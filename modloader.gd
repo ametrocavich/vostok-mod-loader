@@ -4,8 +4,10 @@ const MOD_DIR := "mods"
 const TMP_DIR := "user://vmz_mount_cache"
 const CONFLICT_REPORT_PATH := "user://modloader_conflicts.txt"
 const UI_CONFIG_PATH := "user://mod_config.cfg"
-const MODWORKSHOP_VERSIONS_URL := "https://api.modworkshop.net/mods/versions"
 const MODWORKSHOP_DOWNLOAD_URL_TEMPLATE := "https://api.modworkshop.net/mods/%s/download"
+const MODWORKSHOP_BROWSE_URL := "https://api.modworkshop.net/games/864/mods"
+const MODWORKSHOP_CATEGORIES_URL := "https://api.modworkshop.net/games/864/categories"
+const BROWSE_PAGE_SIZE := 10
 
 const VANILLA_SCAN_DIRS: Array[String] = ["res://Scripts", "res://Scenes"]
 const TRACKED_EXTENSIONS: Array[String] = ["gd", "tscn", "tres", "gdns", "gdnlib", "scn"]
@@ -19,8 +21,7 @@ const LIFECYCLE_METHODS: Array[String] = [
 const OVERLAP_FILE_THRESHOLD := 5       # shared files to flag "Likely Incompatible"
 const OVERLAP_VANILLA_THRESHOLD := 3    # shared vanilla files for critical severity
 const MAX_DISPLAYED_FILENAMES := 6      # truncate file lists in conflict cards
-const MODWORKSHOP_BATCH_SIZE := 100     # mod IDs per API request
-const API_CHECK_TIMEOUT := 15.0         # seconds for version-check requests
+const API_CHECK_TIMEOUT := 15.0         # seconds for API requests
 const API_DOWNLOAD_TIMEOUT := 30.0      # seconds for mod download requests
 const PRIORITY_MIN := -999
 const PRIORITY_MAX := 999
@@ -47,6 +48,24 @@ var _developer_mode: bool = false
 var _has_loaded: bool = false
 var _mods_dir: String = ""
 
+# ─── Browse tab state ──────────────────────────────────────────────��─────────
+var _browse_results_list: VBoxContainer = null
+var _browse_status_label: Label = null
+var _browse_page_label: Label = null
+var _browse_prev_btn: Button = null
+var _browse_next_btn: Button = null
+var _browse_search_btn: Button = null
+var _browse_search_input: LineEdit = null
+var _browse_category_dropdown: OptionButton = null
+var _browse_current_page: int = 1
+var _browse_last_page: int = 1
+var _browse_current_query: String = ""
+var _browse_installed_ids: Dictionary = {}   # mw_id -> mod_name
+var _browse_installed_paths: Dictionary = {} # mw_id -> full_path
+var _browse_installed_versions: Dictionary = {} # mw_id -> version string
+var _browse_rebuild_mods_tab: Callable = Callable()
+var _browse_installed_only: bool = false
+
 var _re_take_over: RegEx
 var _re_extends: RegEx
 var _re_extends_classname: RegEx
@@ -71,7 +90,12 @@ func _ready() -> void:
 	_ui_mod_entries = _collect_mod_metadata()
 	_load_ui_config()
 	await _show_mod_ui()
+	# Save user's enable/disable choices from the UI
 	_save_ui_config()
+	# Re-scan mods folder to pick up any mods installed via the Browse tab
+	_ui_mod_entries = _collect_mod_metadata()
+	# Reload the saved config onto the fresh entries
+	_load_ui_config()
 	_load_all_mods()
 	if _developer_mode:
 		_preflight_compile_check()
@@ -312,16 +336,6 @@ func _show_mod_ui() -> void:
 	mods_tab.name = "Mods"
 	tabs.add_child(mods_tab)
 
-	var updates_tab := _build_updates_tab()
-	updates_tab.name = "Updates"
-	tabs.add_child(updates_tab)
-
-	var compat_tab := _build_compat_tab()
-	compat_tab.name = "Compatibility"
-	tabs.add_child(compat_tab)
-	var compat_idx := compat_tab.get_index()
-	tabs.set_tab_hidden(compat_idx, not _developer_mode)
-
 	var rebuild_mods_tab := func():
 		_ui_mod_entries = _collect_mod_metadata()
 		_load_ui_config()
@@ -333,7 +347,16 @@ func _show_mod_ui() -> void:
 		new_tab.name = "Mods"
 		tabs.add_child(new_tab)
 		tabs.move_child(new_tab, idx)
-		tabs.current_tab = tabs.get_node("Settings").get_index()
+
+	var browse_tab := _build_browse_tab(rebuild_mods_tab)
+	browse_tab.name = "Browse"
+	tabs.add_child(browse_tab)
+
+	var compat_tab := _build_compat_tab()
+	compat_tab.name = "Compatibility"
+	tabs.add_child(compat_tab)
+	var compat_idx := compat_tab.get_index()
+	tabs.set_tab_hidden(compat_idx, not _developer_mode)
 
 	var settings_tab := _build_settings_tab(tabs, compat_idx, rebuild_mods_tab)
 	settings_tab.name = "Settings"
@@ -614,6 +637,433 @@ func _build_mods_tab() -> Control:
 	return outer
 
 
+func _build_browse_tab(rebuild_mods_tab: Callable = Callable()) -> Control:
+	_browse_rebuild_mods_tab = rebuild_mods_tab
+
+	# Build installed mod index
+	_browse_installed_ids.clear()
+	_browse_installed_paths.clear()
+	_browse_installed_versions.clear()
+	for entry in _ui_mod_entries:
+		var cfg: ConfigFile = entry["cfg"]
+		if cfg and cfg.has_section_key("updates", "modworkshop"):
+			var mw_id := int(str(cfg.get_value("updates", "modworkshop", "")))
+			if mw_id > 0:
+				_browse_installed_ids[mw_id] = entry["mod_name"]
+				_browse_installed_paths[mw_id] = entry["full_path"]
+				_browse_installed_versions[mw_id] = str(cfg.get_value("mod", "version", ""))
+
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 6)
+	margin.add_theme_constant_override("margin_right", 6)
+	margin.add_theme_constant_override("margin_top", 6)
+	margin.add_theme_constant_override("margin_bottom", 6)
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 6)
+	margin.add_child(vbox)
+
+	var search_row := HBoxContainer.new()
+	search_row.add_theme_constant_override("separation", 4)
+	vbox.add_child(search_row)
+
+	_browse_search_input = LineEdit.new()
+	_browse_search_input.placeholder_text = "Search mods..."
+	_browse_search_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_browse_search_input.custom_minimum_size.y = 30
+	search_row.add_child(_browse_search_input)
+
+	_browse_category_dropdown = OptionButton.new()
+	_browse_category_dropdown.custom_minimum_size = Vector2(140, 30)
+	_browse_category_dropdown.add_item("All Categories", 0)
+	_browse_category_dropdown.get_popup().always_on_top = true
+	search_row.add_child(_browse_category_dropdown)
+	call_deferred("_fetch_categories", _browse_category_dropdown)
+
+	var installed_check := CheckButton.new()
+	installed_check.text = "Installed"
+	installed_check.custom_minimum_size = Vector2(90, 30)
+	search_row.add_child(installed_check)
+
+	_browse_search_btn = Button.new()
+	_browse_search_btn.text = "Search"
+	_browse_search_btn.custom_minimum_size = Vector2(80, 30)
+	search_row.add_child(_browse_search_btn)
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	vbox.add_child(scroll)
+
+	_browse_results_list = VBoxContainer.new()
+	_browse_results_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_browse_results_list.add_theme_constant_override("separation", 4)
+	scroll.add_child(_browse_results_list)
+
+	var page_row := HBoxContainer.new()
+	page_row.add_theme_constant_override("separation", 6)
+	page_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	vbox.add_child(page_row)
+
+	_browse_prev_btn = Button.new()
+	_browse_prev_btn.text = "< Prev"
+	_browse_prev_btn.custom_minimum_size = Vector2(70, 28)
+	_browse_prev_btn.disabled = true
+	page_row.add_child(_browse_prev_btn)
+
+	_browse_page_label = Label.new()
+	_browse_page_label.text = "Page 1 / 1"
+	_browse_page_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_browse_page_label.custom_minimum_size = Vector2(100, 28)
+	page_row.add_child(_browse_page_label)
+
+	_browse_next_btn = Button.new()
+	_browse_next_btn.text = "Next >"
+	_browse_next_btn.custom_minimum_size = Vector2(70, 28)
+	_browse_next_btn.disabled = true
+	page_row.add_child(_browse_next_btn)
+
+	_browse_status_label = Label.new()
+	_browse_status_label.text = "Search for mods or browse below"
+	_browse_status_label.add_theme_font_size_override("font_size", 11)
+	_browse_status_label.modulate = Color(0.5, 0.5, 0.5)
+	_browse_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(_browse_status_label)
+
+	_browse_search_btn.pressed.connect(func():
+		_browse_current_query = _browse_search_input.text
+		_browse_fetch(_browse_current_query, 1, _browse_category_dropdown.get_selected_id())
+	)
+	_browse_search_input.text_submitted.connect(func(_text):
+		_browse_current_query = _browse_search_input.text
+		_browse_fetch(_browse_current_query, 1, _browse_category_dropdown.get_selected_id())
+	)
+	_browse_category_dropdown.item_selected.connect(func(_idx):
+		_browse_current_query = _browse_search_input.text
+		_browse_fetch(_browse_current_query, 1, _browse_category_dropdown.get_selected_id())
+	)
+	installed_check.toggled.connect(func(on):
+		_browse_installed_only = on
+		_browse_current_query = _browse_search_input.text
+		_browse_fetch(_browse_current_query, 1, _browse_category_dropdown.get_selected_id())
+	)
+	_browse_prev_btn.pressed.connect(func():
+		if _browse_current_page > 1:
+			_browse_fetch(_browse_current_query, _browse_current_page - 1, _browse_category_dropdown.get_selected_id())
+	)
+	_browse_next_btn.pressed.connect(func():
+		if _browse_current_page < _browse_last_page:
+			_browse_fetch(_browse_current_query, _browse_current_page + 1, _browse_category_dropdown.get_selected_id())
+	)
+
+	_browse_fetch("", 1, 0)
+	return margin
+
+
+func _browse_fetch(query: String, page: int, cat_id: int = 0) -> void:
+	_browse_status_label.text = "Loading..."
+	_browse_search_btn.disabled = true
+	_browse_prev_btn.disabled = true
+	_browse_next_btn.disabled = true
+
+	for child in _browse_results_list.get_children():
+		child.queue_free()
+
+	# If "Installed" filter is on, show only installed mods
+	if _browse_installed_only:
+		# Build cards from local data without API call
+		_browse_page_label.text = str(_browse_installed_ids.size()) + " installed mod(s)"
+		_browse_prev_btn.disabled = true
+		_browse_next_btn.disabled = true
+		_browse_search_btn.disabled = false
+		if _browse_installed_ids.size() == 0:
+			_browse_status_label.text = "No installed mods with modworkshop IDs"
+			return
+		# Fetch details for installed mods from API
+		for mw_id in _browse_installed_ids:
+			var req := HTTPRequest.new()
+			req.timeout = API_CHECK_TIMEOUT
+			add_child(req)
+			if req.request("https://api.modworkshop.net/mods/" + str(mw_id)) != OK:
+				req.queue_free()
+				continue
+			var res: Array = await req.request_completed
+			req.queue_free()
+			if res[0] == HTTPRequest.RESULT_SUCCESS and res[1] >= 200 and res[1] < 300:
+				var body := (res[3] as PackedByteArray).get_string_from_utf8()
+				var parsed = JSON.parse_string(body)
+				if parsed is Dictionary:
+					_browse_add_mod_card(parsed)
+		_browse_status_label.text = ""
+		return
+
+	var url := MODWORKSHOP_BROWSE_URL + "?limit=" + str(BROWSE_PAGE_SIZE) + "&page=" + str(page)
+	if query != "":
+		url += "&query=" + query.uri_encode()
+	if cat_id > 0:
+		url += "&category_id=" + str(cat_id)
+
+	var req := HTTPRequest.new()
+	req.timeout = API_CHECK_TIMEOUT
+	add_child(req)
+	if req.request(url) != OK:
+		req.queue_free()
+		_browse_status_label.text = "Failed to connect"
+		_browse_search_btn.disabled = false
+		return
+
+	var res: Array = await req.request_completed
+	req.queue_free()
+
+	if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] < 200 or res[1] >= 300:
+		_browse_status_label.text = "API error (HTTP " + str(res[1]) + ")"
+		_browse_search_btn.disabled = false
+		return
+
+	var body := (res[3] as PackedByteArray).get_string_from_utf8()
+	var parsed = JSON.parse_string(body)
+	if not parsed is Dictionary or not parsed.has("data"):
+		_browse_status_label.text = "Invalid response"
+		_browse_search_btn.disabled = false
+		return
+
+	var mods: Array = parsed["data"]
+	var meta: Dictionary = parsed.get("meta", {})
+	_browse_current_page = int(meta.get("current_page", 1))
+	_browse_last_page = int(meta.get("last_page", 1))
+	var total := int(meta.get("total", 0))
+
+	_browse_page_label.text = "Page " + str(_browse_current_page) + " / " + str(_browse_last_page) + " (" + str(total) + " mods)"
+	_browse_prev_btn.disabled = _browse_current_page <= 1
+	_browse_next_btn.disabled = _browse_current_page >= _browse_last_page
+	_browse_search_btn.disabled = false
+
+	if mods.size() == 0:
+		_browse_status_label.text = "No mods found"
+		return
+	_browse_status_label.text = ""
+
+	for mod in mods:
+		_browse_add_mod_card(mod)
+
+
+func _browse_add_mod_card(mod: Dictionary) -> void:
+	var card := PanelContainer.new()
+	var card_style := StyleBoxFlat.new()
+	card_style.bg_color = Color(0.08, 0.08, 0.08)
+	card_style.border_color = Color(0.2, 0.2, 0.2)
+	card_style.border_width_bottom = 1
+	card_style.content_margin_left = 8
+	card_style.content_margin_right = 8
+	card_style.content_margin_top = 6
+	card_style.content_margin_bottom = 6
+	card.add_theme_stylebox_override("panel", card_style)
+	_browse_results_list.add_child(card)
+
+	var card_hbox := HBoxContainer.new()
+	card_hbox.add_theme_constant_override("separation", 8)
+	card.add_child(card_hbox)
+
+	var info_col := VBoxContainer.new()
+	info_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	info_col.add_theme_constant_override("separation", 2)
+	card_hbox.add_child(info_col)
+
+	var title_row := HBoxContainer.new()
+	info_col.add_child(title_row)
+	var title_lbl := Label.new()
+	title_lbl.text = str(mod.get("name", "Unknown"))
+	title_lbl.add_theme_font_size_override("font_size", 14)
+	title_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	title_row.add_child(title_lbl)
+	var ver_lbl := Label.new()
+	ver_lbl.text = "v" + str(mod.get("version", "?"))
+	ver_lbl.add_theme_font_size_override("font_size", 11)
+	ver_lbl.modulate = Color(0.6, 0.6, 0.6)
+	title_row.add_child(ver_lbl)
+
+	var stats_row := HBoxContainer.new()
+	stats_row.add_theme_constant_override("separation", 12)
+	info_col.add_child(stats_row)
+	var author_name := ""
+	var user_data = mod.get("user", null)
+	if user_data is Dictionary:
+		author_name = str(user_data.get("name", "Unknown"))
+	var author_lbl := Label.new()
+	author_lbl.text = "by " + author_name
+	author_lbl.add_theme_font_size_override("font_size", 11)
+	author_lbl.modulate = Color(0.5, 0.5, 0.5)
+	stats_row.add_child(author_lbl)
+	var dl_lbl := Label.new()
+	dl_lbl.text = str(mod.get("downloads", 0)) + " downloads"
+	dl_lbl.add_theme_font_size_override("font_size", 11)
+	dl_lbl.modulate = Color(0.5, 0.5, 0.5)
+	stats_row.add_child(dl_lbl)
+	var likes_lbl := Label.new()
+	likes_lbl.text = str(mod.get("likes", 0)) + " likes"
+	likes_lbl.add_theme_font_size_override("font_size", 11)
+	likes_lbl.modulate = Color(0.5, 0.5, 0.5)
+	stats_row.add_child(likes_lbl)
+
+	var desc_text := str(mod.get("desc", ""))
+	if desc_text.length() > 150:
+		desc_text = desc_text.substr(0, 147) + "..."
+	var desc_lbl := Label.new()
+	desc_lbl.text = desc_text
+	desc_lbl.add_theme_font_size_override("font_size", 11)
+	desc_lbl.modulate = Color(0.7, 0.7, 0.7)
+	desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	info_col.add_child(desc_lbl)
+
+	var mod_tags: Array = mod.get("tags", [])
+	if mod_tags.size() > 0:
+		var tag_row := HBoxContainer.new()
+		tag_row.add_theme_constant_override("separation", 4)
+		info_col.add_child(tag_row)
+		for tag in mod_tags:
+			if not tag is Dictionary:
+				continue
+			var tag_lbl := Label.new()
+			tag_lbl.text = str(tag.get("name", ""))
+			tag_lbl.add_theme_font_size_override("font_size", 10)
+			var tag_color_str := str(tag.get("color", "#888888"))
+			tag_lbl.modulate = Color.from_string(tag_color_str, Color(0.5, 0.5, 0.5))
+			tag_row.add_child(tag_lbl)
+
+	var cat_data = mod.get("category", null)
+	if cat_data is Dictionary and cat_data.get("name", "") != "":
+		var cat_lbl := Label.new()
+		cat_lbl.text = str(cat_data.get("name", ""))
+		cat_lbl.add_theme_font_size_override("font_size", 10)
+		cat_lbl.modulate = Color(0.4, 0.6, 0.8)
+		info_col.add_child(cat_lbl)
+
+	# Action column
+	var action_col := VBoxContainer.new()
+	action_col.custom_minimum_size.x = 90
+	action_col.alignment = BoxContainer.ALIGNMENT_CENTER
+	card_hbox.add_child(action_col)
+
+	var mod_id := int(mod.get("id", 0))
+	var mod_name := str(mod.get("name", "Unknown"))
+	var remote_version := str(mod.get("version", ""))
+	var has_dl := bool(mod.get("has_download", false))
+	var is_installed := _browse_installed_ids.has(mod_id)
+	var needs_update := false
+
+	if is_installed and remote_version != "":
+		var local_ver := _browse_installed_versions.get(mod_id, "")
+		if local_ver != "" and _compare_versions(local_ver, remote_version) < 0:
+			needs_update = true
+
+	if is_installed and needs_update:
+		# Update button
+		var update_btn := Button.new()
+		update_btn.text = "Update"
+		update_btn.custom_minimum_size = Vector2(80, 28)
+		update_btn.modulate = Color(0.6, 0.8, 1.0)
+		update_btn.pressed.connect(func():
+			update_btn.text = "..."
+			update_btn.disabled = true
+			var target: String = _browse_installed_paths.get(mod_id, "")
+			if target == "":
+				target = _mods_dir.path_join(mod_name.replace(" ", "_") + ".vmz")
+			var ok := await _download_and_replace_mod(target, mod_id)
+			if ok:
+				_browse_status_label.text = mod_name + " updated!"
+				_browse_installed_versions[mod_id] = remote_version
+				if _browse_rebuild_mods_tab.is_valid():
+					_browse_rebuild_mods_tab.call()
+				_browse_fetch(_browse_current_query, _browse_current_page, _browse_category_dropdown.get_selected_id())
+			else:
+				update_btn.text = "Failed"
+				update_btn.disabled = false
+				update_btn.modulate = Color(1.0, 0.4, 0.4)
+		)
+		action_col.add_child(update_btn)
+	elif is_installed:
+		# Uninstall button
+		var uninstall_btn := Button.new()
+		uninstall_btn.text = "Uninstall"
+		uninstall_btn.custom_minimum_size = Vector2(80, 28)
+		uninstall_btn.modulate = Color(1.0, 0.6, 0.6)
+		uninstall_btn.pressed.connect(func():
+			var path: String = _browse_installed_paths.get(mod_id, "")
+			if path == "" or !FileAccess.file_exists(path):
+				uninstall_btn.text = "Not found"
+				return
+			var dir := DirAccess.open(path.get_base_dir())
+			if dir and dir.remove(path.get_file()) == OK:
+				_browse_installed_ids.erase(mod_id)
+				_browse_installed_paths.erase(mod_id)
+				_browse_installed_versions.erase(mod_id)
+				_browse_status_label.text = mod_name + " uninstalled."
+				_log_info("[Browse] Uninstalled: " + path)
+				if _browse_rebuild_mods_tab.is_valid():
+					_browse_rebuild_mods_tab.call()
+				_browse_fetch(_browse_current_query, _browse_current_page, _browse_category_dropdown.get_selected_id())
+			else:
+				uninstall_btn.text = "Failed"
+				_log_critical("[Browse] Failed to delete: " + path)
+		)
+		action_col.add_child(uninstall_btn)
+	elif has_dl:
+		# Install button
+		var install_btn := Button.new()
+		install_btn.text = "Install"
+		install_btn.custom_minimum_size = Vector2(80, 28)
+		install_btn.pressed.connect(func():
+			install_btn.text = "..."
+			install_btn.disabled = true
+			var target := _mods_dir.path_join(mod_name.replace(" ", "_") + ".vmz")
+			var ok := await _download_and_replace_mod(target, mod_id)
+			if ok:
+				_browse_installed_ids[mod_id] = mod_name
+				_browse_installed_paths[mod_id] = target
+				_browse_installed_versions[mod_id] = remote_version
+				_browse_status_label.text = mod_name + " installed!"
+				if _browse_rebuild_mods_tab.is_valid():
+					_browse_rebuild_mods_tab.call()
+				_browse_fetch(_browse_current_query, _browse_current_page, _browse_category_dropdown.get_selected_id())
+			else:
+				install_btn.text = "Failed"
+				install_btn.disabled = false
+				install_btn.modulate = Color(1.0, 0.4, 0.4)
+		)
+		action_col.add_child(install_btn)
+	else:
+		var no_dl_lbl := Label.new()
+		no_dl_lbl.text = "No download"
+		no_dl_lbl.add_theme_font_size_override("font_size", 11)
+		no_dl_lbl.modulate = Color(0.5, 0.5, 0.5)
+		no_dl_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		action_col.add_child(no_dl_lbl)
+
+
+func _fetch_categories(dropdown: OptionButton) -> void:
+	var req := HTTPRequest.new()
+	req.timeout = API_CHECK_TIMEOUT
+	add_child(req)
+	if req.request(MODWORKSHOP_CATEGORIES_URL) != OK:
+		req.queue_free()
+		return
+	var res: Array = await req.request_completed
+	req.queue_free()
+	if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] < 200 or res[1] >= 300:
+		return
+	var body := (res[3] as PackedByteArray).get_string_from_utf8()
+	var parsed = JSON.parse_string(body)
+	var cat_list: Array = []
+	if parsed is Array:
+		cat_list = parsed
+	elif parsed is Dictionary and parsed.has("data"):
+		cat_list = parsed["data"]
+	cat_list.sort_custom(func(a, b): return str(a.get("name", "")).to_lower() < str(b.get("name", "")).to_lower())
+	for cat in cat_list:
+		if is_instance_valid(dropdown):
+			dropdown.add_item(str(cat.get("name", "?")), int(cat.get("id", 0)))
+
+
 func _build_compat_tab() -> Control:
 	var margin := MarginContainer.new()
 	margin.add_theme_constant_override("margin_left", 8)
@@ -824,193 +1274,6 @@ func _run_dry_compat_analysis(populate_cb: Callable) -> void:
 	populate_cb.call(issues)
 
 
-func _build_updates_tab() -> Control:
-	var margin := MarginContainer.new()
-	margin.add_theme_constant_override("margin_left", 8)
-	margin.add_theme_constant_override("margin_right", 8)
-	margin.add_theme_constant_override("margin_top", 6)
-	margin.add_theme_constant_override("margin_bottom", 6)
-
-	var container := VBoxContainer.new()
-	container.add_theme_constant_override("separation", 6)
-	margin.add_child(container)
-
-	var toolbar := HBoxContainer.new()
-	toolbar.add_theme_constant_override("separation", 8)
-	container.add_child(toolbar)
-
-	var spacer := Control.new()
-	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	toolbar.add_child(spacer)
-
-	var check_btn := Button.new()
-	check_btn.text = "Check for Updates"
-	toolbar.add_child(check_btn)
-
-	container.add_child(HSeparator.new())
-
-	# Column headers
-	var header_row := HBoxContainer.new()
-	container.add_child(header_row)
-
-	var h_mod := Label.new()
-	h_mod.text = "Mod"
-	h_mod.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	header_row.add_child(h_mod)
-
-	var h_ver := Label.new()
-	h_ver.text = "Version"
-	h_ver.custom_minimum_size.x = 90
-	header_row.add_child(h_ver)
-
-	var h_status := Label.new()
-	h_status.text = "Status"
-	h_status.custom_minimum_size.x = 160
-	header_row.add_child(h_status)
-
-	var h_action := Label.new()
-	h_action.text = "Action"
-	h_action.custom_minimum_size.x = 90
-	header_row.add_child(h_action)
-
-	container.add_child(HSeparator.new())
-
-	var scroll := ScrollContainer.new()
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	container.add_child(scroll)
-
-	var list := VBoxContainer.new()
-	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(list)
-
-	# { label, version, mw_id, dl_btn, full_path, mod_name }
-	var status_info: Dictionary = {}
-
-	for entry in _ui_mod_entries:
-		var cfg: ConfigFile = entry["cfg"]
-		if cfg == null:
-			continue
-		var version := str(cfg.get_value("mod", "version", ""))
-		var mw_id := 0
-		if cfg.has_section_key("updates", "modworkshop"):
-			mw_id = int(str(cfg.get_value("updates", "modworkshop", "")))
-
-		var row := HBoxContainer.new()
-		list.add_child(row)
-
-		# Name column: mod name + last-modified date sub-label.
-		var name_col := VBoxContainer.new()
-		name_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		row.add_child(name_col)
-
-		var name_lbl := Label.new()
-		name_lbl.text = entry["mod_name"]
-		name_lbl.clip_text = true
-		name_col.add_child(name_lbl)
-
-		var mtime := FileAccess.get_modified_time(entry["full_path"])
-		if mtime > 0:
-			var dt := Time.get_datetime_dict_from_unix_time(mtime)
-			var date_str := "%04d-%02d-%02d" % [dt["year"], dt["month"], dt["day"]]
-			var mod_lbl := Label.new()
-			mod_lbl.text = "modified " + date_str
-			mod_lbl.add_theme_font_size_override("font_size", 11)
-			mod_lbl.modulate = Color(0.5, 0.5, 0.5)
-			name_col.add_child(mod_lbl)
-
-		var ver_lbl := Label.new()
-		ver_lbl.text = "v" + version if version != "" else "—"
-		ver_lbl.custom_minimum_size.x = 90
-		row.add_child(ver_lbl)
-
-		var status_lbl := Label.new()
-		status_lbl.custom_minimum_size.x = 160
-		status_lbl.text = "no update info" if mw_id == 0 or version == "" else "—"
-		row.add_child(status_lbl)
-
-		# Always add dl_btn to preserve column width. Use modulate.a to
-		# hide it visually without collapsing its layout slot.
-		var dl_btn := Button.new()
-		dl_btn.text = "Download"
-		dl_btn.custom_minimum_size.x = 90
-		dl_btn.modulate.a = 0.0
-		dl_btn.disabled = true
-		dl_btn.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		row.add_child(dl_btn)
-
-		list.add_child(HSeparator.new())
-
-		if mw_id > 0 and version != "":
-			status_info[entry["file_name"]] = {
-				"label": status_lbl, "ver_lbl": ver_lbl, "version": version, "mw_id": mw_id,
-				"dl_btn": dl_btn, "full_path": entry["full_path"],
-				"mod_name": entry["mod_name"],
-			}
-
-	if list.get_child_count() == 0:
-		var lbl := Label.new()
-		lbl.text = "No mods with update information found.\nAdd [updates] modworkshop=<id> and version=<x.y.z> to mod.txt to enable this."
-		lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		list.add_child(lbl)
-
-	# ── Activity log ──────────────────────────────────────────────────────────
-
-	container.add_child(HSeparator.new())
-
-	var log_hdr := Label.new()
-	log_hdr.text = "Activity"
-	log_hdr.add_theme_font_size_override("font_size", 11)
-	log_hdr.modulate = Color(0.65, 0.65, 0.65)
-	container.add_child(log_hdr)
-
-	var log_bg := PanelContainer.new()
-	log_bg.custom_minimum_size.y = 72
-	var log_style := StyleBoxFlat.new()
-	log_style.bg_color = Color(0.09, 0.09, 0.09)
-	log_style.content_margin_left = 6
-	log_style.content_margin_right = 6
-	log_style.content_margin_top = 4
-	log_style.content_margin_bottom = 4
-	log_bg.add_theme_stylebox_override("panel", log_style)
-	container.add_child(log_bg)
-
-	var log_scroll := ScrollContainer.new()
-	log_bg.add_child(log_scroll)
-
-	var log_list := VBoxContainer.new()
-	log_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	log_scroll.add_child(log_list)
-
-	var add_log := func(msg: String):
-		var t := Time.get_time_string_from_system()
-		var lbl := Label.new()
-		lbl.text = "[" + t + "] " + msg
-		lbl.add_theme_font_size_override("font_size", 11)
-		lbl.modulate = Color(0.8, 0.8, 0.8)
-		lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		log_list.add_child(lbl)
-		log_scroll.scroll_vertical = 999999
-
-	check_btn.pressed.connect(func():
-		check_btn.disabled = true
-		check_btn.text = "Checking..."
-		for fn in status_info:
-			var info: Dictionary = status_info[fn]
-			(info["label"] as Label).text = "checking..."
-			(info["label"] as Label).modulate = Color(1.0, 1.0, 1.0)
-			var btn: Button = info["dl_btn"]
-			btn.modulate.a = 0.0
-			btn.disabled = true
-			btn.mouse_filter = Control.MOUSE_FILTER_IGNORE
-			btn.text = "Download"
-		await _check_updates_for_ui(status_info, add_log, check_btn)
-		check_btn.disabled = false
-		check_btn.text = "Check for Updates"
-	)
-
-	return margin
-
-
 func _build_settings_tab(tabs: TabContainer, compat_idx: int, rebuild_mods_tab: Callable) -> Control:
 	var margin := MarginContainer.new()
 	margin.add_theme_constant_override("margin_left", 8)
@@ -1055,71 +1318,6 @@ func _build_settings_tab(tabs: TabContainer, compat_idx: int, rebuild_mods_tab: 
 	)
 
 	return margin
-
-
-func _check_updates_for_ui(status_info: Dictionary, add_log: Callable, check_btn: Button) -> void:
-	var ids: Array[int] = []
-	for fn in status_info:
-		ids.append(status_info[fn]["mw_id"])
-	if ids.is_empty():
-		return
-
-	var latest := await _fetch_latest_modworkshop_versions(ids)
-
-	for fn: String in status_info:
-		var info: Dictionary = status_info[fn]
-		var lbl: Label = info["label"]
-		var dl_btn: Button = info["dl_btn"]
-		var latest_v = latest.get(str(info["mw_id"]), null)
-		if latest_v == null:
-			lbl.text = "no data"
-			lbl.modulate = Color(1.0, 1.0, 1.0)
-			continue
-
-		var cmp := _compare_versions(info["version"], str(latest_v))
-		if cmp >= 0:
-			# Local is same version or newer than what's on the server.
-			lbl.text = "up to date"
-			lbl.modulate = Color(0.6, 0.6, 0.6)
-		else:
-			# Server has a newer version.
-			lbl.text = "update: v" + str(latest_v)
-			lbl.modulate = Color(0.90, 0.90, 0.90)
-			dl_btn.modulate.a = 1.0
-			dl_btn.disabled = false
-			dl_btn.mouse_filter = Control.MOUSE_FILTER_STOP
-			var full_path: String = info["full_path"]
-			var mw_id: int = info["mw_id"]
-			var mod_name: String = info["mod_name"]
-			var new_ver: String = str(latest_v)
-			# Disconnect previous connections so repeated checks don't stack callbacks.
-			for c in dl_btn.pressed.get_connections():
-				dl_btn.pressed.disconnect(c["callable"])
-			dl_btn.pressed.connect(func():
-				dl_btn.disabled = true
-				dl_btn.text = "Downloading..."
-				lbl.text = "downloading..."
-				check_btn.disabled = true
-				var ok := await _download_and_replace_mod(full_path, mw_id)
-				check_btn.disabled = false
-				if ok:
-					lbl.text = "updated — restart to apply"
-					lbl.modulate = Color(0.80, 0.80, 0.80)
-					dl_btn.modulate.a = 0.0
-					dl_btn.disabled = true
-					dl_btn.mouse_filter = Control.MOUSE_FILTER_IGNORE
-					dl_btn.text = "Download"
-					# Update cached version so next Check won't re-flag this mod.
-					info["version"] = new_ver
-					(info["ver_lbl"] as Label).text = "v" + new_ver
-					add_log.call(mod_name + " — updated to v" + new_ver + ". Restart game to apply.")
-				else:
-					lbl.text = "download failed"
-					lbl.modulate = Color(1.0, 0.4, 0.4)
-					dl_btn.disabled = false
-					dl_btn.text = "Retry"
-					add_log.call(mod_name + " — download failed.")
-			)
 
 
 # ─── Main load loop ───────────────────────────────────────────────────────────
@@ -2223,46 +2421,87 @@ func _compare_versions(a: String, b: String) -> int:
 	return 0
 
 
-func _fetch_latest_modworkshop_versions(ids: Array[int]) -> Dictionary:
-	var latest_versions := {}
-	for chunk_ids in _chunk_int_array(ids, MODWORKSHOP_BATCH_SIZE):
-		var req := HTTPRequest.new()
-		req.timeout = API_CHECK_TIMEOUT
-		add_child(req)
-		var err := req.request(MODWORKSHOP_VERSIONS_URL,
-			PackedStringArray(["Content-Type: application/json", "Accept: application/json"]),
-			HTTPClient.METHOD_GET, JSON.stringify({"mod_ids": chunk_ids}))
-		if err != OK:
-			req.queue_free()
-			continue
-		# request_completed → [result, http_code, headers, body]
-		var res: Array = await req.request_completed
-		req.queue_free()
-		if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] < 200 or res[1] >= 300:
-			continue
-		var parsed = JSON.parse_string((res[3] as PackedByteArray).get_string_from_utf8())
-		if parsed is Dictionary:
-			latest_versions.merge(parsed, true)
-	return latest_versions
-
-
 func _download_and_replace_mod(target_path: String, modworkshop_id: int) -> bool:
+	_log_info("[Download] Starting: mod " + str(modworkshop_id) + " -> " + target_path)
+
+	# Step 1: Get the actual download URL from the files API
+	var download_url := ""
+	var files_req := HTTPRequest.new()
+	files_req.timeout = API_CHECK_TIMEOUT
+	add_child(files_req)
+	var files_url := "https://api.modworkshop.net/mods/" + str(modworkshop_id) + "/files/latest"
+	_log_info("[Download] Checking files: " + files_url)
+	var files_err := files_req.request(files_url)
+	if files_err == OK:
+		var files_res: Array = await files_req.request_completed
+		files_req.queue_free()
+		if files_res[0] == HTTPRequest.RESULT_SUCCESS and files_res[1] >= 200 and files_res[1] < 300:
+			var files_body := (files_res[3] as PackedByteArray).get_string_from_utf8()
+			var files_parsed = JSON.parse_string(files_body)
+			if files_parsed is Dictionary and files_parsed.has("download_url"):
+				download_url = str(files_parsed["download_url"])
+				_log_info("[Download] Got file URL: " + download_url)
+	else:
+		files_req.queue_free()
+
+	# Step 2: If no file URL, try links endpoint for external downloads
+	if download_url == "":
+		var links_req := HTTPRequest.new()
+		links_req.timeout = API_CHECK_TIMEOUT
+		add_child(links_req)
+		var links_url := "https://api.modworkshop.net/mods/" + str(modworkshop_id) + "/links"
+		_log_info("[Download] No file found, checking links: " + links_url)
+		var links_err := links_req.request(links_url)
+		if links_err == OK:
+			var links_res: Array = await links_req.request_completed
+			links_req.queue_free()
+			if links_res[0] == HTTPRequest.RESULT_SUCCESS and links_res[1] >= 200 and links_res[1] < 300:
+				var links_body := (links_res[3] as PackedByteArray).get_string_from_utf8()
+				var links_parsed = JSON.parse_string(links_body)
+				if links_parsed is Dictionary and links_parsed.has("data"):
+					var links_data: Array = links_parsed["data"]
+					for link in links_data:
+						var url_str := str(link.get("url", ""))
+						if url_str.ends_with(".vmz") or url_str.ends_with(".zip"):
+							download_url = url_str
+							_log_info("[Download] Got link URL: " + download_url)
+							break
+		else:
+			links_req.queue_free()
+
+	# Step 3: Fallback to the generic download endpoint
+	if download_url == "":
+		download_url = MODWORKSHOP_DOWNLOAD_URL_TEMPLATE % str(modworkshop_id)
+		_log_info("[Download] Fallback to generic: " + download_url)
+
+	# Step 4: Download the actual file
 	var req := HTTPRequest.new()
 	req.timeout = API_DOWNLOAD_TIMEOUT
 	add_child(req)
-	var err := req.request(MODWORKSHOP_DOWNLOAD_URL_TEMPLATE % str(modworkshop_id))
+	var err := req.request(download_url)
 	if err != OK:
+		_log_critical("[Download] HTTP request failed to start: error " + str(err))
 		req.queue_free()
 		return false
-	# request_completed → [result, http_code, headers, body]
+
 	var res: Array = await req.request_completed
 	req.queue_free()
 
-	if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] < 200 or res[1] >= 300:
+	if res[0] != HTTPRequest.RESULT_SUCCESS:
+		_log_critical("[Download] Request failed: result=" + str(res[0]) + " http=" + str(res[1]))
 		return false
+	if res[1] < 200 or res[1] >= 300:
+		_log_critical("[Download] HTTP error: " + str(res[1]))
+		var body_preview := (res[3] as PackedByteArray).get_string_from_utf8().substr(0, 200)
+		_log_critical("[Download] Response body: " + body_preview)
+		return false
+
 	var response_body: PackedByteArray = res[3]
 	if response_body.is_empty():
+		_log_critical("[Download] Empty response body")
 		return false
+
+	_log_info("[Download] Downloaded " + str(response_body.size()) + " bytes")
 
 	var temp_path   := target_path + ".download"
 	var backup_path := target_path + ".bak"
@@ -2271,25 +2510,30 @@ func _download_and_replace_mod(target_path: String, modworkshop_id: int) -> bool
 
 	var out := FileAccess.open(temp_path, FileAccess.WRITE)
 	if out == null:
+		_log_critical("[Download] Failed to open temp file for writing: " + temp_path)
 		return false
 	out.store_buffer(response_body)
 	out.close()
 
 	if _read_mod_config(temp_path) == null:
+		_log_critical("[Download] Downloaded file has no valid mod.txt: " + temp_path)
 		DirAccess.remove_absolute(temp_path)
 		return false
 
 	var dir_access := DirAccess.open(target_path.get_base_dir())
 	if dir_access == null:
+		_log_critical("[Download] Cannot open target directory: " + target_path.get_base_dir())
 		DirAccess.remove_absolute(temp_path)
 		return false
 
 	if FileAccess.file_exists(target_path):
 		if dir_access.rename(target_path.get_file(), backup_path.get_file()) != OK:
+			_log_critical("[Download] Failed to backup existing file: " + target_path)
 			DirAccess.remove_absolute(temp_path)
 			return false
 
 	if dir_access.rename(temp_path.get_file(), target_path.get_file()) != OK:
+		_log_critical("[Download] Failed to rename temp to target: " + temp_path + " -> " + target_path)
 		if FileAccess.file_exists(backup_path):
 			dir_access.rename(backup_path.get_file(), target_path.get_file())
 		DirAccess.remove_absolute(temp_path)
@@ -2297,11 +2541,7 @@ func _download_and_replace_mod(target_path: String, modworkshop_id: int) -> bool
 
 	if FileAccess.file_exists(backup_path):
 		DirAccess.remove_absolute(backup_path)
+	_log_info("[Download] Success: " + target_path)
 	return true
 
 
-func _chunk_int_array(arr: Array[int], chunk_size: int) -> Array:
-	var result: Array = []
-	for i in range(0, arr.size(), chunk_size):
-		result.append(arr.slice(i, i + chunk_size))
-	return result
