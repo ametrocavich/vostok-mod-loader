@@ -1,0 +1,1699 @@
+extends Node
+
+const MOD_DIR := "mods"
+const TMP_DIR := "user://vmz_mount_cache"
+const CONFLICT_REPORT_PATH := "user://modloader_conflicts.txt"
+const UI_CONFIG_PATH := "user://mod_config.cfg"
+const MODWORKSHOP_VERSIONS_URL := "https://api.modworkshop.net/mods/versions"
+const MODWORKSHOP_DOWNLOAD_URL_TEMPLATE := "https://api.modworkshop.net/mods/%s/download"
+
+const VANILLA_SCAN_DIRS: Array[String] = ["res://Scripts", "res://Scenes"]
+const TRACKED_EXTENSIONS: Array[String] = ["gd", "tscn", "tres", "gdns", "gdnlib", "scn"]
+const LIFECYCLE_METHODS: Array[String] = [
+	"_ready", "_process", "_physics_process",
+	"_input", "_unhandled_input", "_unhandled_key_input",
+]
+
+# ─── State ────────────────────────────────────────────────────────────────────
+
+var _vanilla_paths: Dictionary = {}
+var _database_path: String = ""
+var _database_replaced_by: String = ""
+var override_registry: Dictionary = {}
+var _mod_script_analysis: Dictionary = {}
+var _archive_file_sets: Dictionary = {}
+var _report_lines: Array[String] = []
+var pending_autoloads: Array[Dictionary] = []
+var loaded_mod_ids: Dictionary = {}
+var registered_autoload_names: Dictionary = {}
+
+# Populated before any mounting. Each entry:
+# { file_name, full_path, ext, mod_name, mod_id, priority, enabled, cfg, has_mod_txt }
+var _ui_mod_entries: Array[Dictionary] = []
+
+var _re_take_over: RegEx
+var _re_extends: RegEx
+var _re_func: RegEx
+
+
+# ─── Entry point ──────────────────────────────────────────────────────────────
+
+func _ready() -> void:
+	# Autoloads run while the scene tree is still setting up children.
+	# Wait one frame so add_child() and DisplayServer queries work correctly.
+	await get_tree().process_frame
+	_compile_regex()
+	_ui_mod_entries = _collect_mod_metadata()
+	_load_ui_config()
+	await _show_mod_ui()
+	_save_ui_config()
+	_load_all_mods()
+	for entry in pending_autoloads:
+		_instantiate_autoload(entry["mod_name"], entry["name"], entry["path"])
+	_print_conflict_summary()
+	_write_conflict_report()
+
+
+func _compile_regex() -> void:
+	_re_take_over = RegEx.new()
+	_re_take_over.compile('take_over_path\\s*\\(\\s*"(res://[^"]+)"')
+	_re_extends = RegEx.new()
+	_re_extends.compile('(?m)^extends\\s+"(res://[^"]+)"')
+	_re_func = RegEx.new()
+	_re_func.compile('(?m)^func\\s+(\\w+)\\s*\\(')
+
+
+# ─── Mod metadata collection (no mounting) ────────────────────────────────────
+
+func _collect_mod_metadata() -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
+	var mods_dir := OS.get_executable_path().get_base_dir().path_join(MOD_DIR)
+	DirAccess.make_dir_recursive_absolute(mods_dir)
+	var dir := DirAccess.open(mods_dir)
+	if dir == null:
+		return entries
+	var seen: Dictionary = {}
+	dir.list_dir_begin()
+	while true:
+		var file_name := dir.get_next()
+		if file_name == "":
+			break
+		if dir.current_is_dir():
+			continue
+		var ext := file_name.get_extension().to_lower()
+		if ext not in ["vmz", "zip", "pck"]:
+			continue
+		if seen.has(file_name):
+			continue
+		seen[file_name] = true
+		var full_path := mods_dir.path_join(file_name)
+		var cfg: ConfigFile = _read_mod_config(full_path) if ext != "pck" else null
+		var mod_name := file_name
+		var mod_id   := file_name
+		var priority := 0
+		if cfg:
+			mod_name = str(cfg.get_value("mod", "name", file_name))
+			mod_id   = str(cfg.get_value("mod", "id",   file_name))
+			if cfg.has_section_key("mod", "priority"):
+				priority = int(str(cfg.get_value("mod", "priority")))
+		entries.append({
+			"file_name": file_name, "full_path": full_path, "ext": ext,
+			"mod_name": mod_name, "mod_id": mod_id,
+			"priority": priority, "enabled": true,
+			"cfg": cfg, "has_mod_txt": cfg != null,
+		})
+	dir.list_dir_end()
+	return entries
+
+
+# ─── Config persistence ───────────────────────────────────────────────────────
+
+func _load_ui_config() -> void:
+	var cfg := ConfigFile.new()
+	if cfg.load(UI_CONFIG_PATH) != OK:
+		return
+	for entry in _ui_mod_entries:
+		var fn: String = entry["file_name"]
+		entry["enabled"] = bool(cfg.get_value("enabled", fn, true))
+		if cfg.has_section_key("priority", fn):
+			entry["priority"] = int(str(cfg.get_value("priority", fn)))
+
+
+func _save_ui_config() -> void:
+	var cfg := ConfigFile.new()
+	for entry in _ui_mod_entries:
+		var fn: String = entry["file_name"]
+		cfg.set_value("enabled", fn, entry["enabled"])
+		cfg.set_value("priority", fn, entry["priority"])
+	cfg.save(UI_CONFIG_PATH)
+
+
+# ─── UI ───────────────────────────────────────────────────────────────────────
+
+func _show_mod_ui() -> void:
+	var win := Window.new()
+	win.title = "Road to Vostok — Mod Loader"
+	win.size = Vector2i(960, 640)
+	win.min_size = Vector2i(640, 420)
+	win.wrap_controls = false
+	win.always_on_top = true
+	win.transparent = true
+	win.transparent_bg = true
+	get_tree().root.add_child(win)
+	win.popup_centered()
+
+	# Kill the default Godot gray on the Window itself (embedded_border is the
+	# stylebox that paints the window's own background area).
+	var win_style := StyleBoxFlat.new()
+	win_style.bg_color = Color(0.0, 0.0, 0.0)
+	win.add_theme_stylebox_override("panel",                    win_style)
+	win.add_theme_stylebox_override("embedded_border",          win_style.duplicate())
+	win.add_theme_stylebox_override("embedded_unfocused_border", win_style.duplicate())
+
+	# Solid dark background so Godot's default gray theme doesn't show through.
+	var bg := Panel.new()
+	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var bg_s := StyleBoxFlat.new()
+	bg_s.bg_color = Color(0.0, 0.0, 0.0, 0.6)
+	bg_s.border_color = Color(1.0, 1.0, 1.0)
+	bg_s.border_width_top    = 1
+	bg_s.border_width_bottom = 1
+	bg_s.border_width_left   = 1
+	bg_s.border_width_right  = 1
+	bg.add_theme_stylebox_override("panel", bg_s)
+	win.add_child(bg)
+
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 10)
+	margin.add_theme_constant_override("margin_right", 10)
+	margin.add_theme_constant_override("margin_top", 8)
+	margin.add_theme_constant_override("margin_bottom", 10)
+	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	margin.theme = _make_dark_theme()
+	win.add_child(margin)
+
+	var root := VBoxContainer.new()
+	root.add_theme_constant_override("separation", 6)
+	margin.add_child(root)
+
+	var tabs := TabContainer.new()
+	tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	root.add_child(tabs)
+
+	root.add_child(HSeparator.new())
+
+	# Bottom bar: instructions + launch button
+	var bottom := HBoxContainer.new()
+	bottom.add_theme_constant_override("separation", 10)
+	root.add_child(bottom)
+
+	var hint := Label.new()
+	hint.text = "Enable/disable mods and set load priority, then click Launch.  Higher priority = loads last = wins conflicts."
+	hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint.add_theme_font_size_override("font_size", 11)
+	hint.modulate = Color(0.45, 0.45, 0.45)
+	bottom.add_child(hint)
+
+	var launch_btn := Button.new()
+	launch_btn.text = "  Launch Game  "
+	launch_btn.custom_minimum_size = Vector2(130, 36)
+	var _ls_n := StyleBoxFlat.new()
+	_ls_n.bg_color = Color(0.05, 0.05, 0.05)
+	_ls_n.border_color = Color(0.28, 0.28, 0.28)
+	_ls_n.border_width_top = 1; _ls_n.border_width_bottom = 1
+	_ls_n.border_width_left = 1; _ls_n.border_width_right = 1
+	_ls_n.content_margin_left = 10; _ls_n.content_margin_right = 10
+	launch_btn.add_theme_stylebox_override("normal", _ls_n)
+	var _ls_h := _ls_n.duplicate()
+	_ls_h.bg_color = Color(0.10, 0.10, 0.10)
+	_ls_h.border_color = Color(0.55, 0.55, 0.55)
+	launch_btn.add_theme_stylebox_override("hover", _ls_h)
+	var _ls_p := _ls_n.duplicate()
+	_ls_p.bg_color = Color(0.03, 0.03, 0.03)
+	launch_btn.add_theme_stylebox_override("pressed", _ls_p)
+	launch_btn.add_theme_color_override("font_color", Color(0.88, 0.88, 0.88))
+	launch_btn.add_theme_color_override("font_hover_color", Color(1.0, 1.0, 1.0))
+	bottom.add_child(launch_btn)
+
+	# Closing the window with X should behave the same as clicking Launch.
+	win.close_requested.connect(func(): launch_btn.pressed.emit())
+
+	var mods_tab := _build_mods_tab()
+	mods_tab.name = "Mods"
+	tabs.add_child(mods_tab)
+
+	var compat_tab := _build_compat_tab()
+	compat_tab.name = "Compatibility"
+	tabs.add_child(compat_tab)
+
+	var updates_tab := _build_updates_tab()
+	updates_tab.name = "Updates"
+	tabs.add_child(updates_tab)
+
+	await launch_btn.pressed
+	win.queue_free()
+
+
+func _make_dark_theme() -> Theme:
+	var t := Theme.new()
+
+	const C_BG    := Color(0.02, 0.02, 0.02)
+	const C_PANEL := Color(0.04, 0.04, 0.04)
+	const C_BTN   := Color(0.07, 0.07, 0.07)
+	const C_BORD  := Color(0.18, 0.18, 0.18)
+	const C_OLIVE := Color(0.90, 0.90, 0.90)
+	const C_TEXT  := Color(0.84, 0.84, 0.84)
+	const C_DIM   := Color(0.42, 0.42, 0.42)
+
+	# ── Button ────────────────────────────────────────────────────────────────
+	var bn := StyleBoxFlat.new()
+	bn.bg_color = C_BTN
+	bn.border_color = C_BORD
+	bn.border_width_top = 1; bn.border_width_bottom = 1
+	bn.border_width_left = 1; bn.border_width_right = 1
+	bn.content_margin_left = 8; bn.content_margin_right = 8
+	bn.content_margin_top = 3; bn.content_margin_bottom = 3
+	var bh := bn.duplicate()
+	bh.bg_color = Color(0.10, 0.10, 0.10); bh.border_color = C_OLIVE
+	var bp := bn.duplicate(); bp.bg_color = Color(0.03, 0.03, 0.03)
+	var bd := bn.duplicate()
+	bd.bg_color = Color(0.04, 0.04, 0.04); bd.border_color = Color(0.12, 0.12, 0.12)
+	t.set_stylebox("normal",   "Button", bn)
+	t.set_stylebox("hover",    "Button", bh)
+	t.set_stylebox("pressed",  "Button", bp)
+	t.set_stylebox("disabled", "Button", bd)
+	t.set_stylebox("focus",    "Button", StyleBoxEmpty.new())
+	t.set_color("font_color",          "Button", C_TEXT)
+	t.set_color("font_hover_color",    "Button", Color(1.0, 1.0, 1.0))
+	t.set_color("font_pressed_color",  "Button", C_TEXT)
+	t.set_color("font_disabled_color", "Button", C_DIM)
+
+	# ── CheckBox (font only — box glyph needs texture to restyle) ─────────────
+	t.set_color("font_color",       "CheckBox", C_TEXT)
+	t.set_color("font_hover_color", "CheckBox", Color(1.0, 1.0, 1.0))
+
+	# ── Label ─────────────────────────────────────────────────────────────────
+	t.set_color("font_color", "Label", C_TEXT)
+
+	# ── Panel / PanelContainer ────────────────────────────────────────────────
+	var ps := StyleBoxFlat.new(); ps.bg_color = C_PANEL
+	t.set_stylebox("panel", "Panel",          ps)
+	t.set_stylebox("panel", "PanelContainer", ps.duplicate())
+
+	# ── TabContainer ──────────────────────────────────────────────────────────
+	var ts := StyleBoxFlat.new()   # selected tab
+	ts.bg_color = C_PANEL
+	ts.border_color = C_BORD
+	ts.border_width_top = 1; ts.border_width_left = 1; ts.border_width_right = 1
+	ts.border_width_bottom = 0
+	ts.content_margin_left = 12; ts.content_margin_right = 12
+	ts.content_margin_top = 5;   ts.content_margin_bottom = 5
+	var tu := ts.duplicate()      # unselected tab
+	tu.bg_color = Color(0.02, 0.02, 0.02)
+	tu.border_color = Color(0.12, 0.12, 0.12)
+	tu.border_width_bottom = 1
+	var tc_panel := StyleBoxFlat.new(); tc_panel.bg_color = C_PANEL
+	tc_panel.content_margin_left   = 10
+	tc_panel.content_margin_right  = 10
+	tc_panel.content_margin_top    = 8
+	tc_panel.content_margin_bottom = 8
+	t.set_stylebox("tab_selected",   "TabContainer", ts)
+	t.set_stylebox("tab_unselected", "TabContainer", tu)
+	t.set_stylebox("tab_hovered",    "TabContainer", tu.duplicate())
+	t.set_stylebox("panel",          "TabContainer", tc_panel)
+	t.set_color("font_selected_color",   "TabContainer", C_OLIVE)
+	t.set_color("font_unselected_color", "TabContainer", C_DIM)
+	t.set_color("font_hovered_color",    "TabContainer", C_TEXT)
+
+	# ── HSeparator ────────────────────────────────────────────────────────────
+	var sep := StyleBoxFlat.new(); sep.bg_color = Color(0.14, 0.14, 0.14)
+	t.set_stylebox("separator", "HSeparator", sep)
+	t.set_constant("separation", "HSeparator", 1)
+
+	# ── LineEdit (SpinBox uses this internally) ────────────────────────────────
+	var le := StyleBoxFlat.new()
+	le.bg_color = Color(0.04, 0.04, 0.04)
+	le.border_color = C_BORD
+	le.border_width_top = 1; le.border_width_bottom = 1
+	le.border_width_left = 1; le.border_width_right = 1
+	le.content_margin_left = 6; le.content_margin_right = 6
+	le.content_margin_top = 3; le.content_margin_bottom = 3
+	t.set_stylebox("normal", "LineEdit", le)
+	t.set_stylebox("focus",  "LineEdit", le.duplicate())
+	t.set_color("font_color", "LineEdit", C_TEXT)
+
+	# ── ScrollContainer (transparent, scrollbars inherit) ─────────────────────
+	t.set_stylebox("panel", "ScrollContainer", StyleBoxEmpty.new())
+
+	return t
+
+
+func _build_mods_tab() -> Control:
+	var split := HSplitContainer.new()
+	split.split_offset = 560
+	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+
+	# ── Left: mod list ────────────────────────────────────────────────────────
+
+	var left_scroll := ScrollContainer.new()
+	left_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.add_child(left_scroll)
+
+	var list := VBoxContainer.new()
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left_scroll.add_child(list)
+
+	# ── Right: live load order preview ────────────────────────────────────────
+
+	var right := VBoxContainer.new()
+	right.custom_minimum_size.x = 220
+	split.add_child(right)
+
+	var order_header := Label.new()
+	order_header.text = "Load Order"
+	order_header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	right.add_child(order_header)
+	right.add_child(HSeparator.new())
+
+	# Dark panel behind the load order list for visual separation.
+	var order_panel := PanelContainer.new()
+	order_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var panel_style := StyleBoxFlat.new()
+	panel_style.bg_color = Color(0.09, 0.09, 0.09)
+	panel_style.content_margin_left = 8
+	panel_style.content_margin_right = 8
+	panel_style.content_margin_top = 6
+	panel_style.content_margin_bottom = 6
+	order_panel.add_theme_stylebox_override("panel", panel_style)
+	right.add_child(order_panel)
+
+	var order_scroll := ScrollContainer.new()
+	order_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	order_panel.add_child(order_scroll)
+
+	var order_list := VBoxContainer.new()
+	order_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	order_scroll.add_child(order_list)
+
+	# Rebuilds the right-side order list from current entry state.
+	var refresh_order := func():
+		for child in order_list.get_children():
+			child.queue_free()
+		var sorted := _ui_mod_entries.filter(func(e): return e["enabled"])
+		sorted.sort_custom(func(a, b): return a["priority"] < b["priority"])
+		if sorted.is_empty():
+			var lbl := Label.new()
+			lbl.text = "(none enabled)"
+			lbl.modulate = Color(0.5, 0.5, 0.5)
+			order_list.add_child(lbl)
+			return
+		for i in sorted.size():
+			var e: Dictionary = sorted[i]
+			var lbl := Label.new()
+			lbl.text = str(i + 1) + ".  " + e["mod_name"]
+			lbl.add_theme_font_size_override("font_size", 12)
+			lbl.modulate = Color(0.80, 0.80, 0.80)
+			lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			order_list.add_child(lbl)
+
+	# ── Column headers ────────────────────────────────────────────────────────
+
+	var header_row := HBoxContainer.new()
+	list.add_child(header_row)
+
+	var h_on := Label.new()
+	h_on.text = "On"
+	h_on.custom_minimum_size.x = 30
+	header_row.add_child(h_on)
+
+	var h_name := Label.new()
+	h_name.text = "Mod"
+	h_name.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header_row.add_child(h_name)
+
+	var h_prio := Label.new()
+	h_prio.text = "Priority"
+	h_prio.custom_minimum_size.x = 100
+	h_prio.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	header_row.add_child(h_prio)
+
+	list.add_child(HSeparator.new())
+
+	# ── One row per mod ───────────────────────────────────────────────────────
+
+	for entry in _ui_mod_entries:
+		var row := HBoxContainer.new()
+		list.add_child(row)
+
+		var check := CheckBox.new()
+		check.button_pressed = entry["enabled"]
+		check.custom_minimum_size.x = 30
+		row.add_child(check)
+
+		var name_col := VBoxContainer.new()
+		name_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(name_col)
+
+		var name_lbl := Label.new()
+		name_lbl.text = entry["mod_name"]
+		name_lbl.clip_text = true
+		name_lbl.modulate = Color(0.58, 0.82, 0.38) if entry["enabled"] else Color(0.5, 0.5, 0.5)
+		name_col.add_child(name_lbl)
+
+		if not entry["has_mod_txt"]:
+			var warn := Label.new()
+			warn.text = "no mod.txt — mount only"
+			warn.modulate = Color(1.0, 0.6, 0.2)
+			warn.add_theme_font_size_override("font_size", 11)
+			name_col.add_child(warn)
+
+		var spin := SpinBox.new()
+		spin.min_value = -999
+		spin.max_value = 999
+		spin.value = entry["priority"]
+		spin.custom_minimum_size.x = 100
+		row.add_child(spin)
+
+		list.add_child(HSeparator.new())
+
+		# Capture entry by reference (Dictionaries are reference types in GDScript)
+		var e := entry
+		var nlbl := name_lbl
+		check.toggled.connect(func(on: bool):
+			e["enabled"] = on
+			nlbl.modulate = Color(0.58, 0.82, 0.38) if on else Color(0.5, 0.5, 0.5)
+			refresh_order.call()
+		)
+		spin.value_changed.connect(func(val: float):
+			e["priority"] = int(val)
+			refresh_order.call()
+		)
+
+	refresh_order.call()
+	return split
+
+
+func _build_compat_tab() -> Control:
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 8)
+	margin.add_theme_constant_override("margin_right", 8)
+	margin.add_theme_constant_override("margin_top", 6)
+	margin.add_theme_constant_override("margin_bottom", 6)
+
+	var container := VBoxContainer.new()
+	container.add_theme_constant_override("separation", 6)
+	margin.add_child(container)
+
+	var toolbar := HBoxContainer.new()
+	toolbar.add_theme_constant_override("separation", 8)
+	container.add_child(toolbar)
+
+	var info := Label.new()
+	info.text = "Reads archives without mounting — shows predicted conflicts for the current load order."
+	info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	info.add_theme_font_size_override("font_size", 12)
+	info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	toolbar.add_child(info)
+
+	var scan_btn := Button.new()
+	scan_btn.text = "Run Analysis"
+	toolbar.add_child(scan_btn)
+
+	container.add_child(HSeparator.new())
+
+	# Split: issue list on the left, detail view on the right.
+	# split_offset offsets from center when both sides have SIZE_EXPAND_FILL.
+	# 94 = center(~470) + 94 = divider at ~564px → right panel gets ~40% of width.
+	var split := HSplitContainer.new()
+	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.split_offset = 94
+	container.add_child(split)
+
+	# ── Left: clickable issue list ────────────────────────────────────────────
+
+	var list_scroll := ScrollContainer.new()
+	list_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	list_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.add_child(list_scroll)
+
+	var issue_list := VBoxContainer.new()
+	issue_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	issue_list.add_theme_constant_override("separation", 2)
+	list_scroll.add_child(issue_list)
+
+	var placeholder := Label.new()
+	placeholder.text = "Click 'Run Analysis' to scan mods."
+	placeholder.modulate = Color(0.6, 0.6, 0.6)
+	issue_list.add_child(placeholder)
+
+	# ── Right: issue detail panel ─────────────────────────────────────────────
+
+	var detail_bg := PanelContainer.new()
+	detail_bg.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var detail_style := StyleBoxFlat.new()
+	detail_style.bg_color = Color(0.09, 0.09, 0.09)
+	detail_style.content_margin_left = 12
+	detail_style.content_margin_right = 12
+	detail_style.content_margin_top = 10
+	detail_style.content_margin_bottom = 10
+	detail_bg.add_theme_stylebox_override("panel", detail_style)
+	split.add_child(detail_bg)
+
+	var detail_scroll := ScrollContainer.new()
+	detail_bg.add_child(detail_scroll)
+
+	var detail_vbox := VBoxContainer.new()
+	detail_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	detail_vbox.add_theme_constant_override("separation", 8)
+	detail_scroll.add_child(detail_vbox)
+
+	var detail_title := Label.new()
+	detail_title.text = "Select an issue to see details."
+	detail_title.modulate = Color(0.65, 0.65, 0.65)
+	detail_title.add_theme_font_size_override("font_size", 14)
+	detail_vbox.add_child(detail_title)
+
+	var detail_what_hdr := Label.new()
+	detail_what_hdr.text = "What's happening"
+	detail_what_hdr.add_theme_font_size_override("font_size", 11)
+	detail_what_hdr.modulate = Color(0.75, 0.75, 0.75)
+	detail_what_hdr.visible = false
+	detail_vbox.add_child(detail_what_hdr)
+
+	var detail_what := Label.new()
+	detail_what.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	detail_what.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	detail_what.visible = false
+	detail_vbox.add_child(detail_what)
+
+	var detail_fix_hdr := Label.new()
+	detail_fix_hdr.text = "How to fix"
+	detail_fix_hdr.add_theme_font_size_override("font_size", 11)
+	detail_fix_hdr.modulate = Color(0.75, 0.75, 0.75)
+	detail_fix_hdr.visible = false
+	detail_vbox.add_child(detail_fix_hdr)
+
+	var detail_fix := Label.new()
+	detail_fix.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	detail_fix.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	detail_fix.visible = false
+	detail_vbox.add_child(detail_fix)
+
+	var detail_mods_hdr := Label.new()
+	detail_mods_hdr.text = "Affected mods"
+	detail_mods_hdr.add_theme_font_size_override("font_size", 11)
+	detail_mods_hdr.modulate = Color(0.75, 0.75, 0.75)
+	detail_mods_hdr.visible = false
+	detail_vbox.add_child(detail_mods_hdr)
+
+	var detail_mods_lbl := Label.new()
+	detail_mods_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	detail_mods_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	detail_mods_lbl.visible = false
+	detail_vbox.add_child(detail_mods_lbl)
+
+	var detail_labels := [detail_what_hdr, detail_what, detail_fix_hdr,
+			detail_fix, detail_mods_hdr, detail_mods_lbl]
+
+	var show_detail := func(issue: Dictionary):
+		detail_title.text = issue["title"]
+		var sev: String = issue["severity"]
+		detail_title.modulate = Color(0.85, 0.32, 0.32) if sev == "critical" \
+				else (Color(0.85, 0.70, 0.28) if sev == "warning" else Color(0.80, 0.80, 0.80))
+		detail_what.text = issue["what"]
+		detail_fix.text = issue["fix"]
+		detail_mods_lbl.text = ", ".join(issue["mods"])
+		for lbl in detail_labels:
+			lbl.visible = true
+
+	var populate_issues := func(issues: Array[Dictionary]):
+		for child in issue_list.get_children():
+			child.queue_free()
+		if issues.is_empty():
+			var lbl := Label.new()
+			lbl.text = "No issues detected."
+			lbl.modulate = Color(0.80, 0.80, 0.80)
+			issue_list.add_child(lbl)
+			return
+		for issue: Dictionary in issues:
+			var sev: String = issue["severity"]
+			var btn := Button.new()
+			btn.text = issue["title"]
+			btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+			btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			btn.modulate = Color(0.85, 0.38, 0.38) if sev == "critical" \
+					else (Color(0.85, 0.72, 0.30) if sev == "warning" else Color(0.72, 0.72, 0.72))
+			var iss := issue
+			btn.pressed.connect(func(): show_detail.call(iss))
+			issue_list.add_child(btn)
+
+	scan_btn.pressed.connect(func():
+		scan_btn.disabled = true
+		scan_btn.text = "Scanning..."
+		_run_dry_compat_analysis(populate_issues)
+		scan_btn.disabled = false
+		scan_btn.text = "Run Analysis"
+	)
+
+	return margin
+
+
+# Scans all enabled archives in load order without mounting anything, then
+# calls the populate callback with structured issue data for the UI.
+# The main _report_lines array is swapped out so dry-run noise doesn't
+# pollute the real launch log.
+func _run_dry_compat_analysis(populate_cb: Callable) -> void:
+	override_registry.clear()
+	_mod_script_analysis.clear()
+	_archive_file_sets.clear()
+	_database_replaced_by = ""
+	_database_path = ""
+
+	var sorted := _ui_mod_entries.filter(func(e): return e["enabled"])
+	sorted.sort_custom(func(a, b): return a["priority"] < b["priority"])
+
+	if sorted.is_empty():
+		populate_cb.call([])
+		return
+
+	var saved_lines := _report_lines
+	var dry_lines: Array[String] = []
+	_report_lines = dry_lines
+
+	for i in sorted.size():
+		var entry: Dictionary = sorted[i]
+		_scan_and_register_archive_claims(entry["full_path"], entry["mod_name"], entry["file_name"], i)
+
+	var issues := _collect_conflict_issues()
+	_report_lines = saved_lines
+	populate_cb.call(issues)
+
+
+func _build_updates_tab() -> Control:
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 8)
+	margin.add_theme_constant_override("margin_right", 8)
+	margin.add_theme_constant_override("margin_top", 6)
+	margin.add_theme_constant_override("margin_bottom", 6)
+
+	var container := VBoxContainer.new()
+	container.add_theme_constant_override("separation", 6)
+	margin.add_child(container)
+
+	var toolbar := HBoxContainer.new()
+	toolbar.add_theme_constant_override("separation", 8)
+	container.add_child(toolbar)
+
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	toolbar.add_child(spacer)
+
+	var check_btn := Button.new()
+	check_btn.text = "Check for Updates"
+	toolbar.add_child(check_btn)
+
+	container.add_child(HSeparator.new())
+
+	# Column headers
+	var header_row := HBoxContainer.new()
+	container.add_child(header_row)
+
+	var h_mod := Label.new()
+	h_mod.text = "Mod"
+	h_mod.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header_row.add_child(h_mod)
+
+	var h_ver := Label.new()
+	h_ver.text = "Version"
+	h_ver.custom_minimum_size.x = 90
+	header_row.add_child(h_ver)
+
+	var h_status := Label.new()
+	h_status.text = "Status"
+	h_status.custom_minimum_size.x = 160
+	header_row.add_child(h_status)
+
+	var h_action := Label.new()
+	h_action.text = "Action"
+	h_action.custom_minimum_size.x = 90
+	header_row.add_child(h_action)
+
+	container.add_child(HSeparator.new())
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	container.add_child(scroll)
+
+	var list := VBoxContainer.new()
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(list)
+
+	# { label, version, mw_id, dl_btn, full_path, mod_name }
+	var status_info: Dictionary = {}
+
+	for entry in _ui_mod_entries:
+		var cfg: ConfigFile = entry["cfg"]
+		if cfg == null:
+			continue
+		var version := str(cfg.get_value("mod", "version", ""))
+		var mw_id := 0
+		if cfg.has_section_key("updates", "modworkshop"):
+			mw_id = int(str(cfg.get_value("updates", "modworkshop", "")))
+
+		var row := HBoxContainer.new()
+		list.add_child(row)
+
+		# Name column: mod name + last-modified date sub-label.
+		var name_col := VBoxContainer.new()
+		name_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(name_col)
+
+		var name_lbl := Label.new()
+		name_lbl.text = entry["mod_name"]
+		name_lbl.clip_text = true
+		name_col.add_child(name_lbl)
+
+		var mtime := FileAccess.get_modified_time(entry["full_path"])
+		if mtime > 0:
+			var dt := Time.get_datetime_dict_from_unix_time(mtime)
+			var date_str := "%04d-%02d-%02d" % [dt["year"], dt["month"], dt["day"]]
+			var mod_lbl := Label.new()
+			mod_lbl.text = "modified " + date_str
+			mod_lbl.add_theme_font_size_override("font_size", 11)
+			mod_lbl.modulate = Color(0.5, 0.5, 0.5)
+			name_col.add_child(mod_lbl)
+
+		var ver_lbl := Label.new()
+		ver_lbl.text = "v" + version if version != "" else "—"
+		ver_lbl.custom_minimum_size.x = 90
+		row.add_child(ver_lbl)
+
+		var status_lbl := Label.new()
+		status_lbl.custom_minimum_size.x = 160
+		status_lbl.text = "no update info" if mw_id == 0 or version == "" else "—"
+		row.add_child(status_lbl)
+
+		# Always add dl_btn to preserve column width. Use modulate.a to
+		# hide it visually without collapsing its layout slot.
+		var dl_btn := Button.new()
+		dl_btn.text = "Download"
+		dl_btn.custom_minimum_size.x = 90
+		dl_btn.modulate.a = 0.0
+		dl_btn.disabled = true
+		dl_btn.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(dl_btn)
+
+		list.add_child(HSeparator.new())
+
+		if mw_id > 0 and version != "":
+			status_info[entry["file_name"]] = {
+				"label": status_lbl, "ver_lbl": ver_lbl, "version": version, "mw_id": mw_id,
+				"dl_btn": dl_btn, "full_path": entry["full_path"],
+				"mod_name": entry["mod_name"],
+			}
+
+	if list.get_child_count() == 0:
+		var lbl := Label.new()
+		lbl.text = "No mods with update information found.\nAdd [updates] modworkshop=<id> and version=<x.y.z> to mod.txt to enable this."
+		lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		list.add_child(lbl)
+
+	# ── Activity log ──────────────────────────────────────────────────────────
+
+	container.add_child(HSeparator.new())
+
+	var log_hdr := Label.new()
+	log_hdr.text = "Activity"
+	log_hdr.add_theme_font_size_override("font_size", 11)
+	log_hdr.modulate = Color(0.65, 0.65, 0.65)
+	container.add_child(log_hdr)
+
+	var log_bg := PanelContainer.new()
+	log_bg.custom_minimum_size.y = 72
+	var log_style := StyleBoxFlat.new()
+	log_style.bg_color = Color(0.09, 0.09, 0.09)
+	log_style.content_margin_left = 6
+	log_style.content_margin_right = 6
+	log_style.content_margin_top = 4
+	log_style.content_margin_bottom = 4
+	log_bg.add_theme_stylebox_override("panel", log_style)
+	container.add_child(log_bg)
+
+	var log_scroll := ScrollContainer.new()
+	log_bg.add_child(log_scroll)
+
+	var log_list := VBoxContainer.new()
+	log_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	log_scroll.add_child(log_list)
+
+	var add_log := func(msg: String):
+		var t := Time.get_time_string_from_system()
+		var lbl := Label.new()
+		lbl.text = "[" + t + "] " + msg
+		lbl.add_theme_font_size_override("font_size", 11)
+		lbl.modulate = Color(0.8, 0.8, 0.8)
+		lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		log_list.add_child(lbl)
+		log_scroll.scroll_vertical = 999999
+
+	check_btn.pressed.connect(func():
+		check_btn.disabled = true
+		check_btn.text = "Checking..."
+		for fn in status_info:
+			var info: Dictionary = status_info[fn]
+			(info["label"] as Label).text = "checking..."
+			(info["label"] as Label).modulate = Color(1.0, 1.0, 1.0)
+			var btn: Button = info["dl_btn"]
+			btn.modulate.a = 0.0
+			btn.disabled = true
+			btn.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			btn.text = "Download"
+		await _check_updates_for_ui(status_info, add_log, check_btn)
+		check_btn.disabled = false
+		check_btn.text = "Check for Updates"
+	)
+
+	return margin
+
+
+func _check_updates_for_ui(status_info: Dictionary, add_log: Callable, check_btn: Button) -> void:
+	var ids: Array[int] = []
+	for fn in status_info:
+		ids.append(status_info[fn]["mw_id"])
+	if ids.is_empty():
+		return
+
+	var latest := await _fetch_latest_modworkshop_versions(ids)
+
+	for fn: String in status_info:
+		var info: Dictionary = status_info[fn]
+		var lbl: Label = info["label"]
+		var dl_btn: Button = info["dl_btn"]
+		var latest_v = latest.get(str(info["mw_id"]), null)
+		if latest_v == null:
+			lbl.text = "no data"
+			lbl.modulate = Color(1.0, 1.0, 1.0)
+			continue
+
+		var cmp := _compare_versions(info["version"], str(latest_v))
+		if cmp >= 0:
+			# Local is same version or newer than what's on the server.
+			lbl.text = "up to date"
+			lbl.modulate = Color(0.6, 0.6, 0.6)
+		else:
+			# Server has a newer version.
+			lbl.text = "update: v" + str(latest_v)
+			lbl.modulate = Color(0.90, 0.90, 0.90)
+			dl_btn.modulate.a = 1.0
+			dl_btn.disabled = false
+			dl_btn.mouse_filter = Control.MOUSE_FILTER_STOP
+			var full_path: String = info["full_path"]
+			var mw_id: int = info["mw_id"]
+			var mod_name: String = info["mod_name"]
+			var new_ver: String = str(latest_v)
+			# Disconnect previous connections so repeated checks don't stack callbacks.
+			for c in dl_btn.pressed.get_connections():
+				dl_btn.pressed.disconnect(c["callable"])
+			dl_btn.pressed.connect(func():
+				dl_btn.disabled = true
+				dl_btn.text = "Downloading..."
+				lbl.text = "downloading..."
+				check_btn.disabled = true
+				var ok := await _download_and_replace_mod(full_path, mw_id)
+				check_btn.disabled = false
+				if ok:
+					lbl.text = "updated!"
+					lbl.modulate = Color(0.80, 0.80, 0.80)
+					dl_btn.modulate.a = 0.0
+					dl_btn.disabled = true
+					dl_btn.mouse_filter = Control.MOUSE_FILTER_IGNORE
+					dl_btn.text = "Download"
+					# Update cached version so next Check won't re-flag this mod.
+					info["version"] = new_ver
+					(info["ver_lbl"] as Label).text = "v" + new_ver
+					add_log.call(mod_name + " — updated to v" + new_ver + ".")
+				else:
+					lbl.text = "download failed"
+					lbl.modulate = Color(1.0, 0.4, 0.4)
+					dl_btn.disabled = false
+					dl_btn.text = "Retry"
+					add_log.call(mod_name + " — download failed.")
+			)
+
+
+# ─── Main load loop ───────────────────────────────────────────────────────────
+
+func _load_all_mods() -> void:
+	pending_autoloads.clear()
+	loaded_mod_ids.clear()
+	registered_autoload_names.clear()
+	override_registry.clear()
+	_report_lines.clear()
+	_database_replaced_by = ""
+	_mod_script_analysis.clear()
+	_archive_file_sets.clear()
+
+	_scan_vanilla_paths()
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(TMP_DIR))
+
+	# Build the candidate list from UI-configured entries (already filtered and trusted).
+	var candidates: Array[Dictionary] = []
+	for entry in _ui_mod_entries:
+		if not entry["enabled"]:
+			continue
+		candidates.append(entry.duplicate())
+	candidates.sort_custom(func(a, b): return a["priority"] < b["priority"])
+
+	if candidates.is_empty():
+		_log_info("No mods enabled.")
+		return
+
+	_log_info("=== Load Order ===")
+	for i in candidates.size():
+		var c: Dictionary = candidates[i]
+		var tag := " [priority=" + str(c["priority"]) + "]" if c["priority"] != 0 else ""
+		_log_info("  [" + str(i + 1) + "] " + c["mod_name"] + " | " + c["file_name"] + tag)
+	_log_info("==================")
+
+	for load_index in candidates.size():
+		_process_mod_candidate(candidates[load_index], load_index)
+
+
+func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
+	var file_name: String = c["file_name"]
+	var full_path: String = c["full_path"]
+	var ext:       String = c["ext"]
+	var mod_name:  String = c["mod_name"]
+	var mod_id:    String = c["mod_id"]
+	var cfg               = c["cfg"]
+
+	_log_info("--- [" + str(load_index + 1) + "] " + mod_name + " (" + file_name + ")")
+
+	if ext != "pck" and loaded_mod_ids.has(mod_id):
+		_log_warning("Duplicate mod id '" + mod_id + "' — skipped: " + file_name)
+		return
+
+	if not _try_mount_pack(full_path):
+		_log_critical("Failed to mount: " + file_name)
+		return
+
+	_log_info("  Mounted OK")
+
+	if ext != "pck":
+		_scan_and_register_archive_claims(full_path, mod_name, file_name, load_index)
+
+	if ext == "pck" or not c["has_mod_txt"]:
+		if not c["has_mod_txt"] and ext != "pck":
+			_log_warning("  No mod.txt — autoloads skipped")
+		return
+
+	loaded_mod_ids[mod_id] = true
+
+	if cfg == null or not cfg.has_section("autoload"):
+		return
+
+	var keys: PackedStringArray = cfg.get_section_keys("autoload")
+	for key in keys:
+		var autoload_name := str(key)
+		var res_path := str(cfg.get_value("autoload", key))
+
+		if registered_autoload_names.has(autoload_name):
+			_log_warning("Duplicate autoload name '" + autoload_name + "' — skipped")
+			continue
+		registered_autoload_names[autoload_name] = true
+
+		if _archive_file_sets.has(file_name) and not _archive_file_sets[file_name].has(res_path):
+			_log_critical("  Autoload path not found in archive: " + res_path)
+			_log_critical("    Declared in mod.txt but missing from: " + file_name)
+
+		pending_autoloads.append({ "mod_name": mod_name, "name": autoload_name, "path": res_path })
+		_log_info("  Autoload queued: " + autoload_name + " -> " + res_path)
+		_register_claim(res_path, mod_name, file_name, load_index, "autoload")
+
+
+# ─── Logging ──────────────────────────────────────────────────────────────────
+
+func _log_info(msg: String) -> void:
+	var line := "[ModLoader][Info] " + msg
+	print(line)
+	_report_lines.append(line)
+
+func _log_warning(msg: String) -> void:
+	var line := "[ModLoader][Warning] " + msg
+	push_warning(line)
+	_report_lines.append(line)
+
+func _log_critical(msg: String) -> void:
+	var line := "[ModLoader][Critical] " + msg
+	push_error(line)
+	_report_lines.append(line)
+
+
+# ─── Override registry ────────────────────────────────────────────────────────
+
+func _register_claim(res_path: String, mod_name: String, archive: String,
+		load_index: int, claim_type: String, source_path: String = "") -> void:
+	if not override_registry.has(res_path):
+		override_registry[res_path] = []
+	for existing in override_registry[res_path]:
+		if existing["mod_name"] == mod_name and existing["archive"] == archive:
+			return
+	override_registry[res_path].append({
+		"mod_name": mod_name, "archive": archive, "load_index": load_index,
+		"claim_type": claim_type, "source_path": source_path,
+	})
+
+func _is_dangerous_path(res_path: String) -> bool:
+	return _vanilla_paths.has(res_path)
+
+func _classify_claim(res_path: String) -> String:
+	var lower := res_path.to_lower()
+	if lower.ends_with(".gd"):                               return "script"
+	if lower.ends_with(".tscn") or lower.ends_with(".scn"):  return "scene"
+	if lower.ends_with(".tres"):                             return "resource"
+	return "file"
+
+
+# ─── Vanilla path scan ────────────────────────────────────────────────────────
+
+func _scan_vanilla_paths() -> void:
+	_vanilla_paths.clear()
+	_database_path = ""
+	for dir_path in VANILLA_SCAN_DIRS:
+		_scan_vanilla_dir(dir_path)
+	for path: String in _vanilla_paths:
+		if path.get_extension().to_lower() == "gd" \
+				and path.get_file().get_basename().to_lower() == "database":
+			_database_path = path
+			_log_info("Vanilla scan: scene registry -> " + _database_path)
+			break
+	if _vanilla_paths.is_empty():
+		_log_warning("Vanilla scan: 0 files found — falling back to filename heuristics.")
+	else:
+		_log_info("Vanilla scan: " + str(_vanilla_paths.size()) + " game files indexed")
+
+func _scan_vanilla_dir(dir_path: String) -> void:
+	var dir := DirAccess.open(dir_path)
+	if dir == null:
+		return
+	dir.list_dir_begin()
+	while true:
+		var entry := dir.get_next()
+		if entry == "":
+			break
+		if entry.begins_with("."):
+			continue
+		var full := dir_path + "/" + entry
+		if dir.current_is_dir():
+			_scan_vanilla_dir(full)
+		elif entry.get_extension().to_lower() in TRACKED_EXTENSIONS:
+			_vanilla_paths[full] = true
+	dir.list_dir_end()
+
+
+# ─── Archive scanner ──────────────────────────────────────────────────────────
+
+func _scan_and_register_archive_claims(archive_path: String, mod_name: String,
+		archive_file: String, load_index: int) -> void:
+	var zr := ZIPReader.new()
+	if zr.open(archive_path) != OK:
+		_log_warning("  Could not scan archive: " + archive_file)
+		return
+
+	var files := zr.get_files()
+
+	# Archives repacked on Windows via ZipFile.CreateFromDirectory() write backslash
+	# separators. Godot mounts the pack but can't resolve those paths.
+	var backslash_count := 0
+	var example_bad := ""
+	for f: String in files:
+		if "\\" in f:
+			backslash_count += 1
+			if example_bad == "":
+				example_bad = f
+	if backslash_count > 0:
+		_log_critical("  BAD ZIP: " + str(backslash_count) + " entries use Windows backslash paths.")
+		_log_critical("    Re-pack with 7-Zip. Example bad entry: '" + example_bad + "'")
+
+	var tracked_count := 0
+	var dangerous_count := 0
+	var path_set: Dictionary = {}
+	var gd_analysis: Dictionary = {
+		"take_over_literal_paths": [],
+		"extends_paths":           [],
+		"uses_dynamic_override":   false,
+		"lifecycle_no_super":      [],
+		"calls_update_tooltip":    false,
+		"total_gd_files":          0,
+	}
+
+	for f in files:
+		if f.get_extension().to_lower() == "gd":
+			gd_analysis["total_gd_files"] = gd_analysis["total_gd_files"] + 1
+			_scan_gd_source(zr.read_file(f).get_string_from_utf8(), gd_analysis)
+
+		var res_path := _normalize_to_res_path(f)
+		if res_path == "":
+			continue
+
+		path_set[res_path] = true
+		tracked_count += 1
+		_register_claim(res_path, mod_name, archive_file, load_index, _classify_claim(res_path), f)
+
+		var bare_name := res_path.get_file().get_basename().to_lower()
+		var is_db_file := bare_name == "database" and res_path.get_extension().to_lower() == "gd"
+
+		if (res_path == _database_path and _database_path != "") or (is_db_file and _database_path == ""):
+			if _database_replaced_by == "":
+				_database_replaced_by = mod_name
+			_log_critical("  DATABASE OVERRIDE: " + mod_name + " replaces Database.gd")
+			_log_warning("    All preload() paths in this file must exist or parsing will fail.")
+		elif is_db_file:
+			_log_warning("  DATABASE COPY: " + mod_name + " bundles a private Database.gd at " + res_path)
+			_log_warning("    Hardcoded preload() paths may break if companion mods aren't present.")
+		elif _is_dangerous_path(res_path):
+			dangerous_count += 1
+
+	zr.close()
+	_mod_script_analysis[mod_name] = gd_analysis
+	_archive_file_sets[archive_file] = path_set
+
+	var summary := "  " + str(tracked_count) + " resource path(s)"
+	if dangerous_count > 0:
+		summary += " [" + str(dangerous_count) + " replace vanilla files]"
+	_log_info(summary)
+
+	if gd_analysis["total_gd_files"] > 0:
+		var override_count: int = (gd_analysis["take_over_literal_paths"] as Array).size() \
+				+ (gd_analysis["extends_paths"] as Array).size()
+		var dynamic_tag := " [uses overrideScript()]" if gd_analysis["uses_dynamic_override"] else ""
+		_log_info("  " + str(gd_analysis["total_gd_files"]) + " .gd file(s), "
+				+ str(override_count) + " override target(s)" + dynamic_tag)
+
+
+func _normalize_to_res_path(zip_path: String) -> String:
+	var path := zip_path.replace("\\", "/")
+	if path.begins_with("res://"):   return path
+	if path.begins_with("/"):        return "res:/" + path
+	if path.begins_with(".") or path == "mod.txt": return ""
+	if path.get_extension().to_lower() in TRACKED_EXTENSIONS:
+		return "res://" + path
+	return ""
+
+
+# ─── GDScript source analysis ─────────────────────────────────────────────────
+
+func _scan_gd_source(text: String, analysis: Dictionary) -> void:
+	for m in _re_take_over.search_all(text):
+		var path := m.get_string(1)
+		if path not in (analysis["take_over_literal_paths"] as Array):
+			(analysis["take_over_literal_paths"] as Array).append(path)
+
+	var m_ext := _re_extends.search(text)
+	if m_ext:
+		var path := m_ext.get_string(1)
+		if path not in (analysis["extends_paths"] as Array):
+			(analysis["extends_paths"] as Array).append(path)
+
+	if not analysis["uses_dynamic_override"]:
+		analysis["uses_dynamic_override"] = "get_base_script()" in text \
+				or "take_over_path(parentScript" in text
+
+	# UpdateTooltip() is inventory-UI only. World-item tooltips are written directly
+	# by HUD._physics_process from gameData.tooltip — this override has no effect there.
+	if not analysis["calls_update_tooltip"]:
+		analysis["calls_update_tooltip"] = "UpdateTooltip" in text
+
+	# Check each overridden lifecycle method for super(). Missing it silently breaks
+	# any overrideScript() chain — earlier mods' versions of that method never run.
+	var func_matches := _re_func.search_all(text)
+	for i in func_matches.size():
+		var func_name := func_matches[i].get_string(1)
+		if func_name not in LIFECYCLE_METHODS:
+			continue
+		var body_start := func_matches[i].get_end()
+		var body_end := text.length() if i + 1 >= func_matches.size() \
+				else func_matches[i + 1].get_start()
+		var body := text.substr(body_start, body_end - body_start)
+		if "super(" not in body and "super." not in body:
+			if func_name not in (analysis["lifecycle_no_super"] as Array):
+				(analysis["lifecycle_no_super"] as Array).append(func_name)
+
+
+func _analyze_script_conflicts() -> void:
+	if _mod_script_analysis.is_empty():
+		return
+
+	# 1. Literal take_over_path conflicts
+	var literal_claims: Dictionary = {}
+	for mod_name: String in _mod_script_analysis:
+		for path in (_mod_script_analysis[mod_name]["take_over_literal_paths"] as Array):
+			if not literal_claims.has(path): literal_claims[path] = []
+			if mod_name not in literal_claims[path]:
+				(literal_claims[path] as Array).append(mod_name)
+
+	var found_literal := false
+	for path: String in literal_claims:
+		var mods: Array = literal_claims[path]
+		if mods.size() <= 1: continue
+		if not found_literal:
+			_log_info("")
+			_log_info("--- Script Injection Conflicts ---")
+			found_literal = true
+		_log_critical("CONFLICT: take_over_path(\"" + path + "\") used by: " + ", ".join(mods))
+		_log_critical("  Last-loaded mod wins. Use priority= in mod.txt to set order.")
+		_log_critical("  EA: coordinate with the other author, or wait for official hook support.")
+
+	# 2. Dynamic override chains — CHAIN OK if all mods call super(), CHAIN BROKEN if not.
+	var extends_claims: Dictionary = {}
+	for mod_name: String in _mod_script_analysis:
+		var analysis: Dictionary = _mod_script_analysis[mod_name]
+		if not analysis["uses_dynamic_override"]: continue
+		for path in (analysis["extends_paths"] as Array):
+			if not extends_claims.has(path): extends_claims[path] = []
+			if mod_name not in extends_claims[path]:
+				(extends_claims[path] as Array).append(mod_name)
+
+	var found_extends := false
+	for path: String in extends_claims:
+		var claimants: Array = extends_claims[path]
+		if claimants.size() <= 1: continue
+		if not found_extends:
+			_log_info("")
+			_log_info("--- Dynamic Override Chains ---")
+			found_extends = true
+		var all_super := true
+		for cmod: String in claimants:
+			if not (_mod_script_analysis[cmod]["lifecycle_no_super"] as Array).is_empty():
+				all_super = false
+				break
+		if all_super:
+			_log_info("CHAIN OK: " + " -> ".join(claimants) + " -> vanilla  (" + path + ")")
+		else:
+			_log_warning("CHAIN BROKEN: " + path + " — " + ", ".join(claimants))
+			_log_warning("  At least one mod skips super() so earlier mods' logic is dropped.")
+			_log_warning("  Fix: add super() in lifecycle methods, or use priority= for order.")
+
+	# 3. Overhaul mods
+	for mod_name: String in _mod_script_analysis:
+		var analysis: Dictionary = _mod_script_analysis[mod_name]
+		var total: int = (analysis["take_over_literal_paths"] as Array).size() \
+				+ (analysis["extends_paths"] as Array).size()
+		if total >= 5:
+			_log_warning("OVERHAUL: " + mod_name + " overrides " + str(total)
+					+ " core scripts — likely incompatible with other overhaul mods.")
+			_log_warning("  EA: needs refactoring to hooks/subclasses for official mod support.")
+
+	# 4. UpdateTooltip() misuse
+	var found_tooltip := false
+	for mod_name: String in _mod_script_analysis:
+		if not _mod_script_analysis[mod_name]["calls_update_tooltip"]: continue
+		if not found_tooltip:
+			_log_info("")
+			_log_info("--- UpdateTooltip() Warning ---")
+			found_tooltip = true
+		_log_warning("TOOLTIP: " + mod_name + " uses UpdateTooltip()")
+		_log_warning("  UpdateTooltip() is inventory-UI only — does not affect world-item tooltips.")
+
+	# 5. Lifecycle overrides without super()
+	var found_no_super := false
+	for mod_name: String in _mod_script_analysis:
+		var no_super: Array = _mod_script_analysis[mod_name]["lifecycle_no_super"]
+		if no_super.is_empty(): continue
+		if not found_no_super:
+			_log_info("")
+			_log_info("--- Missing super() in Lifecycle Methods ---")
+			found_no_super = true
+		_log_warning("NO SUPER: " + mod_name + " — " + ", ".join(no_super))
+		_log_warning("  Breaks overrideScript() chains. Add super() to preserve other mods' logic.")
+
+
+# Returns structured issue data for the compatibility tab UI. Operates on
+# whatever state is currently in _mod_script_analysis and override_registry
+# (populated by _scan_and_register_archive_claims). Does not log anything.
+func _collect_conflict_issues() -> Array[Dictionary]:
+	var issues: Array[Dictionary] = []
+	if _mod_script_analysis.is_empty():
+		return issues
+
+	# 1. Literal take_over_path() conflicts — only one version of that script can be active.
+	var literal_claims: Dictionary = {}
+	for mod_name: String in _mod_script_analysis:
+		for path in (_mod_script_analysis[mod_name]["take_over_literal_paths"] as Array):
+			if not literal_claims.has(path): literal_claims[path] = []
+			if mod_name not in literal_claims[path]:
+				(literal_claims[path] as Array).append(mod_name)
+
+	for path: String in literal_claims:
+		var mods: Array = literal_claims[path]
+		if mods.size() <= 1: continue
+		issues.append({
+			"severity": "critical",
+			"title": "Script Conflict: " + path.get_file(),
+			"what": "Both mods call take_over_path() on the same script:\n  " + path
+					+ "\n\nOnly the last-loaded mod's version will be active. The other is silently replaced.",
+			"fix": "Set priority= in mod.txt to control which mod loads last — the higher value wins.\n"
+					+ "Long-term fix: mod authors need to coordinate, or switch to the extends + super() pattern.",
+			"mods": mods,
+		})
+
+	# 2. Dynamic overrideScript() chains — compose correctly only if all mods call super().
+	var extends_claims: Dictionary = {}
+	for mod_name: String in _mod_script_analysis:
+		var analysis: Dictionary = _mod_script_analysis[mod_name]
+		if not analysis["uses_dynamic_override"]: continue
+		for path in (analysis["extends_paths"] as Array):
+			if not extends_claims.has(path): extends_claims[path] = []
+			if mod_name not in extends_claims[path]:
+				(extends_claims[path] as Array).append(mod_name)
+
+	for path: String in extends_claims:
+		var claimants: Array = extends_claims[path]
+		if claimants.size() <= 1: continue
+		var bad_mods: Array = []
+		for cmod: String in claimants:
+			if not (_mod_script_analysis[cmod]["lifecycle_no_super"] as Array).is_empty():
+				bad_mods.append(cmod)
+		if bad_mods.is_empty():
+			issues.append({
+				"severity": "info",
+				"title": "Chain OK: " + path.get_file(),
+				"what": "Multiple mods override the same script using the extends + super() pattern:\n  "
+						+ path + "\n\nAll mods call super() so they compose correctly.",
+				"fix": "No action needed. This is the correct multi-mod pattern.",
+				"mods": claimants,
+			})
+		else:
+			issues.append({
+				"severity": "warning",
+				"title": "Chain Broken: " + path.get_file(),
+				"what": "Multiple mods override the same script using extends + super(), but at least one "
+						+ "skips super() in lifecycle methods.\n\nMods that loaded earlier will have their "
+						+ "logic silently dropped for those methods.",
+				"fix": "These mods need to add super() to their lifecycle methods:\n  "
+						+ ", ".join(bad_mods)
+						+ "\n\nAlternatively, set a lower priority for the broken mod so it loads first.",
+				"mods": claimants,
+			})
+
+	# 3. Overhaul mods — 5+ core script overrides means near-certain incompatibility with others.
+	for mod_name: String in _mod_script_analysis:
+		var analysis: Dictionary = _mod_script_analysis[mod_name]
+		var total: int = (analysis["take_over_literal_paths"] as Array).size() \
+				+ (analysis["extends_paths"] as Array).size()
+		if total < 5: continue
+		issues.append({
+			"severity": "warning",
+			"title": "Overhaul Mod: " + mod_name,
+			"what": mod_name + " overrides " + str(total) + " core scripts. Overhaul mods have a "
+					+ "large surface area and are almost certainly incompatible with other overhaul mods.",
+			"fix": "Only run one overhaul mod at a time. Check whether any other installed mods are also overhauls.",
+			"mods": [mod_name],
+		})
+
+	# 4. UpdateTooltip() misuse — inventory-UI only, no effect on world-item tooltips.
+	for mod_name: String in _mod_script_analysis:
+		if not _mod_script_analysis[mod_name]["calls_update_tooltip"]: continue
+		issues.append({
+			"severity": "warning",
+			"title": "UpdateTooltip(): " + mod_name,
+			"what": mod_name + " overrides UpdateTooltip(), which only fires for inventory UI.\n\n"
+					+ "World-item tooltip text is written directly by HUD._physics_process from "
+					+ "gameData.tooltip. UpdateTooltip() has no effect on what you see when looking "
+					+ "at items on the ground.",
+			"fix": "If the intent is to change world-item tooltips, the mod author needs to override "
+					+ "HUD._physics_process instead of UpdateTooltip().",
+			"mods": [mod_name],
+		})
+
+	# 5. Lifecycle methods without super() — silently breaks overrideScript() chains.
+	for mod_name: String in _mod_script_analysis:
+		var no_super: Array = _mod_script_analysis[mod_name]["lifecycle_no_super"]
+		if no_super.is_empty(): continue
+		issues.append({
+			"severity": "warning",
+			"title": "Missing super(): " + mod_name,
+			"what": mod_name + " overrides lifecycle method(s) without calling super():\n  "
+					+ ", ".join(no_super)
+					+ "\n\nThis silently drops any other mod's logic for those methods from the call chain.",
+			"fix": "Add super() at the start of each listed method in " + mod_name + ".\n"
+					+ "If the mod intentionally replaces rather than extends, set a high priority "
+					+ "so it loads last.",
+			"mods": [mod_name],
+		})
+
+	# 6. Database.gd replaced — preload() caches paths before resource overrides take effect.
+	if _database_replaced_by != "":
+		var affected: Array[String] = []
+		for res_path: String in override_registry:
+			if res_path == _database_path: continue
+			var lower := res_path.to_lower()
+			if not (lower.ends_with(".tscn") or lower.ends_with(".scn")): continue
+			for claim in (override_registry[res_path] as Array):
+				var cn: String = claim["mod_name"]
+				if cn != _database_replaced_by and cn not in affected:
+					affected.append(cn)
+		if not affected.is_empty():
+			var all_mods: Array[String] = [_database_replaced_by]
+			all_mods.append_array(affected)
+			issues.append({
+				"severity": "critical",
+				"title": "Database.gd Replaced",
+				"what": _database_replaced_by + " replaced Database.gd — the file the game uses to "
+						+ "preload all item and scene paths.\n\nBecause preload() caches paths at parse "
+						+ "time, scene overrides from other mods may silently fail to take effect.",
+				"fix": "Scene override mods may be broken when run alongside " + _database_replaced_by
+						+ ".\nAffected mods: " + ", ".join(affected)
+						+ ".\nContact the " + _database_replaced_by + " author, or disable the "
+						+ "scene-override mods.",
+				"mods": all_mods,
+			})
+
+	return issues
+
+
+# ─── Conflict summary ─────────────────────────────────────────────────────────
+
+func _print_conflict_summary() -> void:
+	_log_info("")
+	_log_info("============================================")
+	_log_info("=== ModLoader Compatibility Summary      ===")
+	_log_info("============================================")
+	_log_info("Mods loaded:  " + str(loaded_mod_ids.size()))
+
+	var conflicted_paths: Array[String] = []
+	var critical_conflicts: Array[String] = []
+	for res_path: String in override_registry:
+		var claims: Array = override_registry[res_path]
+		if claims.size() > 1:
+			conflicted_paths.append(res_path)
+			if _is_dangerous_path(res_path) or res_path == _database_path:
+				critical_conflicts.append(res_path)
+
+	_log_info("Conflicting resource paths: " + str(conflicted_paths.size()))
+	_log_info("Critical conflicts:         " + str(critical_conflicts.size()))
+
+	if conflicted_paths.is_empty():
+		_log_info("No resource path conflicts — all mods appear compatible.")
+	else:
+		_log_info("")
+		_log_info("--- Conflicted Paths (last loader wins) ---")
+		for res_path in conflicted_paths:
+			var claims: Array = override_registry[res_path]
+			var winner: Dictionary = claims[claims.size() - 1]
+			_log_warning("CONFLICT: " + res_path)
+			for claim in claims:
+				var marker := " <-- wins" if claim == winner else ""
+				_log_info("    [" + str(claim["load_index"] + 1) + "] "
+						+ claim["mod_name"] + " via " + claim["archive"] + marker)
+
+	# If Database.gd was replaced, other mods' scene overrides may be dead — the
+	# database caches scene paths via preload() before resource-path overrides take effect.
+	if _database_replaced_by != "":
+		var affected: Array[String] = []
+		for res_path: String in override_registry:
+			if res_path == _database_path: continue
+			var lower := res_path.to_lower()
+			if not (lower.ends_with(".tscn") or lower.ends_with(".scn")): continue
+			for claim in (override_registry[res_path] as Array):
+				var cn: String = claim["mod_name"]
+				if cn != _database_replaced_by and cn not in affected:
+					affected.append(cn)
+		if not affected.is_empty():
+			_log_warning("DATABASE: " + _database_replaced_by + " replaced Database.gd.")
+			_log_warning("  Scene overrides from [" + ", ".join(affected) + "] may not take effect.")
+
+	_analyze_script_conflicts()
+
+	_log_info("============================================")
+	_log_info("")
+
+
+func _write_conflict_report() -> void:
+	var f := FileAccess.open(CONFLICT_REPORT_PATH, FileAccess.WRITE)
+	if f == null:
+		_log_warning("Could not write report to: " + CONFLICT_REPORT_PATH)
+		return
+	for line in _report_lines:
+		f.store_line(line)
+	f.close()
+	print("[ModLoader][Info] Conflict report written to: " + CONFLICT_REPORT_PATH)
+
+
+# ─── Autoload instantiation ───────────────────────────────────────────────────
+
+func _instantiate_autoload(mod_name: String, autoload_name: String, res_path: String) -> void:
+	# Two checks needed — Godot limitation:
+	# FileAccess works for .gd in mounted archives but misses exported .tscn → .scn remapping.
+	# ResourceLoader handles remapping but returns false for .gd in archives.
+	if not (FileAccess.file_exists(res_path) or ResourceLoader.exists(res_path)):
+		_log_critical("Autoload not found: " + res_path + " [" + mod_name + "]")
+		_log_critical("  Possible causes: Windows backslash paths in zip, or file missing from archive.")
+		return
+
+	var resource: Resource = load(res_path)
+	if resource == null:
+		_log_critical("Autoload failed to parse: " + autoload_name + " -> " + res_path)
+		_log_critical("  Check the Godot log above for the specific parse error.")
+		return
+
+	if resource is PackedScene:
+		var instance: Node = (resource as PackedScene).instantiate()
+		instance.name = autoload_name
+		add_child(instance)
+		_log_info("Autoload instantiated (scene): " + autoload_name + " [" + mod_name + "]")
+		return
+
+	if resource is GDScript:
+		var inst: Variant = (resource as GDScript).new()
+		if inst == null:
+			_log_warning("Autoload script returned null: " + autoload_name)
+			return
+		if inst is Node:
+			(inst as Node).name = autoload_name
+			add_child(inst as Node)
+			_log_info("Autoload instantiated (script): " + autoload_name + " [" + mod_name + "]")
+			return
+		_log_warning("Autoload is not a Node — not added to tree: " + autoload_name)
+
+
+# ─── Mount helper ─────────────────────────────────────────────────────────────
+
+func _try_mount_pack(path: String) -> bool:
+	if ProjectSettings.load_resource_pack(path):
+		return true
+	if path.get_extension().to_lower() != "vmz":
+		return false
+	# VMZ files are renamed zips — copy to a real .zip path so Godot can open them.
+	var temp_zip := ProjectSettings.globalize_path(TMP_DIR).path_join(
+			path.get_file().get_basename() + ".zip")
+	var data := FileAccess.get_file_as_bytes(path)
+	if data.size() == 0:
+		return false
+	var out := FileAccess.open(temp_zip, FileAccess.WRITE)
+	if out == null:
+		return false
+	out.store_buffer(data)
+	out.close()
+	return ProjectSettings.load_resource_pack(temp_zip)
+
+
+# ─── mod.txt parser ───────────────────────────────────────────────────────────
+
+func _read_mod_config(path: String) -> ConfigFile:
+	var zr := ZIPReader.new()
+	if zr.open(path) != OK:
+		return null
+	if not zr.file_exists("mod.txt"):
+		zr.close()
+		return null
+	var text := zr.read_file("mod.txt").get_string_from_utf8()
+	zr.close()
+	var cfg := ConfigFile.new()
+	if cfg.parse(text) != OK:
+		return null
+	return cfg
+
+
+# ─── Update fetch helpers ─────────────────────────────────────────────────────
+
+# Compares two dotted version strings. Returns -1 if a < b, 0 if equal, 1 if a > b.
+# "0.0.2" vs "0.0.1" → 1 (local is newer, no update needed).
+func _compare_versions(a: String, b: String) -> int:
+	var pa := a.split(".")
+	var pb := b.split(".")
+	var n := max(pa.size(), pb.size())
+	for i in n:
+		var va := int(pa[i]) if i < pa.size() else 0
+		var vb := int(pb[i]) if i < pb.size() else 0
+		if va < vb: return -1
+		if va > vb: return 1
+	return 0
+
+
+func _fetch_latest_modworkshop_versions(ids: Array[int]) -> Dictionary:
+	var latest_versions := {}
+	for chunk_ids in _chunk_int_array(ids, 100):
+		var req := HTTPRequest.new()
+		add_child(req)
+		var err := req.request(MODWORKSHOP_VERSIONS_URL,
+			PackedStringArray(["Content-Type: application/json", "Accept: application/json"]),
+			HTTPClient.METHOD_GET, JSON.stringify({"mod_ids": chunk_ids}))
+		if err != OK:
+			req.queue_free()
+			continue
+		var res = await req.request_completed
+		req.queue_free()
+		if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] < 200 or res[1] >= 300:
+			continue
+		var parsed = JSON.parse_string(res[3].get_string_from_utf8())
+		if parsed is Dictionary:
+			latest_versions.merge(parsed, true)
+	return latest_versions
+
+
+func _download_and_replace_mod(target_path: String, modworkshop_id: int) -> bool:
+	var req := HTTPRequest.new()
+	add_child(req)
+	var err := req.request(MODWORKSHOP_DOWNLOAD_URL_TEMPLATE % str(modworkshop_id))
+	if err != OK:
+		req.queue_free()
+		return false
+	var res = await req.request_completed
+	req.queue_free()
+
+	if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] < 200 or res[1] >= 300:
+		return false
+	var response_body: PackedByteArray = res[3]
+	if response_body.is_empty():
+		return false
+
+	var temp_path   := target_path + ".download"
+	var backup_path := target_path + ".bak"
+	if FileAccess.file_exists(temp_path):   DirAccess.remove_absolute(temp_path)
+	if FileAccess.file_exists(backup_path): DirAccess.remove_absolute(backup_path)
+
+	var out := FileAccess.open(temp_path, FileAccess.WRITE)
+	if out == null:
+		return false
+	out.store_buffer(response_body)
+	out.close()
+
+	if _read_mod_config(temp_path) == null:
+		DirAccess.remove_absolute(temp_path)
+		return false
+
+	var dir_access := DirAccess.open(target_path.get_base_dir())
+	if dir_access == null:
+		DirAccess.remove_absolute(temp_path)
+		return false
+
+	if FileAccess.file_exists(target_path):
+		if dir_access.rename(target_path.get_file(), backup_path.get_file()) != OK:
+			DirAccess.remove_absolute(temp_path)
+			return false
+
+	if dir_access.rename(temp_path.get_file(), target_path.get_file()) != OK:
+		if FileAccess.file_exists(backup_path):
+			dir_access.rename(backup_path.get_file(), target_path.get_file())
+		DirAccess.remove_absolute(temp_path)
+		return false
+
+	if FileAccess.file_exists(backup_path):
+		DirAccess.remove_absolute(backup_path)
+	return true
+
+
+func _chunk_int_array(arr: Array[int], size: int) -> Array:
+	var result: Array = []
+	var current: Array[int] = []
+	for value in arr:
+		current.append(value)
+		if current.size() >= size:
+			result.append(current)
+			current = []
+	if not current.is_empty():
+		result.append(current)
+	return result
