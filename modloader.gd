@@ -1537,6 +1537,10 @@ func _scan_gd_source(text: String, analysis: Dictionary) -> void:
 				method_list.append(func_name)
 
 		# Check lifecycle methods for super(). Missing it breaks the override chain.
+		# Only flag scripts that extend a game script (res:// path). Standalone
+		# autoloads (extends Node, etc.) don't participate in override chains.
+		if ext_target == "":
+			continue
 		if func_name not in LIFECYCLE_METHODS:
 			continue
 		var body_start := func_matches[i].get_end()
