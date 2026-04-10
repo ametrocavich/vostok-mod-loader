@@ -53,6 +53,7 @@ var _re_extends_classname: RegEx
 var _re_class_name: RegEx
 var _re_func: RegEx
 var _re_preload: RegEx
+var _re_filename_priority: RegEx
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────
@@ -105,6 +106,9 @@ func _compile_regex() -> void:
 	_re_func.compile('(?m)^(?:static\\s+)?func\\s+(\\w+)\\s*\\(')
 	_re_preload = RegEx.new()
 	_re_preload.compile('preload\\s*\\(\\s*"(res://[^"]+)"\\s*\\)')
+	# VostokMods compat: "100-ModName.vmz" encodes priority in the filename.
+	_re_filename_priority = RegEx.new()
+	_re_filename_priority.compile('^(-?\\d+)-(.*)')
 
 
 # ─── Mod metadata collection (no mounting) ────────────────────────────────────
@@ -173,11 +177,30 @@ func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, e
 	var mod_name := file_name
 	var mod_id   := file_name
 	var priority := 0
+
+	# VostokMods compat: parse "100-ModName.vmz" filename priority prefix.
+	# The prefix is stripped from mod_name/mod_id defaults and used as fallback priority.
+	var base_name := file_name.get_basename()  # strip extension
+	var filename_priority := 0
+	var has_filename_priority := false
+	if _re_filename_priority:
+		var m := _re_filename_priority.search(base_name)
+		if m:
+			filename_priority = int(m.get_string(1))
+			base_name = m.get_string(2)
+			has_filename_priority = true
+			mod_name = base_name
+			mod_id   = base_name
+
 	if cfg:
-		mod_name = str(cfg.get_value("mod", "name", file_name))
-		mod_id   = str(cfg.get_value("mod", "id",   file_name))
+		mod_name = str(cfg.get_value("mod", "name", mod_name))
+		mod_id   = str(cfg.get_value("mod", "id",   mod_id))
 		if cfg.has_section_key("mod", "priority"):
 			priority = int(str(cfg.get_value("mod", "priority")))
+		elif has_filename_priority:
+			priority = filename_priority
+	elif has_filename_priority:
+		priority = filename_priority
 	return {
 		"file_name": file_name, "full_path": full_path, "ext": ext,
 		"mod_name": mod_name, "mod_id": mod_id,
@@ -1265,7 +1288,8 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 	var keys: PackedStringArray = cfg.get_section_keys("autoload")
 	for key in keys:
 		var autoload_name := str(key)
-		var res_path := str(cfg.get_value("autoload", key)).lstrip("*").strip_edges()
+		# Strip Godot autoload prefix (*) and VostokMods early-autoload prefix (!).
+		var res_path := str(cfg.get_value("autoload", key)).lstrip("*!").strip_edges()
 
 		if res_path == "":
 			_log_warning("  Empty autoload path for '" + autoload_name + "' — skipped")
