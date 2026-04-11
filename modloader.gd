@@ -53,6 +53,7 @@ var _re_extends_classname: RegEx
 var _re_class_name: RegEx
 var _re_func: RegEx
 var _re_preload: RegEx
+var _re_filename_priority: RegEx
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────
@@ -105,6 +106,9 @@ func _compile_regex() -> void:
 	_re_func.compile('(?m)^(?:static\\s+)?func\\s+(\\w+)\\s*\\(')
 	_re_preload = RegEx.new()
 	_re_preload.compile('preload\\s*\\(\\s*"(res://[^"]+)"\\s*\\)')
+	# VostokMods compat: "100-ModName.vmz" encodes priority in the filename.
+	_re_filename_priority = RegEx.new()
+	_re_filename_priority.compile('^(-?\\d+)-(.*)')
 
 
 # ─── Mod metadata collection (no mounting) ────────────────────────────────────
@@ -167,15 +171,36 @@ func _build_folder_entry(mods_dir: String, dir_name: String) -> Dictionary:
 	return _entry_from_config(cfg, dir_name, folder_path, "folder")
 
 
+# Future: mod.txt may support [mod] load_after = "other_mod_id" for soft dependencies.
+# This would feed into a topological sort pass before the priority/name sort.
 func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, ext: String) -> Dictionary:
 	var mod_name := file_name
 	var mod_id   := file_name
 	var priority := 0
+
+	# VostokMods compat: parse "100-ModName.vmz" filename priority prefix.
+	# The prefix is stripped from mod_name/mod_id defaults and used as fallback priority.
+	var base_name := file_name.get_basename()  # strip extension
+	var filename_priority := 0
+	var has_filename_priority := false
+	if _re_filename_priority:
+		var m := _re_filename_priority.search(base_name)
+		if m:
+			filename_priority = int(m.get_string(1))
+			base_name = m.get_string(2)
+			has_filename_priority = true
+			mod_name = base_name
+			mod_id   = base_name
+
 	if cfg:
-		mod_name = str(cfg.get_value("mod", "name", file_name))
-		mod_id   = str(cfg.get_value("mod", "id",   file_name))
+		mod_name = str(cfg.get_value("mod", "name", mod_name))
+		mod_id   = str(cfg.get_value("mod", "id",   mod_id))
 		if cfg.has_section_key("mod", "priority"):
 			priority = int(str(cfg.get_value("mod", "priority")))
+		elif has_filename_priority:
+			priority = filename_priority
+	elif has_filename_priority:
+		priority = filename_priority
 	return {
 		"file_name": file_name, "full_path": full_path, "ext": ext,
 		"mod_name": mod_name, "mod_id": mod_id,
@@ -506,7 +531,7 @@ func _build_mods_tab() -> Control:
 		for child in order_list.get_children():
 			child.queue_free()
 		var sorted := _ui_mod_entries.filter(func(e): return e["enabled"])
-		sorted.sort_custom(func(a, b): return a["priority"] < b["priority"])
+		sorted.sort_custom(_compare_load_order)
 		if sorted.is_empty():
 			var lbl := Label.new()
 			lbl.text = "(none enabled)"
@@ -800,7 +825,7 @@ func _run_dry_compat_analysis(populate_cb: Callable) -> void:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(TMP_DIR))
 
 	var sorted := _ui_mod_entries.filter(func(e): return e["enabled"])
-	sorted.sort_custom(func(a, b): return a["priority"] < b["priority"])
+	sorted.sort_custom(_compare_load_order)
 
 	if sorted.is_empty():
 		populate_cb.call([])
@@ -1145,17 +1170,27 @@ func _load_all_mods() -> void:
 		if not entry["enabled"]:
 			continue
 		candidates.append(entry.duplicate())
-	candidates.sort_custom(func(a, b): return a["priority"] < b["priority"])
+	candidates.sort_custom(_compare_load_order)
 
 	if candidates.is_empty():
 		_log_info("No mods enabled.")
 		return
 
+	# Warn about duplicate mod names — likely a packaging mistake or fork.
+	# The sort is still deterministic (file_name tiebreaker), but users should know.
+	for i in range(1, candidates.size()):
+		if (candidates[i]["mod_name"] as String).to_lower() \
+				== (candidates[i - 1]["mod_name"] as String).to_lower():
+			_log_warning("Duplicate mod name '" + candidates[i]["mod_name"]
+					+ "' — archives '" + candidates[i - 1]["file_name"]
+					+ "' and '" + candidates[i]["file_name"]
+					+ "'. Load order tie broken by archive filename.")
+
 	_log_info("=== Load Order ===")
 	for i in candidates.size():
 		var c: Dictionary = candidates[i]
-		var tag := " [priority=" + str(c["priority"]) + "]" if c["priority"] != 0 else ""
-		_log_info("  [" + str(i + 1) + "] " + c["mod_name"] + " | " + c["file_name"] + tag)
+		_log_info("  [" + str(i + 1) + "] " + c["mod_name"] + " | " + c["file_name"]
+				+ " [priority=" + str(c["priority"]) + "]")
 	_log_info("==================")
 
 	for load_index in candidates.size():
@@ -1253,7 +1288,8 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 	var keys: PackedStringArray = cfg.get_section_keys("autoload")
 	for key in keys:
 		var autoload_name := str(key)
-		var res_path := str(cfg.get_value("autoload", key)).lstrip("*").strip_edges()
+		# Strip Godot autoload prefix (*) and VostokMods early-autoload prefix (!).
+		var res_path := str(cfg.get_value("autoload", key)).lstrip("*!").strip_edges()
 
 		if res_path == "":
 			_log_warning("  Empty autoload path for '" + autoload_name + "' — skipped")
@@ -1323,6 +1359,18 @@ func _register_claim(res_path: String, mod_name: String, archive: String,
 		"mod_name": mod_name, "archive": archive, "load_index": load_index,
 		"claim_type": claim_type, "source_path": source_path,
 	})
+
+func _compare_load_order(a: Dictionary, b: Dictionary) -> bool:
+	if a["priority"] != b["priority"]:
+		return a["priority"] < b["priority"]
+	var a_name := (a["mod_name"] as String).to_lower()
+	var b_name := (b["mod_name"] as String).to_lower()
+	if a_name != b_name:
+		return a_name < b_name
+	# file_name is the archive's disk filename — guaranteed unique by the filesystem.
+	# This final tiebreaker makes the ordering a strict total order so that Godot's
+	# unstable introsort can never shuffle "equal" elements.
+	return (a["file_name"] as String).to_lower() < (b["file_name"] as String).to_lower()
 
 func _is_dangerous_path(res_path: String) -> bool:
 	return _vanilla_paths.has(res_path)

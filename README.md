@@ -6,7 +6,7 @@ A community-built mod loader for **Road to Vostok** (Godot 4). Adds a launcher U
 
 ## Requirements
 
-- Road to Vostok(PC, Steam)
+- Road to Vostok (PC, Steam)
 - Mods packaged as `.zip`, `.vmz`, or `.pck` files
 
 ---
