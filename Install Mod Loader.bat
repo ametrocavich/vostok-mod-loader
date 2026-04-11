@@ -44,7 +44,7 @@ set "USER_DATA=%APPDATA%\Road to Vostok"
 set "MODLOADER_DEST=%USER_DATA%\modloader.gd"
 set "OVERRIDE_PATH=%GAME_PATH%\override.cfg"
 set "MODS_PATH=%GAME_PATH%\mods"
-set "MODLOADER_URL=https://raw.githubusercontent.com/tetrahydroc/vostok-mod-loader/master/modloader.gd"
+set "MODLOADER_URL=https://raw.githubusercontent.com/ametrocavich/vostok-mod-loader/master/modloader.gd"
 
 :: --- Create user data directory ---
 if not exist "%USER_DATA%" (
