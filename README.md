@@ -1,13 +1,13 @@
 # Road to Vostok — Community Mod Loader
 
-A community-built mod loader for **Road to Vostok** (Godot 4). Adds a launcher UI before the game starts, letting you enable/disable mods, set load order priority, check for updates, and preview compatibility issues before they cause problems in-game.
+A community-built mod loader for **Road to Vostok** (Godot 4). Adds a launcher UI before the game starts, letting you enable/disable mods, set load order, and check for updates.
 
 ---
 
 ## Requirements
 
 - Road to Vostok (PC, Steam)
-- Mods packaged as `.zip`, `.vmz`, or `.pck` files
+- Mods packaged as `.vmz` or `.pck` files
 
 ---
 
@@ -28,7 +28,7 @@ A community-built mod loader for **Road to Vostok** (Godot 4). Adds a launcher U
    C:\Program Files (x86)\Steam\steamapps\common\Road to Vostok\mods\
    ```
 
-4. Place your `.vmz` or `.zip` mod files inside the `mods` folder.
+4. Place your `.vmz` mod files inside the `mods` folder.
 
 5. Launch the game normally. The mod loader UI will appear before the main menu.
 
@@ -36,18 +36,20 @@ A community-built mod loader for **Road to Vostok** (Godot 4). Adds a launcher U
 
 ## Installing Mods
 
-Drop `.vmz` or `.zip` mod files into the `mods` folder. The mod loader finds them automatically on next launch.
+Drop `.vmz` mod files into the `mods` folder. The mod loader finds them automatically on next launch.
 
-`.pck` files are also supported (can be enabled/disabled and prioritized in the UI, but no mod.txt parsing, autoloads, or update checking).
+`.pck` files are also supported but have no mod.txt parsing, autoloads, or update checking.
+
+**Note:** If a mod was distributed as a `.zip` file, rename it to `.vmz` before placing it in the mods folder. The mod loader will not load `.zip` files directly.
 
 ---
 
 ## The Launcher UI
 
-When you start the game, the mod loader window opens with tabs:
+When you start the game, the mod loader window opens with two tabs:
 
 ### Mods
-Lists all detected mods. Use the checkbox to enable or disable each one. The **Load Order** number controls priority — higher number loads later and wins when mods share files. The **Load Order** panel on the right shows the final order in real time.
+Lists all detected mods. Use the checkbox to enable or disable each one. The **Load Order** number controls priority — higher number loads later and wins when two mods change the same file. The **Load Order** panel on the right shows the final order in real time.
 
 A **Developer Mode** checkbox in the toolbar enables extra features for mod creators:
 - **Conflict report** — full log saved to `modloader_conflicts.txt` after each launch
@@ -63,7 +65,7 @@ Click **Launch Game** (or close the window) when you are ready to play.
 
 ## mod.txt Reference
 
-Mods can include a `mod.txt` at the root of their archive to register autoloads, set metadata, and enable update checking:
+Mods should include a `mod.txt` at the root of their archive to register autoloads, set metadata, and enable update checking:
 
 ```ini
 [mod]
@@ -88,7 +90,7 @@ modworkshop=12345
 | `[autoload]` | `Name=res://path/to/script.gd` — instantiated as a Node after all mods mount |
 | `[updates] modworkshop` | ModWorkshop mod ID for update checking |
 
-Mods without `mod.txt` are still mounted as resource packs — their files override vanilla resources, but no autoloads run.
+Mods without `mod.txt` will still mount but may not work correctly — the mod loader will show a warning.
 
 ---
 
@@ -120,12 +122,13 @@ After each launch (with developer mode enabled), a full conflict log is written 
 
 ## For Mod Authors
 
+- **Always package mods as `.vmz`** (renamed zip with forward-slash paths). The mod loader blocks `.zip` files to prevent users from accidentally extracting them.
+- **Include a `mod.txt`** at the root of your archive. Without it, autoloads won't run and the mod loader will flag the mod as invalid.
 - **Conflicts are load-order dependent.** Test with other mods installed and check the conflict report.
 - **If you replace Database.gd**, every `preload()` path in your version must exist or the game will break.
 - **Use `super()` in lifecycle methods.** Skipping it silently breaks any other mod that overrides the same class.
 - **Avoid `take_over_path()` on commonly-overridden scripts** when possible. The `extends + super()` pattern composes across mods; flat `take_over_path()` doesn't.
 - **`UpdateTooltip()` does not affect world items.** World-item tooltip text comes from `HUD._physics_process` reading `gameData.tooltip`.
-- **Windows zip repacking** — use 7-Zip or a tool that writes forward-slash entry paths. .NET `ZipFile.CreateFromDirectory()` writes backslash paths by default, which Godot can't resolve.
 
 ---
 
