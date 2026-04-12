@@ -7,7 +7,6 @@ const UI_CONFIG_PATH := "user://mod_config.cfg"
 const MODWORKSHOP_VERSIONS_URL := "https://api.modworkshop.net/mods/versions"
 const MODWORKSHOP_DOWNLOAD_URL_TEMPLATE := "https://api.modworkshop.net/mods/%s/download"
 
-const VANILLA_SCAN_DIRS: Array[String] = ["res://Scripts", "res://Scenes"]
 const TRACKED_EXTENSIONS: Array[String] = ["gd", "tscn", "tres", "gdns", "gdnlib", "scn"]
 const LIFECYCLE_METHODS: Array[String] = [
 	"_ready", "_process", "_physics_process",
@@ -16,9 +15,6 @@ const LIFECYCLE_METHODS: Array[String] = [
 
 # ─── Tuning constants ────────────────────────────────────────────────────────
 
-const OVERLAP_FILE_THRESHOLD := 5       # shared files to flag "Likely Incompatible"
-const OVERLAP_VANILLA_THRESHOLD := 3    # shared vanilla files for critical severity
-const MAX_DISPLAYED_FILENAMES := 6      # truncate file lists in conflict cards
 const MODWORKSHOP_BATCH_SIZE := 100     # mod IDs per API request
 const API_CHECK_TIMEOUT := 15.0         # seconds for version-check requests
 const API_DOWNLOAD_TIMEOUT := 30.0      # seconds for mod download requests
@@ -27,22 +23,20 @@ const PRIORITY_MAX := 999
 
 # ─── State ────────────────────────────────────────────────────────────────────
 
-var _vanilla_paths: Dictionary = {}
-var _database_path: String = ""
 var _database_replaced_by: String = ""
 var _override_registry: Dictionary = {}
 var _mod_script_analysis: Dictionary = {}
 var _archive_file_sets: Dictionary = {}
-var _bad_zips: Array[Dictionary] = []      # {mod_name, count, example}
 var _report_lines: Array[String] = []
 var _pending_autoloads: Array[Dictionary] = []
 var _loaded_mod_ids: Dictionary = {}
 var _registered_autoload_names: Dictionary = {}
 
 # Populated before any mounting. Each entry:
-# { file_name, full_path, ext, mod_name, mod_id, priority, enabled, cfg, has_mod_txt }
+# { file_name, full_path, ext, mod_name, mod_id, priority, enabled, cfg, mod_txt_status, warnings }
 var _ui_mod_entries: Array[Dictionary] = []
 
+var _last_mod_txt_status: String = "none"
 var _developer_mode: bool = false
 var _has_loaded: bool = false
 var _mods_dir: String = ""
@@ -74,8 +68,6 @@ func _ready() -> void:
 	await _show_mod_ui()
 	_save_ui_config()
 	_load_all_mods()
-	if _developer_mode:
-		_preflight_compile_check()
 	for entry in _pending_autoloads:
 		_instantiate_autoload(entry["mod_name"], entry["name"], entry["path"])
 	if _developer_mode:
@@ -85,7 +77,10 @@ func _ready() -> void:
 	# Reload so mounted resource overrides and take_over_path() apply to the scene.
 	# Needed for ALL mods that replace files, not just those with autoloads.
 	if not _archive_file_sets.is_empty() or _pending_autoloads.size() > 0:
-		get_tree().reload_current_scene()
+		var reload_err := get_tree().reload_current_scene()
+		if reload_err != OK:
+			_log_critical("reload_current_scene() failed with error " + str(reload_err))
+			return
 		# Wait for the reloaded scene to be ready before auditing override instances.
 		# The modloader persists across reloads (it's an autoload), so this works.
 		if _developer_mode:
@@ -146,9 +141,9 @@ func _collect_mod_metadata() -> Array[Dictionary]:
 		entries.append(_build_archive_entry(_mods_dir, entry_name, ext))
 	dir.list_dir_end()
 	if skipped_files.size() > 0:
-		_log_warning("Skipped " + str(skipped_files.size()) + " non-mod file(s) in mods dir:")
+		_log_debug("Skipped " + str(skipped_files.size()) + " non-mod file(s) in mods dir:")
 		for sf in skipped_files:
-			_log_warning("  " + sf + "  (not .zip/.vmz/.pck)")
+			_log_debug("  " + sf + "  (not .vmz/.pck)")
 	if entries.size() == 0:
 		_log_warning("No mods found in: " + _mods_dir)
 	else:
@@ -161,14 +156,20 @@ func _collect_mod_metadata() -> Array[Dictionary]:
 
 func _build_archive_entry(mods_dir: String, file_name: String, ext: String) -> Dictionary:
 	var full_path := mods_dir.path_join(file_name)
+	if ext == "pck":
+		_last_mod_txt_status = "pck"
 	var cfg: ConfigFile = _read_mod_config(full_path) if ext != "pck" else null
-	return _entry_from_config(cfg, file_name, full_path, ext)
+	var entry := _entry_from_config(cfg, file_name, full_path, ext)
+	entry["warnings"] = _build_entry_warnings(entry)
+	return entry
 
 
 func _build_folder_entry(mods_dir: String, dir_name: String) -> Dictionary:
 	var folder_path := mods_dir.path_join(dir_name)
 	var cfg: ConfigFile = _read_mod_config_folder(folder_path)
-	return _entry_from_config(cfg, dir_name, folder_path, "folder")
+	var entry := _entry_from_config(cfg, dir_name, folder_path, "folder")
+	entry["warnings"] = _build_entry_warnings(entry)
+	return entry
 
 
 # Future: mod.txt may support [mod] load_after = "other_mod_id" for soft dependencies.
@@ -201,12 +202,34 @@ func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, e
 			priority = filename_priority
 	elif has_filename_priority:
 		priority = filename_priority
-	return {
+	priority = clampi(priority, PRIORITY_MIN, PRIORITY_MAX)
+	var entry := {
 		"file_name": file_name, "full_path": full_path, "ext": ext,
 		"mod_name": mod_name, "mod_id": mod_id,
 		"priority": priority, "enabled": true,
-		"cfg": cfg, "has_mod_txt": cfg != null,
+		"cfg": cfg, "mod_txt_status": _last_mod_txt_status,
 	}
+	if ext == "zip":
+		entry["enabled"] = false
+	return entry
+
+
+func _build_entry_warnings(entry: Dictionary) -> Array[String]:
+	var warnings: Array[String] = []
+	var ext: String = entry["ext"]
+	if ext == "zip":
+		warnings.append("Rename this file from .zip to .vmz to use it")
+		return warnings
+	if ext == "pck" or ext == "folder":
+		return warnings
+	var status: String = entry.get("mod_txt_status", "none")
+	if status == "none":
+		warnings.append("Invalid mod — may not work correctly. Try re-downloading.")
+	elif status == "parse_error":
+		warnings.append("Invalid mod — may not work correctly. Try re-downloading.")
+	elif status.begins_with("nested:"):
+		warnings.append("Invalid mod — packaged incorrectly. Try re-downloading.")
+	return warnings
 
 
 # ─── Config persistence ───────────────────────────────────────────────────────
@@ -227,6 +250,8 @@ func _load_ui_config() -> void:
 	for entry in _ui_mod_entries:
 		var fn: String = entry["file_name"]
 		entry["enabled"] = bool(cfg.get_value("enabled", fn, true))
+		if entry["ext"] == "zip":
+			entry["enabled"] = false
 		if cfg.has_section_key("priority", fn):
 			entry["priority"] = int(str(cfg.get_value("priority", fn)))
 
@@ -301,8 +326,8 @@ func _show_mod_ui() -> void:
 	root.add_child(bottom)
 
 	var hint := Label.new()
-	hint.text = "Higher priority = loads last = wins conflicts.  " \
-			+ "Mods: " + ProjectSettings.globalize_path(_mods_dir) + "  (.zip / .vmz / .pck)"
+	hint.text = "Higher number loads later and wins when mods share files.\n" \
+			+ "Developer Mode: verbose logging, conflict report, and loose folder loading."
 	hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.add_theme_font_size_override("font_size", 11)
@@ -333,36 +358,13 @@ func _show_mod_ui() -> void:
 	# Closing the window with X should behave the same as clicking Launch.
 	win.close_requested.connect(func(): launch_btn.pressed.emit())
 
-	var mods_tab := _build_mods_tab()
+	var mods_tab := _build_mods_tab(tabs)
 	mods_tab.name = "Mods"
 	tabs.add_child(mods_tab)
 
 	var updates_tab := _build_updates_tab()
 	updates_tab.name = "Updates"
 	tabs.add_child(updates_tab)
-
-	var compat_tab := _build_compat_tab()
-	compat_tab.name = "Compatibility"
-	tabs.add_child(compat_tab)
-	var compat_idx := compat_tab.get_index()
-	tabs.set_tab_hidden(compat_idx, not _developer_mode)
-
-	var rebuild_mods_tab := func():
-		_ui_mod_entries = _collect_mod_metadata()
-		_load_ui_config()
-		var old := tabs.get_node("Mods")
-		var idx := old.get_index()
-		tabs.remove_child(old)
-		old.queue_free()
-		var new_tab := _build_mods_tab()
-		new_tab.name = "Mods"
-		tabs.add_child(new_tab)
-		tabs.move_child(new_tab, idx)
-		tabs.current_tab = tabs.get_node("Settings").get_index()
-
-	var settings_tab := _build_settings_tab(tabs, compat_idx, rebuild_mods_tab)
-	settings_tab.name = "Settings"
-	tabs.add_child(settings_tab)
 
 	await launch_btn.pressed
 	win.queue_free()
@@ -461,7 +463,7 @@ func _make_dark_theme() -> Theme:
 	return t
 
 
-func _build_mods_tab() -> Control:
+func _build_mods_tab(tabs: TabContainer) -> Control:
 	var outer := VBoxContainer.new()
 	outer.size_flags_vertical = Control.SIZE_EXPAND_FILL
 
@@ -474,6 +476,33 @@ func _build_mods_tab() -> Control:
 	toolbar.add_child(open_btn)
 	open_btn.pressed.connect(func():
 		OS.shell_open(ProjectSettings.globalize_path(_mods_dir))
+	)
+
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	toolbar.add_child(spacer)
+
+	var dev_check := CheckBox.new()
+	dev_check.text = "Developer Mode"
+	dev_check.tooltip_text = "Enables verbose logging, conflict report, and loose folder loading"
+	dev_check.button_pressed = _developer_mode
+	dev_check.add_theme_font_size_override("font_size", 11)
+	dev_check.modulate = Color(0.45, 0.45, 0.45)
+	toolbar.add_child(dev_check)
+
+	dev_check.toggled.connect(func(on: bool):
+		_developer_mode = on
+		_ui_mod_entries = _collect_mod_metadata()
+		_load_ui_config()
+		var old := tabs.get_node("Mods")
+		var idx := old.get_index()
+		tabs.remove_child(old)
+		old.queue_free()
+		var new_tab := _build_mods_tab(tabs)
+		new_tab.name = "Mods"
+		tabs.add_child(new_tab)
+		tabs.move_child(new_tab, idx)
+		tabs.current_tab = idx
 	)
 
 	outer.add_child(HSeparator.new())
@@ -563,7 +592,7 @@ func _build_mods_tab() -> Control:
 	header_row.add_child(h_name)
 
 	var h_prio := Label.new()
-	h_prio.text = "Priority"
+	h_prio.text = "Load Order"
 	h_prio.custom_minimum_size.x = 100
 	h_prio.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	header_row.add_child(h_prio)
@@ -574,7 +603,7 @@ func _build_mods_tab() -> Control:
 
 	if _ui_mod_entries.is_empty():
 		var empty := Label.new()
-		empty.text = "No mods found.\n\nPlace .zip, .vmz, or .pck files in:\n" \
+		empty.text = "No mods found.\n\nPlace .vmz or .pck files in:\n" \
 				+ ProjectSettings.globalize_path(_mods_dir)
 		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		empty.modulate = Color(0.5, 0.5, 0.5)
@@ -606,18 +635,23 @@ func _build_mods_tab() -> Control:
 			dev_lbl.modulate = Color(0.9, 0.3, 0.3)
 			dev_lbl.add_theme_font_size_override("font_size", 11)
 			name_col.add_child(dev_lbl)
-		if not entry["has_mod_txt"]:
+		for warn_text: String in entry.get("warnings", []):
 			var warn := Label.new()
-			warn.text = "no mod.txt — mount only"
+			warn.text = warn_text
 			warn.modulate = Color(1.0, 0.6, 0.2)
 			warn.add_theme_font_size_override("font_size", 11)
 			name_col.add_child(warn)
+
+		if entry["ext"] == "zip":
+			check.disabled = true
 
 		var spin := SpinBox.new()
 		spin.min_value = PRIORITY_MIN
 		spin.max_value = PRIORITY_MAX
 		spin.value = entry["priority"]
 		spin.custom_minimum_size.x = 100
+		if entry["ext"] == "zip":
+			spin.editable = false
 		row.add_child(spin)
 
 		list.add_child(HSeparator.new())
@@ -638,215 +672,6 @@ func _build_mods_tab() -> Control:
 	refresh_order.call()
 	return outer
 
-
-func _build_compat_tab() -> Control:
-	var margin := MarginContainer.new()
-	margin.add_theme_constant_override("margin_left", 8)
-	margin.add_theme_constant_override("margin_right", 8)
-	margin.add_theme_constant_override("margin_top", 6)
-	margin.add_theme_constant_override("margin_bottom", 6)
-
-	var container := VBoxContainer.new()
-	container.add_theme_constant_override("separation", 6)
-	margin.add_child(container)
-
-	var toolbar := HBoxContainer.new()
-	toolbar.add_theme_constant_override("separation", 8)
-	container.add_child(toolbar)
-
-	var info := Label.new()
-	info.text = "Dry-scans enabled archives without mounting. Shows override conflicts, broken chains, and crash risks."
-	info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	info.add_theme_font_size_override("font_size", 12)
-	info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	toolbar.add_child(info)
-
-	var scan_btn := Button.new()
-	scan_btn.text = "Run Analysis"
-	toolbar.add_child(scan_btn)
-
-	container.add_child(HSeparator.new())
-
-	# Split: issue list on the left, detail view on the right.
-	# split_offset offsets from center when both sides have SIZE_EXPAND_FILL.
-	# 94 = center(~470) + 94 = divider at ~564px → right panel gets ~40% of width.
-	var split := HSplitContainer.new()
-	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	split.split_offset = 94
-	container.add_child(split)
-
-	# ── Left: clickable issue list ────────────────────────────────────────────
-
-	var list_scroll := ScrollContainer.new()
-	list_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	list_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	split.add_child(list_scroll)
-
-	var issue_list := VBoxContainer.new()
-	issue_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	issue_list.add_theme_constant_override("separation", 2)
-	list_scroll.add_child(issue_list)
-
-	var placeholder := Label.new()
-	placeholder.text = "Click 'Run Analysis' to scan mods."
-	placeholder.modulate = Color(0.6, 0.6, 0.6)
-	issue_list.add_child(placeholder)
-
-	# ── Right: issue detail panel ─────────────────────────────────────────────
-
-	var detail_bg := PanelContainer.new()
-	detail_bg.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var detail_style := StyleBoxFlat.new()
-	detail_style.bg_color = Color(0.09, 0.09, 0.09)
-	detail_style.content_margin_left = 12
-	detail_style.content_margin_right = 12
-	detail_style.content_margin_top = 10
-	detail_style.content_margin_bottom = 10
-	detail_bg.add_theme_stylebox_override("panel", detail_style)
-	split.add_child(detail_bg)
-
-	var detail_scroll := ScrollContainer.new()
-	detail_bg.add_child(detail_scroll)
-
-	var detail_vbox := VBoxContainer.new()
-	detail_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	detail_vbox.add_theme_constant_override("separation", 8)
-	detail_scroll.add_child(detail_vbox)
-
-	var detail_title := Label.new()
-	detail_title.text = "Select an issue to see details."
-	detail_title.modulate = Color(0.65, 0.65, 0.65)
-	detail_title.add_theme_font_size_override("font_size", 14)
-	detail_vbox.add_child(detail_title)
-
-	var detail_what_hdr := Label.new()
-	detail_what_hdr.text = "What's happening"
-	detail_what_hdr.add_theme_font_size_override("font_size", 11)
-	detail_what_hdr.modulate = Color(0.75, 0.75, 0.75)
-	detail_what_hdr.visible = false
-	detail_vbox.add_child(detail_what_hdr)
-
-	var detail_what := Label.new()
-	detail_what.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	detail_what.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	detail_what.visible = false
-	detail_vbox.add_child(detail_what)
-
-	var detail_fix_hdr := Label.new()
-	detail_fix_hdr.text = "How to fix"
-	detail_fix_hdr.add_theme_font_size_override("font_size", 11)
-	detail_fix_hdr.modulate = Color(0.75, 0.75, 0.75)
-	detail_fix_hdr.visible = false
-	detail_vbox.add_child(detail_fix_hdr)
-
-	var detail_fix := Label.new()
-	detail_fix.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	detail_fix.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	detail_fix.visible = false
-	detail_vbox.add_child(detail_fix)
-
-	var detail_mods_hdr := Label.new()
-	detail_mods_hdr.text = "Affected mods"
-	detail_mods_hdr.add_theme_font_size_override("font_size", 11)
-	detail_mods_hdr.modulate = Color(0.75, 0.75, 0.75)
-	detail_mods_hdr.visible = false
-	detail_vbox.add_child(detail_mods_hdr)
-
-	var detail_mods_lbl := Label.new()
-	detail_mods_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	detail_mods_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	detail_mods_lbl.visible = false
-	detail_vbox.add_child(detail_mods_lbl)
-
-	var detail_labels := [detail_what_hdr, detail_what, detail_fix_hdr,
-			detail_fix, detail_mods_hdr, detail_mods_lbl]
-
-	var show_detail := func(issue: Dictionary):
-		detail_title.text = issue["title"]
-		var sev: String = issue["severity"]
-		detail_title.modulate = Color(0.85, 0.32, 0.32) if sev == "critical" \
-				else (Color(0.85, 0.70, 0.28) if sev == "warning" else Color(0.80, 0.80, 0.80))
-		detail_what.text = issue["what"]
-		detail_fix.text = issue["fix"]
-		detail_mods_lbl.text = ", ".join(issue["mods"])
-		for lbl in detail_labels:
-			lbl.visible = true
-
-	var populate_issues := func(issues: Array[Dictionary]):
-		for child in issue_list.get_children():
-			child.queue_free()
-		if issues.is_empty():
-			var lbl := Label.new()
-			lbl.text = "No issues detected."
-			lbl.modulate = Color(0.80, 0.80, 0.80)
-			issue_list.add_child(lbl)
-			return
-		for issue: Dictionary in issues:
-			var sev: String = issue["severity"]
-			var btn := Button.new()
-			btn.text = issue["title"]
-			btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
-			btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			btn.modulate = Color(0.85, 0.38, 0.38) if sev == "critical" \
-					else (Color(0.85, 0.72, 0.30) if sev == "warning" else Color(0.72, 0.72, 0.72))
-			var iss := issue
-			btn.pressed.connect(func(): show_detail.call(iss))
-			issue_list.add_child(btn)
-
-	scan_btn.pressed.connect(func():
-		scan_btn.disabled = true
-		scan_btn.text = "Scanning..."
-		_run_dry_compat_analysis(populate_issues)
-		scan_btn.disabled = false
-		scan_btn.text = "Run Analysis"
-	)
-
-	return margin
-
-
-# Scans all enabled archives in load order without mounting anything, then
-# calls the populate callback with structured issue data for the UI.
-# The main _report_lines array is swapped out so dry-run noise doesn't
-# pollute the real launch log.
-#
-# IMPORTANT: This calls _scan_and_register_archive_claims (read-only scan via
-# ZIPReader) — NOT _process_mod_candidate (which mounts packs and queues
-# autoloads). Calling _process_mod_candidate here would have side effects
-# that corrupt the real launch. _load_all_mods() clears all state before the
-# real load, so stale dry-analysis data does not leak.
-func _run_dry_compat_analysis(populate_cb: Callable) -> void:
-	_override_registry.clear()
-	_mod_script_analysis.clear()
-	_archive_file_sets.clear()
-	_bad_zips.clear()
-	_database_replaced_by = ""
-	_database_path = ""
-	_scan_vanilla_paths()
-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(TMP_DIR))
-
-	var sorted := _ui_mod_entries.filter(func(e): return e["enabled"])
-	sorted.sort_custom(_compare_load_order)
-
-	if sorted.is_empty():
-		populate_cb.call([])
-		return
-
-	var saved_lines := _report_lines
-	var dry_lines: Array[String] = []
-	_report_lines = dry_lines
-
-	for i in sorted.size():
-		var entry: Dictionary = sorted[i]
-		var scan_path: String = entry["full_path"]
-		if entry["ext"] == "folder":
-			scan_path = _zip_folder_to_temp(entry["full_path"])
-			if scan_path == "":
-				continue
-		_scan_and_register_archive_claims(scan_path, entry["mod_name"], entry["file_name"], i)
-
-	var issues := _collect_conflict_issues()
-	_report_lines = saved_lines
-	populate_cb.call(issues)
 
 
 func _build_updates_tab() -> Control:
@@ -1036,51 +861,6 @@ func _build_updates_tab() -> Control:
 	return margin
 
 
-func _build_settings_tab(tabs: TabContainer, compat_idx: int, rebuild_mods_tab: Callable) -> Control:
-	var margin := MarginContainer.new()
-	margin.add_theme_constant_override("margin_left", 8)
-	margin.add_theme_constant_override("margin_right", 8)
-	margin.add_theme_constant_override("margin_top", 6)
-	margin.add_theme_constant_override("margin_bottom", 6)
-
-	var container := VBoxContainer.new()
-	container.add_theme_constant_override("separation", 8)
-	margin.add_child(container)
-
-	var hdr := Label.new()
-	hdr.text = "Developer Mode"
-	hdr.add_theme_font_size_override("font_size", 13)
-	container.add_child(hdr)
-	container.add_child(HSeparator.new())
-
-	var dev_check := CheckBox.new()
-	dev_check.text = "Enable Developer Mode"
-	dev_check.button_pressed = _developer_mode
-	container.add_child(dev_check)
-
-	var desc := Label.new()
-	desc.text = "Enables:\n" \
-			+ "  - Compatibility tab (scan for override conflicts without launching)\n" \
-			+ "  - Compile check (loads each override script to catch parse errors early)\n" \
-			+ "  - Override audit (warns if overrideScript() targets have 0 live nodes)\n" \
-			+ "  - Conflict report saved to modloader_conflicts.txt after each launch\n" \
-			+ "  - Verbose [Debug] logging for load order, timing, and override state\n" \
-			+ "  - Loose mod folders loaded from the mods directory\n" \
-			+ "\nOff by default — adds ~1s to launch for scanning."
-	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	desc.add_theme_font_size_override("font_size", 11)
-	desc.modulate = Color(0.5, 0.5, 0.5)
-	desc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	container.add_child(desc)
-
-	dev_check.toggled.connect(func(on: bool):
-		_developer_mode = on
-		tabs.set_tab_hidden(compat_idx, not on)
-		rebuild_mods_tab.call()
-	)
-
-	return margin
-
 
 func _check_updates_for_ui(status_info: Dictionary, add_log: Callable, check_btn: Button) -> void:
 	var ids: Array[int] = []
@@ -1090,6 +870,9 @@ func _check_updates_for_ui(status_info: Dictionary, add_log: Callable, check_btn
 		return
 
 	var latest := await _fetch_latest_modworkshop_versions(ids)
+
+	if not is_instance_valid(check_btn):
+		return
 
 	for fn: String in status_info:
 		var info: Dictionary = status_info[fn]
@@ -1126,6 +909,8 @@ func _check_updates_for_ui(status_info: Dictionary, add_log: Callable, check_btn
 				lbl.text = "downloading..."
 				check_btn.disabled = true
 				var ok := await _download_and_replace_mod(full_path, mw_id)
+				if not is_instance_valid(check_btn):
+					return
 				check_btn.disabled = false
 				if ok:
 					lbl.text = "updated — restart to apply"
@@ -1158,10 +943,7 @@ func _load_all_mods() -> void:
 	_database_replaced_by = ""
 	_mod_script_analysis.clear()
 	_archive_file_sets.clear()
-	_bad_zips.clear()
 
-	if _developer_mode:
-		_scan_vanilla_paths()
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(TMP_DIR))
 
 	# Build the candidate list from UI-configured entries (already filtered and trusted).
@@ -1197,40 +979,6 @@ func _load_all_mods() -> void:
 		_process_mod_candidate(candidates[load_index], load_index)
 
 
-# Try to load() each .gd file from mounted archives that extends a vanilla script.
-# Catches real Godot compile errors with zero false positives.
-func _preflight_compile_check() -> void:
-	var checked := 0
-	var fail_count := 0
-	for archive_name: String in _archive_file_sets:
-		var file_set: Dictionary = _archive_file_sets[archive_name]
-		for res_path: String in file_set:
-			if not (res_path as String).ends_with(".gd"): continue
-			# Look up which mod owns this file to get its extends_paths.
-			if not _override_registry.has(res_path): continue
-			var owner_name: String = (_override_registry[res_path][0] as Dictionary)["mod_name"]
-			if not _mod_script_analysis.has(owner_name): continue
-			var analysis: Dictionary = _mod_script_analysis[owner_name]
-			# Only check scripts that extend another script (override scripts).
-			if (analysis["extends_paths"] as Array).is_empty(): continue
-			# Try to compile. Check both load() returning null AND whether
-			# the script can actually be instantiated (catches broken but non-null scripts).
-			checked += 1
-			var script: Resource = load(res_path)
-			var failed := script == null
-			if not failed and script is GDScript:
-				failed = not (script as GDScript).can_instantiate()
-			if failed:
-				fail_count += 1
-				_log_critical("Pre-flight: " + owner_name + " — " + res_path
-						+ " failed to compile. See error above.")
-	if fail_count > 0:
-		_log_warning("Pre-flight: " + str(fail_count) + " of " + str(checked)
-				+ " override script(s) failed to compile.")
-	elif checked > 0:
-		_log_info("Pre-flight: " + str(checked) + " override script(s) compiled OK.")
-
-
 func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 	var file_name: String = c["file_name"]
 	var full_path: String = c["full_path"]
@@ -1240,6 +988,10 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 	var cfg               = c["cfg"]
 
 	_log_info("--- [" + str(load_index + 1) + "] " + mod_name + " (" + file_name + ")")
+
+	if ext == "zip":
+		_log_warning("Skipping .zip file: " + file_name + " — rename to .vmz to use")
+		return
 
 	if ext != "pck" and _loaded_mod_ids.has(mod_id):
 		_log_warning("Duplicate mod id '" + mod_id + "' — skipped: " + file_name)
@@ -1275,9 +1027,15 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 				_log_debug("  Mount verification: no files accessible via FileAccess/ResourceLoader (may be normal)")
 				_log_debug("  Will attempt load() directly when needed")
 
-	if ext == "pck" or not c["has_mod_txt"]:
-		if not c["has_mod_txt"] and ext != "pck":
-			_log_warning("  No mod.txt — autoloads skipped")
+	if ext == "pck" or cfg == null:
+		if cfg == null and ext != "pck":
+			var status: String = c.get("mod_txt_status", "none")
+			if status.begins_with("nested:"):
+				_log_warning("  Invalid mod — packaged incorrectly (nested mod.txt at " + status.substr(7) + ")")
+			elif status == "parse_error":
+				_log_warning("  Invalid mod — mod.txt failed to parse")
+			else:
+				_log_warning("  No mod.txt — autoloads skipped")
 		return
 
 	_loaded_mod_ids[mod_id] = true
@@ -1315,7 +1073,7 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 
 		_pending_autoloads.append({ "mod_name": mod_name, "name": autoload_name, "path": res_path })
 		_log_info("  Autoload queued: " + autoload_name + " -> " + res_path)
-		_register_claim(res_path, mod_name, file_name, load_index, "autoload")
+		_register_claim(res_path, mod_name, file_name, load_index)
 
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
@@ -1349,7 +1107,7 @@ func _log_debug(msg: String) -> void:
 # ─── Override registry ────────────────────────────────────────────────────────
 
 func _register_claim(res_path: String, mod_name: String, archive: String,
-		load_index: int, claim_type: String, source_path: String = "") -> void:
+		load_index: int) -> void:
 	if not _override_registry.has(res_path):
 		_override_registry[res_path] = []
 	for existing in _override_registry[res_path]:
@@ -1357,7 +1115,6 @@ func _register_claim(res_path: String, mod_name: String, archive: String,
 			return
 	_override_registry[res_path].append({
 		"mod_name": mod_name, "archive": archive, "load_index": load_index,
-		"claim_type": claim_type, "source_path": source_path,
 	})
 
 func _compare_load_order(a: Dictionary, b: Dictionary) -> bool:
@@ -1371,53 +1128,6 @@ func _compare_load_order(a: Dictionary, b: Dictionary) -> bool:
 	# This final tiebreaker makes the ordering a strict total order so that Godot's
 	# unstable introsort can never shuffle "equal" elements.
 	return (a["file_name"] as String).to_lower() < (b["file_name"] as String).to_lower()
-
-func _is_dangerous_path(res_path: String) -> bool:
-	return _vanilla_paths.has(res_path)
-
-func _classify_claim(res_path: String) -> String:
-	var lower := res_path.to_lower()
-	if lower.ends_with(".gd"):                               return "script"
-	if lower.ends_with(".tscn") or lower.ends_with(".scn"):  return "scene"
-	if lower.ends_with(".tres"):                             return "resource"
-	return "file"
-
-
-# ─── Vanilla path scan ────────────────────────────────────────────────────────
-
-func _scan_vanilla_paths() -> void:
-	_vanilla_paths.clear()
-	_database_path = ""
-	for dir_path in VANILLA_SCAN_DIRS:
-		_scan_vanilla_dir(dir_path)
-	for path: String in _vanilla_paths:
-		if path.get_extension().to_lower() == "gd" \
-				and path.get_file().get_basename().to_lower() == "database":
-			_database_path = path
-			_log_info("Vanilla scan: scene registry -> " + _database_path)
-			break
-	if _vanilla_paths.is_empty():
-		_log_warning("Vanilla scan: 0 files found — falling back to filename heuristics.")
-	else:
-		_log_info("Vanilla scan: " + str(_vanilla_paths.size()) + " game files indexed")
-
-func _scan_vanilla_dir(dir_path: String) -> void:
-	var dir := DirAccess.open(dir_path)
-	if dir == null:
-		return
-	dir.list_dir_begin()
-	while true:
-		var entry := dir.get_next()
-		if entry == "":
-			break
-		if entry.begins_with("."):
-			continue
-		var full := dir_path.path_join(entry)
-		if dir.current_is_dir():
-			_scan_vanilla_dir(full)
-		elif entry.get_extension().to_lower() in TRACKED_EXTENSIONS:
-			_vanilla_paths[full] = true
-	dir.list_dir_end()
 
 
 # ─── Archive scanner ──────────────────────────────────────────────────────────
@@ -1441,12 +1151,10 @@ func _scan_and_register_archive_claims(archive_path: String, mod_name: String,
 			if example_bad == "":
 				example_bad = f
 	if backslash_count > 0:
-		_bad_zips.append({"mod_name": mod_name, "count": backslash_count, "example": example_bad})
 		_log_critical("  BAD ZIP: " + str(backslash_count) + " entries use Windows backslash paths.")
 		_log_critical("    Re-pack with 7-Zip. Example bad entry: '" + example_bad + "'")
 
 	var tracked_count := 0
-	var dangerous_count := 0
 	var path_set: Dictionary = {}
 	var gd_analysis: Dictionary = {
 		"take_over_literal_paths": [],
@@ -1474,30 +1182,24 @@ func _scan_and_register_archive_claims(archive_path: String, mod_name: String,
 
 		path_set[res_path] = true
 		tracked_count += 1
-		_register_claim(res_path, mod_name, archive_file, load_index, _classify_claim(res_path), f)
+		_register_claim(res_path, mod_name, archive_file, load_index)
 
 		var bare_name := res_path.get_file().get_basename().to_lower()
 		var is_db_file := bare_name == "database" and res_path.get_extension().to_lower() == "gd"
 
-		if (res_path == _database_path and _database_path != "") or (is_db_file and _database_path == ""):
+		if is_db_file:
 			if _database_replaced_by == "":
 				_database_replaced_by = mod_name
-			_log_critical("  DATABASE OVERRIDE: " + mod_name + " replaces Database.gd")
-			_log_warning("    All preload() paths in this file must exist or parsing will fail.")
-		elif is_db_file:
-			_log_warning("  DATABASE COPY: " + mod_name + " bundles a private Database.gd at " + res_path)
-			_log_warning("    Hardcoded preload() paths may break if companion mods aren't present.")
-		elif _is_dangerous_path(res_path):
-			dangerous_count += 1
+				_log_info("  DATABASE OVERRIDE: " + mod_name + " replaces Database.gd")
+			else:
+				_log_warning("  DATABASE COPY: " + mod_name + " bundles a private Database.gd at " + res_path)
+				_log_warning("    Hardcoded preload() paths may break if companion mods aren't present.")
 
 	zr.close()
 	_mod_script_analysis[mod_name] = gd_analysis
 	_archive_file_sets[archive_file] = path_set
 
-	var summary := "  " + str(tracked_count) + " resource path(s)"
-	if dangerous_count > 0:
-		summary += " [" + str(dangerous_count) + " replace vanilla files]"
-	_log_info(summary)
+	_log_info("  " + str(tracked_count) + " resource path(s)")
 
 	if gd_analysis["total_gd_files"] > 0:
 		var override_count: int = (gd_analysis["take_over_literal_paths"] as Array).size() \
@@ -1600,393 +1302,6 @@ func _scan_gd_source(text: String, analysis: Dictionary) -> void:
 				(analysis["lifecycle_no_super"] as Array).append(func_name)
 
 
-func _analyze_script_conflicts() -> void:
-	var issues := _collect_conflict_issues()
-	for issue: Dictionary in issues:
-		var sev: String = issue["severity"]
-		var log_fn := _log_info if sev == "info" else (_log_critical if sev == "critical" else _log_warning)
-		log_fn.call(issue["title"] + " — " + ", ".join(issue["mods"]))
-
-
-func _find_database_affected_mods() -> Array[String]:
-	var affected: Array[String] = []
-	for res_path: String in _override_registry:
-		if res_path == _database_path: continue
-		var lower := res_path.to_lower()
-		if not (lower.ends_with(".tscn") or lower.ends_with(".scn")): continue
-		# Only count scene overrides that replace vanilla files. A mod shipping its
-		# own scenes under mods/MyMod/ is not affected by Database preload caching.
-		if not _is_dangerous_path(res_path): continue
-		for claim in (_override_registry[res_path] as Array):
-			var cn: String = claim["mod_name"]
-			if cn != _database_replaced_by and cn not in affected:
-				affected.append(cn)
-	return affected
-
-
-# Returns structured issue data for the compatibility tab UI. Operates on
-# whatever state is currently in _mod_script_analysis and _override_registry
-# (populated by _scan_and_register_archive_claims).
-func _collect_conflict_issues() -> Array[Dictionary]:
-	var issues: Array[Dictionary] = []
-
-	# 1. Literal take_over_path() conflicts — only one version of that script can be active.
-	var literal_claims: Dictionary = {}
-	for mod_name: String in _mod_script_analysis:
-		for path in (_mod_script_analysis[mod_name]["take_over_literal_paths"] as Array):
-			if not literal_claims.has(path): literal_claims[path] = []
-			if mod_name not in literal_claims[path]:
-				(literal_claims[path] as Array).append(mod_name)
-
-	for path: String in literal_claims:
-		var mods: Array = literal_claims[path]
-		if mods.size() <= 1: continue
-		issues.append({
-			"severity": "critical",
-			"title": "Script Conflict: " + path.get_file(),
-			"what": "Both mods call take_over_path() on the same script:\n  " + path
-					+ "\n\nOnly the last-loaded version is active. The other mod's "
-					+ "changes to this script are silently replaced.",
-			"fix": "Use priority to control which mod wins (higher = loads last = wins).\n\n"
-					+ "To fix: one mod should switch to the extends + super() pattern "
-					+ "so both can coexist in a chain.",
-			"mods": mods,
-		})
-
-	# 2. Dynamic overrideScript() chains — compose correctly only if all mods call super().
-	var extends_claims: Dictionary = {}
-	for mod_name: String in _mod_script_analysis:
-		var analysis: Dictionary = _mod_script_analysis[mod_name]
-		if not analysis["uses_dynamic_override"]: continue
-		for path in (analysis["extends_paths"] as Array):
-			if not extends_claims.has(path): extends_claims[path] = []
-			if mod_name not in extends_claims[path]:
-				(extends_claims[path] as Array).append(mod_name)
-
-	for path: String in extends_claims:
-		var claimants: Array = extends_claims[path]
-		if claimants.size() <= 1: continue
-		var bad_mods: Array = []
-		for cmod: String in claimants:
-			if not (_mod_script_analysis[cmod]["lifecycle_no_super"] as Array).is_empty():
-				bad_mods.append(cmod)
-		if bad_mods.is_empty():
-			continue
-		var bad_methods: Array[String] = []
-		for bm: String in bad_mods:
-			var methods: Array = _mod_script_analysis[bm]["lifecycle_no_super"]
-			bad_methods.append(bm + " (" + ", ".join(methods) + ")")
-		issues.append({
-			"severity": "warning",
-			"title": "Chain Broken: " + path.get_file(),
-			"what": "These mods both override " + path.get_file() + " using extends, "
-					+ "but " + ", ".join(bad_mods) + " is missing super() calls:\n  "
-					+ "\n  ".join(bad_methods)
-					+ "\n\nWithout super(), the override chain breaks — other mods' logic "
-					+ "for those methods never runs.",
-			"fix": "Workaround: give " + ", ".join(bad_mods)
-					+ " a lower priority so it loads first (limits the damage).\n\n"
-					+ "Fix: add super() at the start of each listed method.",
-			"mods": claimants,
-		})
-
-	# 2b. Informational card for overrideScript() mods — even without chain conflicts,
-	# mod authors need to understand the timing constraint.
-	for mod_name: String in _mod_script_analysis:
-		var analysis: Dictionary = _mod_script_analysis[mod_name]
-		if not analysis["uses_dynamic_override"]:
-			continue
-		var targets: Array = analysis["extends_paths"]
-		if targets.is_empty():
-			continue
-		# Skip if this mod already appeared in a chain conflict above.
-		var already_flagged := false
-		for iss in issues:
-			if mod_name in (iss["mods"] as Array) and "Chain" in (iss["title"] as String):
-				already_flagged = true
-				break
-		if already_flagged:
-			continue
-		var target_list := ", ".join(targets.map(func(p): return (p as String).get_file()))
-		issues.append({
-			"severity": "info",
-			"title": "Uses overrideScript(): " + mod_name,
-			"what": mod_name + " uses overrideScript() to extend:\n  " + target_list
-					+ "\n\noverrideScript() only affects nodes instantiated after the "
-					+ "override is registered. Nodes already in the scene tree at launch "
-					+ "(e.g. containers, HUD elements) will keep the original script.",
-			"fix": "This is expected behavior, not a bug. If the mod doesn't seem to "
-					+ "work, check that its target nodes are spawned at runtime rather "
-					+ "than placed in the scene at export time.\n\n"
-					+ "Enable Developer Mode and check the conflict report for "
-					+ "'Override registered but 0 matching nodes found' warnings.",
-			"mods": [mod_name],
-		})
-
-	# 3. File overlap grouped by mod pair — one card per conflicting pair, not per file.
-	# Build per-mod path sets from the override registry.
-	var mod_paths: Dictionary = {}  # mod_name -> Dictionary of res_paths
-	for res_path: String in _override_registry:
-		var claims: Array = _override_registry[res_path]
-		for claim in claims:
-			var mn: String = claim["mod_name"]
-			if not mod_paths.has(mn):
-				mod_paths[mn] = {}
-			(mod_paths[mn] as Dictionary)[res_path] = true
-
-	# Compare every pair of mods for shared files.
-	var mod_list: Array = mod_paths.keys()
-	var seen_pairs: Dictionary = {}
-	for i in mod_list.size():
-		for j in range(i + 1, mod_list.size()):
-			var mod_a: String = mod_list[i]
-			var mod_b: String = mod_list[j]
-			var pair_key := mod_a + "|" + mod_b
-			if seen_pairs.has(pair_key): continue
-			seen_pairs[pair_key] = true
-
-			var shared: Array[String] = []
-			var shared_vanilla: Array[String] = []
-			for p: String in (mod_paths[mod_a] as Dictionary):
-				if (mod_paths[mod_b] as Dictionary).has(p):
-					shared.append(p)
-					if _is_dangerous_path(p):
-						shared_vanilla.append(p)
-
-			if shared.is_empty(): continue
-
-			# Build a readable list of conflicting filenames.
-			var file_names: Array[String] = []
-			for p in shared:
-				var fname: String = p.get_file()
-				if fname not in file_names:
-					file_names.append(fname)
-			file_names.sort()
-			var file_list := ", ".join(file_names)
-			if file_names.size() > MAX_DISPLAYED_FILENAMES:
-				file_list = ", ".join(file_names.slice(0, MAX_DISPLAYED_FILENAMES)) + " + " \
-						+ str(file_names.size() - MAX_DISPLAYED_FILENAMES) + " more"
-
-			# Determine severity and wording based on overlap scale.
-			var sev := "critical" if shared_vanilla.size() > 0 else "warning"
-			var title := ""
-			var what := ""
-			var fix := ""
-
-			if shared.size() >= OVERLAP_FILE_THRESHOLD and shared_vanilla.size() >= OVERLAP_VANILLA_THRESHOLD:
-				title = "Likely Incompatible: " + mod_a + " + " + mod_b
-				what = "Both mods change " + str(shared.size()) + " of the same game files (" \
-						+ str(shared_vanilla.size()) + " core scripts):\n  " + file_list \
-						+ "\n\nThis much overlap almost always means these mods will " \
-						+ "break each other. One mod's changes will be lost."
-				fix = "Disable one of these mods. Some overhaul mods already include " \
-						+ "smaller mods — check the mod descriptions."
-			else:
-				title = "Overlap: " + mod_a + " + " + mod_b
-				what = str(shared.size()) + " shared file(s):\n  " + file_list
-				if shared_vanilla.size() > 0:
-					what += "\n\n" + str(shared_vanilla.size()) + " of these are game files. " \
-							+ "The mod with higher priority wins — the other mod's " \
-							+ "version of these files is ignored."
-				else:
-					what += "\n\nBoth mods include these files. The mod with higher " \
-							+ "priority wins for each shared file."
-				fix = "Try changing the priority order on the Mods tab to see which " \
-						+ "arrangement works best. If both mods need these files, " \
-						+ "they can't be used together."
-
-			issues.append({
-				"severity": sev,
-				"title": title,
-				"what": what,
-				"fix": fix,
-				"mods": [mod_a, mod_b],
-			})
-
-	# 4. Database.gd replaced — preload() caches paths before resource overrides take effect.
-	if _database_replaced_by != "":
-		var affected := _find_database_affected_mods()
-		if not affected.is_empty():
-			var all_mods: Array[String] = [_database_replaced_by]
-			all_mods.append_array(affected)
-			issues.append({
-				"severity": "critical",
-				"title": "Database.gd Replaced",
-				"what": _database_replaced_by + " replaces Database.gd, which preload()s all "
-						+ "item and scene paths at parse time.\n\nScene overrides from other mods "
-						+ "may not take effect because Database.gd caches the original paths "
-						+ "before those mods mount.",
-				"fix": "Potentially affected mods:\n  " + ", ".join(affected)
-						+ "\n\nIf scenes or items are missing, the load order between "
-						+ _database_replaced_by + " and scene-override mods may need adjusting.",
-				"mods": all_mods,
-			})
-
-	# 5. class_name double override — Godot bug #83542, fatal crash at startup.
-	# Only fires when 2+ mods with uses_dynamic_override both extend-by-class_name
-	# on the same class AND that class_name is declared by a mod (not a Godot built-in).
-	var declared_class_names: Dictionary = {}
-	for mod_name: String in _mod_script_analysis:
-		for cn in (_mod_script_analysis[mod_name]["class_names"] as Array):
-			declared_class_names[cn] = true
-	var cn_override_claims: Dictionary = {}  # class_name -> Array[mod_name]
-	for mod_name: String in _mod_script_analysis:
-		var cn_analysis: Dictionary = _mod_script_analysis[mod_name]
-		if not cn_analysis["uses_dynamic_override"]: continue
-		for cn in (cn_analysis["extends_class_names"] as Array):
-			# Skip if no mod declares this class_name — it's a Godot built-in (Node,
-			# Resource, Control, etc.) or a game class we can't verify. The bug only
-			# matters for class_name scripts that get take_over_path'd by mods.
-			if not declared_class_names.has(cn):
-				continue
-			if not cn_override_claims.has(cn): cn_override_claims[cn] = []
-			if mod_name not in cn_override_claims[cn]:
-				(cn_override_claims[cn] as Array).append(mod_name)
-	for cn: String in cn_override_claims:
-		var cn_mods: Array = cn_override_claims[cn]
-		if cn_mods.size() <= 1: continue
-		issues.append({
-			"severity": "critical",
-			"title": "class_name Crash: " + cn,
-			"what": "These mods both override a script that uses class_name '" + cn + "'.\n\n"
-					+ "Godot bug #83542: take_over_path() on class_name scripts can only "
-					+ "succeed once. A second override causes a fatal engine crash at startup.",
-			"fix": "Only one mod can override a class_name script. Disable all but one.\n\n"
-					+ "To fix: mod authors should use extends \"res://path.gd\" instead of "
-					+ "extends " + cn + " to avoid the class_name limitation.",
-			"mods": cn_mods,
-		})
-
-	# 6. Broken extends paths — mod extends a script that doesn't exist anywhere.
-	# Use FileAccess + ResourceLoader to check the live filesystem rather than
-	# relying on directory scanning, which can miss paths outside Scripts/Scenes.
-	for mod_name: String in _mod_script_analysis:
-		for ext_path in (_mod_script_analysis[mod_name]["extends_paths"] as Array):
-			var p: String = ext_path
-			if FileAccess.file_exists(p) or ResourceLoader.exists(p):
-				continue
-			issues.append({
-				"severity": "warning",
-				"title": "Missing Script: " + p.get_file(),
-				"what": mod_name + " extends a script that no longer exists:\n  " + p
-						+ "\n\nThis override will silently fail — " + mod_name + "'s changes "
-						+ "to this script won't apply. The game may have been updated "
-						+ "and this script was renamed or moved.",
-				"fix": mod_name + " needs an update for the current game version. "
-						+ "The mod will still load but features that depend on this "
-						+ "script won't work.",
-				"mods": [mod_name],
-			})
-
-	# 7. base() calls — Godot 3 pattern or removed parent method. Will fail at runtime.
-	for mod_name: String in _mod_script_analysis:
-		if not _mod_script_analysis[mod_name]["calls_base"]: continue
-		issues.append({
-			"severity": "warning",
-			"title": "Uses base(): " + mod_name,
-			"what": mod_name + " calls base() which is not a GDScript 4 built-in.\n\n"
-					+ "If this was meant to call the parent method, it should be super(). "
-					+ "If base() was a method on the game script, it may have been "
-					+ "removed or renamed in the current version.",
-			"fix": "The mod author needs to replace base() with super() or update "
-					+ "for the current game version.",
-			"mods": [mod_name],
-		})
-
-	# 8. Method-level collisions — two mods override the same method on the same script.
-	var method_claims: Dictionary = {}  # extends_path -> {method_name -> Array[mod_name]}
-	for mod_name: String in _mod_script_analysis:
-		var om: Dictionary = _mod_script_analysis[mod_name]["override_methods"]
-		for ext_path: String in om:
-			if not method_claims.has(ext_path):
-				method_claims[ext_path] = {}
-			for method_name in (om[ext_path] as Array):
-				if not (method_claims[ext_path] as Dictionary).has(method_name):
-					(method_claims[ext_path] as Dictionary)[method_name] = []
-				var claimers: Array = (method_claims[ext_path] as Dictionary)[method_name]
-				if mod_name not in claimers:
-					claimers.append(mod_name)
-
-	# Group shared methods by mod pair to avoid spamming one card per method.
-	var method_pair_issues: Dictionary = {}  # "modA|modB" -> {script, methods}
-	for ext_path: String in method_claims:
-		for method_name: String in (method_claims[ext_path] as Dictionary):
-			var method_mods: Array = (method_claims[ext_path] as Dictionary)[method_name]
-			if method_mods.size() <= 1: continue
-			for mi in method_mods.size():
-				for mj in range(mi + 1, method_mods.size()):
-					var mpk: String = str(method_mods[mi]) + "|" + str(method_mods[mj])
-					if not method_pair_issues.has(mpk):
-						method_pair_issues[mpk] = {
-							"mod_a": method_mods[mi], "mod_b": method_mods[mj], "scripts": {}
-						}
-					var mp: Dictionary = method_pair_issues[mpk]
-					if not (mp["scripts"] as Dictionary).has(ext_path):
-						(mp["scripts"] as Dictionary)[ext_path] = []
-					var ml: Array = (mp["scripts"] as Dictionary)[ext_path]
-					if method_name not in ml:
-						ml.append(method_name)
-
-	for mpk: String in method_pair_issues:
-		var mp_data: Dictionary = method_pair_issues[mpk]
-		var mp_mod_a: String = mp_data["mod_a"]
-		var mp_mod_b: String = mp_data["mod_b"]
-		var mp_scripts: Dictionary = mp_data["scripts"]
-		var detail_lines: Array[String] = []
-		for sp: String in mp_scripts:
-			detail_lines.append(sp.get_file() + ": " + ", ".join(mp_scripts[sp]))
-		issues.append({
-			"severity": "warning",
-			"title": "Method Overlap: " + mp_mod_a + " + " + mp_mod_b,
-			"what": "Both mods override the same method(s) on the same script(s):\n  "
-					+ "\n  ".join(detail_lines)
-					+ "\n\nEven with correct super() calls, both mods are modifying the same "
-					+ "function. Changes may interfere depending on load order.",
-			"fix": "Test with both priority orderings to find which works. If neither "
-					+ "works, these mods need author coordination to split their changes "
-					+ "across different methods.",
-			"mods": [mp_mod_a, mp_mod_b],
-		})
-
-	# 9. Stale preload() — mod preloads a path that another mod overrides via file replacement.
-	var all_override_paths: Dictionary = {}
-	for res_path: String in _override_registry:
-		var pl_claims: Array = _override_registry[res_path]
-		if pl_claims.size() >= 1:
-			all_override_paths[res_path] = (pl_claims[pl_claims.size() - 1] as Dictionary)["mod_name"]
-	for mod_name: String in _mod_script_analysis:
-		for pl_path in (_mod_script_analysis[mod_name]["preload_paths"] as Array):
-			if not all_override_paths.has(pl_path): continue
-			var overrider: String = all_override_paths[pl_path]
-			if overrider == mod_name: continue
-			issues.append({
-				"severity": "warning",
-				"title": "Stale preload(): " + (pl_path as String).get_file(),
-				"what": mod_name + " uses preload(\"" + pl_path + "\") but " + overrider
-						+ " replaces that file.\n\npreload() caches at compile time, before "
-						+ "mods mount. " + mod_name + " will get the vanilla version, not "
-						+ overrider + "'s replacement.",
-				"fix": "Replace preload() with load() in " + mod_name + "'s script. "
-						+ "load() runs at runtime and respects mounted mod files.",
-				"mods": [mod_name, overrider],
-			})
-
-	# 10. BAD ZIP — Windows backslash paths in archive. Godot can't resolve them.
-	for bz: Dictionary in _bad_zips:
-		issues.append({
-			"severity": "critical",
-			"title": "Bad Archive: " + bz["mod_name"],
-			"what": bz["mod_name"] + " has " + str(bz["count"])
-					+ " entries with backslash (\\) path separators.\n\n"
-					+ "Godot requires forward slashes. These files will silently fail "
-					+ "to load.\n\nExample: " + bz["example"],
-			"fix": "Re-pack with 7-Zip (which uses forward slashes). This typically "
-					+ "happens when using Windows ZipFile.CreateFromDirectory().",
-			"mods": [bz["mod_name"]],
-		})
-
-	return issues
-
 
 # ─── Override diagnostics (developer mode) ───────────────────────────────────
 
@@ -2031,9 +1346,8 @@ func _audit_override_instances() -> void:
 			_log_debug("Override applied: " + target_path.get_file()
 					+ " — " + str(live_script_paths[target_path]) + " node(s) [" + mod_name + "]")
 		else:
-			_log_warning("Override registered but 0 nodes use " + target_path.get_file()
-					+ " in current scene [" + mod_name + "]")
-			_log_warning("  Target may be spawned later at runtime, or the path may be wrong.")
+			_log_debug("Override registered but 0 nodes use " + target_path.get_file()
+					+ " in current scene — likely spawned at runtime [" + mod_name + "]")
 
 
 func _collect_live_scripts(root_node: Node, out: Dictionary) -> void:
@@ -2059,16 +1373,12 @@ func _print_conflict_summary() -> void:
 	_log_info("Mods loaded:  " + str(_loaded_mod_ids.size()))
 
 	var conflicted_paths: Array[String] = []
-	var critical_conflicts: Array[String] = []
 	for res_path: String in _override_registry:
 		var claims: Array = _override_registry[res_path]
 		if claims.size() > 1:
 			conflicted_paths.append(res_path)
-			if _is_dangerous_path(res_path) or res_path == _database_path:
-				critical_conflicts.append(res_path)
 
 	_log_info("Conflicting resource paths: " + str(conflicted_paths.size()))
-	_log_info("Critical conflicts:         " + str(critical_conflicts.size()))
 
 	if conflicted_paths.is_empty():
 		_log_info("No resource path conflicts — all mods appear compatible.")
@@ -2083,14 +1393,6 @@ func _print_conflict_summary() -> void:
 				var marker := " <-- wins" if claim == winner else ""
 				_log_info("    [" + str(claim["load_index"] + 1) + "] "
 						+ claim["mod_name"] + " via " + claim["archive"] + marker)
-
-	if _database_replaced_by != "":
-		var affected := _find_database_affected_mods()
-		if not affected.is_empty():
-			_log_warning("DATABASE: " + _database_replaced_by + " replaced Database.gd.")
-			_log_warning("  Scene overrides from [" + ", ".join(affected) + "] may not take effect.")
-
-	_analyze_script_conflicts()
 
 	_log_info("============================================")
 	_log_info("")
@@ -2135,8 +1437,12 @@ func _instantiate_autoload(mod_name: String, autoload_name: String, res_path: St
 
 	if resource is PackedScene:
 		var instance: Node = (resource as PackedScene).instantiate()
+		if instance == null:
+			_log_critical("PackedScene.instantiate() returned null: " + autoload_name
+					+ " -> " + res_path + " [" + mod_name + "]")
+			return
 		instance.name = autoload_name
-		get_tree().root.call_deferred("add_child", instance)
+		get_tree().root.add_child(instance)
 		_log_info("Autoload instantiated (scene): " + autoload_name + " [" + mod_name + "]")
 		return
 
@@ -2153,10 +1459,15 @@ func _instantiate_autoload(mod_name: String, autoload_name: String, res_path: St
 			return
 		if inst is Node:
 			(inst as Node).name = autoload_name
-			get_tree().root.call_deferred("add_child", inst as Node)
+			get_tree().root.add_child(inst as Node)
 			_log_info("Autoload instantiated (script): " + autoload_name + " [" + mod_name + "]")
 			return
-		_log_warning("Autoload is not a Node — not added to tree: " + autoload_name)
+		_log_warning("Autoload is not a Node — not added to tree: " + autoload_name
+				+ " [" + mod_name + "]")
+		return
+
+	_log_warning("Autoload is not a PackedScene or GDScript: " + autoload_name
+			+ " -> " + res_path + " [" + mod_name + "]")
 
 
 # ─── Mount helper ─────────────────────────────────────────────────────────────
@@ -2183,18 +1494,31 @@ func _try_mount_pack(path: String) -> bool:
 # ─── mod.txt parser ───────────────────────────────────────────────────────────
 
 func _read_mod_config(path: String) -> ConfigFile:
+	_last_mod_txt_status = "none"
 	var zr := ZIPReader.new()
 	if zr.open(path) != OK:
 		return null
 	if not zr.file_exists("mod.txt"):
+		# Scan for nested mod.txt (e.g. "SubFolder/mod.txt").
+		for f: String in zr.get_files():
+			if f.get_file() == "mod.txt":
+				_last_mod_txt_status = "nested:" + f
+				zr.close()
+				return null
 		zr.close()
 		return null
 	var text := zr.read_file("mod.txt").get_string_from_utf8()
 	zr.close()
-	return _parse_mod_txt(text)
+	var cfg := _parse_mod_txt(text)
+	if cfg == null:
+		_last_mod_txt_status = "parse_error"
+		return null
+	_last_mod_txt_status = "ok"
+	return cfg
 
 
 func _read_mod_config_folder(folder_path: String) -> ConfigFile:
+	_last_mod_txt_status = "none"
 	var mod_txt_path := folder_path.path_join("mod.txt")
 	if not FileAccess.file_exists(mod_txt_path):
 		return null
@@ -2203,7 +1527,12 @@ func _read_mod_config_folder(folder_path: String) -> ConfigFile:
 		return null
 	var text := f.get_as_text()
 	f.close()
-	return _parse_mod_txt(text)
+	var cfg := _parse_mod_txt(text)
+	if cfg == null:
+		_last_mod_txt_status = "parse_error"
+		return null
+	_last_mod_txt_status = "ok"
+	return cfg
 
 
 func _parse_mod_txt(text: String) -> ConfigFile:
@@ -2297,6 +1626,7 @@ func _fetch_latest_modworkshop_versions(ids: Array[int]) -> Dictionary:
 func _download_and_replace_mod(target_path: String, modworkshop_id: int) -> bool:
 	var req := HTTPRequest.new()
 	req.timeout = API_DOWNLOAD_TIMEOUT
+	req.download_body_size_limit = 256 * 1024 * 1024
 	add_child(req)
 	var err := req.request(MODWORKSHOP_DOWNLOAD_URL_TEMPLATE % str(modworkshop_id))
 	if err != OK:

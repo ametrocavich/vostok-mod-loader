@@ -47,22 +47,15 @@ Drop `.vmz` or `.zip` mod files into the `mods` folder. The mod loader finds the
 When you start the game, the mod loader window opens with tabs:
 
 ### Mods
-Lists all detected mods. Use the checkbox to enable or disable each one. The **Priority** spinbox controls load order — higher value loads later and wins any file conflicts. The **Load Order** panel on the right shows the final order in real time.
+Lists all detected mods. Use the checkbox to enable or disable each one. The **Load Order** number controls priority — higher number loads later and wins when mods share files. The **Load Order** panel on the right shows the final order in real time.
+
+A **Developer Mode** checkbox in the toolbar enables extra features for mod creators:
+- **Conflict report** — full log saved to `modloader_conflicts.txt` after each launch
+- **Debug logging** — verbose `[Debug]` lines covering load order and mount state
+- **Loose folder loading** — unzipped mod folders in the mods directory are treated as mods
 
 ### Updates
 If your mods include ModWorkshop update info in their `mod.txt`, click **Check for Updates** to fetch the latest versions and download updates directly.
-
-### Compatibility
-*(Developer mode only)* Click **Run Analysis** to scan your enabled mods without mounting anything. Reports script conflicts, broken override chains, overhaul mod warnings, and Database.gd replacement issues before they affect your game.
-
-### Settings
-Toggle developer mode on/off. Developer mode enables:
-- **Compatibility tab** — static analysis of override conflicts
-- **Compile check** — loads each override script before launch to catch parse errors
-- **Override audit** — warns when `overrideScript()` targets have zero live nodes in the scene tree
-- **Conflict report** — full log saved to `modloader_conflicts.txt` after each launch
-- **Debug logging** — verbose `[Debug]` lines covering load order, override timing, and mount state
-- **Loose folder loading** — unzipped mod folders in the mods directory are treated as mods
 
 Click **Launch Game** (or close the window) when you are ready to play.
 
@@ -91,7 +84,7 @@ modworkshop=12345
 | `name` | Display name shown in the UI |
 | `id` | Unique identifier — duplicates are skipped |
 | `version` | Semver string used for update comparison |
-| `priority` | Load order weight. Higher = loads later = wins conflicts. Default 0. |
+| `priority` | Load order number. Higher = loads later = wins. Default 0. |
 | `[autoload]` | `Name=res://path/to/script.gd` — instantiated as a Node after all mods mount |
 | `[updates] modworkshop` | ModWorkshop mod ID for update checking |
 
@@ -103,8 +96,8 @@ Mods without `mod.txt` are still mounted as resource packs — their files overr
 
 | Format | Notes |
 |--------|-------|
-| `.vmz` | Road to Vostok's native format (renamed zip) |
-| `.zip` | Standard zip — must use forward-slash paths internally |
+| `.vmz` | Road to Vostok's native mod format (renamed zip) |
+| `.zip` | Must be renamed to `.vmz` before use |
 | `.pck` | Godot PCK — mount only, no mod.txt or autoloads |
 
 ---
@@ -119,17 +112,9 @@ After each launch (with developer mode enabled), a full conflict log is written 
 
 ### What the messages mean
 
-- **CONFLICT: {path}** — Two mods shipped the same file. The last-loaded mod wins. Adjust priorities if the wrong one is winning.
-- **Script Conflict: {file}** — Two mods both call `take_over_path()` on the same script. Only the last-loaded version is active.
-- **Chain Broken: {file}** — Mods using `overrideScript()` can stack via `extends + super()`. A mod in the chain is missing `super()` calls, so earlier mods' logic gets dropped.
-- **Database.gd Replaced** — A mod replaced `Database.gd`. Scene overrides from other mods may not take effect due to `preload()` caching.
-- **Likely Incompatible / Overlap** — Two mods modify many of the same files. The more overlap, the less likely they'll work together.
-- **Method Overlap** — Two mods override the same function on the same script. Even with `super()`, their changes may interfere.
-- **Bad Archive: {mod}** — The zip has backslash file paths (common with Windows repacking). Re-pack using 7-Zip.
-- **class_name Crash: {name}** — Two mods override a script with `class_name`. Godot bug [#83542](https://github.com/godotengine/godot/issues/83542) causes a fatal engine crash. Disable all but one.
-- **Missing Script: {file}** — A mod extends a script that no longer exists. The game may have been updated.
-- **Uses base(): {mod}** — A mod calls `base()` which is a Godot 3 pattern. Should be `super()` in Godot 4.
-- **Stale preload(): {file}** — A mod uses `preload()` on a file that another mod replaces. Use `load()` instead.
+- **CONFLICT: {path}** — Two mods shipped the same file. The last-loaded mod wins. Adjust load order if the wrong one is winning.
+- **DATABASE OVERRIDE: {mod}** — A mod replaced `Database.gd`. This is normal for overhaul mods.
+- **BAD ZIP: {mod}** — The archive has broken file paths (common with Windows repacking). Re-download or re-pack using 7-Zip.
 
 ---
 
