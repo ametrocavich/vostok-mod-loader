@@ -87,13 +87,14 @@ static func _mount_previous_session() -> int:
 		any_missing = true
 
 	if any_missing:
-		# Archive gone, no cache. Wipe override.cfg so the next boot is clean.
-		# This boot might log errors for the missing autoloads but won't crash
-		# (Godot 4.6 treats missing [autoload_prepend] scripts as non-fatal).
+		# Archive gone, no cache. Wipe override.cfg autoload sections so the next
+		# boot is clean, but preserve any non-autoload settings ([display], etc.).
 		var exe_dir := OS.get_executable_path().get_base_dir()
-		var f := FileAccess.open(exe_dir.path_join("override.cfg"), FileAccess.WRITE)
+		var cfg_path := exe_dir.path_join("override.cfg")
+		var preserved := _read_preserved_cfg_sections(cfg_path)
+		var f := FileAccess.open(cfg_path, FileAccess.WRITE)
 		if f:
-			f.store_string("[autoload]\nModLoader=\"*" + MODLOADER_RES_PATH + "\"\n")
+			f.store_string("[autoload]\nModLoader=\"*" + MODLOADER_RES_PATH + "\"\n" + preserved)
 			f.close()
 		var state_path := ProjectSettings.globalize_path(PASS_STATE_PATH)
 		if FileAccess.file_exists(state_path):
@@ -1530,12 +1531,40 @@ func _collect_enabled_archive_paths() -> PackedStringArray:
 		paths.append(c["full_path"])
 	return paths
 
+# Reads override.cfg and returns lines for sections OTHER than [autoload] and
+# [autoload_prepend]. Used to preserve user/game settings when rewriting.
+static func _read_preserved_cfg_sections(cfg_path: String) -> String:
+	if not FileAccess.file_exists(cfg_path):
+		return ""
+	var f := FileAccess.open(cfg_path, FileAccess.READ)
+	if f == null:
+		return ""
+	var text := f.get_as_text()
+	f.close()
+	var result := PackedStringArray()
+	var in_autoload_section := false
+	for line in text.split("\n"):
+		var stripped := line.strip_edges()
+		if stripped.begins_with("["):
+			var section := stripped.to_lower()
+			in_autoload_section = section == "[autoload]" or section == "[autoload_prepend]"
+			if not in_autoload_section:
+				result.append(line)
+			continue
+		if not in_autoload_section and stripped != "":
+			result.append(line)
+	var preserved := "\n".join(result).strip_edges()
+	if preserved.is_empty():
+		return ""
+	return "\n" + preserved + "\n"
+
 # Uses FileAccess instead of ConfigFile (which erases null keys).
 # ModLoader listed last in [autoload_prepend] = loaded first (reverse insertion).
 func _write_override_cfg(prepend_autoloads: Array[Dictionary]) -> Error:
 	var exe_dir := OS.get_executable_path().get_base_dir()
 	var path := exe_dir.path_join("override.cfg")
 	var tmp := path + ".tmp"
+	var preserved := _read_preserved_cfg_sections(path)
 	var lines := PackedStringArray()
 	if prepend_autoloads.size() > 0:
 		lines.append("[autoload_prepend]")
@@ -1550,7 +1579,7 @@ func _write_override_cfg(prepend_autoloads: Array[Dictionary]) -> Error:
 	var f := FileAccess.open(tmp, FileAccess.WRITE)
 	if f == null:
 		return FileAccess.get_open_error()
-	f.store_string("\n".join(lines) + "\n")
+	f.store_string("\n".join(lines) + "\n" + preserved)
 	f.close()
 	# Windows DirAccess.rename() won't overwrite — remove target first.
 	if FileAccess.file_exists(path):
@@ -1656,11 +1685,13 @@ func _clean_stale_cache() -> void:
 
 func _restore_clean_override_cfg() -> void:
 	var exe_dir := OS.get_executable_path().get_base_dir()
-	var f := FileAccess.open(exe_dir.path_join("override.cfg"), FileAccess.WRITE)
+	var path := exe_dir.path_join("override.cfg")
+	var preserved := _read_preserved_cfg_sections(path)
+	var f := FileAccess.open(path, FileAccess.WRITE)
 	if f == null:
 		_log_critical("Cannot write override.cfg — game dir may be read-only: " + exe_dir)
 		return
-	f.store_string("[autoload]\nModLoader=\"*" + MODLOADER_RES_PATH + "\"\n")
+	f.store_string("[autoload]\nModLoader=\"*" + MODLOADER_RES_PATH + "\"\n" + preserved)
 	f.close()
 
 func _clear_restart_counter() -> void:
