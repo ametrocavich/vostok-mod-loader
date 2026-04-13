@@ -148,7 +148,7 @@ func _ready() -> void:
 	_has_loaded = true
 	await get_tree().process_frame
 	if "--modloader-restart" in OS.get_cmdline_user_args():
-		_run_pass_2()
+		await _run_pass_2()
 	else:
 		await _run_pass_1()
 
@@ -179,7 +179,7 @@ func _run_pass_1() -> void:
 
 	if new_hash == old_hash and not new_hash.is_empty():
 		_log_info("Mod state unchanged — skipping restart")
-		_finish_with_existing_mounts()
+		await _finish_with_existing_mounts()
 		return
 
 	if archive_paths.size() > 0:
@@ -190,10 +190,10 @@ func _run_pass_1() -> void:
 		var err := _write_override_cfg(sections.prepend)
 		if err != OK:
 			_log_critical("Failed to write override.cfg (error %d) — single-pass fallback" % err)
-			_finish_single_pass()
+			await _finish_single_pass()
 			return
 		if _write_pass_state(archive_paths, new_hash) != OK:
-			_finish_single_pass()
+			await _finish_single_pass()
 			return
 		OS.set_restart_on_exit(true, ["--", "--modloader-restart"])
 		get_tree().quit()
@@ -203,7 +203,7 @@ func _run_pass_1() -> void:
 	if FileAccess.file_exists(PASS_STATE_PATH):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(PASS_STATE_PATH))
 		_restore_clean_override_cfg()
-	_finish_single_pass()
+	await _finish_single_pass()
 
 func _finish_with_existing_mounts() -> void:
 	for entry in _pending_autoloads:
@@ -1078,6 +1078,8 @@ func check_updates_for_ui(status_info: Dictionary, add_log: Callable, check_btn:
 				check_btn.disabled = true
 				var ok := await download_and_replace_mod(full_path, mw_id)
 				if not is_instance_valid(check_btn):
+					return
+				if not is_instance_valid(dl_btn):
 					return
 				check_btn.disabled = false
 				if ok:
