@@ -174,7 +174,6 @@ static func _mount_previous_session() -> int:
 	_write_filescope_log(log_lines)
 	return count
 
-## Write diagnostic log from static/file-scope context (can't use _log_info).
 static func _write_filescope_log(lines: PackedStringArray) -> void:
 	for line in lines:
 		print(line)
@@ -184,9 +183,6 @@ static func _write_filescope_log(lines: PackedStringArray) -> void:
 			f.store_line(line)
 		f.close()
 
-# Called from _mount_previous_session() when a game update is detected (exe mtime
-# changed). Removes the hook pack ZIP and vanilla source cache so Pass 1 can
-# regenerate hooks from the updated game scripts.
 static func _static_wipe_hook_cache() -> void:
 	var pack_path := ProjectSettings.globalize_path(HOOK_PACK_PATH)
 	if FileAccess.file_exists(pack_path):
@@ -275,10 +271,6 @@ func _run_pass_1() -> void:
 	var sections := _build_autoload_sections()
 	var archive_paths := _collect_enabled_archive_paths()
 
-	# Compute state hash BEFORE generating hook pack. The hash includes "h:" entries
-	# from _hook_registry (populated by load_all_mods), mod archive paths+mtimes, and
-	# autoload sections. The hook pack is a derived artifact — its content is fully
-	# determined by these inputs, so we don't need it to exist for the hash.
 	var new_hash := _compute_state_hash(archive_paths, sections.prepend)
 	var old_hash := ""
 	var state_cfg := ConfigFile.new()
@@ -290,9 +282,6 @@ func _run_pass_1() -> void:
 		await _finish_with_existing_mounts()
 		return
 
-	# State changed — generate hook pack if any mod declared [hooks].
-	# Must run AFTER load_all_mods() so vanilla scripts are readable via load().
-	# Hook pack is appended LAST to archive_paths so it wins over everything.
 	var hook_pack_path := _generate_hook_pack()
 	if hook_pack_path != "":
 		if not ProjectSettings.load_resource_pack(hook_pack_path):
@@ -303,7 +292,6 @@ func _run_pass_1() -> void:
 	elif not _hook_script_paths.is_empty():
 		_log_critical("[Hooks] Hook pack generation failed — hooks will not work")
 
-	# Clean up stale hook artifacts if no hooks are needed this session.
 	if _hook_script_paths.is_empty():
 		var pack_file := ProjectSettings.globalize_path(HOOK_PACK_PATH)
 		if FileAccess.file_exists(pack_file):
@@ -1436,12 +1424,8 @@ func _compare_load_order(a: Dictionary, b: Dictionary) -> bool:
 # Mods declare hooks in mod.txt [hooks]; the preprocessor rewrites vanilla methods
 # with dispatch wrappers. Mods register callables via add_hook() at runtime.
 
-## Register a hook callable for a vanilla method. Called by mod autoloads in _ready().
-## before=true: fires before the vanilla method (return true from callback to skip it).
-##   Before-hooks share the args array — modifications are visible to subsequent hooks.
-## before=false: fires after (callback receives (instance, args, result_wrapper)).
-##   result_wrapper is [return_value] for non-void methods, [] for void.
-## The method must be declared in mod.txt [hooks] for the imposter to exist.
+# before=true: fires before vanilla (return true to skip). before=false: fires after.
+# Method must be declared in mod.txt [hooks].
 func add_hook(script_path: String, method_name: String, callback: Callable, before: bool = true) -> void:
 	var key := script_path + "::" + method_name
 	if not _hook_script_paths.has(script_path):
@@ -1454,14 +1438,11 @@ func add_hook(script_path: String, method_name: String, callback: Callable, befo
 		return  # Already registered (guard against double _ready() from scene reloads)
 	_hook_registry[key][list_key].append(callback)
 
-# Called by generated imposter functions. Returns true if any hook wants to skip vanilla.
 func _call_before_hooks(script_path: String, method_name: String, instance: Object, args: Array) -> bool:
 	var key := script_path + "::" + method_name
 	if not _hook_registry.has(key):
 		return false
-	# Reentrancy guard: if a hook callback calls the same hooked method, skip hooks
-	# to prevent infinite recursion. The vanilla method runs directly instead.
-	var depth: int = _hook_call_depth.get(key, 0)
+	var depth: int = _hook_call_depth.get(key, 0)  # reentrancy guard
 	if depth > 0:
 		return false
 	_hook_call_depth[key] = depth + 1
@@ -1476,12 +1457,10 @@ func _call_before_hooks(script_path: String, method_name: String, instance: Obje
 	_hook_call_depth[key] = depth
 	return skip
 
-# Called by generated imposter functions. result is [] for void, [value] otherwise.
 func _call_after_hooks(script_path: String, method_name: String, instance: Object, args: Array, result: Array) -> void:
 	var key := script_path + "::" + method_name
 	if not _hook_registry.has(key):
 		return
-	# Reentrancy guard shared with _call_before_hooks via _hook_call_depth.
 	var depth: int = _hook_call_depth.get(key, 0)
 	if depth > 0:
 		return
@@ -1492,8 +1471,6 @@ func _call_after_hooks(script_path: String, method_name: String, instance: Objec
 		callable.call(instance, args, result)
 	_hook_call_depth[key] = depth
 
-# Populates _class_name_to_path from the engine's global_script_class_cache.cfg.
-# Used for hook validation and take_over_path safety warnings.
 func _build_class_name_lookup() -> void:
 	_class_name_to_path.clear()
 	var cache := ConfigFile.new()
@@ -1509,9 +1486,6 @@ func _build_class_name_lookup() -> void:
 		_log_warning("Could not load global_script_class_cache.cfg — using hardcoded fallback")
 		_class_name_to_path = _get_hardcoded_class_map()
 
-# Fallback for when global_script_class_cache.cfg is unavailable.
-# 57 entries — extracted from RTV decompiled scripts.
-# Notable: Flash -> MuzzleFlash.gd, Knife -> KnifeRig.gd.
 func _get_hardcoded_class_map() -> Dictionary:
 	return {
 		"AIWeaponData": "res://Scripts/AIWeaponData.gd",
@@ -1574,36 +1548,26 @@ func _get_hardcoded_class_map() -> Dictionary:
 		"WorldSave": "res://Scripts/WorldSave.gd",
 	}
 
-# Vanilla source cache — the previous session's hook pack may be file-scope-mounted,
-# making load().source_code return the hooked version. This cache stores the original
-# un-hooked source to prevent double-processing on subsequent launches.
-
 func _read_vanilla_source(script_path: String) -> String:
-	# The previous session's hook pack may already be mounted (via file-scope
-	# _mount_previous_session), so load() could return the HOOKED version.
-	# The vanilla cache stores the original, un-hooked source.
+	# Hook pack may be file-scope-mounted, so load() could return the hooked
+	# version.  The vanilla cache stores the original source.
 	var cache_file := VANILLA_CACHE_DIR.path_join(script_path.trim_prefix("res://"))
 	if FileAccess.file_exists(cache_file):
 		var cached := FileAccess.get_file_as_string(cache_file)
 		if not cached.is_empty():
 			var live := load(script_path) as GDScript
 			if live and ("func _vanilla_" not in live.source_code):
-				# Live source is un-hooked (no hook pack, or pack doesn't cover
-				# this script). If it differs from cache, the game was updated.
-				if live.source_code != cached:
+				if live.source_code != cached:  # game updated
 					_save_vanilla_source(script_path, live.source_code)
 					return live.source_code
 				return cached
-			# Live source IS hooked (previous hook pack mounted). Trust cache.
-			return cached
+			return cached  # live is hooked — trust cache
 
-	# No cache — first time hooking this script.
 	var script := load(script_path) as GDScript
 	if script == null or script.source_code.is_empty():
 		return ""
 	var source := script.source_code
-	if "func _vanilla_" in source:
-		# Hook pack is mounted but no cache exists (manual deletion?).
+	if "func _vanilla_" in source:  # hook pack mounted but cache missing
 		_log_critical("[Hooks] Cannot read vanilla source for %s — delete %s and restart"
 				% [script_path, ProjectSettings.globalize_path(HOOK_PACK_PATH)])
 		return ""
@@ -1618,10 +1582,6 @@ func _save_vanilla_source(script_path: String, source: String) -> void:
 	if f:
 		f.store_string(source)
 		f.close()
-
-# Script preprocessor — renames vanilla methods to _vanilla_<name> and appends
-# imposter wrappers that dispatch to registered hooks. Uses reflection for method
-# metadata (params, types, flags) and source text for body boundaries.
 
 func _preprocess_script(script_path: String, hooked_methods: Array[String]) -> String:
 	var source := _read_vanilla_source(script_path)
@@ -1658,7 +1618,6 @@ func _preprocess_script(script_path: String, hooked_methods: Array[String]) -> S
 			else:
 				_log_warning("[Hooks] Could not extract method info for: %s::%s" % [script_path, m["name"]])
 
-	# Warn about declared methods that weren't found (likely typos in mod.txt).
 	for hm in hooked_methods:
 		if hm not in method_info:
 			_log_warning("[Hooks] Method '%s' not found in %s — check mod.txt [hooks]" % [hm, script_path])
@@ -1667,7 +1626,6 @@ func _preprocess_script(script_path: String, hooked_methods: Array[String]) -> S
 		_log_warning("[Hooks] No hookable methods found in: " + script_path)
 		return ""
 
-	# Process methods from bottom to top so renaming doesn't shift line numbers.
 	var sorted_methods := method_info.keys()
 	sorted_methods.sort_custom(func(a, b): return method_info[a]["line"] > method_info[b]["line"])
 
@@ -1676,10 +1634,7 @@ func _preprocess_script(script_path: String, hooked_methods: Array[String]) -> S
 		var info = method_info[method_name]
 		lines[info["line"]] = lines[info["line"]].replace(
 			"func " + method_name + "(", "func _vanilla_" + method_name + "(")
-		# Rewrite bare super() calls in the renamed method's body.
-		# super() in a method named _vanilla_Foo would try to call the parent's
-		# _vanilla_Foo (which doesn't exist). Rewrite to super.Foo().
-		# Skip comment lines and avoid corrupting string literals.
+		# Rewrite super() → super.<method>() in the renamed body.
 		for i in range(info["body_start"], info["body_end"]):
 			var line_str: String = lines[i]
 			var stripped_line := line_str.strip_edges()
@@ -1687,7 +1642,6 @@ func _preprocess_script(script_path: String, hooked_methods: Array[String]) -> S
 				continue  # skip comment lines
 			if "super(" not in line_str:
 				continue  # fast path — no super() call on this line
-			# Only replace super( that appears before any # comment on the line.
 			var comment_pos := line_str.find("#")
 			var super_pos := line_str.find("super(")
 			if comment_pos >= 0 and super_pos > comment_pos:
@@ -1700,21 +1654,12 @@ func _preprocess_script(script_path: String, hooked_methods: Array[String]) -> S
 		result += "\n\n" + imp
 	return result
 
-# Extracts line boundaries, parameter names, and flags for a single method.
-# Uses reflection (get_script_method_list data) for params/types/flags, and
-# source scanning for line boundaries (get_member_line returns -1 in exports).
-# Returns null if the method is unhookable (inner class, getter/setter, etc.).
 func _extract_method_info(script: GDScript, lines: Array, method_dict: Dictionary) -> Variant:
 	var method_name: String = method_dict["name"]
 
-	# get_member_line() is gated behind TOOLS_ENABLED — returns -1 in export builds.
 	var start_line: int = script.get_member_line(method_name) - 1
 	if start_line < 0 or start_line >= lines.size():
-		# get_member_line() returns -1 in export builds, or may return a line
-		# from a hooked source when the hook pack is file-scope-mounted (the
-		# imposter appended at the bottom would be past vanilla line count).
-		# Fall back to scanning the vanilla source text.
-		start_line = -1
+		start_line = -1  # fallback: scan source text
 		for i in lines.size():
 			var stripped: String = lines[i].strip_edges()
 			if stripped.begins_with("func " + method_name + "(") \
@@ -1726,21 +1671,16 @@ func _extract_method_info(script: GDScript, lines: Array, method_dict: Dictionar
 
 	var sig_line: String = lines[start_line]
 
-	# Skip inner-class methods (indented func declarations).
 	if sig_line.begins_with("\t") or sig_line.begins_with(" "):
-		return null
+		return null  # inner class method
 
-	# Skip property getters/setters (declared as "var x: Type: set = Foo").
-	# Only check lines starting with "var " or "@export" to avoid false positives
-	# from comments or partial name matches.
 	for check_line: String in lines:
 		var stripped_check := check_line.strip_edges()
 		if not stripped_check.begins_with("var ") and not stripped_check.begins_with("@export"):
 			continue
 		if (": set = " + method_name) in check_line or (": get = " + method_name) in check_line:
-			return null
+			return null  # getter/setter
 
-	# Find body end by scanning for the next line at same or lower indent level.
 	var body_start: int = start_line + 1
 	var body_end := lines.size()
 	var base_indent := _get_indent_level(sig_line)
@@ -1752,18 +1692,15 @@ func _extract_method_info(script: GDScript, lines: Array, method_dict: Dictionar
 			body_end = i
 			break
 
-	# Parameter names from reflection (reliable in export builds).
 	var param_names: Array[String] = []
 	for arg in method_dict["args"]:
 		param_names.append(arg["name"])
 
-	# Detect async by scanning for "await " in the method body.
 	var body_text := ""
 	for i in range(body_start, body_end):
 		body_text += lines[i] + "\n"
 	var is_async := "await " in body_text
 
-	# Return type: "void" (explicit annotation, lifecycle, or _init), "typed" (non-Nil), "" (untyped).
 	var return_type := ""
 	var ret = method_dict["return"]
 	if method_name == "_init" or method_name in LIFECYCLE_METHODS:
@@ -1796,45 +1733,27 @@ func _get_indent_level(line: String) -> int:
 			break
 	return count
 
-# Generates the wrapper function that replaces the original method name.
-# Dispatches to before-hooks, calls _vanilla_<method>, then after-hooks.
-# Preserves the original signature verbatim (default values, type annotations).
 func _generate_imposter(script_path: String, method_name: String, info: Dictionary) -> String:
 	var lines := PackedStringArray()
 	lines.append(info["signature_line"])
 
-	# Pack arguments into an array so before-hooks can modify them.
 	var args_str := "[" + ", ".join(info["param_names"]) + "]"
 	lines.append("\tvar __hook_args := " + args_str)
 
-	# Before-hooks: return true to skip the vanilla method entirely.
 	var self_ref := "null" if info["is_static"] else "self"
 	lines.append('\tvar __skip := ModLoader._call_before_hooks("%s", "%s", %s, __hook_args)' \
 			% [script_path, method_name, self_ref])
 
-	if info["return_type"] == "void":
-		lines.append("\tif __skip: return")
-	elif info["return_type"] == "":
-		# Untyped return — null is safe.
-		lines.append("\tif __skip: return")
-	else:
-		# Typed return — a before-hook that skips must accept a potentially
-		# wrong default.  The hook should set a proper return via the args/result
-		# mechanism if it cares about the return value.
-		lines.append("\tif __skip: return")
+	lines.append("\tif __skip: return")
 
-	# Unpack potentially-modified args back into local variables.
 	for i in info["param_names"].size():
 		lines.append("\t%s = __hook_args[%d]" % [info["param_names"][i], i])
 
-	# Call the renamed vanilla method.
 	var call_args := ", ".join(info["param_names"])
 	var vanilla_call := "_vanilla_" + method_name + "(" + call_args + ")"
 	if info["is_async"]:
 		vanilla_call = "await " + vanilla_call
 
-	# After-hooks: receive (instance, args, result_wrapper).
-	# result_wrapper is a single-element array so after-hooks can modify the return.
 	if info["return_type"] == "void":
 		lines.append("\t" + vanilla_call)
 		lines.append('\tModLoader._call_after_hooks("%s", "%s", %s, __hook_args, [])' \
@@ -1847,8 +1766,6 @@ func _generate_imposter(script_path: String, method_name: String, info: Dictiona
 		lines.append("\treturn __result_wrapper[0]")
 
 	return "\n".join(lines)
-
-# Hook pack generation — writes transformed scripts to a ZIP mounted via load_resource_pack
 
 func _generate_hook_pack() -> String:
 	if _hook_script_paths.is_empty():
@@ -1951,9 +1868,6 @@ func scan_and_register_archive_claims(archive_path: String, mod_name: String,
 
 		var res_path := _normalize_to_res_path(f)
 		if res_path == "" and f.ends_with(".remap"):
-			# Exported mods compile .tscn/.tres to .scn/.res and leave .remap
-			# redirects.  Register the original path so autoload validation
-			# and conflict detection recognize it.
 			res_path = _normalize_to_res_path(f.trim_suffix(".remap"))
 		if res_path == "":
 			continue
@@ -2073,8 +1987,6 @@ func _scan_gd_source(text: String, analysis: Dictionary) -> void:
 			if func_name not in (analysis["lifecycle_no_super"] as Array):
 				(analysis["lifecycle_no_super"] as Array).append(func_name)
 
-# Warn about class_name conflicts and take_over_path on class_name scripts.
-# Runs on every .gd file in every mod archive (not gated by developer mode).
 func _check_class_name_safety(text: String, file_path: String, mod_name: String) -> void:
 	for m_cn in _re_class_name.search_all(text):
 		var cn := m_cn.get_string(1)
@@ -2152,10 +2064,6 @@ func _build_autoload_sections() -> Dictionary:
 	for entry in _pending_autoloads:
 		if entry.get("is_early", false):
 			var path: String = entry["path"]
-			# Godot may open all [autoload_prepend] scripts before any file-scope
-			# code runs, so scripts inside mod archives won't be found yet.  If the
-			# script only exists in a mounted archive (not on disk / game PCK),
-			# extract it to disk so Godot can open it at startup.
 			var disk_path := _ensure_early_autoload_on_disk(path, entry.get("mod_name", ""))
 			prepend.append({ "name": entry["name"], "path": disk_path })
 		else:
@@ -2192,23 +2100,20 @@ func _clean_early_autoload_dir() -> void:
 			DirAccess.remove_absolute(full)
 	dir.list_dir_end()
 
-## If an early autoload script lives only inside a mod archive, extract it to
-## disk so Godot can open it before ModLoader's file-scope archive mounting
-## runs.  Scripts already on disk (or in the game PCK) are returned as-is.
+# Extract an early autoload .gd script to disk if it only exists inside a
+# mounted archive.  Godot opens [autoload_prepend] scripts before file-scope
+# code runs, so archive-only scripts must be on disk for the restart.
+# Scene autoloads (.tscn) are handled by file-scope mounting — returned as-is.
 func _ensure_early_autoload_on_disk(res_path: String, mod_name: String) -> String:
-	# Already on disk?  Great — use it directly.
 	var global := ProjectSettings.globalize_path(res_path)
 	if FileAccess.file_exists(global):
 		return res_path
 
-	# Try loading via ResourceLoader (works for mounted archives + game PCK).
+	# Only .gd scripts need extraction — scenes resolve via file-scope mount.
 	var script := load(res_path) as GDScript
 	if script == null or not script.has_source_code():
-		_log_warning("Early autoload '%s' not found — cannot extract to disk [%s]"
-				% [res_path, mod_name])
-		return res_path  # let it fail visibly on restart
+		return res_path
 
-	# Extract to disk.
 	var rel := res_path.trim_prefix("res://")
 	var disk_dir := ProjectSettings.globalize_path(EARLY_AUTOLOAD_DIR)
 	var target := disk_dir.path_join(rel)
@@ -2551,25 +2456,16 @@ func _try_mount_pack(path: String) -> bool:
 		return true
 	return false
 
-## Scan a mounted archive for .remap files and resolve them via take_over_path().
-##
-## When mods are exported from the Godot editor, .tscn/.tres are compiled to
-## .scn/.res and .remap files redirect the original paths.  load_resource_pack()
-## does NOT follow .remap files, so preload("res://Mod/Item.tscn") fails even
-## though the archive contains Item.tscn.remap → exported Item.scn.
-## We read each .remap, load the target resource, and call take_over_path() so
-## the original path resolves correctly.
+# Resolve .remap files in a mounted archive so preload()/load() work with
+# the original .tscn/.tres paths (load_resource_pack doesn't follow remaps).
 func _resolve_remaps(archive_path: String) -> void:
 	var remap_count := _static_resolve_remaps(archive_path)
 	if remap_count > 0:
 		_log_debug("  Resolved %d .remap file(s)" % remap_count)
 
-## Static version usable from file-scope _mount_previous_session().
 static func _static_resolve_remaps(archive_path: String) -> int:
 	var zr := ZIPReader.new()
-	var open_path := archive_path
-	# VMZ files may have been copied to a .zip cache — try the original first.
-	if zr.open(open_path) != OK:
+	if zr.open(archive_path) != OK:
 		return 0
 
 	var count := 0
@@ -2585,11 +2481,9 @@ static func _static_resolve_remaps(archive_path: String) -> int:
 		var target: String = cfg.get_value("remap", "path", "")
 		if target.is_empty():
 			continue
-		# Build the original res:// path (the path without .remap suffix).
 		var original_path := f.trim_suffix(".remap")
 		if not original_path.begins_with("res://"):
 			original_path = "res://" + original_path
-		# Load the compiled resource and make it available at the original path.
 		var res: Resource = load(target)
 		if res != null:
 			res.take_over_path(original_path)
