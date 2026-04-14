@@ -322,6 +322,7 @@ func _run_pass_1() -> void:
 	await _finish_single_pass()
 
 func _finish_with_existing_mounts() -> void:
+	_apply_hook_pack_scripts()
 	for entry in _pending_autoloads:
 		if get_tree().root.has_node(entry["name"]):
 			_log_info("  Autoload '%s' already in tree — skipped" % entry["name"])
@@ -362,6 +363,7 @@ func _finish_single_pass() -> void:
 
 func _run_pass_2() -> void:
 	_log_info("Pass 2 — %d archive(s) mounted at file-scope" % _file_scope_mounts)
+	_apply_hook_pack_scripts()
 	_clear_restart_counter()
 	_compile_regex()
 	_build_class_name_lookup()
@@ -1420,6 +1422,53 @@ func _compare_load_order(a: Dictionary, b: Dictionary) -> bool:
 	# Filename tiebreaker for stable sort.
 	return (a["file_name"] as String).to_lower() < (b["file_name"] as String).to_lower()
 
+# Apply hook pack scripts on Pass 2.  load_resource_pack() with text .gd files
+# does NOT override binary-tokenized .gd from the game PCK.  So we read the
+# hooked source from the vanilla cache + imposter functions, create a new GDScript,
+# and use take_over_path() to replace the cached binary version — same technique
+# the Godot Mod Loader uses for script extensions.
+func _apply_hook_pack_scripts() -> void:
+	var hook_pack := ProjectSettings.globalize_path(HOOK_PACK_PATH)
+	if not FileAccess.file_exists(hook_pack):
+		return
+
+	# Read the transformed scripts from the hook pack ZIP.
+	var zr := ZIPReader.new()
+	if zr.open(hook_pack) != OK:
+		_log_warning("[Hooks] Could not open hook pack for take_over_path application")
+		return
+
+	var applied := 0
+	for file_path in zr.get_files():
+		if not file_path.ends_with(".gd"):
+			continue
+		var res_path := "res://" + file_path
+		var source := zr.read_file(file_path).get_string_from_utf8()
+		if source.is_empty():
+			continue
+
+		# Strip class_name to avoid "hides a global script class" crash.
+		# The class is already registered from the game's PCK — we just need
+		# the script to compile and take over the path.
+		var cn_regex := RegEx.new()
+		cn_regex.compile("(?m)^class_name\\s+.*$")
+		var stripped_source := cn_regex.sub(source, "")
+
+		var new_script := GDScript.new()
+		new_script.source_code = stripped_source
+		var err := new_script.reload()
+		if err != OK:
+			_log_critical("[Hooks] take_over_path: failed to compile %s (error %d)" % [res_path, err])
+			continue
+
+		new_script.take_over_path(res_path)
+		applied += 1
+		_log_info("[Hooks] take_over_path: applied %s" % res_path)
+
+	zr.close()
+	if applied > 0:
+		_log_info("[Hooks] Applied %d hooked script(s) via take_over_path" % applied)
+
 # Script hooks — lets multiple mods modify methods on vanilla class_name scripts.
 # Mods declare hooks in mod.txt [hooks]; the preprocessor rewrites vanilla methods
 # with dispatch wrappers. Mods register callables via add_hook() at runtime.
@@ -1548,6 +1597,407 @@ func _get_hardcoded_class_map() -> Dictionary:
 		"WorldSave": "res://Scripts/WorldSave.gd",
 	}
 
+# ─── GDSC Binary Token Detokenizer ───────────────────────────────────────────
+# Reconstructs GDScript source from Godot's binary-tokenized .gdc format (GDSC).
+# Used when the game exports with binary tokenization and load().source_code is
+# empty.  Only called on-demand for scripts listed in mod [hooks] sections.
+# Supports TOKENIZER_VERSION 100 (Godot 4.0-4.4) and 101 (Godot 4.5-4.6).
+
+const _GDSC_MAGIC := "GDSC"
+const _GDSC_TOKEN_BITS := 8
+const _GDSC_TOKEN_MASK := (1 << (_GDSC_TOKEN_BITS - 1)) - 1  # 0x7F
+const _GDSC_TOKEN_BYTE_MASK := 0x80
+
+# Token type indices — Godot 4.5-4.6 / TOKENIZER_VERSION 101.
+# 0=EMPTY 1=ANNOTATION 2=IDENTIFIER 3=LITERAL
+# 4-9: < <= > >= == !=   10-15: and or not && || !
+# 16-21: & | ~ ^ << >>   22-27: + - * ** / %
+# 28-39: = += -= *= **= /= %= <<= >>= &= |= ^=
+# 40-50: if elif else for while break continue pass return match when
+# 51-72: as assert await breakpoint class class_name const enum extends func
+#        in is namespace preload self signal static super trait var void yield
+# 73-78: [ ] { } ( )   79-87: , ; . .. ... : $ -> _
+# 88-90: NEWLINE INDENT DEDENT   91-94: PI TAU INF NAN   99: EOF
+#
+# Raw int keys are used in dictionaries below because Godot does not allow
+# enum references in const dictionary initializers.
+const _TOKEN_TEXT := {
+	4: "<", 5: "<=", 6: ">", 7: ">=", 8: "==", 9: "!=",
+	10: "and", 11: "or", 12: "not", 13: "&&", 14: "||", 15: "!",
+	16: "&", 17: "|", 18: "~", 19: "^", 20: "<<", 21: ">>",
+	22: "+", 23: "-", 24: "*", 25: "**", 26: "/", 27: "%",
+	28: "=", 29: "+=", 30: "-=", 31: "*=", 32: "**=", 33: "/=",
+	34: "%=", 35: "<<=", 36: ">>=", 37: "&=", 38: "|=", 39: "^=",
+	40: "if", 41: "elif", 42: "else", 43: "for", 44: "while",
+	45: "break", 46: "continue", 47: "pass", 48: "return", 49: "match", 50: "when",
+	51: "as", 52: "assert", 53: "await", 54: "breakpoint", 55: "class",
+	56: "class_name", 57: "const", 58: "enum", 59: "extends", 60: "func",
+	61: "in", 62: "is", 63: "namespace", 64: "preload", 65: "self",
+	66: "signal", 67: "static", 68: "super", 69: "trait", 70: "var",
+	71: "void", 72: "yield",
+	73: "[", 74: "]", 75: "{", 76: "}", 77: "(", 78: ")",
+	79: ",", 80: ";", 81: ".", 82: "..", 83: "...",
+	84: ":", 85: "$", 86: "->", 87: "_",
+	91: "PI", 92: "TAU", 93: "INF", 94: "NAN",
+	96: "`", 97: "?",
+}
+
+# Tokens that want a space BEFORE them (binary operators, keywords after exprs).
+const _SPACE_BEFORE := {
+	4: 1, 5: 1, 6: 1, 7: 1, 8: 1, 9: 1,      # < <= > >= == !=
+	10: 1, 11: 1, 12: 1, 13: 1, 14: 1,         # and or not && ||
+	16: 1, 17: 1, 19: 1, 20: 1, 21: 1,          # & | ^ << >>
+	22: 1, 23: 1, 24: 1, 25: 1, 26: 1, 27: 1,  # + - * ** / %
+	28: 1, 29: 1, 30: 1, 31: 1, 32: 1, 33: 1,  # = += -= *= **= /=
+	34: 1, 35: 1, 36: 1, 37: 1, 38: 1, 39: 1,  # %= <<= >>= &= |= ^=
+	40: 1, 42: 1, 51: 1, 61: 1, 62: 1,          # if else as in is
+	86: 1,                                        # ->
+}
+
+# Tokens that want a space AFTER them.
+const _SPACE_AFTER := {
+	79: 1, 80: 1, 86: 1,                          # , ; ->
+	4: 1, 5: 1, 6: 1, 7: 1, 8: 1, 9: 1,          # < <= > >= == !=
+	10: 1, 11: 1, 12: 1, 13: 1, 14: 1, 15: 1,    # and or not && || !
+	16: 1, 17: 1, 19: 1, 20: 1, 21: 1,            # & | ^ << >>
+	22: 1, 23: 1, 24: 1, 25: 1, 26: 1, 27: 1,    # + - * ** / %
+	28: 1, 29: 1, 30: 1, 31: 1, 32: 1, 33: 1,    # = += -= *= **= /=
+	34: 1, 35: 1, 36: 1, 37: 1, 38: 1, 39: 1,    # %= <<= >>= &= |= ^=
+	84: 1,                                          # :
+	1: 1,                                           # @ annotations
+	# All keywords (40-72) need space after:
+	40: 1, 41: 1, 42: 1, 43: 1, 44: 1,            # if elif else for while
+	45: 1, 46: 1, 47: 1, 48: 1, 49: 1, 50: 1,    # break continue pass return match when
+	51: 1, 52: 1, 53: 1, 54: 1, 55: 1,            # as assert await breakpoint class
+	56: 1, 57: 1, 58: 1, 59: 1, 60: 1,            # class_name const enum extends func
+	61: 1, 62: 1, 63: 1, 64: 1, 65: 1,            # in is namespace preload self
+	66: 1, 67: 1, 68: 1, 69: 1, 70: 1,            # signal static super trait var
+	71: 1, 72: 1,                                   # void yield
+}
+
+func _detokenize_script(script_path: String) -> String:
+	# Try multiple methods to read raw bytes — FileAccess on res:// can fail for
+	# PCK-embedded files depending on the container format (RSCC, encryption, etc.).
+	var raw := PackedByteArray()
+
+	# Method 1: FileAccess.open() on res:// path directly.
+	var f := FileAccess.open(script_path, FileAccess.READ)
+	if f:
+		raw = f.get_buffer(f.get_length())
+		f.close()
+
+	# Method 2: Try the globalized path.
+	if raw.is_empty():
+		var glob_path := ProjectSettings.globalize_path(script_path)
+		f = FileAccess.open(glob_path, FileAccess.READ)
+		if f:
+			raw = f.get_buffer(f.get_length())
+			f.close()
+
+	# Method 3: Try loading as a generic Resource and check if it has raw data.
+	# (GDScript objects loaded from tokenized files don't expose raw bytes, but
+	# we can try get_file_as_bytes with .gdc extension in case Godot mapped it.)
+	if raw.is_empty():
+		var gdc_path := script_path.replace(".gd", ".gdc")
+		raw = FileAccess.get_file_as_bytes(gdc_path)
+
+	if raw.is_empty():
+		_log_warning("[Detokenize] Cannot read bytes from: %s (tried res://, globalized, .gdc)" % script_path)
+		return ""
+
+	# ── Header (12 bytes) ──
+	if raw.size() < 12:
+		return ""
+	var magic := raw.slice(0, 4).get_string_from_ascii()
+	if magic != _GDSC_MAGIC:
+		# Not a GDSC file — might be plain text that load() failed on for another reason.
+		var text := raw.get_string_from_utf8()
+		if not text.is_empty() and (text.begins_with("extends") or text.begins_with("class_name") or text.begins_with("@")):
+			return text
+		_log_warning("[Detokenize] Not a GDSC file: " + script_path)
+		return ""
+
+	var version := raw.decode_u32(4)
+	if version != 100 and version != 101:
+		_log_critical("[Detokenize] Unsupported GDSC version %d in %s (expected 100 or 101)" % [version, script_path])
+		return ""
+
+	var decompressed_size := raw.decode_u32(8)
+	var buf: PackedByteArray
+	if decompressed_size == 0:
+		buf = raw.slice(12)
+	else:
+		var compressed := raw.slice(12)
+		buf = compressed.decompress(decompressed_size, FileAccess.COMPRESSION_ZSTD)
+		if buf.is_empty():
+			_log_critical("[Detokenize] ZSTD decompression failed for: " + script_path)
+			return ""
+
+	# ── Metadata ──
+	var meta_size := 20 if version == 100 else 16  # v100 has 4-byte padding
+	if buf.size() < meta_size:
+		return ""
+	var ident_count: int = buf.decode_u32(0)
+	var const_count: int = buf.decode_u32(4)
+	var line_count: int  = buf.decode_u32(8)
+	var token_count: int
+	if version == 100:
+		token_count = buf.decode_u32(16)
+	else:
+		token_count = buf.decode_u32(12)
+
+	var offset := meta_size
+
+	# ── Identifiers (XOR 0xb6 encoded UTF-32) ──
+	var identifiers: Array[String] = []
+	for _i in ident_count:
+		if offset + 4 > buf.size():
+			break
+		var str_len: int = buf.decode_u32(offset)
+		offset += 4
+		var s := ""
+		for _j in str_len:
+			if offset + 4 > buf.size():
+				break
+			var b0: int = buf[offset] ^ 0xb6
+			var b1: int = buf[offset + 1] ^ 0xb6
+			var b2: int = buf[offset + 2] ^ 0xb6
+			var b3: int = buf[offset + 3] ^ 0xb6
+			var code_point: int = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+			if code_point > 0:
+				s += String.chr(code_point)
+			offset += 4
+		identifiers.append(s)
+
+	# ── Constants (Variant-encoded, sequential) ──
+	var constants: Array = []
+	for _i in const_count:
+		if offset + 4 > buf.size():
+			break
+		# Decode next Variant from the stream.  We round-trip through
+		# var_to_bytes() to determine consumed size since bytes_to_var()
+		# doesn't report how many bytes it read.
+		var remaining := buf.slice(offset)
+		var val = bytes_to_var(remaining)
+		constants.append(val)
+		# Advance offset by the encoded size.
+		var encoded := var_to_bytes(val)
+		offset += encoded.size()
+
+	# ── Line/column maps ──
+	var line_map := {}  # token_index -> line
+	var col_map := {}   # token_index -> column
+	for _i in line_count:
+		if offset + 8 > buf.size():
+			break
+		var tok_idx: int = buf.decode_u32(offset)
+		var line_val: int = buf.decode_u32(offset + 4)
+		line_map[tok_idx] = line_val
+		offset += 8
+	for _i in line_count:
+		if offset + 8 > buf.size():
+			break
+		var tok_idx: int = buf.decode_u32(offset)
+		var col_val: int = buf.decode_u32(offset + 4)
+		col_map[tok_idx] = col_val
+		offset += 8
+
+	# ── Token stream ──
+	var tokens: Array = []  # Array of [type: int, data_index: int]
+	for _i in token_count:
+		if offset >= buf.size():
+			break
+		var token_len := 8 if (buf[offset] & _GDSC_TOKEN_BYTE_MASK) else 5
+		if offset + token_len > buf.size():
+			break
+		var raw_type: int = buf.decode_u32(offset)
+		var tk_type: int = raw_type & _GDSC_TOKEN_MASK
+		var data_idx: int = raw_type >> _GDSC_TOKEN_BITS
+		tokens.append([tk_type, data_idx])
+		offset += token_len
+
+	# ── Reconstruct source ──
+	var result := _gdsc_reconstruct(tokens, identifiers, constants, line_map, col_map)
+	if result.is_empty():
+		return ""
+
+	# ── Validate: try to parse the reconstructed source ──
+	# Strip class_name for validation — GDScript.new().reload() rejects duplicate
+	# class_name declarations that conflict with already-registered global classes.
+	var validate_source := result
+	var cn_regex := RegEx.new()
+	cn_regex.compile("(?m)^class_name\\s+.*$")
+	validate_source = cn_regex.sub(validate_source, "# class_name stripped for validation")
+	var test_script := GDScript.new()
+	test_script.source_code = validate_source
+	var err := test_script.reload(true)  # true = keep_state
+	if err != OK:
+		_log_critical("[Detokenize] Reconstructed source for %s has parse errors (error %d)" % [script_path, err])
+		var dbg_lines := result.split("\n")
+		for j in mini(40, dbg_lines.size()):
+			_log_debug("[Detokenize]   %3d | %s" % [j + 1, dbg_lines[j]])
+	else:
+		_log_info("[Detokenize] Reconstructed: %s (%d tokens, %d lines) — parse OK" \
+				% [script_path, tokens.size(), result.count("\n") + 1])
+	return result
+
+func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Array,
+		line_map: Dictionary, col_map: Dictionary) -> String:
+	var lines := PackedStringArray()
+	var current_line := ""
+	var current_line_num := 1
+	var need_space := false
+	var prev_tk := -1
+	var line_started := false  # has any visible token been emitted on this line?
+
+	for i in tokens.size():
+		var tk: int = tokens[i][0]
+		var idx: int = tokens[i][1]
+
+		# Handle line changes via line_map.
+		if line_map.has(i):
+			var new_line: int = line_map[i]
+			while current_line_num < new_line:
+				lines.append(current_line)
+				current_line = ""
+				current_line_num += 1
+				need_space = false
+				line_started = false
+
+		if tk == 99:  # EOF
+			break
+
+		if tk == 88:  # NEWLINE
+			lines.append(current_line)
+			current_line = ""
+			current_line_num += 1
+			need_space = false
+			line_started = false
+			prev_tk = tk
+			continue
+
+		if tk == 89 or tk == 90:  # INDENT / DEDENT — skip, we use col_map instead
+			prev_tk = tk
+			continue
+
+		# Build the text for this token.
+		var text := ""
+		if tk == 2:  # IDENTIFIER
+			text = identifiers[idx] if idx < identifiers.size() else "<ident?>"
+		elif tk == 1:  # ANNOTATION
+			var aname: String = identifiers[idx] if idx < identifiers.size() else "?"
+			text = aname if aname.begins_with("@") else ("@" + aname)
+		elif tk == 3:  # LITERAL
+			text = _gdsc_variant_to_source(constants[idx] if idx < constants.size() else null)
+		elif _TOKEN_TEXT.has(tk):
+			text = _TOKEN_TEXT[tk]
+		else:
+			text = "<tk%d>" % tk
+
+		# Apply indentation from column data for the first visible token on a line.
+		if not line_started:
+			line_started = true
+			if col_map.has(i):
+				var col: int = col_map[i]
+				# Convert column to tabs (Godot uses tab_size=4 for indentation).
+				var tabs: int = col / 4
+				for _t in tabs:
+					current_line += "\t"
+
+		# Spacing logic.
+		var add_space_before := false
+		if need_space and not current_line.is_empty() and not current_line.ends_with("\t"):
+			if _SPACE_BEFORE.has(tk):
+				add_space_before = true
+			elif tk == 2 or tk == 3 or tk == 1 or (tk >= 40 and tk <= 72):
+				# IDENTIFIER, LITERAL, ANNOTATION, or any keyword — space before
+				# unless prev was an opener, dot, $, ~, !, indent, newline.
+				# Note: annotation (1) excluded only for identifiers (part of the
+				# annotation name), NOT for keywords like var/func after @export.
+				var skip_anno := (prev_tk == 1 and (tk == 2 or tk == 1))  # ident/anno after anno
+				if not skip_anno \
+						and prev_tk != 77 and prev_tk != 73 \
+						and prev_tk != 81 and prev_tk != 85 \
+						and prev_tk != 18 \
+						and prev_tk != 15 and prev_tk != 89 \
+						and prev_tk != 88 and prev_tk != -1:
+					add_space_before = true
+			elif tk == 77:  # PAREN_OPEN
+				# Space before ( after control-flow keywords, but NOT after
+				# function-like keywords (func, preload, super, assert, await).
+				if prev_tk >= 40 and prev_tk <= 50:  # if..when (control flow)
+					add_space_before = true
+			elif tk == 12 or tk == 15:  # NOT, BANG
+				add_space_before = true
+
+		if add_space_before and not current_line.ends_with(" ") and not current_line.ends_with("\t"):
+			current_line += " "
+
+		current_line += text
+
+		# Set need_space for next token.  _SPACE_AFTER covers operators,
+		# keywords, and punctuation.  Also need space after identifiers (2),
+		# literals (3), close-parens (78), close-bracket (74), close-brace (76),
+		# constants (91-94 PI/TAU/INF/NAN), and underscore (87).
+		need_space = _SPACE_AFTER.has(tk) or tk == 2 or tk == 3 \
+				or tk == 78 or tk == 74 or tk == 76 \
+				or tk == 91 or tk == 92 or tk == 93 \
+				or tk == 94 or tk == 87
+
+		prev_tk = tk
+
+	# Flush last line.
+	if not current_line.is_empty():
+		lines.append(current_line)
+
+	# GDScript files should end with newline.
+	var result := "\n".join(lines)
+	if not result.ends_with("\n"):
+		result += "\n"
+	return result
+
+func _gdsc_variant_to_source(value: Variant) -> String:
+	if value == null:
+		return "null"
+	match typeof(value):
+		TYPE_BOOL:
+			return "true" if value else "false"
+		TYPE_INT:
+			return str(value)
+		TYPE_FLOAT:
+			var s := str(value)
+			if "." not in s and "e" not in s and "inf" not in s.to_lower() and "nan" not in s.to_lower():
+				s += ".0"
+			return s
+		TYPE_STRING:
+			return '"%s"' % str(value).c_escape()
+		TYPE_STRING_NAME:
+			return '&"%s"' % str(value).c_escape()
+		TYPE_NODE_PATH:
+			return '^"%s"' % str(value).c_escape()
+		TYPE_VECTOR2:
+			return "Vector2(%s, %s)" % [_gdsc_variant_to_source(value.x), _gdsc_variant_to_source(value.y)]
+		TYPE_VECTOR2I:
+			return "Vector2i(%s, %s)" % [value.x, value.y]
+		TYPE_VECTOR3:
+			return "Vector3(%s, %s, %s)" % [_gdsc_variant_to_source(value.x), _gdsc_variant_to_source(value.y), _gdsc_variant_to_source(value.z)]
+		TYPE_VECTOR3I:
+			return "Vector3i(%s, %s, %s)" % [value.x, value.y, value.z]
+		TYPE_COLOR:
+			return "Color(%s, %s, %s, %s)" % [_gdsc_variant_to_source(value.r), _gdsc_variant_to_source(value.g), _gdsc_variant_to_source(value.b), _gdsc_variant_to_source(value.a)]
+		TYPE_ARRAY:
+			var parts := PackedStringArray()
+			for item in value:
+				parts.append(_gdsc_variant_to_source(item))
+			return "[%s]" % ", ".join(parts)
+		TYPE_DICTIONARY:
+			var parts := PackedStringArray()
+			for k in value:
+				parts.append("%s: %s" % [_gdsc_variant_to_source(k), _gdsc_variant_to_source(value[k])])
+			return "{%s}" % ", ".join(parts)
+		_:
+			return str(value)
+
 func _read_vanilla_source(script_path: String) -> String:
 	# Hook pack may be file-scope-mounted, so load() could return the hooked
 	# version.  The vanilla cache stores the original source.
@@ -1564,9 +2014,16 @@ func _read_vanilla_source(script_path: String) -> String:
 			return cached  # live is hooked — trust cache
 
 	var script := load(script_path) as GDScript
-	if script == null or script.source_code.is_empty():
+	if script == null:
 		return ""
+
 	var source := script.source_code
+	if source.is_empty():
+		# Script is binary-tokenized (GDSC format) — detokenize from raw bytes.
+		source = _detokenize_script(script_path)
+		if source.is_empty():
+			return ""
+
 	if "func _vanilla_" in source:  # hook pack mounted but cache missing
 		_log_critical("[Hooks] Cannot read vanilla source for %s — delete %s and restart"
 				% [script_path, ProjectSettings.globalize_path(HOOK_PACK_PATH)])
@@ -1575,6 +2032,8 @@ func _read_vanilla_source(script_path: String) -> String:
 	return source
 
 func _save_vanilla_source(script_path: String, source: String) -> void:
+	if source.is_empty():
+		return  # never write 0-byte cache files
 	var cache_file := VANILLA_CACHE_DIR.path_join(script_path.trim_prefix("res://"))
 	DirAccess.make_dir_recursive_absolute(
 		ProjectSettings.globalize_path(cache_file.get_base_dir()))
@@ -1646,6 +2105,17 @@ func _preprocess_script(script_path: String, hooked_methods: Array[String]) -> S
 			var super_pos := line_str.find("super(")
 			if comment_pos >= 0 and super_pos > comment_pos:
 				continue  # super( is inside a comment
+			# Check if super( is inside a string literal.
+			var in_string := false
+			var dquotes := 0
+			var squotes := 0
+			for ci in super_pos:
+				if line_str[ci] == '"':
+					dquotes += 1
+				elif line_str[ci] == "'":
+					squotes += 1
+			if dquotes % 2 != 0 or squotes % 2 != 0:
+				continue  # super( is inside a string literal
 			lines[i] = line_str.replace("super(", "super." + method_name + "(")
 		imposters.append(_generate_imposter(script_path, method_name, info))
 
@@ -1657,7 +2127,11 @@ func _preprocess_script(script_path: String, hooked_methods: Array[String]) -> S
 func _extract_method_info(script: GDScript, lines: Array, method_dict: Dictionary) -> Variant:
 	var method_name: String = method_dict["name"]
 
-	var start_line: int = script.get_member_line(method_name) - 1
+	var start_line := -1
+	# get_member_line() crashes on binary-tokenized scripts — only call it if
+	# the script has source code available.
+	if script.has_source_code():
+		start_line = script.get_member_line(method_name) - 1
 	if start_line < 0 or start_line >= lines.size():
 		start_line = -1  # fallback: scan source text
 		for i in lines.size():
@@ -1697,19 +2171,41 @@ func _extract_method_info(script: GDScript, lines: Array, method_dict: Dictionar
 		param_names.append(arg["name"])
 
 	var body_text := ""
+	var method_indent := _get_indent_level(sig_line)
 	for i in range(body_start, body_end):
 		body_text += lines[i] + "\n"
-	var is_async := "await " in body_text
 
+	# Detect async — check for `await` in body, but skip comments and strings.
+	var is_async := _body_contains_keyword(body_text, "await")
+
+	# Determine return type.
 	var return_type := ""
+	var return_type_id: int = 0  # Variant::Type for typed returns
 	var ret = method_dict["return"]
 	if method_name == "_init" or method_name in LIFECYCLE_METHODS:
 		return_type = "void"
 	elif ret["type"] == 0:  # Variant::NIL — could be void or untyped
 		if "-> void" in sig_line:
 			return_type = "void"
+		else:
+			# No return type annotation.  Check if body has `return <value>` at
+			# the method's own indent level (not inside lambdas/inner funcs).
+			var has_value_return := false
+			for bline in body_text.split("\n"):
+				var bstripped := bline.strip_edges()
+				if bstripped.is_empty() or bstripped.begins_with("#"):
+					continue
+				var bind := _get_indent_level(bline)
+				if bind > method_indent + 1:
+					continue  # deeper indent — could be lambda body
+				if bstripped.begins_with("return ") and bstripped != "return":
+					has_value_return = true
+					break
+			if not has_value_return:
+				return_type = "void"
 	else:
 		return_type = "typed"
+		return_type_id = ret["type"]
 
 	var is_static: bool = (int(method_dict["flags"]) & 32) != 0  # METHOD_FLAG_STATIC
 
@@ -1722,6 +2218,7 @@ func _extract_method_info(script: GDScript, lines: Array, method_dict: Dictionar
 		"is_static": is_static,
 		"is_async": is_async,
 		"return_type": return_type,
+		"return_type_id": return_type_id,
 	}
 
 func _get_indent_level(line: String) -> int:
@@ -1729,9 +2226,63 @@ func _get_indent_level(line: String) -> int:
 	for c in line:
 		if c == '\t':
 			count += 1
+		elif c == ' ':
+			count += 1  # spaces from detokenized source (4 spaces = 1 tab)
 		else:
 			break
-	return count
+	return count / 4 if count > 0 and '\t' not in line.left(count) else count
+
+# Check if body text contains a keyword outside of comments and string literals.
+func _body_contains_keyword(body_text: String, keyword: String) -> bool:
+	for bline in body_text.split("\n"):
+		var stripped := bline.strip_edges()
+		if stripped.is_empty() or stripped.begins_with("#"):
+			continue
+		if keyword not in stripped:
+			continue
+		# Skip if in a string literal — crude check: count quotes before keyword.
+		var kpos := stripped.find(keyword)
+		var dquotes := 0
+		var squotes := 0
+		for ci in kpos:
+			if stripped[ci] == '"':
+				dquotes += 1
+			elif stripped[ci] == "'":
+				squotes += 1
+		if dquotes % 2 != 0 or squotes % 2 != 0:
+			continue  # keyword is inside a string literal
+		# Skip comment-trailing keyword.
+		var hash_pos := -1
+		for ci in stripped.length():
+			if stripped[ci] == '#':
+				hash_pos = ci
+				break
+			elif stripped[ci] == '"' or stripped[ci] == "'":
+				break  # string before any #, stop looking
+		if hash_pos >= 0 and kpos > hash_pos:
+			continue  # keyword is after # comment
+		return true
+	return false
+
+# Return a GDScript expression for the default value of a Variant type.
+func _get_type_default(type_id: int) -> String:
+	match type_id:
+		TYPE_BOOL: return "false"
+		TYPE_INT: return "0"
+		TYPE_FLOAT: return "0.0"
+		TYPE_STRING: return '""'
+		TYPE_STRING_NAME: return '&""'
+		TYPE_VECTOR2: return "Vector2()"
+		TYPE_VECTOR2I: return "Vector2i()"
+		TYPE_VECTOR3: return "Vector3()"
+		TYPE_VECTOR3I: return "Vector3i()"
+		TYPE_COLOR: return "Color()"
+		TYPE_ARRAY: return "[]"
+		TYPE_DICTIONARY: return "{}"
+		TYPE_PACKED_BYTE_ARRAY: return "PackedByteArray()"
+		TYPE_PACKED_STRING_ARRAY: return "PackedStringArray()"
+		TYPE_NODE_PATH: return 'NodePath("")'
+		_: return "null"
 
 func _generate_imposter(script_path: String, method_name: String, info: Dictionary) -> String:
 	var lines := PackedStringArray()
@@ -1744,7 +2295,12 @@ func _generate_imposter(script_path: String, method_name: String, info: Dictiona
 	lines.append('\tvar __skip := ModLoader._call_before_hooks("%s", "%s", %s, __hook_args)' \
 			% [script_path, method_name, self_ref])
 
-	lines.append("\tif __skip: return")
+	# Return appropriate default when skip is true.
+	if info["return_type"] == "typed":
+		var default_val := _get_type_default(info["return_type_id"])
+		lines.append("\tif __skip: return %s" % default_val)
+	else:
+		lines.append("\tif __skip: return")
 
 	for i in info["param_names"].size():
 		lines.append("\t%s = __hook_args[%d]" % [info["param_names"][i], i])
@@ -1774,8 +2330,9 @@ func _generate_hook_pack() -> String:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(HOOK_PACK_DIR))
 
 	var pack_path := ProjectSettings.globalize_path(HOOK_PACK_PATH)
+	var tmp_path := pack_path + ".tmp"
 	var zp := ZIPPacker.new()
-	if zp.open(pack_path) != OK:
+	if zp.open(tmp_path) != OK:
 		_log_critical("[Hooks] Failed to create hook pack ZIP")
 		return ""
 
@@ -1800,19 +2357,39 @@ func _generate_hook_pack() -> String:
 			_log_critical("[Hooks] Failed to preprocess: " + script_path)
 			continue
 
+		# Validate the transformed script parses before packing it.
+		# Strip class_name to avoid "hides a global script class" error.
+		var validate_src := transformed
+		var vcn_regex := RegEx.new()
+		vcn_regex.compile("(?m)^class_name\\s+.*$")
+		validate_src = vcn_regex.sub(validate_src, "# class_name stripped for validation")
+		var validate := GDScript.new()
+		validate.source_code = validate_src
+		var verr := validate.reload(true)
+		if verr != OK:
+			_log_critical("[Hooks] Transformed %s has parse errors (error %d) — skipping" % [script_path, verr])
+			var vlines := transformed.split("\n")
+			for vj in mini(50, vlines.size()):
+				_log_debug("[Hooks]   %3d | %s" % [vj + 1, vlines[vj]])
+			continue
+
 		var zip_internal_path := script_path.replace("res://", "")
 		zp.start_file(zip_internal_path)
 		zp.write_file(transformed.to_utf8_buffer())
 		zp.close_file()
 		any_success = true
-		_log_info("[Hooks] Hooked: %s (%d methods)" % [script_path, hooked_methods.size()])
+		_log_info("[Hooks] Hooked: %s (%d methods) — validated OK" % [script_path, hooked_methods.size()])
 
 	zp.close()
 
 	if not any_success:
-		DirAccess.remove_absolute(pack_path)
+		DirAccess.remove_absolute(tmp_path)
 		return ""
 
+	# Atomic rename: tmp → final path.  Prevents corrupt ZIPs from partial writes.
+	if FileAccess.file_exists(pack_path):
+		DirAccess.remove_absolute(pack_path)
+	DirAccess.rename_absolute(tmp_path, pack_path)
 	return pack_path
 
 # Archive scanner
