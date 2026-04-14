@@ -146,12 +146,16 @@ static func _mount_previous_session() -> int:
 	var count := 0
 	for path in paths:
 		if ProjectSettings.load_resource_pack(path):
-			log_lines.append("[FileScope]   MOUNTED: " + path)
+			var remaps := _static_resolve_remaps(path)
+			log_lines.append("[FileScope]   MOUNTED: " + path
+					+ (" (%d remaps)" % remaps if remaps > 0 else ""))
 			count += 1
 		elif path.get_extension().to_lower() == "vmz":
 			var zip_path := _static_vmz_to_zip(path)
 			if not zip_path.is_empty() and ProjectSettings.load_resource_pack(zip_path):
-				log_lines.append("[FileScope]   MOUNTED (vmz→zip): " + path)
+				var remaps := _static_resolve_remaps(zip_path)
+				log_lines.append("[FileScope]   MOUNTED (vmz→zip): " + path
+						+ (" (%d remaps)" % remaps if remaps > 0 else ""))
 				count += 1
 			else:
 				log_lines.append("[FileScope]   MOUNT FAILED (vmz): " + path + " zip_path=" + zip_path)
@@ -2532,11 +2536,61 @@ func _instantiate_autoload(mod_name: String, autoload_name: String, res_path: St
 
 func _try_mount_pack(path: String) -> bool:
 	if ProjectSettings.load_resource_pack(path):
+		_resolve_remaps(path)
 		return true
 	if path.get_extension().to_lower() != "vmz":
 		return false
 	var zip_path := _static_vmz_to_zip(path)
-	return not zip_path.is_empty() and ProjectSettings.load_resource_pack(zip_path)
+	if not zip_path.is_empty() and ProjectSettings.load_resource_pack(zip_path):
+		_resolve_remaps(zip_path)
+		return true
+	return false
+
+## Scan a mounted archive for .remap files and resolve them via take_over_path().
+##
+## When mods are exported from the Godot editor, .tscn/.tres are compiled to
+## .scn/.res and .remap files redirect the original paths.  load_resource_pack()
+## does NOT follow .remap files, so preload("res://Mod/Item.tscn") fails even
+## though the archive contains Item.tscn.remap → exported Item.scn.
+## We read each .remap, load the target resource, and call take_over_path() so
+## the original path resolves correctly.
+func _resolve_remaps(archive_path: String) -> void:
+	var remap_count := _static_resolve_remaps(archive_path)
+	if remap_count > 0:
+		_log_debug("  Resolved %d .remap file(s)" % remap_count)
+
+## Static version usable from file-scope _mount_previous_session().
+static func _static_resolve_remaps(archive_path: String) -> int:
+	var zr := ZIPReader.new()
+	var open_path := archive_path
+	# VMZ files may have been copied to a .zip cache — try the original first.
+	if zr.open(open_path) != OK:
+		return 0
+
+	var count := 0
+	for f: String in zr.get_files():
+		if not f.ends_with(".remap"):
+			continue
+		var remap_bytes := zr.read_file(f)
+		if remap_bytes.is_empty():
+			continue
+		var cfg := ConfigFile.new()
+		if cfg.parse(remap_bytes.get_string_from_utf8()) != OK:
+			continue
+		var target: String = cfg.get_value("remap", "path", "")
+		if target.is_empty():
+			continue
+		# Build the original res:// path (the path without .remap suffix).
+		var original_path := f.trim_suffix(".remap")
+		if not original_path.begins_with("res://"):
+			original_path = "res://" + original_path
+		# Load the compiled resource and make it available at the original path.
+		var res: Resource = load(target)
+		if res != null:
+			res.take_over_path(original_path)
+			count += 1
+	zr.close()
+	return count
 
 # mod.txt parser
 
