@@ -289,24 +289,6 @@ With Developer Mode enabled, a full conflict log is written to `%APPDATA%\Road t
 - **`UpdateTooltip()` is inventory-only.** World-item tooltips come from `HUD._physics_process` reading `gameData.tooltip`.
 - **Test with other mods installed** and check the conflict report.
 
-## VostokMods Compatibility
-
-Mods packaged for [VostokMods](https://github.com/Ryhon0/VostokMods) generally work with this loader.
-
-| Feature | Status |
-|---------|--------|
-| `.vmz` archives | Supported |
-| `mod.txt` format | Supported |
-| `[mod] priority` | Supported |
-| Filename priority prefix (`100-ModName.vmz`) | Supported |
-| `!` early autoload prefix | Supported |
-
-VostokMods runs as a separate launcher before Godot starts. This loader runs inside the game, so it cannot:
-
-- **Merge `override.cfg`** - engine settings are read at startup before GDScript runs
-- **Register `class_name`** - global class cache is read-only at runtime (use path references instead)
-- **Extract native plugins** - GDExtension `.dll`/`.so` files must be on disk at startup
-
 ## Uninstalling
 
 Delete `override.cfg` and `modloader.gd` from the game folder. The `mods` folder and its contents can be removed separately.
