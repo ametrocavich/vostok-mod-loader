@@ -255,3 +255,25 @@ Delete `override.cfg` and `modloader.gd` from the game folder.
 
 Settings: `%APPDATA%\Road to Vostok\mod_config.cfg`
 Conflict log: `%APPDATA%\Road to Vostok\modloader_conflicts.txt`
+
+---
+
+## Recovery (Technical Details)
+
+- **Heartbeat file:** `user://modloader_heartbeat.txt` is written at launch and deleted on success. If it persists, the mod loader increments a crash counter. After 2 crashes, it wipes `override.cfg` and all two-pass state.
+- **Safe mode:** An empty `modloader_safe_mode` file in the game folder triggers a full reset on next launch.
+- **State files:** `user://mod_pass_state.cfg` stores archive paths for the two-pass restart. Deleted after successful Pass 2.
+
+---
+
+## License
+
+MIT License
+
+Copyright (c) 2025
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
