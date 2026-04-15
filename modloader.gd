@@ -13,7 +13,7 @@ const MINOR_VERSION := 1
 const PATCH_VERSION := 0
 
 # Or as an array:
-const MODLOADER_VERSION_NUMBERS = [2, 1, 0, "stable"] # Benefit of using the array version it would be possible to add the branch version e.g., stable, dev, experimental
+const MODLOADER_VERSION_NUMBERS = [2, 1, 0, "dev"] # Benefit of using the array version it would be possible to add the branch version e.g., stable, dev, experimental
 
 const MODLOADER_VERSION := "2.1.0"
 const MODLOADER_RES_PATH := "res://modloader.gd"
