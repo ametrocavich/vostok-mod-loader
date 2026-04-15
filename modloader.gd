@@ -48,11 +48,11 @@ var _override_registry: Dictionary = {}
 var _mod_script_analysis: Dictionary = {}
 var _archive_file_sets: Dictionary = {}
 
-# Hook system state
-var _hook_registry: Dictionary = {}       # "res://path.gd::method" -> { before: [Callable], after: [Callable] }
-var _hook_script_paths: Dictionary = {}   # "res://path.gd" -> true  (scripts that need hook-pack entries)
+# Hooks
+var _hook_registry: Dictionary = {}       # "res://path.gd::method" -> { before: [], after: [] }
+var _hook_script_paths: Dictionary = {}   # "res://path.gd" -> true
 var _class_name_to_path: Dictionary = {}  # "Camera" -> "res://Scripts/Camera.gd"
-var _hook_call_depth: Dictionary = {}     # "res://path.gd::method" -> int  (reentrancy guard)
+var _hook_call_depth: Dictionary = {}     # reentrancy guard per key
 
 var _re_take_over: RegEx
 var _re_extends: RegEx
@@ -289,14 +289,8 @@ func _run_pass_1() -> void:
 			hook_pack_path = ""
 		else:
 			archive_paths.append(hook_pack_path)
-	elif not _hook_script_paths.is_empty():
+	elif not _loaded_mod_ids.is_empty():
 		_log_critical("[Hooks] Hook pack generation failed — hooks will not work")
-
-	if _hook_script_paths.is_empty():
-		var pack_file := ProjectSettings.globalize_path(HOOK_PACK_PATH)
-		if FileAccess.file_exists(pack_file):
-			_static_wipe_hook_cache()
-			_log_info("[Hooks] Cleaned up unused hook artifacts")
 
 	if archive_paths.size() > 0:
 		_log_info("Preparing two-pass restart — %d archive(s)" % archive_paths.size())
@@ -319,6 +313,10 @@ func _run_pass_1() -> void:
 	if FileAccess.file_exists(PASS_STATE_PATH):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(PASS_STATE_PATH))
 		_restore_clean_override_cfg()
+	var pack_file := ProjectSettings.globalize_path(HOOK_PACK_PATH)
+	if FileAccess.file_exists(pack_file):
+		_static_wipe_hook_cache()
+		_log_info("[Hooks] Cleaned up unused hook artifacts")
 	await _finish_single_pass()
 
 func _finish_with_existing_mounts() -> void:
@@ -1232,7 +1230,6 @@ func load_all_mods(pass_label: String = "") -> void:
 	_mod_script_analysis.clear()
 	_archive_file_sets.clear()
 	_hook_registry.clear()
-	_hook_script_paths.clear()
 	_hook_call_depth.clear()
 
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(TMP_DIR))
@@ -1318,7 +1315,7 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 
 	_loaded_mod_ids[mod_id] = true
 
-	# Parse [hooks] before [autoload] — mods with hooks but no autoloads still work.
+	# [hooks] is optional — all class_name methods are pre-wrapped.
 	if cfg != null and cfg.has_section("hooks"):
 		for key in cfg.get_section_keys("hooks"):
 			var script_path := str(key)
@@ -1327,11 +1324,7 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 				method_name = method_name.strip_edges()
 				if method_name.is_empty():
 					continue
-				_hook_script_paths[script_path] = true
-				var hook_key := script_path + "::" + method_name
-				if not _hook_registry.has(hook_key):
-					_hook_registry[hook_key] = { "before": [], "after": [] }
-				_log_info("  Hook declared: %s :: %s [%s]" % [script_path, method_name, mod_name])
+				_log_info("  Hook hint: %s :: %s [%s]" % [script_path, method_name, mod_name])
 
 	if cfg == null or not cfg.has_section("autoload"):
 		return
@@ -1422,21 +1415,21 @@ func _compare_load_order(a: Dictionary, b: Dictionary) -> bool:
 	# Filename tiebreaker for stable sort.
 	return (a["file_name"] as String).to_lower() < (b["file_name"] as String).to_lower()
 
-# Apply hook pack scripts on Pass 2.  load_resource_pack() with text .gd files
-# does NOT override binary-tokenized .gd from the game PCK.  So we read the
-# hooked source from the vanilla cache + imposter functions, create a new GDScript,
-# and use take_over_path() to replace the cached binary version — same technique
-# the Godot Mod Loader uses for script extensions.
+# Apply hook pack scripts via take_over_path.  class_name is stripped to avoid
+# "hides a global script class" — scripts with typed array refs are excluded
+# upstream in _generate_hook_pack() to prevent Array[Object] identity errors.
 func _apply_hook_pack_scripts() -> void:
 	var hook_pack := ProjectSettings.globalize_path(HOOK_PACK_PATH)
 	if not FileAccess.file_exists(hook_pack):
 		return
 
-	# Read the transformed scripts from the hook pack ZIP.
 	var zr := ZIPReader.new()
 	if zr.open(hook_pack) != OK:
-		_log_warning("[Hooks] Could not open hook pack for take_over_path application")
+		_log_warning("[Hooks] Could not open hook pack for script application")
 		return
+
+	var cn_regex := RegEx.new()
+	cn_regex.compile("(?m)^class_name\\s+.*$")
 
 	var applied := 0
 	for file_path in zr.get_files():
@@ -1447,40 +1440,29 @@ func _apply_hook_pack_scripts() -> void:
 		if source.is_empty():
 			continue
 
-		# Strip class_name to avoid "hides a global script class" crash.
-		# The class is already registered from the game's PCK — we just need
-		# the script to compile and take over the path.
-		var cn_regex := RegEx.new()
-		cn_regex.compile("(?m)^class_name\\s+.*$")
-		var stripped_source := cn_regex.sub(source, "")
-
+		var stripped := cn_regex.sub(source, "")
 		var new_script := GDScript.new()
-		new_script.source_code = stripped_source
+		new_script.source_code = stripped
 		var err := new_script.reload()
 		if err != OK:
-			_log_critical("[Hooks] take_over_path: failed to compile %s (error %d)" % [res_path, err])
+			_log_critical("[Hooks] Compile failed for %s (error %d)" % [res_path, err])
 			continue
-
 		new_script.take_over_path(res_path)
+		_hook_script_paths[res_path] = true
 		applied += 1
-		_log_info("[Hooks] take_over_path: applied %s" % res_path)
+		_log_info("[Hooks] take_over_path: %s" % res_path)
 
 	zr.close()
 	if applied > 0:
 		_log_info("[Hooks] Applied %d hooked script(s) via take_over_path" % applied)
 
-# Script hooks — lets multiple mods modify methods on vanilla class_name scripts.
-# Mods declare hooks in mod.txt [hooks]; the preprocessor rewrites vanilla methods
-# with dispatch wrappers. Mods register callables via add_hook() at runtime.
-
+# Hook API — mods call add_hook() to intercept methods on class_name scripts.
 # before=true: fires before vanilla (return true to skip). before=false: fires after.
-# Method must be declared in mod.txt [hooks].
 func add_hook(script_path: String, method_name: String, callback: Callable, before: bool = true) -> void:
 	var key := script_path + "::" + method_name
-	if not _hook_script_paths.has(script_path):
-		_log_warning("[Hooks] add_hook() for undeclared script %s — add [hooks] to mod.txt" % script_path)
+	if not _hook_script_paths.is_empty() and not _hook_script_paths.has(script_path):
+		_log_warning("[Hooks] add_hook() for unwrapped script %s — not a class_name script?" % script_path)
 	if not _hook_registry.has(key):
-		_log_warning("[Hooks] add_hook() for undeclared method %s::%s — hook will not fire" % [script_path, method_name])
 		_hook_registry[key] = { "before": [], "after": [] }
 	var list_key := "before" if before else "after"
 	if callback in _hook_registry[key][list_key]:
@@ -1600,7 +1582,7 @@ func _get_hardcoded_class_map() -> Dictionary:
 # ─── GDSC Binary Token Detokenizer ───────────────────────────────────────────
 # Reconstructs GDScript source from Godot's binary-tokenized .gdc format (GDSC).
 # Used when the game exports with binary tokenization and load().source_code is
-# empty.  Only called on-demand for scripts listed in mod [hooks] sections.
+# empty.  Called for all class_name scripts during hook pack generation.
 # Supports TOKENIZER_VERSION 100 (Godot 4.0-4.4) and 101 (Godot 4.5-4.6).
 
 const _GDSC_MAGIC := "GDSC"
@@ -2006,12 +1988,13 @@ func _read_vanilla_source(script_path: String) -> String:
 		var cached := FileAccess.get_file_as_string(cache_file)
 		if not cached.is_empty():
 			var live := load(script_path) as GDScript
-			if live and ("func _vanilla_" not in live.source_code):
+			if live and not live.source_code.is_empty() \
+					and ("func _vanilla_" not in live.source_code):
 				if live.source_code != cached:  # game updated
 					_save_vanilla_source(script_path, live.source_code)
 					return live.source_code
 				return cached
-			return cached  # live is hooked — trust cache
+			return cached  # live is hooked or binary-tokenized — trust cache
 
 	var script := load(script_path) as GDScript
 	if script == null:
@@ -2042,7 +2025,7 @@ func _save_vanilla_source(script_path: String, source: String) -> void:
 		f.store_string(source)
 		f.close()
 
-func _preprocess_script(script_path: String, hooked_methods: Array[String]) -> String:
+func _preprocess_script(script_path: String) -> String:
 	var source := _read_vanilla_source(script_path)
 	if source.is_empty():
 		_log_critical("[Hooks] Failed to read vanilla source for: " + script_path)
@@ -2070,19 +2053,12 @@ func _preprocess_script(script_path: String, hooked_methods: Array[String]) -> S
 
 	var method_info := {}
 	for m in own_methods:
-		if m["name"] in hooked_methods:
-			var info := _extract_method_info(script, lines, m)
-			if info != null:
-				method_info[m["name"]] = info
-			else:
-				_log_warning("[Hooks] Could not extract method info for: %s::%s" % [script_path, m["name"]])
-
-	for hm in hooked_methods:
-		if hm not in method_info:
-			_log_warning("[Hooks] Method '%s' not found in %s — check mod.txt [hooks]" % [hm, script_path])
+		var info := _extract_method_info(script, lines, m)
+		if info != null:
+			method_info[m["name"]] = info
 
 	if method_info.is_empty():
-		_log_warning("[Hooks] No hookable methods found in: " + script_path)
+		_log_debug("[Hooks] No hookable own methods in: " + script_path)
 		return ""
 
 	var sorted_methods := method_info.keys()
@@ -2106,7 +2082,6 @@ func _preprocess_script(script_path: String, hooked_methods: Array[String]) -> S
 			if comment_pos >= 0 and super_pos > comment_pos:
 				continue  # super( is inside a comment
 			# Check if super( is inside a string literal.
-			var in_string := false
 			var dquotes := 0
 			var squotes := 0
 			for ci in super_pos:
@@ -2288,6 +2263,21 @@ func _generate_imposter(script_path: String, method_name: String, info: Dictiona
 	var lines := PackedStringArray()
 	lines.append(info["signature_line"])
 
+	var call_args := ", ".join(info["param_names"])
+	var vanilla_call := "_vanilla_" + method_name + "(" + call_args + ")"
+	var fast_call := vanilla_call
+	if info["is_async"]:
+		fast_call = "await " + fast_call
+
+	# Fast-path: no hooks registered → call vanilla directly.
+	lines.append('\tif not ModLoader._hook_registry.has("%s::%s"):' % [script_path, method_name])
+	if info["return_type"] == "void":
+		lines.append("\t\t" + fast_call)
+		lines.append("\t\treturn")
+	else:
+		lines.append("\t\treturn " + fast_call)
+
+	# Full dispatch — before hooks, arg mutation, vanilla call, after hooks.
 	var args_str := "[" + ", ".join(info["param_names"]) + "]"
 	lines.append("\tvar __hook_args := " + args_str)
 
@@ -2295,7 +2285,6 @@ func _generate_imposter(script_path: String, method_name: String, info: Dictiona
 	lines.append('\tvar __skip := ModLoader._call_before_hooks("%s", "%s", %s, __hook_args)' \
 			% [script_path, method_name, self_ref])
 
-	# Return appropriate default when skip is true.
 	if info["return_type"] == "typed":
 		var default_val := _get_type_default(info["return_type_id"])
 		lines.append("\tif __skip: return %s" % default_val)
@@ -2305,8 +2294,6 @@ func _generate_imposter(script_path: String, method_name: String, info: Dictiona
 	for i in info["param_names"].size():
 		lines.append("\t%s = __hook_args[%d]" % [info["param_names"][i], i])
 
-	var call_args := ", ".join(info["param_names"])
-	var vanilla_call := "_vanilla_" + method_name + "(" + call_args + ")"
 	if info["is_async"]:
 		vanilla_call = "await " + vanilla_call
 
@@ -2323,10 +2310,40 @@ func _generate_imposter(script_path: String, method_name: String, info: Dictiona
 
 	return "\n".join(lines)
 
-func _generate_hook_pack() -> String:
-	if _hook_script_paths.is_empty():
-		return ""
+func _find_typed_array_class_refs() -> Dictionary:
+	# Find class_names used as typed array elements (e.g. Array[SlotData]).
+	# These can't be wrapped — take_over_path breaks the pointer identity check
+	# in container_type_validate.h (godotengine/godot#97433).
+	# Only scans class_name scripts; refs from other scripts aren't detected.
+	var refs: Dictionary = {}  # class_name -> true
+	var re := RegEx.new()
+	re.compile("Array\\[([A-Z]\\w+)\\]")
+	for script_path: String in _class_name_to_path.values():
+		var source := _read_vanilla_source(script_path)
+		if source.is_empty():
+			continue
+		for m in re.search_all(source):
+			var type_name := m.get_string(1)
+			if _class_name_to_path.has(type_name):
+				refs[type_name] = true
+	if not refs.is_empty():
+		_log_info("[Hooks] Class names referenced in typed arrays (not wrappable): %s"
+				% ", ".join(refs.keys()))
+	return refs
 
+func _generate_hook_pack() -> String:
+	if _class_name_to_path.is_empty():
+		return ""
+	if _loaded_mod_ids.is_empty():
+		return ""  # No mods loaded — no one to call add_hook()
+
+	var unsafe_class_names := _find_typed_array_class_refs()
+
+	var _path_to_class_name: Dictionary = {}
+	for k: String in _class_name_to_path:
+		_path_to_class_name[_class_name_to_path[k]] = k
+
+	_hook_script_paths.clear()
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(HOOK_PACK_DIR))
 
 	var pack_path := ProjectSettings.globalize_path(HOOK_PACK_PATH)
@@ -2336,8 +2353,17 @@ func _generate_hook_pack() -> String:
 		_log_critical("[Hooks] Failed to create hook pack ZIP")
 		return ""
 
+	var vcn_regex := RegEx.new()
+	vcn_regex.compile("(?m)^class_name\\s+.*$")
+
 	var any_success := false
-	for script_path: String in _hook_script_paths:
+	var total_methods := 0
+	for script_path: String in _class_name_to_path.values():
+		# Skip scripts whose class_name is referenced in typed arrays.
+		var cn: String = _path_to_class_name.get(script_path, "")
+		if cn in unsafe_class_names:
+			_log_info("[Hooks] Skipped %s — class_name '%s' used in typed arrays" % [script_path, cn])
+			continue
 		# Warn if a mod also ships a direct replacement for this script.
 		if _override_registry.has(script_path):
 			var claims: Array = _override_registry[script_path]
@@ -2345,24 +2371,12 @@ func _generate_hook_pack() -> String:
 				_log_warning("[Hooks] %s is hooked but also replaced by '%s' — hooks will wrap the modded version, not vanilla"
 						% [script_path, claim["mod_name"]])
 
-		var hooked_methods: Array[String] = []
-		for key: String in _hook_registry:
-			if key.begins_with(script_path + "::"):
-				hooked_methods.append(key.split("::")[1])
-		if hooked_methods.is_empty():
-			continue
-
-		var transformed := _preprocess_script(script_path, hooked_methods)
+		var transformed := _preprocess_script(script_path)
 		if transformed.is_empty():
-			_log_critical("[Hooks] Failed to preprocess: " + script_path)
 			continue
 
 		# Validate the transformed script parses before packing it.
-		# Strip class_name to avoid "hides a global script class" error.
-		var validate_src := transformed
-		var vcn_regex := RegEx.new()
-		vcn_regex.compile("(?m)^class_name\\s+.*$")
-		validate_src = vcn_regex.sub(validate_src, "# class_name stripped for validation")
+		var validate_src := vcn_regex.sub(transformed, "# class_name stripped for validation")
 		var validate := GDScript.new()
 		validate.source_code = validate_src
 		var verr := validate.reload(true)
@@ -2373,18 +2387,25 @@ func _generate_hook_pack() -> String:
 				_log_debug("[Hooks]   %3d | %s" % [vj + 1, vlines[vj]])
 			continue
 
+		# Count wrapped methods via _vanilla_ prefix in transformed source.
+		var method_count := transformed.count("func _vanilla_")
+		total_methods += method_count
+
 		var zip_internal_path := script_path.replace("res://", "")
 		zp.start_file(zip_internal_path)
 		zp.write_file(transformed.to_utf8_buffer())
 		zp.close_file()
 		any_success = true
-		_log_info("[Hooks] Hooked: %s (%d methods) — validated OK" % [script_path, hooked_methods.size()])
+		_hook_script_paths[script_path] = true
+		_log_info("[Hooks] Wrapped: %s (%d methods)" % [script_path, method_count])
 
 	zp.close()
 
 	if not any_success:
 		DirAccess.remove_absolute(tmp_path)
 		return ""
+
+	_log_info("[Hooks] Hook pack: %d scripts, %d methods total" % [_hook_script_paths.size(), total_methods])
 
 	# Atomic rename: tmp → final path.  Prevents corrupt ZIPs from partial writes.
 	if FileAccess.file_exists(pack_path):
@@ -2826,10 +2847,7 @@ func _compute_state_hash(archive_paths: PackedStringArray, prepend_autoloads: Ar
 			var ver: String = (entry["cfg"] as ConfigFile).get_value("mod", "version", "")
 			if not ver.is_empty():
 				parts.append("v:%s=%s" % [entry["mod_id"], ver])
-	var sorted_hooks := _hook_registry.keys()
-	sorted_hooks.sort()
-	for key in sorted_hooks:
-		parts.append("h:" + key)
+	parts.append("ml:" + MODLOADER_VERSION)
 	return "\n".join(parts).md5_text()
 
 func _write_heartbeat() -> void:
@@ -2950,12 +2968,11 @@ func _print_conflict_summary() -> void:
 	if not _hook_script_paths.is_empty():
 		_log_info("")
 		_log_info("--- Hooked Scripts ---")
-		for script_path: String in _hook_script_paths:
-			var methods: Array[String] = []
-			for key: String in _hook_registry:
-				if key.begins_with(script_path + "::"):
-					methods.append(key.split("::")[1])
-			_log_info("  %s: %s" % [script_path, ", ".join(methods)])
+		_log_info("  %d scripts wrapped" % _hook_script_paths.size())
+		for key: String in _hook_registry:
+			var entry: Dictionary = _hook_registry[key]
+			if entry["before"].size() > 0 or entry["after"].size() > 0:
+				_log_info("  Active: %s (%d before, %d after)" % [key, entry["before"].size(), entry["after"].size()])
 
 	_log_info("============================================")
 	_log_info("")
