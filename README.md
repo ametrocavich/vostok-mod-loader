@@ -5,7 +5,7 @@ Mod loader for Road to Vostok (Godot 4.6). Adds a pre-game UI for managing mods,
 ## Requirements
 
 - Road to Vostok (PC, Steam)
-- Mods packaged as `.vmz` files
+- Mods packaged as `.vmz` or `.pck` files
 
 ## Installation
 
@@ -27,7 +27,12 @@ Mod loader for Road to Vostok (Godot 4.6). Adds a pre-game UI for managing mods,
 
 Drop `.vmz` files into the `mods` folder. They show up automatically on next launch.
 
-`.pck` files also work but have no mod.txt metadata, autoloads, or update checking.
+`.pck` files also work but have no mod.txt metadata, autoloads, or update checking. If a mod was distributed as a `.zip`, rename it to `.vmz`.
+
+| Format | Notes |
+|--------|-------|
+| `.vmz` | Road to Vostok's native mod format (renamed zip) |
+| `.pck` | Godot PCK - mount only, no mod.txt or autoloads |
 
 ## Launcher UI
 
@@ -63,8 +68,8 @@ modworkshop=12345
 | `id` | Unique ID. Duplicates are skipped. |
 | `version` | Version string for update comparison |
 | `priority` | Load order weight. Higher = loads later = wins conflicts. Default 0. |
-| `[autoload]` | `Name="res://path.gd"` - instantiated as a Node after mods mount |
-| `[hooks]` | Optional. Logged as hints, not required for hooks to work. See [Hooks](#hooks). |
+| `[autoload]` | `Name="res://path.gd"` - instantiated as a Node after mods mount. Prefix with `!` for [early autoloads](#early-autoloads). |
+| `[hooks]` | Optional. See [Hooks](#hooks). |
 | `[updates] modworkshop` | ModWorkshop ID for update checking |
 
 Mods without `mod.txt` still mount as resource packs. Their files override vanilla resources, but no autoloads run.
@@ -223,18 +228,16 @@ The `[hooks]` section in mod.txt is still recognized but no longer required. If 
 - **Per-frame overhead**. Unhooked methods cost one dictionary lookup per call. Methods with active hooks do the full dispatch (array allocation, callable iteration). On 314 wrapped methods with zero hooks active, there's no measurable performance impact.
 - **Source reconstruction**. Scripts are reconstructed from Godot's binary token format. Original comments and formatting are not preserved. The detokenizer handles Godot 4.0-4.6 token formats.
 
-### Troubleshooting
+### Hook troubleshooting
 
-- **"add_hook() for unwrapped script"** - the script path isn't a wrapped `class_name` script. Check that the path is correct and the script has a `class_name` declaration.
-- **"Cannot assign contents of Array[Object] to Array[Object]"** - a script whose `class_name` is used in typed arrays was wrapped. This shouldn't happen with the auto-detection, but if it does, check which class name is causing it and report an issue.
-- **"hooked but also replaced by..."** - another mod replaces the same script file. Hooks will wrap the modded version, not vanilla.
-- **Hook doesn't fire** - make sure you're calling `add_hook()` from `_ready()` in an autoload, not from a script in the scene tree. The hook needs to be registered before the method gets called.
-- **"Compiler bug: unresolved assign"** - Godot engine bug that can occur during compilation of certain scripts (e.g. KnifeRig.gd). Non-fatal, the script still works.
+- **"add_hook() for unwrapped script"** - the script path isn't a wrapped `class_name` script. Check the path and that the script has a `class_name` declaration.
+- **"Cannot assign contents of Array[Object] to Array[Object]"** - a script whose `class_name` is used in typed arrays was wrapped. Shouldn't happen with auto-detection. Report an issue if it does.
+- **"hooked but also replaced by..."** - another mod replaces the same script file. Hooks wrap the modded version, not vanilla.
+- **Hook doesn't fire** - make sure you're calling `add_hook()` from `_ready()` in an autoload, not from a scene script. The hook needs to be registered before the method gets called.
+- **"Compiler bug: unresolved assign"** - Godot engine bug during compilation of certain scripts (e.g. KnifeRig.gd). Non-fatal, the script still works.
 
 Hook cache: `%APPDATA%\Road to Vostok\modloader_hooks\`
 To force a full rebuild, delete the `modloader_hooks` folder and `mod_pass_state.cfg`.
-
-Errors go to `%APPDATA%\Road to Vostok\modloader_conflicts.txt`.
 
 ## Early Autoloads
 
@@ -248,14 +251,6 @@ EarlySetup="!res://MyMod/EarlySetup.gd"
 This triggers a two-pass launch. The mod loader writes the autoload to `override.cfg`, restarts the game, and your node is in the scene tree before the game's autoloads run.
 
 Regular autoloads (without `!`) load after all mods mount. Only use `!` when your mod genuinely needs to run before game autoloads.
-
-## Supported Archive Formats
-
-| Format | Notes |
-|--------|-------|
-| `.vmz` | Road to Vostok's native mod format (renamed zip) |
-| `.zip` | Must be renamed to `.vmz` before use |
-| `.pck` | Godot PCK - mount only, no mod.txt or autoloads |
 
 ## Troubleshooting
 
