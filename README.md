@@ -247,11 +247,69 @@ EarlySetup="!res://MyMod/EarlySetup.gd"
 
 This triggers a two-pass launch. The mod loader writes the autoload to `override.cfg`, restarts the game, and your node is in the scene tree before the game's autoloads run.
 
-Regular autoloads (without `!`) load after all mods mount.
+Regular autoloads (without `!`) load after all mods mount. Only use `!` when your mod genuinely needs to run before game autoloads.
+
+## Supported Archive Formats
+
+| Format | Notes |
+|--------|-------|
+| `.vmz` | Road to Vostok's native mod format (renamed zip) |
+| `.zip` | Must be renamed to `.vmz` before use |
+| `.pck` | Godot PCK - mount only, no mod.txt or autoloads |
+
+## Troubleshooting
+
+If the game crashes or gets stuck after enabling mods:
+
+- **Wait it out.** After 2 failed launches, the mod loader automatically resets to a clean state.
+- **Manual reset:** Create an empty file named `modloader_safe_mode` (no file extension) in the game folder. On next launch, the mod loader resets and deletes the file.
+- **Full reset:** Delete `override.cfg` from the game folder and replace it with a fresh copy from the mod loader release.
+
+## Conflict Report
+
+With Developer Mode enabled, a full conflict log is written to `%APPDATA%\Road to Vostok\modloader_conflicts.txt` after each launch.
+
+| Message | Meaning |
+|---------|---------|
+| **CONFLICT** | Two mods ship the same file. Last-loaded wins. Adjust priorities. |
+| **SCRIPT CONFLICT** | Two mods both `take_over_path()` the same script. Hard incompatibility. |
+| **CHAIN OK / CHAIN BROKEN** | Override chain via `super()`. OK means mods stack cleanly, BROKEN means one skips `super()`. |
+| **DATABASE OVERRIDE** | A mod replaced `Database.gd`. Normal for overhauls, may block other mods' scene overrides. |
+| **OVERHAUL** | 5+ core script overrides. Likely incompatible with other overhaul mods. |
+| **NO SUPER** | Lifecycle method override without `super()`. Breaks other mods in the chain. |
+| **BAD ZIP** | Backslash file paths in the archive. Re-pack with 7-Zip. |
+
+## Best Practices
+
+- **Package as `.vmz`** with forward-slash paths. Use 7-Zip, not .NET `ZipFile.CreateFromDirectory()` (writes backslashes).
+- **Include a `mod.txt`** at the archive root. Without it, autoloads won't run.
+- **Use `super()` in lifecycle methods.** Skipping it breaks other mods that override the same class.
+- **Prefer hooks over file replacement** when you only need to modify a few methods. Hooks compose across mods; file replacement doesn't.
+- **If you replace Database.gd**, every `preload()` path must exist or the game breaks.
+- **`UpdateTooltip()` is inventory-only.** World-item tooltips come from `HUD._physics_process` reading `gameData.tooltip`.
+- **Test with other mods installed** and check the conflict report.
+
+## VostokMods Compatibility
+
+Mods packaged for [VostokMods](https://github.com/Ryhon0/VostokMods) generally work with this loader.
+
+| Feature | Status |
+|---------|--------|
+| `.vmz` archives | Supported |
+| `mod.txt` format | Supported |
+| `[mod] priority` | Supported |
+| Filename priority prefix (`100-ModName.vmz`) | Supported |
+| `!` early autoload prefix | Supported |
+
+VostokMods runs as a separate launcher before Godot starts. This loader runs inside the game, so it cannot:
+
+- **Merge `override.cfg`** - engine settings are read at startup before GDScript runs
+- **Register `class_name`** - global class cache is read-only at runtime (use path references instead)
+- **Extract native plugins** - GDExtension `.dll`/`.so` files must be on disk at startup
 
 ## Uninstalling
 
-Delete `override.cfg` and `modloader.gd` from the game folder.
+Delete `override.cfg` and `modloader.gd` from the game folder. The `mods` folder and its contents can be removed separately.
 
 Settings: `%APPDATA%\Road to Vostok\mod_config.cfg`
 Conflict log: `%APPDATA%\Road to Vostok\modloader_conflicts.txt`
