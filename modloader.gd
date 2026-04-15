@@ -1,4 +1,4 @@
-## Metro Mod Loader — community mod loader for Road to Vostok (Godot 4.6+).
+## Metro Mod Loader -- community mod loader for Road to Vostok (Godot 4.6+).
 ## Loads .vmz/.pck archives from <game>/mods/ via a pre-game config window.
 ## Two-pass architecture: mounts archives at file-scope, optionally restarts to
 ## prepend mod autoloads before the game's own autoloads via [autoload_prepend].
@@ -72,30 +72,30 @@ static func _mount_previous_session() -> int:
 
 	var cfg := ConfigFile.new()
 	if cfg.load(PASS_STATE_PATH) != OK:
-		log_lines.append("[FileScope] No pass state file — skipping")
+		log_lines.append("[FileScope] No pass state file -- skipping")
 		_write_filescope_log(log_lines)
 		return 0
 	# Wipe stale state from a different modloader version (format may have changed).
 	var saved_ver: String = cfg.get_value("state", "modloader_version", "")
 	if saved_ver != MODLOADER_VERSION:
-		log_lines.append("[FileScope] Version mismatch: saved=%s current=%s — wiping" % [saved_ver, MODLOADER_VERSION])
+		log_lines.append("[FileScope] Version mismatch: saved=%s current=%s -- wiping" % [saved_ver, MODLOADER_VERSION])
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(PASS_STATE_PATH))
 		_write_filescope_log(log_lines)
 		return 0
-	# Detect game updates — exe mtime change means vanilla scripts may have changed.
+	# Detect game updates -- exe mtime change means vanilla scripts may have changed.
 	var saved_exe_mtime: int = cfg.get_value("state", "exe_mtime", 0)
 	if saved_exe_mtime != 0:
 		var current_exe_mtime := FileAccess.get_modified_time(OS.get_executable_path())
 		if current_exe_mtime != saved_exe_mtime:
-			log_lines.append("[FileScope] Game exe mtime changed — wiping hook cache")
-			# Game updated — wipe hook cache so Pass 1 regenerates from fresh vanilla.
+			log_lines.append("[FileScope] Game exe mtime changed -- wiping hook cache")
+			# Game updated -- wipe hook cache so Pass 1 regenerates from fresh vanilla.
 			_static_wipe_hook_cache()
 			DirAccess.remove_absolute(ProjectSettings.globalize_path(PASS_STATE_PATH))
 			_write_filescope_log(log_lines)
 			return 0
 	var paths: PackedStringArray = cfg.get_value("state", "archive_paths", PackedStringArray())
 	if paths.is_empty():
-		log_lines.append("[FileScope] Pass state has no archive paths — skipping")
+		log_lines.append("[FileScope] Pass state has no archive paths -- skipping")
 		_write_filescope_log(log_lines)
 		return 0
 
@@ -110,7 +110,7 @@ static func _mount_previous_session() -> int:
 		if FileAccess.file_exists(abs_path):
 			log_lines.append("[FileScope]   EXISTS: " + abs_path)
 			continue
-		# VMZ source gone — check if the zip cache survived.
+		# VMZ source gone -- check if the zip cache survived.
 		if abs_path.get_extension().to_lower() == "vmz":
 			var cache_dir := ProjectSettings.globalize_path(TMP_DIR)
 			var cached := cache_dir.path_join(abs_path.get_file().get_basename() + ".zip")
@@ -122,7 +122,7 @@ static func _mount_previous_session() -> int:
 		any_missing = true
 
 	if any_missing:
-		log_lines.append("[FileScope] Archive(s) missing — resetting to clean state")
+		log_lines.append("[FileScope] Archive(s) missing -- resetting to clean state")
 		# Archive gone, no cache. Wipe override.cfg autoload sections so the next
 		# boot is clean, but preserve any non-autoload settings ([display], etc.).
 		var exe_dir := OS.get_executable_path().get_base_dir()
@@ -139,7 +139,7 @@ static func _mount_previous_session() -> int:
 		return 0
 
 	if any_stale:
-		# Source gone but cache works — invalidate hash so Pass 1 rewrites state.
+		# Source gone but cache works -- invalidate hash so Pass 1 rewrites state.
 		cfg.set_value("state", "mods_hash", "")
 		cfg.save(PASS_STATE_PATH)
 
@@ -170,7 +170,7 @@ static func _mount_previous_session() -> int:
 		else:
 			log_lines.append("[FileScope]   HOOK PACK MOUNT FAILED: " + hook_pack)
 
-	log_lines.append("[FileScope] Done — %d archive(s) mounted" % count)
+	log_lines.append("[FileScope] Done -- %d archive(s) mounted" % count)
 	_write_filescope_log(log_lines)
 	return count
 
@@ -198,7 +198,7 @@ static func _static_wipe_hook_cache() -> void:
 	while file_name != "":
 		var full := cache_dir.path_join(file_name)
 		if dir.current_is_dir():
-			# Shallow — vanilla cache is only Scripts/*.gd (one level deep)
+			# Shallow -- vanilla cache is only Scripts/*.gd (one level deep)
 			var sub := DirAccess.open(full)
 			if sub:
 				sub.list_dir_begin()
@@ -251,7 +251,7 @@ func _ready() -> void:
 	else:
 		await _run_pass_1()
 
-# Pass 1: Normal launch — show UI, configure, optionally restart
+# Pass 1: Normal launch -- show UI, configure, optionally restart
 
 func _run_pass_1() -> void:
 	_log_info("Metro Mod Loader v" + MODLOADER_VERSION)
@@ -278,7 +278,7 @@ func _run_pass_1() -> void:
 		old_hash = state_cfg.get_value("state", "mods_hash", "")
 
 	if new_hash == old_hash and not new_hash.is_empty():
-		_log_info("Mod state unchanged — skipping restart")
+		_log_info("Mod state unchanged -- skipping restart")
 		await _finish_with_existing_mounts()
 		return
 
@@ -290,16 +290,16 @@ func _run_pass_1() -> void:
 		else:
 			archive_paths.append(hook_pack_path)
 	elif not _loaded_mod_ids.is_empty():
-		_log_critical("[Hooks] Hook pack generation failed — hooks will not work")
+		_log_critical("[Hooks] Hook pack generation failed -- hooks will not work")
 
 	if archive_paths.size() > 0:
-		_log_info("Preparing two-pass restart — %d archive(s)" % archive_paths.size())
+		_log_info("Preparing two-pass restart -- %d archive(s)" % archive_paths.size())
 		if sections.prepend.size() > 0:
 			_log_info("  %d early autoload(s) in [autoload_prepend]" % sections.prepend.size())
 		_write_heartbeat()
 		var err := _write_override_cfg(sections.prepend)
 		if err != OK:
-			_log_critical("Failed to write override.cfg (error %d) — single-pass fallback" % err)
+			_log_critical("Failed to write override.cfg (error %d) -- single-pass fallback" % err)
 			await _finish_single_pass()
 			return
 		if _write_pass_state(archive_paths, new_hash) != OK:
@@ -323,7 +323,7 @@ func _finish_with_existing_mounts() -> void:
 	_apply_hook_pack_scripts()
 	for entry in _pending_autoloads:
 		if get_tree().root.has_node(entry["name"]):
-			_log_info("  Autoload '%s' already in tree — skipped" % entry["name"])
+			_log_info("  Autoload '%s' already in tree -- skipped" % entry["name"])
 			continue
 		_instantiate_autoload(entry["mod_name"], entry["name"], entry["path"])
 	if _developer_mode:
@@ -357,10 +357,10 @@ func _finish_single_pass() -> void:
 			await get_tree().process_frame
 			_audit_override_instances()
 
-# Pass 2: Post-restart — archives already mounted at file-scope
+# Pass 2: Post-restart -- archives already mounted at file-scope
 
 func _run_pass_2() -> void:
-	_log_info("Pass 2 — %d archive(s) mounted at file-scope" % _file_scope_mounts)
+	_log_info("Pass 2 -- %d archive(s) mounted at file-scope" % _file_scope_mounts)
 	_apply_hook_pack_scripts()
 	_clear_restart_counter()
 	_compile_regex()
@@ -372,7 +372,7 @@ func _run_pass_2() -> void:
 	load_all_mods("Pass 2")
 	for entry in _pending_autoloads:
 		if get_tree().root.has_node(entry["name"]):
-			_log_info("  Autoload '%s' already in tree — skipped" % entry["name"])
+			_log_info("  Autoload '%s' already in tree -- skipped" % entry["name"])
 			continue
 		_instantiate_autoload(entry["mod_name"], entry["name"], entry["path"])
 
@@ -519,11 +519,11 @@ func _build_entry_warnings(entry: Dictionary) -> Array[String]:
 		return warnings
 	var status: String = entry.get("mod_txt_status", "none")
 	if status == "none":
-		warnings.append("Invalid mod — may not work correctly. Try re-downloading.")
+		warnings.append("Invalid mod -- may not work correctly. Try re-downloading.")
 	elif status == "parse_error":
-		warnings.append("Invalid mod — may not work correctly. Try re-downloading.")
+		warnings.append("Invalid mod -- may not work correctly. Try re-downloading.")
 	elif status.begins_with("nested:"):
-		warnings.append("Invalid mod — packaged incorrectly. Try re-downloading.")
+		warnings.append("Invalid mod -- packaged incorrectly. Try re-downloading.")
 	return warnings
 
 # Config persistence
@@ -561,7 +561,7 @@ func _save_ui_config() -> void:
 
 func show_mod_ui() -> void:
 	var win := Window.new()
-	win.title = "Road to Vostok — Mod Loader"
+	win.title = "Road to Vostok -- Mod Loader"
 	win.size = Vector2i(960, 640)
 	win.min_size = Vector2i(640, 420)
 	win.wrap_controls = false
@@ -693,7 +693,7 @@ func make_dark_theme() -> Theme:
 	t.set_color("font_pressed_color",  "Button", C_TEXT)
 	t.set_color("font_disabled_color", "Button", C_DIM)
 
-	# ── CheckBox (font only — box glyph needs texture to restyle) ─────────────
+	# ── CheckBox (font only -- box glyph needs texture to restyle) ─────────────
 	t.set_color("font_color",       "CheckBox", C_TEXT)
 	t.set_color("font_hover_color", "CheckBox", Color(1.0, 1.0, 1.0))
 
@@ -1056,13 +1056,13 @@ func build_updates_tab() -> Control:
 			name_col.add_child(mod_lbl)
 
 		var ver_lbl := Label.new()
-		ver_lbl.text = "v" + version if version != "" else "—"
+		ver_lbl.text = "v" + version if version != "" else "--"
 		ver_lbl.custom_minimum_size.x = 90
 		row.add_child(ver_lbl)
 
 		var status_lbl := Label.new()
 		status_lbl.custom_minimum_size.x = 160
-		status_lbl.text = "no update info" if mw_id == 0 or version == "" else "—"
+		status_lbl.text = "no update info" if mw_id == 0 or version == "" else "--"
 		row.add_child(status_lbl)
 
 		# Always add dl_btn to preserve column width. Use modulate.a to
@@ -1200,7 +1200,7 @@ func check_updates_for_ui(status_info: Dictionary, add_log: Callable, check_btn:
 					return
 				check_btn.disabled = false
 				if ok:
-					lbl.text = "updated — restart to apply"
+					lbl.text = "updated -- restart to apply"
 					lbl.modulate = Color(0.80, 0.80, 0.80)
 					dl_btn.modulate.a = 0.0
 					dl_btn.disabled = true
@@ -1209,13 +1209,13 @@ func check_updates_for_ui(status_info: Dictionary, add_log: Callable, check_btn:
 					# Update cached version so next Check won't re-flag this mod.
 					info["version"] = new_ver
 					(info["ver_lbl"] as Label).text = "v" + new_ver
-					add_log.call(mod_name + " — updated to v" + new_ver + ". Restart game to apply.")
+					add_log.call(mod_name + " -- updated to v" + new_ver + ". Restart game to apply.")
 				else:
 					lbl.text = "download failed"
 					lbl.modulate = Color(1.0, 0.4, 0.4)
 					dl_btn.disabled = false
 					dl_btn.text = "Retry"
-					add_log.call(mod_name + " — download failed.")
+					add_log.call(mod_name + " -- download failed.")
 			)
 
 # Main load loop
@@ -1245,13 +1245,13 @@ func load_all_mods(pass_label: String = "") -> void:
 		_log_info("No mods enabled.")
 		return
 
-	# Warn about duplicate mod names — likely a packaging mistake or fork.
+	# Warn about duplicate mod names -- likely a packaging mistake or fork.
 	# The sort is still deterministic (file_name tiebreaker), but users should know.
 	for i in range(1, candidates.size()):
 		if (candidates[i]["mod_name"] as String).to_lower() \
 				== (candidates[i - 1]["mod_name"] as String).to_lower():
 			_log_warning("Duplicate mod name '" + candidates[i]["mod_name"]
-					+ "' — archives '" + candidates[i - 1]["file_name"]
+					+ "' -- archives '" + candidates[i - 1]["file_name"]
 					+ "' and '" + candidates[i]["file_name"]
 					+ "'. Load order tie broken by archive filename.")
 
@@ -1277,11 +1277,11 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 	_log_info("--- [" + str(load_index + 1) + "] " + mod_name + " (" + file_name + ")")
 
 	if ext == "zip":
-		_log_warning("Skipping .zip file: " + file_name + " — rename to .vmz to use")
+		_log_warning("Skipping .zip file: " + file_name + " -- rename to .vmz to use")
 		return
 
 	if ext != "pck" and _loaded_mod_ids.has(mod_id):
-		_log_warning("Duplicate mod id '" + mod_id + "' — skipped: " + file_name)
+		_log_warning("Duplicate mod id '" + mod_id + "' -- skipped: " + file_name)
 		return
 
 	var mount_path := full_path
@@ -1306,16 +1306,16 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 		if cfg == null and ext != "pck":
 			var status: String = c.get("mod_txt_status", "none")
 			if status.begins_with("nested:"):
-				_log_warning("  Invalid mod — packaged incorrectly (nested mod.txt at " + status.substr(7) + ")")
+				_log_warning("  Invalid mod -- packaged incorrectly (nested mod.txt at " + status.substr(7) + ")")
 			elif status == "parse_error":
-				_log_warning("  Invalid mod — mod.txt failed to parse")
+				_log_warning("  Invalid mod -- mod.txt failed to parse")
 			else:
-				_log_warning("  No mod.txt — autoloads skipped")
+				_log_warning("  No mod.txt -- autoloads skipped")
 		return
 
 	_loaded_mod_ids[mod_id] = true
 
-	# [hooks] is optional — all class_name methods are pre-wrapped.
+	# [hooks] is optional -- all class_name methods are pre-wrapped.
 	if cfg != null and cfg.has_section("hooks"):
 		for key in cfg.get_section_keys("hooks"):
 			var script_path := str(key)
@@ -1339,11 +1339,11 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 		var res_path := raw_path
 
 		if res_path == "":
-			_log_warning("  Empty autoload path for '" + autoload_name + "' — skipped")
+			_log_warning("  Empty autoload path for '" + autoload_name + "' -- skipped")
 			continue
 
 		if _registered_autoload_names.has(autoload_name):
-			_log_warning("Duplicate autoload name '" + autoload_name + "' — skipped")
+			_log_warning("Duplicate autoload name '" + autoload_name + "' -- skipped")
 			continue
 		_registered_autoload_names[autoload_name] = true
 
@@ -1416,7 +1416,7 @@ func _compare_load_order(a: Dictionary, b: Dictionary) -> bool:
 	return (a["file_name"] as String).to_lower() < (b["file_name"] as String).to_lower()
 
 # Apply hook pack scripts via take_over_path.  class_name is stripped to avoid
-# "hides a global script class" — scripts with typed array refs are excluded
+# "hides a global script class" -- scripts with typed array refs are excluded
 # upstream in _generate_hook_pack() to prevent Array[Object] identity errors.
 func _apply_hook_pack_scripts() -> void:
 	var hook_pack := ProjectSettings.globalize_path(HOOK_PACK_PATH)
@@ -1456,12 +1456,12 @@ func _apply_hook_pack_scripts() -> void:
 	if applied > 0:
 		_log_info("[Hooks] Applied %d hooked script(s) via take_over_path" % applied)
 
-# Hook API — mods call add_hook() to intercept methods on class_name scripts.
+# Hook API -- mods call add_hook() to intercept methods on class_name scripts.
 # before=true: fires before vanilla (return true to skip). before=false: fires after.
 func add_hook(script_path: String, method_name: String, callback: Callable, before: bool = true) -> void:
 	var key := script_path + "::" + method_name
 	if not _hook_script_paths.is_empty() and not _hook_script_paths.has(script_path):
-		_log_warning("[Hooks] add_hook() for unwrapped script %s — not a class_name script?" % script_path)
+		_log_warning("[Hooks] add_hook() for unwrapped script %s -- not a class_name script?" % script_path)
 	if not _hook_registry.has(key):
 		_hook_registry[key] = { "before": [], "after": [] }
 	var list_key := "before" if before else "after"
@@ -1514,7 +1514,7 @@ func _build_class_name_lookup() -> void:
 				_class_name_to_path[cn] = path
 		_log_info("Loaded %d class_name mappings from game cache" % _class_name_to_path.size())
 	else:
-		_log_warning("Could not load global_script_class_cache.cfg — using hardcoded fallback")
+		_log_warning("Could not load global_script_class_cache.cfg -- using hardcoded fallback")
 		_class_name_to_path = _get_hardcoded_class_map()
 
 func _get_hardcoded_class_map() -> Dictionary:
@@ -1590,7 +1590,7 @@ const _GDSC_TOKEN_BITS := 8
 const _GDSC_TOKEN_MASK := (1 << (_GDSC_TOKEN_BITS - 1)) - 1  # 0x7F
 const _GDSC_TOKEN_BYTE_MASK := 0x80
 
-# Token type indices — Godot 4.5-4.6 / TOKENIZER_VERSION 101.
+# Token type indices -- Godot 4.5-4.6 / TOKENIZER_VERSION 101.
 # 0=EMPTY 1=ANNOTATION 2=IDENTIFIER 3=LITERAL
 # 4-9: < <= > >= == !=   10-15: and or not && || !
 # 16-21: & | ~ ^ << >>   22-27: + - * ** / %
@@ -1658,7 +1658,7 @@ const _SPACE_AFTER := {
 }
 
 func _detokenize_script(script_path: String) -> String:
-	# Try multiple methods to read raw bytes — FileAccess on res:// can fail for
+	# Try multiple methods to read raw bytes -- FileAccess on res:// can fail for
 	# PCK-embedded files depending on the container format (RSCC, encryption, etc.).
 	var raw := PackedByteArray()
 
@@ -1692,7 +1692,7 @@ func _detokenize_script(script_path: String) -> String:
 		return ""
 	var magic := raw.slice(0, 4).get_string_from_ascii()
 	if magic != _GDSC_MAGIC:
-		# Not a GDSC file — might be plain text that load() failed on for another reason.
+		# Not a GDSC file -- might be plain text that load() failed on for another reason.
 		var text := raw.get_string_from_utf8()
 		if not text.is_empty() and (text.begins_with("extends") or text.begins_with("class_name") or text.begins_with("@")):
 			return text
@@ -1804,7 +1804,7 @@ func _detokenize_script(script_path: String) -> String:
 		return ""
 
 	# ── Validate: try to parse the reconstructed source ──
-	# Strip class_name for validation — GDScript.new().reload() rejects duplicate
+	# Strip class_name for validation -- GDScript.new().reload() rejects duplicate
 	# class_name declarations that conflict with already-registered global classes.
 	var validate_source := result
 	var cn_regex := RegEx.new()
@@ -1819,7 +1819,7 @@ func _detokenize_script(script_path: String) -> String:
 		for j in mini(40, dbg_lines.size()):
 			_log_debug("[Detokenize]   %3d | %s" % [j + 1, dbg_lines[j]])
 	else:
-		_log_info("[Detokenize] Reconstructed: %s (%d tokens, %d lines) — parse OK" \
+		_log_info("[Detokenize] Reconstructed: %s (%d tokens, %d lines) -- parse OK" \
 				% [script_path, tokens.size(), result.count("\n") + 1])
 	return result
 
@@ -1858,7 +1858,7 @@ func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Arr
 			prev_tk = tk
 			continue
 
-		if tk == 89 or tk == 90:  # INDENT / DEDENT — skip, we use col_map instead
+		if tk == 89 or tk == 90:  # INDENT / DEDENT -- skip, we use col_map instead
 			prev_tk = tk
 			continue
 
@@ -1892,7 +1892,7 @@ func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Arr
 			if _SPACE_BEFORE.has(tk):
 				add_space_before = true
 			elif tk == 2 or tk == 3 or tk == 1 or (tk >= 40 and tk <= 72):
-				# IDENTIFIER, LITERAL, ANNOTATION, or any keyword — space before
+				# IDENTIFIER, LITERAL, ANNOTATION, or any keyword -- space before
 				# unless prev was an opener, dot, $, ~, !, indent, newline.
 				# Note: annotation (1) excluded only for identifiers (part of the
 				# annotation name), NOT for keywords like var/func after @export.
@@ -1994,7 +1994,7 @@ func _read_vanilla_source(script_path: String) -> String:
 					_save_vanilla_source(script_path, live.source_code)
 					return live.source_code
 				return cached
-			return cached  # live is hooked or binary-tokenized — trust cache
+			return cached  # live is hooked or binary-tokenized -- trust cache
 
 	var script := load(script_path) as GDScript
 	if script == null:
@@ -2002,13 +2002,13 @@ func _read_vanilla_source(script_path: String) -> String:
 
 	var source := script.source_code
 	if source.is_empty():
-		# Script is binary-tokenized (GDSC format) — detokenize from raw bytes.
+		# Script is binary-tokenized (GDSC format) -- detokenize from raw bytes.
 		source = _detokenize_script(script_path)
 		if source.is_empty():
 			return ""
 
 	if "func _vanilla_" in source:  # hook pack mounted but cache missing
-		_log_critical("[Hooks] Cannot read vanilla source for %s — delete %s and restart"
+		_log_critical("[Hooks] Cannot read vanilla source for %s -- delete %s and restart"
 				% [script_path, ProjectSettings.globalize_path(HOOK_PACK_PATH)])
 		return ""
 	_save_vanilla_source(script_path, source)
@@ -2076,7 +2076,7 @@ func _preprocess_script(script_path: String) -> String:
 			if stripped_line.begins_with("#"):
 				continue  # skip comment lines
 			if "super(" not in line_str:
-				continue  # fast path — no super() call on this line
+				continue  # fast path -- no super() call on this line
 			var comment_pos := line_str.find("#")
 			var super_pos := line_str.find("super(")
 			if comment_pos >= 0 and super_pos > comment_pos:
@@ -2103,7 +2103,7 @@ func _extract_method_info(script: GDScript, lines: Array, method_dict: Dictionar
 	var method_name: String = method_dict["name"]
 
 	var start_line := -1
-	# get_member_line() crashes on binary-tokenized scripts — only call it if
+	# get_member_line() crashes on binary-tokenized scripts -- only call it if
 	# the script has source code available.
 	if script.has_source_code():
 		start_line = script.get_member_line(method_name) - 1
@@ -2150,7 +2150,7 @@ func _extract_method_info(script: GDScript, lines: Array, method_dict: Dictionar
 	for i in range(body_start, body_end):
 		body_text += lines[i] + "\n"
 
-	# Detect async — check for `await` in body, but skip comments and strings.
+	# Detect async -- check for `await` in body, but skip comments and strings.
 	var is_async := _body_contains_keyword(body_text, "await")
 
 	# Determine return type.
@@ -2159,7 +2159,7 @@ func _extract_method_info(script: GDScript, lines: Array, method_dict: Dictionar
 	var ret = method_dict["return"]
 	if method_name == "_init" or method_name in LIFECYCLE_METHODS:
 		return_type = "void"
-	elif ret["type"] == 0:  # Variant::NIL — could be void or untyped
+	elif ret["type"] == 0:  # Variant::NIL -- could be void or untyped
 		if "-> void" in sig_line:
 			return_type = "void"
 		else:
@@ -2172,7 +2172,7 @@ func _extract_method_info(script: GDScript, lines: Array, method_dict: Dictionar
 					continue
 				var bind := _get_indent_level(bline)
 				if bind > method_indent + 1:
-					continue  # deeper indent — could be lambda body
+					continue  # deeper indent -- could be lambda body
 				if bstripped.begins_with("return ") and bstripped != "return":
 					has_value_return = true
 					break
@@ -2215,7 +2215,7 @@ func _body_contains_keyword(body_text: String, keyword: String) -> bool:
 			continue
 		if keyword not in stripped:
 			continue
-		# Skip if in a string literal — crude check: count quotes before keyword.
+		# Skip if in a string literal -- crude check: count quotes before keyword.
 		var kpos := stripped.find(keyword)
 		var dquotes := 0
 		var squotes := 0
@@ -2277,7 +2277,7 @@ func _generate_imposter(script_path: String, method_name: String, info: Dictiona
 	else:
 		lines.append("\t\treturn " + fast_call)
 
-	# Full dispatch — before hooks, arg mutation, vanilla call, after hooks.
+	# Full dispatch -- before hooks, arg mutation, vanilla call, after hooks.
 	var args_str := "[" + ", ".join(info["param_names"]) + "]"
 	lines.append("\tvar __hook_args := " + args_str)
 
@@ -2312,7 +2312,7 @@ func _generate_imposter(script_path: String, method_name: String, info: Dictiona
 
 func _find_typed_array_class_refs() -> Dictionary:
 	# Find class_names used as typed array elements (e.g. Array[SlotData]).
-	# These can't be wrapped — take_over_path breaks the pointer identity check
+	# These can't be wrapped -- take_over_path breaks the pointer identity check
 	# in container_type_validate.h (godotengine/godot#97433).
 	# Only scans class_name scripts; refs from other scripts aren't detected.
 	var refs: Dictionary = {}  # class_name -> true
@@ -2335,13 +2335,13 @@ func _generate_hook_pack() -> String:
 	if _class_name_to_path.is_empty():
 		return ""
 	if _loaded_mod_ids.is_empty():
-		return ""  # No mods loaded — no one to call add_hook()
+		return ""  # No mods loaded -- no one to call add_hook()
 
 	var unsafe_class_names := _find_typed_array_class_refs()
 
-	var _path_to_class_name: Dictionary = {}
+	var path_to_cn: Dictionary = {}
 	for k: String in _class_name_to_path:
-		_path_to_class_name[_class_name_to_path[k]] = k
+		path_to_cn[_class_name_to_path[k]] = k
 
 	_hook_script_paths.clear()
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(HOOK_PACK_DIR))
@@ -2360,15 +2360,15 @@ func _generate_hook_pack() -> String:
 	var total_methods := 0
 	for script_path: String in _class_name_to_path.values():
 		# Skip scripts whose class_name is referenced in typed arrays.
-		var cn: String = _path_to_class_name.get(script_path, "")
+		var cn: String = path_to_cn.get(script_path, "")
 		if cn in unsafe_class_names:
-			_log_info("[Hooks] Skipped %s — class_name '%s' used in typed arrays" % [script_path, cn])
+			_log_info("[Hooks] Skipped %s -- class_name '%s' used in typed arrays" % [script_path, cn])
 			continue
 		# Warn if a mod also ships a direct replacement for this script.
 		if _override_registry.has(script_path):
 			var claims: Array = _override_registry[script_path]
 			for claim in claims:
-				_log_warning("[Hooks] %s is hooked but also replaced by '%s' — hooks will wrap the modded version, not vanilla"
+				_log_warning("[Hooks] %s is hooked but also replaced by '%s' -- hooks will wrap the modded version, not vanilla"
 						% [script_path, claim["mod_name"]])
 
 		var transformed := _preprocess_script(script_path)
@@ -2381,7 +2381,7 @@ func _generate_hook_pack() -> String:
 		validate.source_code = validate_src
 		var verr := validate.reload(true)
 		if verr != OK:
-			_log_critical("[Hooks] Transformed %s has parse errors (error %d) — skipping" % [script_path, verr])
+			_log_critical("[Hooks] Transformed %s has parse errors (error %d) -- skipping" % [script_path, verr])
 			var vlines := transformed.split("\n")
 			for vj in mini(50, vlines.size()):
 				_log_debug("[Hooks]   %3d | %s" % [vj + 1, vlines[vj]])
@@ -2449,7 +2449,7 @@ func scan_and_register_archive_claims(archive_path: String, mod_name: String,
 		"extends_class_names":     [],
 		"override_methods":        {},   # extends_path -> Array[method_name]
 		"preload_paths":           [],
-		"calls_base":              false, # uses base() instead of super() — Godot 3 or removed method
+		"calls_base":              false, # uses base() instead of super() -- Godot 3 or removed method
 		"total_gd_files":          0,
 	}
 
@@ -2521,14 +2521,14 @@ func _scan_gd_source(text: String, analysis: Dictionary) -> void:
 		if path not in (analysis["extends_paths"] as Array):
 			(analysis["extends_paths"] as Array).append(path)
 
-	# Detect extends via class_name (e.g. "extends Weapon") — breaks override chains.
+	# Detect extends via class_name (e.g. "extends Weapon") -- breaks override chains.
 	var m_ext_cn := _re_extends_classname.search(text)
 	if m_ext_cn:
 		var cn := m_ext_cn.get_string(1)
 		if cn not in (analysis["extends_class_names"] as Array):
 			(analysis["extends_class_names"] as Array).append(cn)
 
-	# Detect class_name declarations — Godot bug #83542: can only be overridden once.
+	# Detect class_name declarations -- Godot bug #83542: can only be overridden once.
 	for m_cn in _re_class_name.search_all(text):
 		var cn := m_cn.get_string(1)
 		if cn not in (analysis["class_names"] as Array):
@@ -2539,21 +2539,21 @@ func _scan_gd_source(text: String, analysis: Dictionary) -> void:
 				or "take_over_path(parentScript" in text
 
 	# UpdateTooltip() is inventory-UI only. World-item tooltips are written directly
-	# by HUD._physics_process from gameData.tooltip — this override has no effect there.
+	# by HUD._physics_process from gameData.tooltip -- this override has no effect there.
 	if not analysis["calls_update_tooltip"]:
 		analysis["calls_update_tooltip"] = "UpdateTooltip" in text
 
-	# Detect base() calls — Godot 3 pattern or removed parent method.
+	# Detect base() calls -- Godot 3 pattern or removed parent method.
 	if not analysis["calls_base"]:
 		analysis["calls_base"] = "base(" in text
 
-	# preload() paths — used for stale-cache detection.
+	# preload() paths -- used for stale-cache detection.
 	for m_pl in _re_preload.search_all(text):
 		var pl_path := m_pl.get_string(1)
 		if pl_path not in (analysis["preload_paths"] as Array):
 			(analysis["preload_paths"] as Array).append(pl_path)
 
-	# Method declarations — needed for mod collision detection.
+	# Method declarations -- needed for mod collision detection.
 	var func_matches := _re_func.search_all(text)
 
 	# Determine the extends target for this file (if any).
@@ -2597,12 +2597,12 @@ func _check_class_name_safety(text: String, file_path: String, mod_name: String)
 		var to_path := m_to.get_string(1)
 		for cn: String in _class_name_to_path:
 			if _class_name_to_path[cn] == to_path:
-				_log_critical("  DANGER: %s calls take_over_path on class_name script %s (%s) — this will crash" % [file_path, to_path, cn])
+				_log_critical("  DANGER: %s calls take_over_path on class_name script %s (%s) -- this will crash" % [file_path, to_path, cn])
 				break
 
 # Override diagnostics (developer mode)
 
-# Log which mods use overrideScript() — overrides apply after scene reload.
+# Log which mods use overrideScript() -- overrides apply after scene reload.
 func _log_override_timing_warnings() -> void:
 	for mod_name: String in _mod_script_analysis:
 		var analysis: Dictionary = _mod_script_analysis[mod_name]
@@ -2613,7 +2613,7 @@ func _log_override_timing_warnings() -> void:
 			continue
 		var target_list := ", ".join(targets.map(func(p): return (p as String).get_file()))
 		_log_debug(mod_name + " uses overrideScript() on: " + target_list
-				+ " — applies after scene reload")
+				+ " -- applies after scene reload")
 
 # After reload, do any live nodes actually match the override targets?
 func _audit_override_instances() -> void:
@@ -2636,10 +2636,10 @@ func _audit_override_instances() -> void:
 		var mod_name: String = override_targets[target_path]
 		if live_script_paths.has(target_path):
 			_log_debug("Override applied: " + target_path.get_file()
-					+ " — " + str(live_script_paths[target_path]) + " node(s) [" + mod_name + "]")
+					+ " -- " + str(live_script_paths[target_path]) + " node(s) [" + mod_name + "]")
 		else:
 			_log_debug("Override registered but 0 nodes use " + target_path.get_file()
-					+ " in current scene — likely spawned at runtime [" + mod_name + "]")
+					+ " in current scene -- likely spawned at runtime [" + mod_name + "]")
 
 func _collect_live_scripts(root_node: Node, out: Dictionary) -> void:
 	var stack: Array[Node] = [root_node]
@@ -2677,7 +2677,7 @@ func _clean_early_autoload_dir() -> void:
 	var dir := DirAccess.open(dir_path)
 	if dir == null:
 		return
-	# Simple recursive wipe — this directory is entirely modloader-managed.
+	# Simple recursive wipe -- this directory is entirely modloader-managed.
 	dir.list_dir_begin()
 	while true:
 		var entry := dir.get_next()
@@ -2701,13 +2701,13 @@ func _clean_early_autoload_dir() -> void:
 # Extract an early autoload .gd script to disk if it only exists inside a
 # mounted archive.  Godot opens [autoload_prepend] scripts before file-scope
 # code runs, so archive-only scripts must be on disk for the restart.
-# Scene autoloads (.tscn) are handled by file-scope mounting — returned as-is.
+# Scene autoloads (.tscn) are handled by file-scope mounting -- returned as-is.
 func _ensure_early_autoload_on_disk(res_path: String, mod_name: String) -> String:
 	var global := ProjectSettings.globalize_path(res_path)
 	if FileAccess.file_exists(global):
 		return res_path
 
-	# Only .gd scripts need extraction — scenes resolve via file-scope mount.
+	# Only .gd scripts need extraction -- scenes resolve via file-scope mount.
 	var script := load(res_path) as GDScript
 	if script == null or not script.has_source_code():
 		return res_path
@@ -2741,14 +2741,14 @@ func _collect_enabled_archive_paths() -> PackedStringArray:
 			continue
 		if c["ext"] == "folder":
 			# Folder mods are zipped to a temp cache during load_all_mods().
-			# Store the temp zip path — the folder itself can't be mounted.
+			# Store the temp zip path -- the folder itself can't be mounted.
 			var folder_name: String = c["full_path"].get_file()
 			var tmp_zip := ProjectSettings.globalize_path(TMP_DIR).path_join(
 					folder_name + "_dev.zip")
 			if FileAccess.file_exists(tmp_zip):
 				paths.append(tmp_zip)
 			else:
-				_log_warning("Folder mod '%s' has no cached zip — skipping from pass state"
+				_log_warning("Folder mod '%s' has no cached zip -- skipping from pass state"
 						% c["mod_name"])
 			continue
 		paths.append(c["full_path"])
@@ -2804,7 +2804,7 @@ func _write_override_cfg(prepend_autoloads: Array[Dictionary]) -> Error:
 		return FileAccess.get_open_error()
 	f.store_string("\n".join(lines) + "\n" + preserved)
 	f.close()
-	# Windows DirAccess.rename() won't overwrite — remove target first.
+	# Windows DirAccess.rename() won't overwrite -- remove target first.
 	if FileAccess.file_exists(path):
 		DirAccess.remove_absolute(path)
 	var dir := DirAccess.open(exe_dir)
@@ -2863,12 +2863,12 @@ func _delete_heartbeat() -> void:
 func _check_crash_recovery() -> void:
 	if not FileAccess.file_exists(HEARTBEAT_PATH):
 		return
-	_log_warning("Heartbeat detected — previous launch may have crashed")
+	_log_warning("Heartbeat detected -- previous launch may have crashed")
 	var cfg := ConfigFile.new()
 	if cfg.load(PASS_STATE_PATH) == OK:
 		var count: int = cfg.get_value("state", "restart_count", 0)
 		if count >= MAX_RESTART_COUNT:
-			_log_critical("Restart loop (%d crashes) — resetting to clean state" % count)
+			_log_critical("Restart loop (%d crashes) -- resetting to clean state" % count)
 			_restore_clean_override_cfg()
 			DirAccess.remove_absolute(ProjectSettings.globalize_path(PASS_STATE_PATH))
 			_delete_heartbeat()
@@ -2880,7 +2880,7 @@ func _check_safe_mode() -> void:
 	var safe_path := exe_dir.path_join(SAFE_MODE_FILE)
 	if not FileAccess.file_exists(safe_path):
 		return
-	_log_warning("Safe mode file detected — resetting to clean state")
+	_log_warning("Safe mode file detected -- resetting to clean state")
 	_restore_clean_override_cfg()
 	if FileAccess.file_exists(PASS_STATE_PATH):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(PASS_STATE_PATH))
@@ -2904,12 +2904,12 @@ func _clean_stale_cache() -> void:
 			continue
 		var base := fname.get_basename()
 		if base.ends_with("_dev"):
-			# Folder mod cache — check if the source folder still exists.
+			# Folder mod cache -- check if the source folder still exists.
 			var folder_name := base.substr(0, base.length() - 4)
 			if DirAccess.dir_exists_absolute(_mods_dir.path_join(folder_name)):
 				continue
 		else:
-			# VMZ cache — check if the source .vmz still exists.
+			# VMZ cache -- check if the source .vmz still exists.
 			var vmz_name := base + ".vmz"
 			if FileAccess.file_exists(_mods_dir.path_join(vmz_name)):
 				continue
@@ -2923,7 +2923,7 @@ func _restore_clean_override_cfg() -> void:
 	var preserved := _read_preserved_cfg_sections(path)
 	var f := FileAccess.open(path, FileAccess.WRITE)
 	if f == null:
-		_log_critical("Cannot write override.cfg — game dir may be read-only: " + exe_dir)
+		_log_critical("Cannot write override.cfg -- game dir may be read-only: " + exe_dir)
 		return
 	f.store_string("[autoload]\nModLoader=\"*" + MODLOADER_RES_PATH + "\"\n" + preserved)
 	f.close()
@@ -2952,7 +2952,7 @@ func _print_conflict_summary() -> void:
 	_log_info("Conflicting resource paths: " + str(conflicted_paths.size()))
 
 	if conflicted_paths.is_empty():
-		_log_info("No resource path conflicts — all mods appear compatible.")
+		_log_info("No resource path conflicts -- all mods appear compatible.")
 	else:
 		_log_info("")
 		_log_info("--- Conflicted Paths (last loader wins) ---")
@@ -3000,7 +3000,7 @@ func _instantiate_autoload(mod_name: String, autoload_name: String, res_path: St
 
 	if get_tree().root.has_node(autoload_name):
 		_log_warning("Autoload name '" + autoload_name + "' conflicts with existing node at /root/"
-				+ autoload_name + " — Godot will rename it. [" + mod_name + "]")
+				+ autoload_name + " -- Godot will rename it. [" + mod_name + "]")
 
 	if resource is PackedScene:
 		var instance: Node = (resource as PackedScene).instantiate()
@@ -3029,7 +3029,7 @@ func _instantiate_autoload(mod_name: String, autoload_name: String, res_path: St
 			get_tree().root.add_child(inst as Node)
 			_log_info("Autoload instantiated (script): " + autoload_name + " [" + mod_name + "]")
 			return
-		_log_warning("Autoload is not a Node — not added to tree: " + autoload_name
+		_log_warning("Autoload is not a Node -- not added to tree: " + autoload_name
 				+ " [" + mod_name + "]")
 		return
 
@@ -3149,7 +3149,7 @@ func zip_folder_to_temp(folder_path: String) -> String:
 	if zp.open(tmp_zip_path) != OK:
 		_log_critical("Failed to create temp zip: " + tmp_zip_path)
 		return ""
-	# Zip contents without a top-level wrapper — the folder's internal structure
+	# Zip contents without a top-level wrapper -- the folder's internal structure
 	# already mirrors the res:// paths the mod expects.
 	_zip_folder_recursive(zp, folder_path, "")
 	zp.close()
