@@ -4,6 +4,17 @@
 ## prepend mod autoloads before the game's own autoloads via [autoload_prepend].
 extends Node
 
+# Nothing big just some sugar. It would be handy to have the modloader version as numbers.
+# Example Usage: if ModLoader.MAJOR_VERSION < 2: return
+
+# Either as seperate variables like this:
+const MAJOR_VERSION := 2
+const MINOR_VERSION := 1
+const PATCH_VERSION := 0
+
+# Or as an array:
+const MODLOADER_VERSION_NUMBERS = [2, 1, 0, "stable"] # Benefit of using the array version it would be possible to add the branch version e.g., stable, dev, experimental
+
 const MODLOADER_VERSION := "2.1.0"
 const MODLOADER_RES_PATH := "res://modloader.gd"
 const MOD_DIR := "mods"
