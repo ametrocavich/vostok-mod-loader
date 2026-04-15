@@ -64,7 +64,7 @@ modworkshop=12345
 | `version` | Version string for update comparison |
 | `priority` | Load order weight. Higher = loads later = wins conflicts. Default 0. |
 | `[autoload]` | `Name="res://path.gd"` - instantiated as a Node after mods mount |
-| `[hooks]` | Declares methods to hook. See [Hooks](#hooks). |
+| `[hooks]` | Optional. Logged as hints, not required for hooks to work. See [Hooks](#hooks). |
 | `[updates] modworkshop` | ModWorkshop ID for update checking |
 
 Mods without `mod.txt` still mount as resource packs. Their files override vanilla resources, but no autoloads run.
@@ -75,27 +75,11 @@ Hooks let you intercept methods on vanilla `class_name` scripts without replacin
 
 ### How it works
 
-1. Declare which methods you want to hook in `mod.txt`.
-2. At launch, the mod loader reads the game's binary-tokenized scripts, reconstructs the source, and rewrites the target methods with dispatch wrappers.
-3. Your autoload calls `ModLoader.add_hook()` to register callbacks.
+At startup the mod loader detokenizes every `class_name` script in the game, wraps each method with a dispatch imposter, and applies the result via `take_over_path()`. Mods just call `add_hook()` from their autoload. No `[hooks]` section in mod.txt needed.
 
-Rewritten scripts are applied via `take_over_path()`. Vanilla source is cached between launches. The cache auto-invalidates when the game executable changes.
+Unhooked methods have a fast-path that skips the dispatch entirely (single dictionary lookup, no array allocation). Only methods with active hooks pay the full dispatch cost.
 
-### Declaring hooks
-
-Add a `[hooks]` section to `mod.txt`. Keys are `res://` script paths, values are comma-separated method names:
-
-```ini
-[hooks]
-"res://Scripts/Controller.gd"="Movement, Gravity"
-"res://Scripts/Door.gd"="_ready, Interact"
-```
-
-Rules:
-- The script needs a `class_name` declaration.
-- Only methods the script defines can be hooked. Inherited methods that aren't overridden (like an un-overridden `_ready`) can't be hooked.
-- Typos in method names produce a warning in the log.
-- You need an `[autoload]` to call `add_hook()` at runtime.
+Vanilla source is cached between launches. The cache rebuilds automatically when the game updates or the modloader version changes.
 
 ### add_hook()
 
@@ -103,12 +87,14 @@ Call this from your autoload's `_ready()`:
 
 ```gdscript
 ModLoader.add_hook(
-    script_path: String,   # must match the key in [hooks]
-    method_name: String,   # must match a declared method
+    script_path: String,   # res:// path to the script
+    method_name: String,   # name of the method to hook
     callback: Callable,    # your function
     before: bool = true    # true = before hook, false = after hook
 )
 ```
+
+The script must have a `class_name` and the method must be defined in that script (not just inherited).
 
 ### Before hooks
 
@@ -148,9 +134,6 @@ name="Fast Doors"
 id="fast_doors"
 version="1.0.0"
 
-[hooks]
-"res://Scripts/Door.gd"="_ready"
-
 [autoload]
 FastDoors="res://FastDoors/Main.gd"
 ```
@@ -183,9 +166,6 @@ name="Low Gravity"
 id="low_gravity"
 version="1.0.0"
 
-[hooks]
-"res://Scripts/Controller.gd"="Gravity"
-
 [autoload]
 LowGravity="res://LowGravity/Main.gd"
 ```
@@ -216,6 +196,8 @@ func _skip_loot(instance: Object, args: Array) -> bool:
     return true  # vanilla GenerateLoot won't run
 ```
 
+Be careful with skip hooks on methods that manage game state (like `Jump` or `Movement`). Skipping a method that other code depends on can cause side effects.
+
 ### Multiple mods on the same method
 
 - Before hooks run in load order (by `priority`). If one returns `true`, later before hooks, the vanilla method, and after hooks are all skipped.
@@ -230,18 +212,27 @@ func _skip_loot(instance: Object, args: Array) -> bool:
 | Survives game updates | Yes, cache rebuilds | May break |
 | Scope | Per-method | Whole file |
 
+### Backwards compatibility
+
+The `[hooks]` section in mod.txt is still recognized but no longer required. If present, entries are logged as hints. Mods using the old format continue to work without changes.
+
 ### Limitations
 
-- Only methods the script defines can be hooked. If a script doesn't override `_ready()`, you can't hook it.
-- Hooking methods called every frame (from `_physics_process`) adds minor overhead from the dispatch wrapper.
-- Source is reconstructed from Godot's binary token format. Original comments are not preserved.
+- **Typed arrays**: Scripts whose `class_name` is used as a typed array element type (`Array[SlotData]`, `Array[ItemData]`, etc) can't be wrapped. `take_over_path()` breaks Godot's internal type identity check for typed arrays ([godotengine/godot#97433](https://github.com/godotengine/godot/issues/97433)). The modloader detects these automatically and skips them. Currently 9 class names are excluded, mostly data/save classes. If a future game update adds typed array references to a gameplay script, hooks on that script would stop firing.
+- **Own methods only**. If a script doesn't override `_ready()`, you can't hook it. Only methods the script defines (not inherited) are wrapped.
+- **Per-frame overhead**. Unhooked methods cost one dictionary lookup per call. Methods with active hooks do the full dispatch (array allocation, callable iteration). On 314 wrapped methods with zero hooks active, there's no measurable performance impact.
+- **Source reconstruction**. Scripts are reconstructed from Godot's binary token format. Original comments and formatting are not preserved. The detokenizer handles Godot 4.0-4.6 token formats.
 
 ### Troubleshooting
 
-- **"add_hook() for undeclared script"** - `script_path` doesn't match any key in your `[hooks]` section.
-- **"add_hook() for undeclared method"** - method name wasn't declared in `mod.txt`. The wrapper wasn't generated.
-- **"Method not found in script"** - the method doesn't exist in the vanilla script. Check spelling.
-- **"hooked but also replaced by..."** - another mod replaces the same script file. Hooks wrap the modded version.
+- **"add_hook() for unwrapped script"** - the script path isn't a wrapped `class_name` script. Check that the path is correct and the script has a `class_name` declaration.
+- **"Cannot assign contents of Array[Object] to Array[Object]"** - a script whose `class_name` is used in typed arrays was wrapped. This shouldn't happen with the auto-detection, but if it does, check which class name is causing it and report an issue.
+- **"hooked but also replaced by..."** - another mod replaces the same script file. Hooks will wrap the modded version, not vanilla.
+- **Hook doesn't fire** - make sure you're calling `add_hook()` from `_ready()` in an autoload, not from a script in the scene tree. The hook needs to be registered before the method gets called.
+- **"Compiler bug: unresolved assign"** - Godot engine bug that can occur during compilation of certain scripts (e.g. KnifeRig.gd). Non-fatal, the script still works.
+
+Hook cache: `%APPDATA%\Road to Vostok\modloader_hooks\`
+To force a full rebuild, delete the `modloader_hooks` folder and `mod_pass_state.cfg`.
 
 Errors go to `%APPDATA%\Road to Vostok\modloader_conflicts.txt`.
 
