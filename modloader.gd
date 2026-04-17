@@ -4,7 +4,7 @@
 ## prepend mod autoloads before the game's own autoloads via [autoload_prepend].
 extends Node
 
-const MODLOADER_VERSION := "2.3.0"
+const MODLOADER_VERSION := "2.3.1"
 const MODLOADER_RES_PATH := "res://modloader.gd"
 const MOD_DIR := "mods"
 const TMP_DIR := "user://vmz_mount_cache"
@@ -98,6 +98,12 @@ var _skip_super: bool = false
 var _seq: int = 0
 var _caller: Node = null                 # public: source node of the current dispatch
 var _is_ready: bool = false              # public: true once frameworks_ready has emitted
+# Step C re-entry guard: Set of hook_base currently executing a dispatch
+# wrapper. When a rewritten mod script's wrapper fires, then its body calls
+# super() into vanilla's wrapper, the vanilla wrapper sees the base already
+# active and skips dispatch (just runs its body). Prevents double-fire when
+# rewritten subclass scripts chain into rewritten vanilla.
+var _wrapper_active: Dictionary = {}
 
 # Runtime script-swap state.
 var _hook_swap_map: Dictionary = {}      # res_path -> framework GDScript
@@ -126,17 +132,72 @@ var _re_filename_priority: RegEx
 
 # Mounts previous session's archives at file-scope (before _ready) so autoloads
 # that load after ModLoader can resolve their res:// paths.
-var _file_scope_mounts: int = _mount_previous_session()
+# Returns a dict keyed by the archive path as it appears in pass state -- used
+# by _process_mod_candidate to skip redundant re-mounts that would clobber our
+# own overlay overrides applied at static init (e.g. hook pack for mod scripts).
+var _filescope_mounted: Dictionary = _mount_previous_session()
 
-static func _mount_previous_session() -> int:
+static func _mount_previous_session() -> Dictionary:
+	var mounted: Dictionary = {}
 	var log_lines: PackedStringArray = []
 	log_lines.append("[FileScope] _mount_previous_session() starting")
+
+	# PRE-INIT cache snapshot: at class-level static init, before we do ANY
+	# work (including hook pack mount), which of the known-pinned scripts
+	# are already compiled in Godot's ResourceCache? If YES here, something
+	# compiled them before ModLoader's class even loaded -- autoload_prepend
+	# won't help because ModLoader can't run any earlier in the current
+	# architecture. If NO here, they're compiled by game autoloads/scenes
+	# that run AFTER our static init, meaning there IS a window to preempt.
+	var pinned_probes: Array[String] = [
+		"res://Scripts/Camera.gd", "res://Scripts/WeaponRig.gd",
+		"res://Scripts/Bed.gd", "res://Scripts/Hitbox.gd", "res://Scripts/Pickup.gd",
+		"res://Scripts/Cat.gd", "res://Scripts/CatBox.gd", "res://Scripts/CatFeeder.gd",
+		"res://Scripts/Fish.gd", "res://Scripts/Lure.gd", "res://Scripts/FishingRig.gd",
+		"res://Scripts/Grenade.gd", "res://Scripts/GrenadeRig.gd",
+		"res://Scripts/KnifeRig.gd", "res://Scripts/Noise.gd", "res://Scripts/Recoil.gd",
+		"res://Scripts/Optic.gd", "res://Scripts/Laser.gd", "res://Scripts/PIP.gd",
+		"res://Scripts/Impulse.gd", "res://Scripts/Instrument.gd",
+		"res://Scripts/Television.gd", "res://Scripts/Sway.gd", "res://Scripts/Tilt.gd",
+		"res://Scripts/Handling.gd", "res://Scripts/Furniture.gd",
+		"res://Scripts/AudioInstance2D.gd", "res://Scripts/AudioInstance3D.gd",
+		"res://Scripts/LootContainer.gd", "res://Scripts/Grid.gd", "res://Scripts/UIPosition.gd",
+		# Autoload-like (expected to be cached at static init):
+		"res://Scripts/Database.gd", "res://Scripts/GameData.gd",
+		"res://Scripts/Settings.gd", "res://Scripts/Menu.gd", "res://Scripts/Loader.gd",
+		"res://Scripts/Inputs.gd", "res://Scripts/Simulation.gd",
+		"res://Scripts/Mode.gd", "res://Scripts/Profiler.gd",
+		# Controls (known-working via inline -- should NOT be cached):
+		"res://Scripts/Controller.gd", "res://Scripts/Door.gd", "res://Scripts/Trader.gd",
+	]
+	var pre_cached_count := 0
+	var pre_cached_tokenized: PackedStringArray = []
+	var pre_cached_source: PackedStringArray = []
+	var pre_notloaded: PackedStringArray = []
+	for path in pinned_probes:
+		if ResourceLoader.has_cached(path):
+			pre_cached_count += 1
+			var s := load(path) as GDScript
+			if s != null and s.source_code.length() > 0:
+				pre_cached_source.append(path.get_file())
+			else:
+				pre_cached_tokenized.append(path.get_file())
+		else:
+			pre_notloaded.append(path.get_file())
+	log_lines.append("[FileScope] PRE-INIT cache: %d/%d probes already cached at static init" \
+			% [pre_cached_count, pinned_probes.size()])
+	if pre_cached_tokenized.size() > 0:
+		log_lines.append("[FileScope]   tokenized (PCK-compiled already): " + ", ".join(pre_cached_tokenized))
+	if pre_cached_source.size() > 0:
+		log_lines.append("[FileScope]   source-loaded (our take_over_path from prev session): " + ", ".join(pre_cached_source))
+	if pre_notloaded.size() > 0:
+		log_lines.append("[FileScope]   NOT YET LOADED (preempt window open): " + ", ".join(pre_notloaded))
 
 	var cfg := ConfigFile.new()
 	if cfg.load(PASS_STATE_PATH) != OK:
 		log_lines.append("[FileScope] No pass state file -- skipping")
 		_write_filescope_log(log_lines)
-		return 0
+		return mounted
 	# Wipe stale state from a different modloader version (format may have changed).
 	# Also reset override.cfg -- prior version may have written [autoload_prepend]
 	# entries for mods that are no longer enabled, causing Godot to fail loading
@@ -147,7 +208,7 @@ static func _mount_previous_session() -> int:
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(PASS_STATE_PATH))
 		_static_reset_override_cfg(log_lines)
 		_write_filescope_log(log_lines)
-		return 0
+		return mounted
 	# Detect game updates -- exe mtime change means vanilla scripts may have changed.
 	var saved_exe_mtime: int = cfg.get_value("state", "exe_mtime", 0)
 	if saved_exe_mtime != 0:
@@ -159,12 +220,12 @@ static func _mount_previous_session() -> int:
 			DirAccess.remove_absolute(ProjectSettings.globalize_path(PASS_STATE_PATH))
 			_static_reset_override_cfg(log_lines)
 			_write_filescope_log(log_lines)
-			return 0
+			return mounted
 	var paths: PackedStringArray = cfg.get_value("state", "archive_paths", PackedStringArray())
 	if paths.is_empty():
 		log_lines.append("[FileScope] Pass state has no archive paths -- skipping")
 		_write_filescope_log(log_lines)
-		return 0
+		return mounted
 
 	log_lines.append("[FileScope] %d archive path(s) in pass state" % paths.size())
 
@@ -197,47 +258,117 @@ static func _mount_previous_session() -> int:
 		var preserved := _read_preserved_cfg_sections(cfg_path)
 		var f := FileAccess.open(cfg_path, FileAccess.WRITE)
 		if f:
-			f.store_string("[autoload]\nModLoader=\"*" + MODLOADER_RES_PATH + "\"\n" + preserved)
+			f.store_string("[autoload_prepend]\nModLoader=\"*" + MODLOADER_RES_PATH + "\"\n\n[autoload]\n\n" + preserved)
 			f.close()
 		var state_path := ProjectSettings.globalize_path(PASS_STATE_PATH)
 		if FileAccess.file_exists(state_path):
 			DirAccess.remove_absolute(state_path)
 		_write_filescope_log(log_lines)
-		return 0
+		return mounted
 
 	if any_stale:
 		# Source gone but cache works -- invalidate hash so Pass 1 rewrites state.
 		cfg.set_value("state", "mods_hash", "")
 		cfg.save(PASS_STATE_PATH)
 
-	var count := 0
 	for path in paths:
 		if ProjectSettings.load_resource_pack(path):
 			var remaps := _static_resolve_remaps(path)
 			log_lines.append("[FileScope]   MOUNTED: " + path
 					+ (" (%d remaps)" % remaps if remaps > 0 else ""))
-			count += 1
+			mounted[path] = true
 		elif path.get_extension().to_lower() == "vmz":
 			var zip_path := _static_vmz_to_zip(path)
 			if not zip_path.is_empty() and ProjectSettings.load_resource_pack(zip_path):
 				var remaps := _static_resolve_remaps(zip_path)
 				log_lines.append("[FileScope]   MOUNTED (vmz->zip): " + path
 						+ (" (%d remaps)" % remaps if remaps > 0 else ""))
-				count += 1
+				mounted[path] = true
 			else:
 				log_lines.append("[FileScope]   MOUNT FAILED (vmz): " + path + " zip_path=" + zip_path)
 		else:
 			log_lines.append("[FileScope]   MOUNT FAILED: " + path)
 
-	# Framework wrappers are NOT mounted at file scope. Each is take_over_path'd
-	# individually in _activate_hooked_scripts() after mods register. Mounting
-	# would shadow vanilla scripts in the VFS at init_cache time, causing every
-	# instantiation to go through the wrapper regardless of whether any mod
-	# wanted that framework active.
+	# Step D: mount the hook pack (Scripts/<Name>.gd + .gd.remap + empty
+	# .gdc for each rewritten vanilla) at static init -- BEFORE any game
+	# autoload compiles a class_name script. This is the only way to
+	# rewire scripts Godot pre-compiles during class_cache population
+	# (Camera, WeaponRig in the current mod set); source_code+reload and
+	# CACHE_MODE_IGNORE+take_over_path both fail after class_cache pins
+	# a compiled reference. Must mount AFTER mod archives so our
+	# Scripts/*.gd entries win via replace_files=true.
+	#
+	# First-ever session: no pass_state entry, skip. Pass 1 will generate
+	# and activate this session -- Camera/WeaponRig fall back to PCK
+	# bytecode that first run. Second session onward: pre-mount works.
+	# Fallback to HOOK_PACK_ZIP constant if pass_state lost the key
+	# (e.g. after a version-mismatch wipe). The zip survives on disk.
+	var hook_pack: String = cfg.get_value("state", "hook_pack_path", "") as String
+	if hook_pack == "":
+		var fallback_abs := ProjectSettings.globalize_path(HOOK_PACK_ZIP)
+		if FileAccess.file_exists(fallback_abs):
+			hook_pack = HOOK_PACK_ZIP
+			log_lines.append("[FileScope] HOOK PACK path missing from pass_state -- using fallback: " + HOOK_PACK_ZIP)
+	if hook_pack != "":
+		var hook_abs: String = hook_pack if not hook_pack.begins_with("user://") \
+				else ProjectSettings.globalize_path(hook_pack)
+		if FileAccess.file_exists(hook_abs):
+			if ProjectSettings.load_resource_pack(hook_abs, true):
+				log_lines.append("[FileScope] HOOK PACK mounted at static init: " + hook_pack)
+				# CRITICAL: mounting alone isn't enough. Godot pre-compiles
+				# class_name scripts referenced by the initial scene graph
+				# (Camera, WeaponRig) BEFORE ModLoader._ready. Once they land
+				# in ScriptServer.class_cache as PCK-bytecode, no runtime
+				# rewire works. Force a fresh source-compile of every
+				# rewritten script RIGHT NOW while we're still at static
+				# init -- before game autoloads run, before any scene
+				# instantiates. take_over_path claims the canonical path
+				# in the cache so downstream load()s return our version.
+				var hzr := ZIPReader.new()
+				if hzr.open(hook_abs) == OK:
+					var preloaded := 0
+					var preload_failed := 0
+					for f: String in hzr.get_files():
+						# Only force-compile vanilla Scripts/ entries.
+						# CACHE_MODE_IGNORE runs GDScript's strict reload parser
+						# on anything we preload. Vanilla scripts need that --
+						# we're preempting the PCK's .gdc compile. Mod scripts
+						# at <ModDir>/<Name>.gd are loaded lazily when the mod's
+						# autoload does load() -- lenient first-compile lets
+						# them through even if the mod's source has quirks
+						# (undeclared vars, missing identifiers) that strict
+						# reload rejects. We just need them mounted; the pack
+						# mount via load_resource_pack already serves them.
+						if not f.begins_with("Scripts/") or not f.ends_with(".gd"):
+							continue
+						var rpath := "res://" + f
+						var scr := ResourceLoader.load(rpath, "", ResourceLoader.CACHE_MODE_IGNORE) as GDScript
+						if scr == null or scr.source_code.is_empty():
+							preload_failed += 1
+							continue
+						scr.take_over_path(rpath)
+						preloaded += 1
+					hzr.close()
+					log_lines.append("[FileScope] HOOK PACK preloaded %d script(s) at static init (%d failed)" \
+							% [preloaded, preload_failed])
+			else:
+				log_lines.append("[FileScope] HOOK PACK mount FAILED: " + hook_pack)
+		else:
+			log_lines.append("[FileScope] HOOK PACK path in pass_state but file missing: " + hook_abs)
 
-	log_lines.append("[FileScope] Done -- %d archive(s) mounted" % count)
+	# TEST HOOK: mount the test pack here (static-init, before any autoload
+	# runs) so VFS serves our rewritten scripts to the FIRST compilation.
+	# Mount it AFTER mod archives so our entries win via replace_files=true.
+	var test_pack_path := ProjectSettings.globalize_path("user://test_pack_precedence.zip")
+	if FileAccess.file_exists(test_pack_path):
+		if ProjectSettings.load_resource_pack(test_pack_path, true):
+			log_lines.append("[FileScope] TEST: mounted test_pack_precedence.zip at static init")
+		else:
+			log_lines.append("[FileScope] TEST: FAILED to mount test_pack_precedence.zip")
+
+	log_lines.append("[FileScope] Done -- %d archive(s) mounted" % mounted.size())
 	_write_filescope_log(log_lines)
-	return count
+	return mounted
 
 static func _write_filescope_log(lines: PackedStringArray) -> void:
 	for line in lines:
@@ -262,9 +393,9 @@ static func _static_reset_override_cfg(log_lines: PackedStringArray) -> void:
 	if f == null:
 		log_lines.append("[FileScope] WARNING: could not rewrite override.cfg (read-only?)")
 		return
-	f.store_string("[autoload]\nModLoader=\"*" + MODLOADER_RES_PATH + "\"\n" + preserved)
+	f.store_string("[autoload_prepend]\nModLoader=\"*" + MODLOADER_RES_PATH + "\"\n\n[autoload]\n\n" + preserved)
 	f.close()
-	log_lines.append("[FileScope] override.cfg reset to clean [autoload] state")
+	log_lines.append("[FileScope] override.cfg reset to clean [autoload_prepend] state")
 
 static func _static_wipe_hook_cache() -> void:
 	# Wipe every Framework*.gd we previously generated (cheap to regenerate).
@@ -339,10 +470,369 @@ func _ready() -> void:
 		return
 	_has_loaded = true
 	await get_tree().process_frame
-	if "--modloader-restart" in OS.get_cmdline_user_args():
+	_compile_regex()
+	# Hook _load_all_mods completion to mount our test pack AFTER mod re-mounts.
+	# (Test pack mounted before _run_pass_2 gets overwritten when load_all_mods
+	# re-mounts ImmersiveXP.vmz with replace_files=true.)
+	var is_pass_2 := "--modloader-restart" in OS.get_cmdline_user_args()
+	if _load_test_pack_flag() and not is_pass_2:
+		_test_pack_precedence()
+		_log_info("[TEST-REMAP] test complete (Pass 1, before restart)")
+	if is_pass_2:
 		await _run_pass_2()
 	else:
 		await _run_pass_1()
+	# Deferred verify: by now all autoloads have run. Check what IXP took over.
+	if _load_test_pack_flag():
+		await get_tree().create_timer(1.0).timeout
+		_test_post_autoload_verify()
+
+func _test_post_autoload_verify() -> void:
+	const TAG := "[TEST-REMAP-POST]"
+	_log_info(TAG + " === DEFERRED VERIFY: 1s after all autoloads ===")
+	var s := load("res://Scripts/Controller.gd") as GDScript
+	if s == null:
+		_log_critical(TAG + " load() returned null")
+		return
+	var sc: String = s.source_code
+	var methods := s.get_script_method_list()
+	var names: Array = []
+	for m in methods:
+		names.append(m["name"])
+	_log_info(TAG + "   Scripts/Controller.gd:")
+	_log_info(TAG + "     source_code length: " + str(sc.length()))
+	_log_info(TAG + "     has vanilla-side marker: " + str("_rtv_test_remap_marker" in sc))
+	_log_info(TAG + "     has IXP-side marker: " + str("TEST-HOOK-IXP" in sc))
+	_log_info(TAG + "     _rtv_vanilla_Movement in methods: " + str("_rtv_vanilla_Movement" in names))
+	_log_info(TAG + "     Movement in methods: " + str("Movement" in names))
+	_log_info(TAG + "     method count: " + str(names.size()))
+	_log_info(TAG + "     global_name: '" + str(s.get_global_name()) + "'")
+	_log_info(TAG + "     script instance_id: " + str(s.get_instance_id()))
+
+	# Verified 2026-04-17: explicit load(IXP_PATH, REUSE/IGNORE) triggers
+	# #83542 after IXP's take_over_path (cache cold -> fresh compile ->
+	# find_class("Controller") fails against the IXP overlay at vanilla path).
+	# FileAccess-only ground truth avoids the forced recompile.
+	const IXP_PATH := "res://ImmersiveXP/Controller.gd"
+	if FileAccess.file_exists(IXP_PATH):
+		var bytes := FileAccess.get_file_as_bytes(IXP_PATH)
+		var txt := bytes.get_string_from_utf8()
+		_log_info(TAG + "   FileAccess IXP/Controller.gd: " + str(bytes.size()) + " bytes, has marker: " + str("TEST-HOOK-IXP" in txt))
+
+# =============================================================================
+# TEMPORARY: Pack-over-bytecode precedence test. Gated behind a setting flag
+# in mod_config.cfg. Remove after verifying whether mounting .gd + .gd.remap
+# beats the PCK's .gdc + .gd.remap for a specific resource path.
+# =============================================================================
+
+func _load_test_pack_flag() -> bool:
+	var cfg := ConfigFile.new()
+	if cfg.load(UI_CONFIG_PATH) != OK:
+		return false
+	return bool(cfg.get_value("settings", "test_pack_precedence", false))
+
+func _test_pack_precedence() -> void:
+	const TAG := "[TEST-REMAP]"
+	const TARGET_PATH := "res://Scripts/Controller.gd"
+	const REMAP_PATH := "res://Scripts/Controller.gd.remap"
+	const GDC_PATH := "res://Scripts/Controller.gdc"
+	const MARKER_SYMBOL := "_rtv_test_remap_marker"
+	const TEST_ZIP := "user://test_pack_precedence.zip"
+	_log_info(TAG + " starting pack-over-bytecode test for " + TARGET_PATH)
+
+	# --- PRE-MOUNT DIAGNOSTICS ---
+	_log_info(TAG + " === PRE-MOUNT VFS state ===")
+	_log_info(TAG + "   FileAccess.file_exists(.gd):       " + str(FileAccess.file_exists(TARGET_PATH)))
+	_log_info(TAG + "   FileAccess.file_exists(.gdc):      " + str(FileAccess.file_exists(GDC_PATH)))
+	_log_info(TAG + "   FileAccess.file_exists(.gd.remap): " + str(FileAccess.file_exists(REMAP_PATH)))
+	_log_info(TAG + "   ResourceLoader.exists(.gd):   " + str(ResourceLoader.exists(TARGET_PATH)))
+	_log_info(TAG + "   ResourceLoader.exists(.gdc):  " + str(ResourceLoader.exists(GDC_PATH)))
+	if FileAccess.file_exists(REMAP_PATH):
+		var pre_remap := FileAccess.get_file_as_string(REMAP_PATH)
+		_log_info(TAG + "   PCK's .remap content: " + pre_remap.replace("\n", "|"))
+
+	# --- BUILD TEST PACK ---
+	# IMPORTANT: do NOT call load(TARGET_PATH) here -- that would cache the
+	# bytecode version and prevent our mounted .gd from winning on subsequent
+	# loads. Go straight to detokenize, and explicitly target the .gdc path so
+	# a stale test pack mounted at static init can't pollute the input with
+	# its own rewritten .gd (duplicate-function parse error -> game breaks).
+	var vanilla_source := _detokenize_script(GDC_PATH)
+	if vanilla_source.is_empty():
+		_log_critical(TAG + " FAIL: could not detokenize vanilla source")
+		return
+
+	# Capture PRISTINE IXP/Controller.gd source via ZIPReader directly against
+	# the .vmz -- bypasses the VFS entirely, so we're immune to either
+	#   (a) destructive ops on a previously-mounted test pack leaving stale
+	#       mount entries pointing at a deleted file (old crash path), or
+	#   (b) reading an already-rewritten version from a prior session's pack
+	#       that got mounted at static init (double-rewrite duplicate funcs).
+	var mods_dir := OS.get_executable_path().get_base_dir().path_join(MOD_DIR)
+	var ixp_vmz_path := mods_dir.path_join("ImmersiveXP.vmz")
+	var captured_ixp_source := ""
+	if FileAccess.file_exists(ixp_vmz_path):
+		var ixp_zr := ZIPReader.new()
+		if ixp_zr.open(ixp_vmz_path) == OK:
+			var ixp_bytes := ixp_zr.read_file("ImmersiveXP/Controller.gd")
+			ixp_zr.close()
+			captured_ixp_source = ixp_bytes.get_string_from_utf8()
+			if captured_ixp_source.is_empty():
+				_log_warning(TAG + " IXP source read from vmz returned empty")
+			else:
+				_log_info(TAG + " Captured pristine IXP source from vmz: " \
+						+ str(captured_ixp_source.length()) + " bytes")
+		else:
+			_log_warning(TAG + " ZIPReader.open failed on " + ixp_vmz_path)
+	else:
+		_log_info(TAG + " ImmersiveXP.vmz not present, TEST 4B will skip")
+
+	# Step A (2026-04-17): feed the pristine vanilla through the production
+	# generator _rtv_rewrite_vanilla_source(). It renames EVERY non-static
+	# method to _rtv_vanilla_<name> and appends full dispatch wrappers at the
+	# original names. This proves the generator produces runtime-correct
+	# output for all methods (not just Movement like the prior inline
+	# rewrite did).
+	var parsed := _rtv_parse_script(TARGET_PATH.get_file(), vanilla_source)
+	var hookable_count := 0
+	for fe in parsed["functions"]:
+		if not fe["is_static"]:
+			hookable_count += 1
+	_log_info(TAG + " Step A: parsed %d function(s), %d hookable (non-static)" \
+			% [(parsed["functions"] as Array).size(), hookable_count])
+
+	var rewritten := _rtv_rewrite_vanilla_source(vanilla_source, parsed)
+
+	# Append the test-remap marker (non-hookable callable) so we can verify the
+	# compiled class is usable via script.new() + call(marker) below.
+	var marker_block: String = "\n# rtv test-remap marker\nfunc " + MARKER_SYMBOL \
+			+ "() -> String:\n\treturn \"test-remap-ok\"\n"
+	rewritten += marker_block
+
+	_log_info(TAG + " rewritten source length: " + str(rewritten.length()) + " chars (+" \
+			+ str(rewritten.length() - vanilla_source.length()) + ")")
+
+	# Which variant to test. Toggle by editing the next few lines:
+	var variant := "A"  # "A"=.gd + self-ref remap, "B"=.gd only, "C"=empty remap, "D"=.gd + .gdc-remap
+	_log_info(TAG + " VARIANT: " + variant)
+
+	var test_zip_abs := ProjectSettings.globalize_path(TEST_ZIP)
+	if FileAccess.file_exists(test_zip_abs):
+		DirAccess.remove_absolute(test_zip_abs)
+	var zp := ZIPPacker.new()
+	if zp.open(test_zip_abs) != OK:
+		_log_critical(TAG + " FAIL: cannot open test zip")
+		return
+	zp.start_file("Scripts/Controller.gd")
+	zp.write_file(rewritten.to_utf8_buffer())
+	zp.close_file()
+	match variant:
+		"A":  # .gd + self-referencing .remap (redirect-the-redirect)
+			zp.start_file("Scripts/Controller.gd.remap")
+			zp.write_file("[remap]\npath=\"res://Scripts/Controller.gd\"\n".to_utf8_buffer())
+			zp.close_file()
+		"B":  # .gd only, no .remap override
+			pass
+		"C":  # .gd + empty .remap (no path key)
+			zp.start_file("Scripts/Controller.gd.remap")
+			zp.write_file("[remap]\n".to_utf8_buffer())
+			zp.close_file()
+		"D":  # .gd + .remap pointing at same .gdc as before (no-op override)
+			zp.start_file("Scripts/Controller.gd.remap")
+			zp.write_file("[remap]\npath=\"res://Scripts/Controller.gdc\"\n".to_utf8_buffer())
+			zp.close_file()
+
+	# === TEST 4B: also pre-wrap ImmersiveXP's Controller.gd ===
+	# When ImmersiveXP's autoload does load("res://ImmersiveXP/Controller.gd")
+	# .take_over_path(vanilla_path), it'll load our pre-wrapped version and
+	# move THAT to the vanilla path. Hooks fire through the mod's chain.
+	# Uses captured_ixp_source captured at top of function -- reading IXP_PATH
+	# HERE fails after we delete the old test pack zip above (VFS has stale
+	# mount entries pointing at the deleted file).
+	const IXP_PATH := "res://ImmersiveXP/Controller.gd"
+	if not captured_ixp_source.is_empty():
+		var ixp_source := captured_ixp_source
+		if not ixp_source.is_empty():
+			_log_info(TAG + " IXP Controller source length: " + str(ixp_source.length()))
+			var ixp_lines: PackedStringArray = ixp_source.split("\n")
+			var ixp_renamed := false
+			for i in ixp_lines.size():
+				var line_str := str(ixp_lines[i])
+				if line_str.strip_edges().begins_with("func Movement("):
+					ixp_lines[i] = line_str.replace("func Movement(", "func _rtv_vanilla_Movement(")
+					ixp_renamed = true
+					break
+			var ixp_new_lines: Array = []
+			for line in ixp_lines:
+				ixp_new_lines.append(line)
+			if ixp_renamed:
+				# Detect indentation style: if source uses spaces, our appended
+				# wrapper must too (GDScript errors on mixed tabs/spaces).
+				var uses_spaces := false
+				for line in ixp_lines:
+					var line_str2 := str(line)
+					if line_str2.begins_with("    ") and not line_str2.begins_with("\t"):
+						uses_spaces = true
+						break
+					if line_str2.begins_with("\t"):
+						break
+				var ind := "    " if uses_spaces else "\t"
+				_log_info(TAG + " IXP indent style: " + ("spaces" if uses_spaces else "tabs"))
+				ixp_new_lines.append("")
+				ixp_new_lines.append("func Movement(delta):")
+				ixp_new_lines.append(ind + "if Engine.get_frames_drawn() % 60 == 0:")
+				ixp_new_lines.append(ind + ind + 'print("[TEST-HOOK-IXP] Movement called (frame %d)" % Engine.get_frames_drawn())')
+				ixp_new_lines.append(ind + "_rtv_vanilla_Movement(delta)")
+				ixp_new_lines.append("")
+				var ixp_rewritten := "\n".join(ixp_new_lines)
+				zp.start_file("ImmersiveXP/Controller.gd")
+				zp.write_file(ixp_rewritten.to_utf8_buffer())
+				zp.close_file()
+				# Also ship .gd.remap pointing back at .gd in case ImmersiveXP
+				# shipped a remap (mod archives from Godot export often do).
+				zp.start_file("ImmersiveXP/Controller.gd.remap")
+				zp.write_file("[remap]\npath=\"res://ImmersiveXP/Controller.gd\"\n".to_utf8_buffer())
+				zp.close_file()
+				_log_info(TAG + " TEST 4B: wrote pre-wrapped ImmersiveXP/Controller.gd (" \
+						+ str(ixp_rewritten.length()) + " chars)")
+			else:
+				_log_warning(TAG + " TEST 4B: Movement not found in IXP source, skipped")
+		else:
+			_log_info(TAG + " TEST 4B: IXP Controller source empty, skipped")
+	else:
+		_log_info(TAG + " TEST 4B: IXP Controller not in VFS (ImmersiveXP disabled?)")
+
+	zp.close()
+	_log_info(TAG + " wrote test pack")
+
+	# --- MOUNT ---
+	if not ProjectSettings.load_resource_pack(TEST_ZIP, true):
+		_log_critical(TAG + " FAIL: load_resource_pack returned false")
+		return
+	_log_info(TAG + " mounted test pack OK (replace_files=true)")
+
+	# --- POST-MOUNT DIAGNOSTICS ---
+	_log_info(TAG + " === POST-MOUNT VFS state ===")
+	_log_info(TAG + "   FileAccess.file_exists(.gd):       " + str(FileAccess.file_exists(TARGET_PATH)))
+	_log_info(TAG + "   FileAccess.file_exists(.gdc):      " + str(FileAccess.file_exists(GDC_PATH)))
+	_log_info(TAG + "   FileAccess.file_exists(.gd.remap): " + str(FileAccess.file_exists(REMAP_PATH)))
+	if FileAccess.file_exists(REMAP_PATH):
+		var post_remap := FileAccess.get_file_as_string(REMAP_PATH)
+		_log_info(TAG + "   .remap content post-mount: " + post_remap.replace("\n", "|"))
+	if FileAccess.file_exists(TARGET_PATH):
+		var gd_bytes := FileAccess.get_file_as_bytes(TARGET_PATH)
+		_log_info(TAG + "   .gd bytes readable: " + str(gd_bytes.size()) + " bytes")
+		if gd_bytes.size() > 0:
+			var first_80 := gd_bytes.slice(0, 80).get_string_from_utf8()
+			_log_info(TAG + "   .gd first 80 bytes: " + first_80.replace("\n", "|"))
+	# Also verify IXP path post-mount
+	const IXP_PATH_CHECK := "res://ImmersiveXP/Controller.gd"
+	if FileAccess.file_exists(IXP_PATH_CHECK):
+		var ixp_bytes := FileAccess.get_file_as_bytes(IXP_PATH_CHECK)
+		var ixp_content := ixp_bytes.get_string_from_utf8()
+		var has_our_hook := "TEST-HOOK-IXP" in ixp_content
+		_log_info(TAG + "   IXP/Controller.gd bytes: " + str(ixp_bytes.size()) + " has our marker: " + str(has_our_hook))
+		if not has_our_hook and ixp_content.length() > 0:
+			_log_info(TAG + "   IXP/Controller.gd first 80: " + ixp_content.substr(0, 80).replace("\n", "|"))
+
+	# --- LOAD TESTS ---
+	_log_info(TAG + " === LOAD ATTEMPTS (cache should be cold -- we never pre-loaded) ===")
+
+	# Attempt 1: default load(), same as any game code. If this has our marker,
+	# production scripts will get our version too.
+	var post := load(TARGET_PATH) as GDScript
+	if post:
+		var post_source: String = post.source_code
+		_log_info(TAG + "   load(.gd) [default=REUSE]: source_code length=" + str(post_source.length()) \
+				+ " has_marker=" + str(MARKER_SYMBOL in post_source))
+	else:
+		_log_critical(TAG + "   load(.gd) [default=REUSE]: returned null")
+
+	# Attempt 2: load again -- confirm cache is stable (returns same instance)
+	var post2 := load(TARGET_PATH) as GDScript
+	if post and post2:
+		_log_info(TAG + "   load(.gd) [2nd]: same_instance=" + str(post == post2) \
+				+ " same_source_length=" + str(post.source_code.length() == post2.source_code.length()))
+
+	# Attempt 3: ResourceLoader.CACHE_MODE_IGNORE (fresh VFS fetch, bypass cache)
+	var post_ignore := ResourceLoader.load(TARGET_PATH, "", ResourceLoader.CACHE_MODE_IGNORE) as GDScript
+	if post_ignore:
+		var ignore_source: String = post_ignore.source_code
+		_log_info(TAG + "   load(.gd, IGNORE): source_code length=" + str(ignore_source.length()) \
+				+ " has_marker=" + str(MARKER_SYMBOL in ignore_source))
+
+	# Attempt 4: deeper diagnostics on the compiled script
+	var marker_in_method_list := false
+	if post:
+		_log_info(TAG + "   global_name: " + str(post.get_global_name()))
+		_log_info(TAG + "   instance_base_type: " + post.get_instance_base_type())
+		var methods := post.get_script_method_list()
+		var method_names: Array = []
+		for m in methods:
+			method_names.append(m["name"])
+		marker_in_method_list = MARKER_SYMBOL in method_names
+		_log_info(TAG + "   method list count: " + str(method_names.size()) \
+				+ "  marker_in_list: " + str(marker_in_method_list))
+
+	# Attempt 5: DEFINITIVE test -- instantiate the script and call the marker method
+	var instantiate_ok := false
+	var call_returned: Variant = null
+	var call_err := ""
+	if post and marker_in_method_list:
+		# Script.new() for Node-derived scripts creates a new instance; must free() it.
+		# Wrap in a safety check -- CharacterBody3D init may fail without scene context.
+		var inst = null
+		var new_ok := false
+		inst = post.new() if post.can_instantiate() else null
+		new_ok = inst != null
+		_log_info(TAG + "   script.new() returned non-null: " + str(new_ok))
+		if new_ok:
+			instantiate_ok = true
+			if inst.has_method(MARKER_SYMBOL):
+				call_returned = inst.call(MARKER_SYMBOL)
+				_log_info(TAG + "   instance.call(marker): returned " + str(call_returned))
+			else:
+				call_err = "instance lacks marker method despite class having it"
+				_log_info(TAG + "   " + call_err)
+			# Clean up -- don't leak Node instances
+			if inst is Node:
+				(inst as Node).queue_free()
+			else:
+				inst = null
+
+	# Check Movement method rewrite landed in compiled class
+	var vanilla_movement_in_list := false
+	var wrapper_movement_in_list := false
+	if post:
+		var methods2 := post.get_script_method_list()
+		for m in methods2:
+			if m["name"] == "_rtv_vanilla_Movement":
+				vanilla_movement_in_list = true
+			elif m["name"] == "Movement":
+				wrapper_movement_in_list = true
+		_log_info(TAG + "   _rtv_vanilla_Movement in method list: " + str(vanilla_movement_in_list))
+		_log_info(TAG + "   Movement (wrapper) in method list: " + str(wrapper_movement_in_list))
+
+	# Final verdict
+	var final_sc := (post.source_code if post else "") as String
+	if marker_in_method_list and call_returned == "test-remap-ok":
+		_log_info(TAG + " ====== CONFIRMED SUCCESS: rewrite compiled AND callable ======")
+		if vanilla_movement_in_list and wrapper_movement_in_list:
+			_log_info(TAG + " Step A: Movement rename + dispatch wrapper both compiled OK")
+			_log_info(TAG + " (wrapper prints nothing by itself; [TEST-HOOK-IXP] from IXP-side wrapper is the in-game signal)")
+		else:
+			_log_warning(TAG + " Step A: Movement intercept NOT compiled (vanilla_in=%s, wrapper_in=%s)" \
+					% [vanilla_movement_in_list, wrapper_movement_in_list])
+	elif marker_in_method_list:
+		_log_info(TAG + " ====== LIKELY SUCCESS: compiled script has marker method ======")
+		_log_info(TAG + " (couldn't instantiate to call -- instantiate_ok=" + str(instantiate_ok) \
+				+ " err='" + call_err + "')")
+	elif MARKER_SYMBOL in final_sc:
+		_log_critical(TAG + " ====== SOURCE-ONLY: text has marker but compiled class does not ======")
+	elif final_sc.is_empty():
+		_log_critical(TAG + " ====== FAIL: got bytecode, source empty ======")
+	else:
+		_log_critical(TAG + " ====== UNKNOWN: got source but no marker ======")
 
 # Pass 1: Normal launch -- show UI, configure, optionally restart
 
@@ -431,7 +921,7 @@ func _finish_with_existing_mounts() -> void:
 	_connect_node_swap()
 	_emit_frameworks_ready()
 	_delete_heartbeat()
-	if _file_scope_mounts > 0 or not _archive_file_sets.is_empty() or _pending_autoloads.size() > 0:
+	if not _filescope_mounted.is_empty() or not _archive_file_sets.is_empty() or _pending_autoloads.size() > 0:
 		var err := get_tree().reload_current_scene()
 		if err != OK:
 			_log_critical("reload_current_scene() failed with error " + str(err))
@@ -460,7 +950,7 @@ func _finish_single_pass() -> void:
 # Pass 2: Post-restart -- archives already mounted at file-scope
 
 func _run_pass_2() -> void:
-	_log_info("Pass 2 -- %d archive(s) mounted at file-scope" % _file_scope_mounts)
+	_log_info("Pass 2 -- %d archive(s) mounted at file-scope" % _filescope_mounted.size())
 	# Restore script overrides from pass state and apply before hooks.
 	var _pass_cfg := ConfigFile.new()
 	if _pass_cfg.load(PASS_STATE_PATH) == OK:
@@ -482,6 +972,33 @@ func _run_pass_2() -> void:
 	_detect_tetra_modlib()
 	_register_rtv_modlib_meta()
 	_generate_hook_pack()
+	# After load_all_mods re-mounts mod archives (wiping our IXP/Controller
+	# override), remount the already-generated test pack to re-apply.
+	# NOTE: Godot dedupes load_resource_pack by path, so mounting the same
+	# filename twice is a no-op. Copy to a different filename each time.
+	if _load_test_pack_flag():
+		var src_abs := ProjectSettings.globalize_path("user://test_pack_precedence.zip")
+		var reapply_abs := ProjectSettings.globalize_path("user://test_pack_reapply_" \
+				+ str(Time.get_ticks_msec()) + ".zip")
+		if FileAccess.file_exists(src_abs):
+			var src := FileAccess.open(src_abs, FileAccess.READ)
+			var dst := FileAccess.open(reapply_abs, FileAccess.WRITE)
+			if src and dst:
+				dst.store_buffer(src.get_buffer(src.get_length()))
+				src.close()
+				dst.close()
+				if ProjectSettings.load_resource_pack(reapply_abs, true):
+					_log_info("[TEST-REMAP] Pass 2: re-applied test pack via copy " + reapply_abs.get_file())
+					# Verify VFS state post-reapply
+					if FileAccess.file_exists("res://ImmersiveXP/Controller.gd"):
+						var chk := FileAccess.get_file_as_bytes("res://ImmersiveXP/Controller.gd")
+						var has_marker := "TEST-HOOK-IXP" in chk.get_string_from_utf8()
+						_log_info("[TEST-REMAP] Pass 2 post-reapply: IXP/Controller.gd = " \
+								+ str(chk.size()) + " bytes, has marker: " + str(has_marker))
+				else:
+					_log_warning("[TEST-REMAP] Pass 2: load_resource_pack on copy failed")
+			else:
+				_log_warning("[TEST-REMAP] Pass 2: failed to copy test pack")
 	for entry in _pending_autoloads:
 		if get_tree().root.has_node(entry["name"]):
 			_log_info("  Autoload '%s' already in tree -- skipped" % entry["name"])
@@ -496,7 +1013,7 @@ func _run_pass_2() -> void:
 	_connect_node_swap()
 	_emit_frameworks_ready()
 	_delete_heartbeat()
-	if _file_scope_mounts > 0 or not _archive_file_sets.is_empty() or _pending_autoloads.size() > 0:
+	if not _filescope_mounted.is_empty() or not _archive_file_sets.is_empty() or _pending_autoloads.size() > 0:
 		var err := get_tree().reload_current_scene()
 		if err != OK:
 			_log_critical("reload_current_scene() failed with error " + str(err))
@@ -662,6 +1179,13 @@ func _load_ui_config() -> void:
 
 func _save_ui_config() -> void:
 	var cfg := ConfigFile.new()
+	# Load existing to preserve any custom [settings] keys (e.g. test flags).
+	cfg.load(UI_CONFIG_PATH)
+	# Clear mod-specific sections so removed mods don't linger.
+	if cfg.has_section("enabled"):
+		cfg.erase_section("enabled")
+	if cfg.has_section("priority"):
+		cfg.erase_section("priority")
 	for entry in _ui_mod_entries:
 		var fn: String = entry["file_name"]
 		cfg.set_value("enabled", fn, entry["enabled"])
@@ -1404,12 +1928,20 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 			_log_critical("Failed to zip folder: " + file_name)
 			return
 
-	if not _try_mount_pack(mount_path):
+	# If this archive was already file-scope-mounted at static init, skip the
+	# redundant re-mount. ProjectSettings.load_resource_pack with
+	# replace_files=true (default in _try_mount_pack) would otherwise clobber
+	# any overlay pack we mounted AFTER this archive -- e.g. an inline-hooks
+	# overlay whose entries overlap with this mod's archive paths.
+	if _filescope_mounted.has(full_path):
+		_log_info("  File-scope mount active -- skipping re-mount")
+		_log_debug("  Mount path: " + mount_path)
+	elif not _try_mount_pack(mount_path):
 		_log_critical("Failed to mount: " + file_name + " (path: " + mount_path + ")")
 		return
-
-	_log_info("  Mounted OK")
-	_log_debug("  Mount path: " + mount_path)
+	else:
+		_log_info("  Mounted OK")
+		_log_debug("  Mount path: " + mount_path)
 
 	if ext != "pck":
 		var scan_path := mount_path if ext == "folder" else full_path
@@ -2389,38 +2921,31 @@ func _gdsc_variant_to_source(value: Variant) -> String:
 			return str(value)
 
 func _read_vanilla_source(script_path: String) -> String:
-	# If take_over_path already swapped this script to a framework wrapper, the
-	# live source will contain our markers. Fall back to the vanilla cache.
+	# On-disk cache first (pristine vanilla from a prior session's detokenize).
+	# IMPORTANT: do NOT call load(script_path) here, not even to "verify" the
+	# live script. Any load() triggers ResourceFormatLoaderGDScript to read
+	# the PCK's .gdc (via the PCK's stale .gd.remap) and cache the tokenized
+	# result at script_path. Subsequent hook-pack mounts + loads hit that
+	# cached entry instead of our rewrite. Cache must stay cold until the
+	# hook pack is mounted.
 	var cache_file := VANILLA_CACHE_DIR.path_join(script_path.trim_prefix("res://"))
 	if FileAccess.file_exists(cache_file):
 		var cached := FileAccess.get_file_as_string(cache_file)
 		if not cached.is_empty():
-			var live := load(script_path) as GDScript
-			var live_is_wrapper := live != null and not live.source_code.is_empty() \
-					and ("_rtv_ready_done" in live.source_code \
-						or 'Engine.get_meta("RTVModLib"' in live.source_code)
-			if live and not live.source_code.is_empty() and not live_is_wrapper:
-				if live.source_code != cached:  # game updated
-					_save_vanilla_source(script_path, live.source_code)
-					return live.source_code
-				return cached
-			return cached  # live is a framework wrapper or binary-tokenized -- trust cache
+			return cached
 
-	var script := load(script_path) as GDScript
-	if script == null:
+	# No cache: detokenize from raw .gdc bytes. This uses FileAccess only
+	# (never ResourceLoader), so no cache entry is created.
+	var source := _detokenize_script(script_path)
+	if source.is_empty():
 		return ""
 
-	var source := script.source_code
-	if source.is_empty():
-		# Script is binary-tokenized (GDSC format) -- detokenize from raw bytes.
-		source = _detokenize_script(script_path)
-		if source.is_empty():
-			return ""
-
-	# Detect a framework wrapper accidentally loaded at the vanilla path --
-	# means take_over_path already ran and we have no way back to vanilla.
+	# Detect a rewrite accidentally served at the vanilla path (would mean
+	# a prior session left a mount active that contaminated detokenize
+	# input -- shouldn't happen in the current design, but catch it loudly
+	# so we don't double-rewrite).
 	if "_rtv_ready_done" in source or 'Engine.get_meta("RTVModLib"' in source:
-		_log_critical("[Hooks] Cannot read vanilla source for %s -- framework wrapper is at the vanilla path. Delete %s and restart." \
+		_log_critical("[Hooks] Detokenized source for %s already contains rewrite markers -- possible stale overlay. Delete %s and restart." \
 				% [script_path, ProjectSettings.globalize_path(HOOK_PACK_DIR)])
 		return ""
 	_save_vanilla_source(script_path, source)
@@ -2634,7 +3159,7 @@ func _rtv_generate_override(script: Dictionary) -> String:
 
 		if is_ready:
 			out += "%s\n" % sig
-			out += "\tvar _lib = Engine.get_meta(\"RTVModLib\", null)\n"
+			out += "\tvar _lib = Engine.get_meta(\"RTVModLib\") if Engine.has_meta(\"RTVModLib\") else null\n"
 			out += "\tif !_lib:\n"
 			out += "\t\tif not _rtv_ready_done:\n"
 			out += "\t\t\t%s\n" % super_call
@@ -2660,7 +3185,7 @@ func _rtv_generate_override(script: Dictionary) -> String:
 			out += "\t_lib._dispatch_deferred(\"%s-callback\", %s)\n\n" % [hook_base, args_array]
 		elif not is_void:
 			out += "%s\n" % sig
-			out += "\tvar _lib = Engine.get_meta(\"RTVModLib\", null)\n"
+			out += "\tvar _lib = Engine.get_meta(\"RTVModLib\") if Engine.has_meta(\"RTVModLib\") else null\n"
 			out += "\tif !_lib:\n"
 			out += "\t\treturn %s\n" % super_call
 			out += "\t_lib._caller = self\n"
@@ -2684,7 +3209,7 @@ func _rtv_generate_override(script: Dictionary) -> String:
 			out += "\treturn _result\n\n"
 		else:
 			out += "%s\n" % sig
-			out += "\tvar _lib = Engine.get_meta(\"RTVModLib\", null)\n"
+			out += "\tvar _lib = Engine.get_meta(\"RTVModLib\") if Engine.has_meta(\"RTVModLib\") else null\n"
 			out += "\tif !_lib:\n"
 			out += "\t\t%s\n" % super_call
 			out += "\t\treturn\n"
@@ -2705,6 +3230,371 @@ func _rtv_generate_override(script: Dictionary) -> String:
 			out += "\t_lib._dispatch_deferred(\"%s-callback\", %s)\n\n" % [hook_base, args_array]
 
 	return out
+
+# Inline source-rewrite generator (Option C / Phase 1 Step A).
+#
+# Produces the full rewritten source of a vanilla script where each hookable
+# method <name> is renamed to _rtv_vanilla_<name> and a new <name> method is
+# appended that dispatches through RTVModLib hooks, then calls the renamed
+# original.
+#
+# Unlike _rtv_generate_override which produces a separate wrapper class that
+# extends vanilla, this rewrites the vanilla script itself. When shipped at
+# res://Scripts/<Name>.gd via a hook pack, it becomes the script Godot compiles
+# for that path -- no extends chain, no class_name registry asymmetry, no bug
+# #83542 regardless of what mods do with take_over_path.
+#
+# Caller MUST pass pristine vanilla source (e.g. from .gdc bytecode via
+# _read_vanilla_source / _detokenize_script). Passing already-rewritten source
+# produces duplicate-function parse errors.
+func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, rename_prefix: String = "_rtv_vanilla_") -> String:
+	# rename_prefix defaults to "_rtv_vanilla_" for vanilla scripts.
+	# Mod subclasses pass "_rtv_mod_" so the renamed mod body doesn't shadow
+	# vanilla's renamed body via virtual dispatch. Without this: mod's body
+	# is _rtv_vanilla_<name>, vanilla's body is ALSO _rtv_vanilla_<name>, and
+	# vanilla's wrapper calls _rtv_vanilla_<name>() on self -- which is a mod
+	# instance -- which dispatches to mod's body again. Infinite loop.
+	var hookable: Array = []
+	for fe in parsed["functions"]:
+		if fe["is_static"]:
+			continue
+		hookable.append(fe)
+	if hookable.is_empty():
+		return source
+
+	# Build set of hookable method names for fast lookup during rename pass.
+	var hookable_names: Dictionary = {}
+	for fe in hookable:
+		hookable_names[fe["name"]] = true
+
+	# Normalize line endings. IXP ships CRLF-encoded source; our appended
+	# wrappers use LF only. Mixing CRLF and LF in a single file confuses
+	# GDScript's parser with a "tab character for indentation" error (even
+	# when there are no tabs -- the misleading error is triggered by the
+	# ending mismatch). Strip all CR so the whole file is pure LF.
+	var src: String = source.replace("\r\n", "\n").replace("\r", "\n")
+
+	# Pass 1: rename top-level "func <name>(" to "func _rtv_vanilla_<name>("
+	# AND rewrite bare super() calls inside that body to super.<name>().
+	# Only matches at line start (static methods already filtered). Inner-class
+	# methods (indented) keep their names. class_name stays intact -- scripts
+	# ship at res://Scripts/<Name>.gd matching the PCK's class-cache
+	# registration, and extends-by-path from other scripts needs the target
+	# to carry a class_name to resolve.
+	#
+	# super() rewrite rationale: in IXP's Loader.gd `func CheckVersion(): ...
+	# return super()`, `super()` means "parent's version of the current
+	# function". After we rename the enclosing func to _rtv_vanilla_CheckVersion,
+	# GDScript's strict reload parser looks for _rtv_vanilla_CheckVersion on the
+	# parent -- which vanilla Loader doesn't have. Rewriting to
+	# `super.CheckVersion()` keeps it resolving to the original method name on
+	# parent (which is now our dispatch wrapper). `super.<explicit_method>()`
+	# and `super.OtherMethod()` are already explicit and pass through untouched.
+	var lines: PackedStringArray = src.split("\n")
+	var current_hooked_method: String = ""
+	for i in lines.size():
+		var line: String = lines[i]
+		# Top-level line (no indent): may open or close a method block.
+		if not line.is_empty() and line[0] != "\t" and line[0] != " ":
+			current_hooked_method = ""
+			if line.begins_with("func "):
+				var open_paren := line.find("(")
+				if open_paren >= 0:
+					var name_end := open_paren
+					while name_end > 5 and line[name_end - 1] == " ":
+						name_end -= 1
+					var method_name := line.substr(5, name_end - 5)
+					if hookable_names.has(method_name):
+						lines[i] = "func " + rename_prefix + method_name + line.substr(name_end)
+						current_hooked_method = method_name
+			continue
+		# Indented line: inside some block. If inside a renamed method, rewrite
+		# bare super( / super ( to super.<orig_name>( so it still resolves.
+		if current_hooked_method.is_empty():
+			continue
+		if not ("super" in line):
+			continue
+		lines[i] = _rewrite_bare_super(line, current_hooked_method)
+
+	# Pass 2: append dispatch wrappers at EOF. Match the source's indent
+	# style -- GDScript rejects tab/space mixing in a single file. IXP uses
+	# 4-space indent; vanilla RTV uses tabs.
+	var indent := _detect_indent_style(src)
+	var prefix := _rtv_script_hook_prefix(parsed["filename"])
+	var appended := "\n\n# --- Metro mod loader inline hook dispatch wrappers ---\n"
+	for fe in hookable:
+		appended += _rtv_dispatch_inline_src(fe, prefix, indent, rename_prefix) + "\n"
+
+	return "\n".join(lines) + appended
+
+# Rewrite bare `super(` / `super (` in a line to `super.<method>(`. Preserves
+# the rest of the line verbatim. Skips `super.<something>(` (already explicit),
+# and skips occurrences inside strings or comments by stopping at the first
+# `#` or quote. Called per-line within a renamed method's body.
+func _rewrite_bare_super(line: String, method_name: String) -> String:
+	# Strip inline comment/string content before matching to avoid false hits.
+	# Simple heuristic: search the part of the line before the first # (not in
+	# a string). Strings with # are rare enough that we accept false negatives.
+	var scan_end := line.length()
+	var comment_idx := line.find("#")
+	if comment_idx >= 0:
+		scan_end = comment_idx
+	var out := line
+	var cursor := 0
+	while cursor < scan_end:
+		var idx := out.find("super", cursor)
+		if idx < 0 or idx >= scan_end:
+			break
+		# Must be a whole word: preceding char can't be alphanumeric or _ or .
+		# (dot would mean this is `x.super...` -- not a super call).
+		if idx > 0:
+			var prev := out[idx - 1]
+			if prev == "." or prev == "_" or prev.to_upper() != prev.to_lower() \
+					or (prev >= "0" and prev <= "9"):
+				cursor = idx + 5
+				continue
+		# After "super", skip optional whitespace, then require "(".
+		var after := idx + 5
+		while after < out.length() and out[after] == " ":
+			after += 1
+		if after >= out.length() or out[after] != "(":
+			cursor = idx + 5
+			continue
+		# Rewrite "super(" segment to "super.<method>(", keeping the rest.
+		var before := out.substr(0, idx)
+		var rest := out.substr(after)  # from "("
+		out = before + "super." + method_name + rest
+		# Advance past the replaced region and update scan_end for shift.
+		var delta := 1 + method_name.length()  # added ".<name>"
+		cursor = idx + 5 + delta + 1  # past "super.<name>("
+		scan_end += delta
+	return out
+
+# Scan source for the first indented (non-empty, non-comment) line and return
+# its leading whitespace as the indent unit. Falls back to tab when the file
+# has no indentation (rare -- empty method bodies use `pass` which is typically
+# indented). Used to make generated wrappers match the file's existing style,
+# since GDScript forbids mixing tabs and spaces.
+func _detect_indent_style(source: String) -> String:
+	for line: String in source.split("\n"):
+		if line.is_empty():
+			continue
+		var ch: String = line[0]
+		if ch != "\t" and ch != " ":
+			continue
+		# Skip pure-whitespace lines.
+		var stripped := line.strip_edges()
+		if stripped.is_empty() or stripped.begins_with("#"):
+			continue
+		if ch == "\t":
+			return "\t"
+		var n := 0
+		while n < line.length() and line[n] == " ":
+			n += 1
+		if n > 0:
+			return " ".repeat(n)
+	return "\t"
+
+# Produces ONE inline dispatch wrapper that calls _rtv_vanilla_<name>(...).
+#
+# Mirrors _rtv_generate_override's templates but:
+#  - calls _rtv_vanilla_<name>(...) instead of super(...)
+#  - no _rtv_ready_done flag (same class, no inheritance-chain double-fire)
+#  - prepends `await` when the vanilla method is a coroutine
+func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "\t", rename_prefix: String = "_rtv_vanilla_") -> String:
+	var method_name: String = fe["name"]
+	var params: String = fe["params"]
+	var param_names_str: String = ", ".join(fe["param_names"])
+	var hook_base: String = "%s-%s" % [prefix, method_name.to_lower()]
+	var vanilla_call: String = "%s%s(%s)" % [rename_prefix, method_name, param_names_str]
+	var args_array: String = "[]" if param_names_str.is_empty() else "[%s]" % param_names_str
+	var is_coro: bool = bool(fe["is_coroutine"])
+	var is_engine_void: bool = method_name in RTV_ENGINE_VOID_METHODS
+	var is_void: bool = is_engine_void or not bool(fe["has_return_value"])
+	var aw: String = "await " if is_coro else ""
+
+	var sig: String = "func %s():" % method_name if params.is_empty() \
+			else "func %s(%s):" % [method_name, params]
+
+	# Indent levels. GDScript requires consistent tabs-or-spaces per file;
+	# IXP uses 4-space, vanilla RTV uses tabs. Caller passes the source's
+	# detected indent so the emitted wrapper matches.
+	var I1: String = indent
+	var I2: String = indent + indent
+	var I3: String = indent + indent + indent
+
+	var out := ""
+	# Dispatch-live probe: one counter per hook_base via Engine meta dict,
+	# plus a one-shot print the first time each wrapper fires. That
+	# gives a definitive list of every wrapper that executes at runtime
+	# AND proves the wrapper body actually runs (not just that source
+	# matches). Remove in Step E.
+	var probe: String = ""
+	probe += "%svar _rtv_bh = Engine.get_meta(\"_rtv_dispatch_by_hook\", {}) as Dictionary\n" % I1
+	probe += "%svar _rtv_prev = int(_rtv_bh.get(\"%s\", 0))\n" % [I1, hook_base]
+	probe += "%s_rtv_bh[\"%s\"] = _rtv_prev + 1\n" % [I1, hook_base]
+	probe += "%sEngine.set_meta(\"_rtv_dispatch_by_hook\", _rtv_bh)\n" % I1
+	probe += "%sEngine.set_meta(\"_rtv_dispatch_count\", int(Engine.get_meta(\"_rtv_dispatch_count\", 0)) + 1)\n" % I1
+	probe += "%sif _rtv_prev == 0:\n" % I1
+	probe += "%sprint(\"[RTV-WRAPPER-FIRST] %s\")\n" % [I2, hook_base]
+	# Step C re-entry guard: when a mod's rewritten wrapper fires and its body
+	# calls super() into vanilla's rewritten wrapper, the nested wrapper would
+	# dispatch again. Guard checks _lib._wrapper_active for this hook_base and
+	# if already set, skips ALL dispatch + replace lookup and just runs the
+	# vanilla body. One dispatch per logical call regardless of chain depth.
+	if not is_void:
+		out += "%s\n" % sig
+		out += probe
+		out += "%svar _lib = Engine.get_meta(\"RTVModLib\") if Engine.has_meta(\"RTVModLib\") else null\n" % I1
+		out += "%sif !_lib:\n" % I1
+		out += "%sEngine.set_meta(\"_rtv_dispatch_no_lib\", int(Engine.get_meta(\"_rtv_dispatch_no_lib\", 0)) + 1)\n" % I2
+		out += "%sreturn %s%s\n" % [I2, aw, vanilla_call]
+		out += "%sif _lib._wrapper_active.has(\"%s\"):\n" % [I1, hook_base]
+		out += "%sreturn %s%s\n" % [I2, aw, vanilla_call]
+		out += "%s_lib._wrapper_active[\"%s\"] = true\n" % [I1, hook_base]
+		out += "%s_lib._caller = self\n" % I1
+		out += "%s_lib._dispatch(\"%s-pre\", %s)\n" % [I1, hook_base, args_array]
+		out += "%svar _result\n" % I1
+		out += "%svar _repl = _lib._get_hooks(\"%s\")\n" % [I1, hook_base]
+		out += "%sif _repl.size() > 0:\n" % I1
+		out += "%svar _prev_skip = _lib._skip_super\n" % I2
+		out += "%s_lib._skip_super = false\n" % I2
+		out += "%svar _replret = _repl[0].callv(%s)\n" % [I2, args_array]
+		out += "%svar _did_skip = _lib._skip_super\n" % I2
+		out += "%s_lib._skip_super = _prev_skip\n" % I2
+		out += "%sif _did_skip:\n" % I2
+		out += "%s_result = _replret\n" % I3
+		out += "%selse:\n" % I2
+		out += "%s_result = %s%s\n" % [I3, aw, vanilla_call]
+		out += "%selse:\n" % I1
+		out += "%s_result = %s%s\n" % [I2, aw, vanilla_call]
+		out += "%s_lib._dispatch(\"%s-post\", %s)\n" % [I1, hook_base, args_array]
+		out += "%s_lib._dispatch_deferred(\"%s-callback\", %s)\n" % [I1, hook_base, args_array]
+		out += "%s_lib._wrapper_active.erase(\"%s\")\n" % [I1, hook_base]
+		out += "%sreturn _result\n" % I1
+	else:
+		out += "%s\n" % sig
+		out += probe
+		out += "%svar _lib = Engine.get_meta(\"RTVModLib\") if Engine.has_meta(\"RTVModLib\") else null\n" % I1
+		out += "%sif !_lib:\n" % I1
+		out += "%sEngine.set_meta(\"_rtv_dispatch_no_lib\", int(Engine.get_meta(\"_rtv_dispatch_no_lib\", 0)) + 1)\n" % I2
+		out += "%s%s%s\n" % [I2, aw, vanilla_call]
+		out += "%sreturn\n" % I2
+		out += "%sif _lib._wrapper_active.has(\"%s\"):\n" % [I1, hook_base]
+		out += "%s%s%s\n" % [I2, aw, vanilla_call]
+		out += "%sreturn\n" % I2
+		out += "%s_lib._wrapper_active[\"%s\"] = true\n" % [I1, hook_base]
+		out += "%s_lib._caller = self\n" % I1
+		out += "%s_lib._dispatch(\"%s-pre\", %s)\n" % [I1, hook_base, args_array]
+		out += "%svar _repl = _lib._get_hooks(\"%s\")\n" % [I1, hook_base]
+		out += "%sif _repl.size() > 0:\n" % I1
+		out += "%svar _prev_skip = _lib._skip_super\n" % I2
+		out += "%s_lib._skip_super = false\n" % I2
+		out += "%s_repl[0].callv(%s)\n" % [I2, args_array]
+		out += "%svar _did_skip = _lib._skip_super\n" % I2
+		out += "%s_lib._skip_super = _prev_skip\n" % I2
+		out += "%sif !_did_skip:\n" % I2
+		out += "%s%s%s\n" % [I3, aw, vanilla_call]
+		out += "%selse:\n" % I1
+		out += "%s%s%s\n" % [I2, aw, vanilla_call]
+		out += "%s_lib._dispatch(\"%s-post\", %s)\n" % [I1, hook_base, args_array]
+		out += "%s_lib._dispatch_deferred(\"%s-callback\", %s)\n" % [I1, hook_base, args_array]
+		out += "%s_lib._wrapper_active.erase(\"%s\")\n" % [I1, hook_base]
+	return out
+
+# Step C: mod-script extends scanner. For each enabled mod, walk the archive
+# looking for .gd files whose first non-trivial line is extends-by-literal
+# "res://Scripts/<X>.gd" where <X> is a vanilla script we already rewrite.
+# Those mod scripts get the same rename+dispatch-wrapper treatment, shipped
+# at their own res:// path, so hooks fire even when the mod replaces a
+# method without calling super().
+#
+# Returns Array of Dictionary: { mod_name, res_path, vanilla_filename,
+# source, load_index }. res_path is the mod's path (res://ModDir/X.gd),
+# vanilla_filename keys hook dispatch prefix ("Controller.gd" -> "controller").
+func _scan_mod_extends_targets(vanilla_filenames: Dictionary) -> Array:
+	var candidates: Array = []
+	var entries := _ui_mod_entries.duplicate()
+	entries.sort_custom(_compare_load_order)
+	var load_index := 0
+	for entry: Dictionary in entries:
+		if not entry["enabled"]:
+			continue
+		var mod_name: String = entry["mod_name"]
+		var archive_path: String = entry["full_path"]
+		var ext: String = entry["ext"]
+		# Resolve to zip path for ZIPReader access.
+		var abs_archive: String = archive_path
+		if ext == "vmz":
+			var cache_dir := ProjectSettings.globalize_path(TMP_DIR)
+			var cached := cache_dir.path_join(archive_path.get_file().get_basename() + ".zip")
+			if not FileAccess.file_exists(cached):
+				load_index += 1
+				continue
+			abs_archive = cached
+		elif ext == "folder":
+			# Folder mods materialize to a tmp zip during load_all_mods. Skip
+			# if that hasn't happened yet this session (rare path).
+			var folder_zip := ProjectSettings.globalize_path(TMP_DIR).path_join(
+					archive_path.get_file() + "_dev.zip")
+			if not FileAccess.file_exists(folder_zip):
+				load_index += 1
+				continue
+			abs_archive = folder_zip
+		elif ext != "zip" and ext != "pck":
+			load_index += 1
+			continue
+		var zr := ZIPReader.new()
+		if zr.open(abs_archive) != OK:
+			load_index += 1
+			continue
+		for f: String in zr.get_files():
+			var normalized := f.replace("\\", "/")
+			if normalized.get_extension().to_lower() != "gd":
+				continue
+			var bytes := zr.read_file(f)
+			if bytes.is_empty():
+				continue
+			var text := bytes.get_string_from_utf8()
+			var ext_target := _parse_extends_literal(text)
+			if ext_target.is_empty() or not ext_target.begins_with("res://Scripts/"):
+				continue
+			var vfn := ext_target.get_file()
+			if not vanilla_filenames.has(vfn):
+				continue
+			candidates.append({
+				"mod_name": mod_name,
+				"res_path": "res://" + normalized,
+				"vanilla_filename": vfn,
+				"source": text,
+				"load_index": load_index,
+			})
+		zr.close()
+		load_index += 1
+	return candidates
+
+# Parse first non-empty non-comment line for `extends "res://..."`. Returns
+# the quoted path, or "" if the script uses class-name extends, non-literal
+# extends (preload/load/variable), or something else.
+func _parse_extends_literal(source: String) -> String:
+	for raw in source.split("\n"):
+		var s := raw.strip_edges()
+		if s.is_empty() or s.begins_with("#"):
+			continue
+		# Skip tool/icon annotations that may precede extends.
+		if s.begins_with("@"):
+			continue
+		if not s.begins_with("extends"):
+			return ""
+		# "extends <target>" -- strip keyword + whitespace.
+		var rest := s.substr(7).strip_edges()
+		if rest.begins_with("\""):
+			var close := rest.find("\"", 1)
+			if close < 0:
+				return ""
+			return rest.substr(1, close - 1)
+		return ""
+	return ""
 
 # --- Script enumeration -----------------------------------------------------
 # DirAccess.get_files_at() returns at most 1 entry on res://Scripts/ in
@@ -2855,6 +3745,13 @@ func _generate_hook_pack() -> String:
 
 	var script_count := 0
 	var hook_count := 0
+	var packed_filenames: Array[String] = []
+	# Empty allowlist = process ALL hookable vanilla scripts. Used for
+	# measuring the pre-compiled-vs-source-compiled split across the
+	# full game. After _activate_rewritten_scripts runs, we can count
+	# from COMPILE-PROOF log lines how many scripts fell into the
+	# GDScriptCache-pinned bucket vs the live-inline bucket.
+	var _step_b_allowlist: Array[String] = []
 	for script_path: String in script_paths:
 		var filename := script_path.get_file()
 
@@ -2863,9 +3760,13 @@ func _generate_hook_pack() -> String:
 			continue
 		if filename in RTV_RESOURCE_SERIALIZED_SKIP or filename in RTV_RESOURCE_DATA_SKIP:
 			continue
+		if not _step_b_allowlist.is_empty() and filename not in _step_b_allowlist:
+			continue
 
-		# Warn if a [script_overrides] replacement is also in play -- the
-		# framework wrapper's super() will flow into the override, not vanilla.
+		# Warn if a [script_overrides] replacement is also in play. For rewritten
+		# scripts this is benign (no extends chain into the override) but the
+		# override still displaces our rewrite at its own path, so dispatch
+		# won't fire for nodes using the override.
 		if _override_registry.has(script_path) or _applied_script_overrides.has(script_path):
 			var sources: PackedStringArray = []
 			if _override_registry.has(script_path):
@@ -2875,7 +3776,7 @@ func _generate_hook_pack() -> String:
 				if entry["vanilla_path"] == script_path:
 					sources.append(entry["mod_name"] + " [script_overrides]")
 			if sources.size() > 0:
-				_log_warning("[RTVCodegen] %s is framework-wrapped and also overridden by %s -- wrappers will super() into the override" \
+				_log_warning("[RTVCodegen] %s is rewritten and also overridden by %s -- override displaces the rewrite, hooks won't fire for that path" \
 						% [script_path, ", ".join(sources)])
 
 		var source := _read_vanilla_source(script_path)
@@ -2893,31 +3794,455 @@ func _generate_hook_pack() -> String:
 		if hookable_count == 0:
 			continue
 
-		var wrapper := _rtv_generate_override(parsed)
-		var out_name := "Framework" + filename
-		var zip_internal := "modloader_hooks/" + out_name  # res:// prepended on mount
-		if zp.start_file(zip_internal) != OK:
-			_log_warning("[RTVCodegen] Failed to start zip entry %s" % zip_internal)
+		var rewritten := _rtv_rewrite_vanilla_source(source, parsed)
+		# Ship at the ORIGINAL vanilla path so class_name registration in the
+		# PCK's global_script_class_cache.cfg matches our file. Declaring
+		# class_name at a non-registered path triggers "Class X hides a
+		# global script class" errors for scripts Godot pre-compiled at
+		# startup (Camera, WeaponRig). Same-path keeps the registry
+		# consistent with what's at the path.
+		var gd_entry := "Scripts/" + filename
+		if zp.start_file(gd_entry) != OK:
+			_log_warning("[RTVCodegen] Failed to start zip entry %s" % gd_entry)
 			continue
-		zp.write_file(wrapper.to_utf8_buffer())
+		zp.write_file(rewritten.to_utf8_buffer())
+		zp.close_file()
+		# Self-referencing .gd.remap overrides the PCK's .gd.remap -> .gdc
+		# redirect. Godot's _path_remap reads this BEFORE GDScript loader.
+		var remap_entry := "Scripts/" + filename + ".remap"
+		if zp.start_file(remap_entry) != OK:
+			_log_warning("[RTVCodegen] Failed to start zip entry %s" % remap_entry)
+			continue
+		var remap_body := "[remap]\npath=\"res://Scripts/%s\"\n" % filename
+		zp.write_file(remap_body.to_utf8_buffer())
+		zp.close_file()
+		# Empty .gdc to shadow the PCK's bytecode. Godot's GDScript loader
+		# prefers a sibling .gdc when present at the same base path -- even
+		# after our self-referencing remap redirects to .gd. A zero-byte
+		# .gdc at the same path defeats that preference: Godot can't parse
+		# empty bytecode, silently falls back to compiling our .gd. Verified
+		# 2026-04-17 -- no engine errors, all 5 rewrites load live.
+		var gdc_filename: String = filename.replace(".gd", ".gdc")
+		var gdc_entry := "Scripts/" + gdc_filename
+		if zp.start_file(gdc_entry) != OK:
+			_log_warning("[RTVCodegen] Failed to start zip entry %s" % gdc_entry)
+			continue
+		zp.write_file(PackedByteArray())
 		zp.close_file()
 
 		script_count += 1
 		hook_count += hookable_count * 4  # pre/post/callback/replace per method
-		_log_debug("[RTVCodegen] Packed %s (%d hooks)" % [out_name, hookable_count * 4])
+		packed_filenames.append(filename)
+		_log_debug("[RTVCodegen] Rewrote Scripts/%s (%d hooks)" % [filename, hookable_count * 4])
+
+	# Step C: rewrite mod scripts that subclass a vanilla script we just
+	# rewrote. Same rename+dispatch treatment keyed to the vanilla filename,
+	# so hooks fire regardless of whether the mod's body calls super(). The
+	# re-entry guard in the dispatch template prevents double-fire when the
+	# mod's body DOES call super() through to vanilla's wrapper.
+	var vanilla_set: Dictionary = {}
+	for fn in packed_filenames:
+		vanilla_set[fn] = true
+	var mod_candidates := _scan_mod_extends_targets(vanilla_set)
+	var mod_script_count := 0
+	var mod_hook_count := 0
+	var mod_packed: Array[Dictionary] = []  # {res_path, vanilla_filename}
+	for cand: Dictionary in mod_candidates:
+		var cand_filename: String = (cand["res_path"] as String).get_file()
+		var vanilla_filename: String = cand["vanilla_filename"]
+		var mod_name: String = cand["mod_name"]
+		var source: String = cand["source"]
+		# Parse using the VANILLA filename so hook_base is "controller-*"
+		# not "immersivexp/controller-*" -- single hook namespace per vanilla.
+		var parsed := _rtv_parse_script(vanilla_filename, source)
+		var hookable_count := 0
+		for fe in parsed["functions"]:
+			if not fe["is_static"]:
+				hookable_count += 1
+		if hookable_count == 0:
+			continue
+		# Use _rtv_mod_ prefix for mod method renames so they don't shadow
+		# vanilla's _rtv_vanilla_ methods via virtual dispatch. Otherwise
+		# super._ready() -> vanilla wrapper -> _rtv_vanilla__ready() resolves
+		# back to the mod's override -> infinite loop.
+		var rewritten := _rtv_rewrite_vanilla_source(source, parsed, "_rtv_mod_")
+		# Pack at the mod's own path. Mount replace_files=true wins over the
+		# mod's .vmz which also serves this path. Script stays a subclass of
+		# rewritten vanilla via extends; its body may or may not call super.
+		var zip_rel: String = (cand["res_path"] as String).trim_prefix("res://")
+		if zp.start_file(zip_rel) != OK:
+			_log_warning("[RTVCodegen] Failed to start mod zip entry %s" % zip_rel)
+			continue
+		zp.write_file(rewritten.to_utf8_buffer())
+		zp.close_file()
+		# Self-referencing .remap to override any stale redirect from the
+		# mod archive (mods usually ship source-only, but defend anyway).
+		var mod_remap_entry := zip_rel + ".remap"
+		if zp.start_file(mod_remap_entry) == OK:
+			var mod_remap_body := "[remap]\npath=\"%s\"\n" % cand["res_path"]
+			zp.write_file(mod_remap_body.to_utf8_buffer())
+			zp.close_file()
+		# Empty .gdc shadow.
+		var mod_gdc_entry: String = zip_rel.replace(".gd", ".gdc")
+		if zp.start_file(mod_gdc_entry) == OK:
+			zp.write_file(PackedByteArray())
+			zp.close_file()
+		mod_script_count += 1
+		mod_hook_count += hookable_count * 4
+		mod_packed.append({"res_path": cand["res_path"], "vanilla_filename": vanilla_filename})
+		_log_debug("[RTVCodegen] Rewrote mod script %s (ext=%s, %d hooks) [%s]" \
+				% [cand["res_path"], vanilla_filename, hookable_count * 4, mod_name])
 
 	zp.close()
+	if mod_script_count > 0:
+		_log_info("[RTVCodegen] Rewrote %d mod subclass script(s), %d hook points -- composes with mods that bypass super()" \
+				% [mod_script_count, mod_hook_count])
+		hook_count += mod_hook_count
+		script_count += mod_script_count
 
-	# Mount must happen BEFORE mod autoloads run so [rtvmodlib] needs= resolves.
+	# Mount must happen BEFORE mod autoloads run so [rtvmodlib] needs= resolves
+	# and before any scene compiles against the rewritten class_name scripts.
+	# replace_files=true is the default in 4.6 but pass explicitly -- the whole
+	# design depends on our Scripts/*.gd + .gd.remap entries winning over the
+	# PCK's same-path entries in Godot's VFS layering.
 	if script_count > 0:
-		if ProjectSettings.load_resource_pack(HOOK_PACK_ZIP):
-			_log_info("[RTVCodegen] Generated %d framework wrapper(s), %d hook points -- pack mounted at %s" \
-					% [script_count, hook_count, HOOK_PACK_MOUNT_BASE])
+		if ProjectSettings.load_resource_pack(HOOK_PACK_ZIP, true):
+			_log_info("[RTVCodegen] Generated %d rewritten vanilla script(s), %d hook points -- pack mounted at res://" \
+					% [script_count, hook_count])
+			_activate_rewritten_scripts(packed_filenames)
 		else:
-			_log_critical("[RTVCodegen] Failed to mount framework pack at %s -- wrappers won't be loadable" % zip_abs)
+			_log_critical("[RTVCodegen] Failed to mount hook pack at %s -- rewrites won't load" % zip_abs)
 	else:
-		_log_info("[RTVCodegen] No frameworks produced -- no pack mounted")
+		_log_info("[RTVCodegen] No scripts rewritten -- no pack mounted")
 	return HOOK_PACK_ZIP
+
+# Force the game's ResourceCache entry for each rewritten vanilla path to use
+# our source. Necessary because:
+#   - pre-mount load()s (engine class_name pre-compile for scripts in the main
+#     scene graph, or anything else) cache the PCK's .gdc-compiled script at
+#     res://Scripts/<Name>.gd
+#   - CACHE_MODE_REPLACE doesn't fully rewrite those entries -- it re-reads
+#     through the GDScript loader which keeps the bytecode association
+#   - scene ext_resource and ClassName.new() both resolve through the cache,
+#     so if the cache is stale our dispatch wrappers never fire
+#
+# Direct mutation of source_code + reload() recompiles the existing cached
+# script in place. Scene nodes, ScriptServer class_cache, and any other
+# live references keep working -- they now dispatch through our wrappers.
+# Verified 2026-04-17: 158 wrapper calls in 4s across 5 scripts (physics
+# tick rate on active Camera/Controller nodes).
+func _activate_rewritten_scripts(filenames: Array[String]) -> void:
+	# PRE-ACTIVATE pass: classify each cached script as
+	#  (a) already has _rtv_vanilla_* from static-init preload (pinned OK)
+	#  (b) source_code matches our rewrite but methods don't (GDScriptCache-pinned)
+	#  (c) source_code is empty (tokenized bytecode from PCK, no Static init preload)
+	#  (d) something else
+	# Summary counts printed at the end so we don't have to count by hand.
+	var pre_a := 0
+	var pre_b := 0
+	var pre_c := 0
+	var pre_d := 0
+	var pre_b_names: PackedStringArray = []
+	var pre_c_names: PackedStringArray = []
+	for fname: String in filenames:
+		var vp := "res://Scripts/" + fname
+		var c := load(vp) as GDScript
+		if c == null:
+			pre_d += 1
+			continue
+		var pre_rename := false
+		for m in c.get_script_method_list():
+			if str(m["name"]).begins_with("_rtv_vanilla_"):
+				pre_rename = true
+				break
+		var srclen: int = c.source_code.length()
+		if pre_rename:
+			pre_a += 1
+		elif srclen > 0:
+			pre_b += 1
+			pre_b_names.append(fname)
+		else:
+			pre_c += 1
+			pre_c_names.append(fname)
+	_log_info("[RTVCodegen] PRE-ACTIVATE summary: inline-live=%d, pinned-with-source=%d, pinned-tokenized=%d, other=%d / total=%d" \
+			% [pre_a, pre_b, pre_c, pre_d, filenames.size()])
+	if pre_b > 0:
+		_log_info("[RTVCodegen]   pinned-with-source (GDScriptCache has our text but compiled methods are vanilla): %s" \
+				% ", ".join(Array(pre_b_names).slice(0, 25)))
+	if pre_c > 0:
+		_log_info("[RTVCodegen]   pinned-tokenized (PCK .gdc, our static-init preload missed): %s" \
+				% ", ".join(Array(pre_c_names).slice(0, 25)))
+
+	var activated := 0
+	var preactivated := 0
+	for fname: String in filenames:
+		var vp := "res://Scripts/" + fname
+		var cached := load(vp) as GDScript
+		if cached == null:
+			_log_warning("[RTVCodegen] activate %s: load returned null -- skip" % vp)
+			continue
+
+		# If static-init preload already put our rewrite into this cached
+		# script, skip the reload entirely. reload() would fail with
+		# "Cannot reload script while instances exist" for autoload-backed
+		# scripts (Database, GameData, Inputs, Loader, Menu, etc.) -- and
+		# the reload isn't needed anyway since the compiled methods
+		# already include our _rtv_vanilla_* renames.
+		var already_live := false
+		for m in cached.get_script_method_list():
+			if str(m["name"]).begins_with("_rtv_vanilla_"):
+				already_live = true
+				break
+		if already_live:
+			preactivated += 1
+			activated += 1
+			continue
+
+		# Otherwise: mutate source_code + reload. This covers scripts whose
+		# cache entry was compiled-from-source but without our rewrite yet
+		# (rare -- normal case is static-init preload already covered it).
+		var our_source := FileAccess.get_file_as_string(vp)
+		if our_source.is_empty():
+			_log_warning("[RTVCodegen] activate %s: FileAccess returned empty -- skip" % vp)
+			continue
+		cached.source_code = our_source
+		var err := cached.reload()
+		if err != OK:
+			_log_warning("[RTVCodegen] activate %s: reload failed (%s)" % [vp, error_string(err)])
+		# Step 2: verify the reload actually took by checking the compiled
+		# method list. For scripts originally compiled from .gdc bytecode
+		# (Camera, WeaponRig -- pre-compiled by the engine during startup
+		# because they're referenced by the initial scene graph), reload()
+		# does NOT re-parse from the mutated source_code -- it apparently
+		# re-reads bytecode. Fall back to loading a fresh script via
+		# CACHE_MODE_IGNORE (which goes through _path_remap -> our .gd
+		# with source compile) and take_over_path to displace the stale
+		# cache entry.
+		var has_rename := false
+		for m in cached.get_script_method_list():
+			if str(m["name"]).begins_with("_rtv_vanilla_"):
+				has_rename = true
+				break
+		if not has_rename:
+			_log_info("[RTVCodegen] activate %s: reload didn't apply (pre-compiled); falling back to fresh+take_over_path" % vp)
+			var fresh := ResourceLoader.load(vp, "", ResourceLoader.CACHE_MODE_IGNORE) as GDScript
+			if fresh == null:
+				_log_critical("[RTVCodegen] activate %s: fresh load returned null -- skip" % vp)
+				continue
+			var fresh_has_rename := false
+			for m in fresh.get_script_method_list():
+				if str(m["name"]).begins_with("_rtv_vanilla_"):
+					fresh_has_rename = true
+					break
+			if not fresh_has_rename:
+				_log_critical("[RTVCodegen] activate %s: fresh load also lacks renames -- rewrite isn't compiling" % vp)
+				continue
+			fresh.take_over_path(vp)
+			_log_info("[RTVCodegen] activate %s: fresh script took over vanilla path" % vp)
+		activated += 1
+	_log_info("[RTVCodegen] Activated %d/%d rewritten script(s) (%d already live from static-init preload)" \
+			% [activated, filenames.size(), preactivated])
+
+	# Step D: persist hook pack path to pass_state so the next session's
+	# _mount_previous_session() picks it up at static init -- BEFORE game
+	# autoloads compile class_name scripts from the PCK's .gdc. Only
+	# then can we rewire pre-compiled scripts like Camera and WeaponRig
+	# (ScriptServer.class_cache pins their bytecode once compiled).
+	_persist_hook_pack_state()
+
+	# End-to-end proof: register REAL hooks via the public RTVModLib API
+	# on well-known Controller/Camera/Door methods. If these fire at
+	# runtime, the full chain is working:
+	#   1. our rewrite is what game code compiles against
+	#   2. our dispatch wrapper runs on method entry
+	#   3. _dispatch("<hook_name>-pre", args) reaches RTVModLib's _hooks dict
+	#   4. our registered callback fires with the right args
+	# Each hook bumps its own counter via Engine meta; deferred log
+	# reports which hooks fired. If any of the three is zero, that
+	# layer of the chain is broken.
+	# Hooks spread across three phases: pre-gameplay menu (loader/simulation/
+	# profiler fire every physics tick from the start), menu UI (settings/
+	# menu fire on user click), gameplay (controller/character fire once in
+	# world). If the first set fires and the last doesn't, it's just timing.
+	# If NONE fire but dispatch counter is high, _hooks lookup is broken.
+	var probe_counts := {
+		"loader_pp": 0, "simulation_proc": 0, "profiler_proc": 0,
+		"menu_ready": 0, "settings_load": 0,
+		"controller_pp": 0, "character_pp": 0, "camera_pp": 0,
+	}
+	Engine.set_meta("_rtv_probe_counts", probe_counts)
+	Engine.set_meta("_rtv_probe_first_args", {})
+	var _bump := func(key: String, arg):
+		var pc: Dictionary = Engine.get_meta("_rtv_probe_counts", {})
+		pc[key] = int(pc.get(key, 0)) + 1
+		Engine.set_meta("_rtv_probe_counts", pc)
+		var fa: Dictionary = Engine.get_meta("_rtv_probe_first_args", {})
+		if not fa.has(key):
+			fa[key] = str(arg)
+			Engine.set_meta("_rtv_probe_first_args", fa)
+	hook("loader-_physics_process-pre", func(d): _bump.call("loader_pp", d), 100)
+	hook("simulation-_process-pre", func(d): _bump.call("simulation_proc", d), 100)
+	hook("profiler-_process-pre", func(d): _bump.call("profiler_proc", d), 100)
+	hook("menu-_ready-pre", func(): _bump.call("menu_ready", "(no args)"), 100)
+	hook("settings-loadpreferences-pre", func(): _bump.call("settings_load", "(no args)"), 100)
+	hook("controller-_physics_process-pre", func(d): _bump.call("controller_pp", d), 100)
+	hook("character-_physics_process-pre", func(d): _bump.call("character_pp", d), 100)
+	hook("camera-_physics_process-pre", func(d): _bump.call("camera_pp", d), 100)
+
+	# Compile proof: inspect the methods on each activated script. If our
+	# rewrite compiled into the cached GDScript, the method list contains
+	# both the renamed vanilla (e.g. _rtv_vanilla_Movement) AND the
+	# dispatch wrapper at the original name (e.g. Movement).
+	for fname: String in filenames:
+		var vp := "res://Scripts/" + fname
+		var s := load(vp) as GDScript
+		if s == null:
+			continue
+		var methods := s.get_script_method_list()
+		var has_vanilla_rename := false
+		var sample_rename := ""
+		for m in methods:
+			var n: String = str(m["name"])
+			if n.begins_with("_rtv_vanilla_"):
+				has_vanilla_rename = true
+				if sample_rename == "":
+					sample_rename = n
+				if sample_rename != "" and has_vanilla_rename:
+					break
+		_log_info("[RTVCodegen] COMPILE-PROOF %s: %d methods compiled, _rtv_vanilla_* present=%s (e.g. %s)" \
+				% [vp, methods.size(), has_vanilla_rename, sample_rename])
+
+	# Autoload instance inspection: for the "Already in use" set, the
+	# script's get_script_method_list() shows our renames, BUT the live
+	# autoload node might still be holding a pointer to the original
+	# bytecode via its get_script() property. If script_match=false for
+	# any of these, our rewrite isn't reaching the actual game instance.
+	var autoload_names: Array[String] = ["Database", "GameData", "Settings",
+			"Menu", "Loader", "Inputs", "Mode", "Profiler", "Simulation"]
+	var root := get_tree().root
+	for aname: String in autoload_names:
+		var node: Node = root.get_node_or_null(aname)
+		if node == null:
+			_log_info("[RTVCodegen] AUTOLOAD-CHECK %s: node NOT in tree" % aname)
+			continue
+		var scr := node.get_script() as GDScript
+		if scr == null:
+			_log_info("[RTVCodegen] AUTOLOAD-CHECK %s: no script attached" % aname)
+			continue
+		var has_rename := false
+		for m in scr.get_script_method_list():
+			if str(m["name"]).begins_with("_rtv_vanilla_"):
+				has_rename = true
+				break
+		# Also check if the method list is available via the INSTANCE (has_method
+		# on the node). If the node's bytecode is our rewrite, it should report
+		# _rtv_vanilla_<something> as a method.
+		var instance_methods_has_rename := false
+		for m in node.get_method_list():
+			if str(m["name"]).begins_with("_rtv_vanilla_"):
+				instance_methods_has_rename = true
+				break
+		_log_info("[RTVCodegen] AUTOLOAD-CHECK %s: script=%s script_has_rename=%s instance_has_rename=%s" \
+				% [aname, scr.resource_path, has_rename, instance_methods_has_rename])
+
+	# Reset counters before probes. The dispatch template increments
+	# _rtv_dispatch_count on entry, _rtv_dispatch_no_lib when the _lib
+	# null-check trips, and _rtv_dispatch_by_hook per hook_base.
+	Engine.set_meta("_rtv_dispatch_count", 0)
+	Engine.set_meta("_rtv_dispatch_no_lib", 0)
+	Engine.set_meta("_rtv_dispatch_by_hook", {})
+	# 30s gives the player time to get into gameplay so controller-level
+	# hooks can fire at least once.
+	get_tree().create_timer(30.0).timeout.connect(func():
+		var n: int = int(Engine.get_meta("_rtv_dispatch_count", 0))
+		var no_lib: int = int(Engine.get_meta("_rtv_dispatch_no_lib", 0))
+		var by_hook: Dictionary = Engine.get_meta("_rtv_dispatch_by_hook", {})
+		var pc: Dictionary = Engine.get_meta("_rtv_probe_counts", {})
+		var fa: Dictionary = Engine.get_meta("_rtv_probe_first_args", {})
+		if n > 0:
+			_log_info("[RTVCodegen] DISPATCH-LIVE: %d wrapper call(s) in 30s (no-lib fallback=%d)" % [n, no_lib])
+		else:
+			_log_critical("[RTVCodegen] DISPATCH-DEAD: 0 wrapper calls in 30s -- game code not hitting rewrite")
+		# Sort by count desc and log top 15
+		var pairs: Array = []
+		for k: String in by_hook:
+			pairs.append([k, int(by_hook[k])])
+		pairs.sort_custom(func(a, b): return a[1] > b[1])
+		for i in range(min(15, pairs.size())):
+			_log_info("[RTVCodegen]   hook_base=%s count=%d" % [pairs[i][0], pairs[i][1]])
+		# HOOK-API per-probe breakdown across phases:
+		var total := 0
+		for k: String in ["loader_pp", "simulation_proc", "profiler_proc",
+				"menu_ready", "settings_load",
+				"controller_pp", "character_pp", "camera_pp"]:
+			var v := int(pc.get(k, 0))
+			total += v
+			_log_info("[RTVCodegen] HOOK-API %s: count=%d first_arg=%s" \
+					% [k, v, fa.get(k, "n/a")])
+		if total > 0:
+			_log_info("[RTVCodegen] HOOK-API-LIVE: %d callback fires total across probes -- full chain verified" % total)
+		else:
+			_log_critical("[RTVCodegen] HOOK-API-DEAD: 0 callback fires -- dispatch runs but _hooks lookup/callback is broken")
+		# IXP takeover verification: inspect live Controller/Camera/WeaponRig
+		# instances. IXP's take_over_path moves IXP's script onto the vanilla
+		# path. If IXP's override is ACTIVE, node.get_script() will be IXP's
+		# script (source contains "IXP" or "ImmersiveXP" markers), and the
+		# base-script chain should walk IXP -> our rewrite -> engine class.
+		# If IXP failed, node.get_script() is our rewrite directly (no IXP
+		# ancestor). This is the definitive proof IXP's takeover works.
+		var check_classes: Array[String] = ["Controller", "Camera", "WeaponRig"]
+		for cls_name: String in check_classes:
+			var found: Array = []
+			_rtv_collect_nodes_by_class(get_tree().root, cls_name, found)
+			if found.is_empty():
+				_log_info("[IXP-VERIFY] No %s node in tree yet" % cls_name)
+				continue
+			var node: Node = found[0]
+			var scr := node.get_script() as GDScript
+			if scr == null:
+				_log_info("[IXP-VERIFY] %s: no script attached" % cls_name)
+				continue
+			var src: String = scr.source_code
+			var has_ixp := "ImmersiveXP" in src or "IXP " in src or "overrideScript" in src
+			var has_rewrite := "_rtv_vanilla_" in src
+			_log_info("[IXP-VERIFY] %s instance script: path=%s src_len=%d ixp_content=%s rewrite_content=%s" \
+					% [cls_name, scr.resource_path, src.length(), has_ixp, has_rewrite])
+			# Walk base chain
+			var base := scr.get_base_script() as GDScript
+			var depth := 1
+			while base != null and depth < 6:
+				var b_src: String = base.source_code
+				var b_has_ixp := "ImmersiveXP" in b_src or "IXP " in b_src
+				var b_has_rewrite := "_rtv_vanilla_" in b_src
+				_log_info("[IXP-VERIFY]   base[%d]: path=%s src_len=%d ixp=%s rewrite=%s" \
+						% [depth, base.resource_path, b_src.length(), b_has_ixp, b_has_rewrite])
+				base = base.get_base_script() as GDScript
+				depth += 1
+	)
+
+# Recursively walk the scene tree, collecting nodes whose attached script
+# (or any ancestor in its extends chain) has the given class_name. Base
+# chain walk is needed because mods that override vanilla via
+# take_over_path typically use extends-by-path (no class_name of their
+# own), so their instances report get_global_name() == "". Matching via
+# base chain catches IXP's Controller which extends our class_name
+# Controller rewrite.
+func _rtv_collect_nodes_by_class(node: Node, cls_name: String, out: Array) -> void:
+	var scr := node.get_script() as GDScript
+	if scr != null:
+		var matched := false
+		var s: GDScript = scr
+		var depth := 0
+		while s != null and depth < 8:
+			if str(s.get_global_name()) == cls_name:
+				matched = true
+				break
+			s = s.get_base_script() as GDScript
+			depth += 1
+		if matched:
+			out.append(node)
+	for child in node.get_children():
+		_rtv_collect_nodes_by_class(child, cls_name, out)
 
 # Archive scanner
 
@@ -3260,15 +4585,18 @@ func _write_override_cfg(prepend_autoloads: Array[Dictionary]) -> Error:
 	var tmp := path + ".tmp"
 	var preserved := _read_preserved_cfg_sections(path)
 	var lines := PackedStringArray()
-	if prepend_autoloads.size() > 0:
-		lines.append("[autoload_prepend]")
-		for entry in prepend_autoloads:
-			lines.append('%s="*%s"' % [entry["name"], entry["path"]])
-		lines.append('ModLoader="*' + MODLOADER_RES_PATH + '"')
-		lines.append("")
+	# Always put ModLoader in [autoload_prepend] (last = loaded first via
+	# reverse insertion). Without this, when no mods use the "!" prefix,
+	# ModLoader falls into plain [autoload] and some game autoloads
+	# (Database, GameData, Loader, Simulation) load before our class-level
+	# static init runs -- pinning their .gdc bytecode before our hook pack
+	# can preempt them.
+	lines.append("[autoload_prepend]")
+	for entry in prepend_autoloads:
+		lines.append('%s="*%s"' % [entry["name"], entry["path"]])
+	lines.append('ModLoader="*' + MODLOADER_RES_PATH + '"')
+	lines.append("")
 	lines.append("[autoload]")
-	if prepend_autoloads.is_empty():
-		lines.append('ModLoader="*' + MODLOADER_RES_PATH + '"')
 	lines.append("")
 	var f := FileAccess.open(tmp, FileAccess.WRITE)
 	if f == null:
@@ -3286,6 +4614,21 @@ func _write_override_cfg(prepend_autoloads: Array[Dictionary]) -> Error:
 	if err != OK:
 		DirAccess.remove_absolute(tmp)
 	return err
+
+func _persist_hook_pack_state() -> void:
+	# Write hook_pack_path to pass_state so _mount_previous_session() can
+	# mount it at static init in the next session. Piggybacks on the
+	# existing pass_state ConfigFile -- doesn't overwrite other keys.
+	var cfg := ConfigFile.new()
+	cfg.load(PASS_STATE_PATH)  # OK if missing; we populate below
+	cfg.set_value("state", "hook_pack_path", HOOK_PACK_ZIP)
+	# Store exe mtime alongside so _mount_previous_session's existing
+	# exe-mtime check also invalidates the hook pack on game updates.
+	cfg.set_value("state", "hook_pack_exe_mtime", FileAccess.get_modified_time(OS.get_executable_path()))
+	if cfg.get_value("state", "modloader_version", "") == "":
+		cfg.set_value("state", "modloader_version", MODLOADER_VERSION)
+	if cfg.save(PASS_STATE_PATH) == OK:
+		_log_info("[RTVCodegen] Persisted hook pack path for next-session static-init mount")
 
 func _write_pass_state(archive_paths: PackedStringArray, state_hash: String = "") -> Error:
 	var cfg := ConfigFile.new()
@@ -3403,7 +4746,7 @@ func _restore_clean_override_cfg() -> void:
 	if f == null:
 		_log_critical("Cannot write override.cfg -- game dir may be read-only: " + exe_dir)
 		return
-	f.store_string("[autoload]\nModLoader=\"*" + MODLOADER_RES_PATH + "\"\n" + preserved)
+	f.store_string("[autoload_prepend]\nModLoader=\"*" + MODLOADER_RES_PATH + "\"\n\n[autoload]\n\n" + preserved)
 	f.close()
 
 func _clear_restart_counter() -> void:
