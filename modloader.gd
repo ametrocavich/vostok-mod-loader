@@ -108,6 +108,9 @@ var _node_swap_connected := false
 var _swap_count: int = 0
 var _rtv_modlib_registered := false      # true if Engine.set_meta("RTVModLib", ...) was us
 var _defer_to_tetra_modlib := false      # true if tetra's mod is loaded -- we stand down
+var _ready_is_coroutine_by_path: Dictionary = {}  # res_path -> bool. Sync (false) means
+                                                  # _deferred_swap pre-sets _rtv_ready_done
+                                                  # so super() doesn't re-run vanilla _ready.
 
 # Script overrides
 var _pending_script_overrides: Array[Dictionary] = []  # {vanilla_path, mod_script_path, mod_name, priority}
@@ -1779,13 +1782,17 @@ func _on_node_added(node: Node) -> void:
 # Swap a vanilla-script node to its framework wrapper: snapshot props,
 # set_script, restore, then fire _ready so the wrapper dispatches.
 #
-# We do NOT pre-set _rtv_ready_done before _ready (RTVModLib does). If vanilla
-# _ready has an await (Trader), set_script kills the coroutine on the old
-# instance and the post-await code never runs (UIManager stays null, etc).
-# Letting super() run vanilla _ready a second time on the new instance gets
-# it to completion. The pre-await statements re-run, which is harmless for
-# every script we've tested (timer.start / animations.play / @onready
-# assignments are all idempotent).
+# Pre-set _rtv_ready_done depends on whether vanilla _ready is async:
+#  - Sync _ready (Pickup, Controller, etc): pre-set true, super() is skipped,
+#    only post hooks fire. Re-running sync _ready can clobber state mutated
+#    by the caller after the original _ready returned (e.g. Pickup._ready
+#    calls Freeze, then the drop logic calls Unfreeze; re-running _ready
+#    re-Freezes and the item floats).
+#  - Async _ready (Trader): leave false. set_script kills the coroutine on
+#    the old instance, so post-await code never runs. Letting super() re-run
+#    vanilla _ready on the new instance gets it to completion. Pre-await
+#    statements re-run, idempotent for tested cases (timer.start /
+#    animations.play / @onready assignments).
 func _deferred_swap(node: Node, framework_script: Script, path: String) -> void:
 	if not is_instance_valid(node):
 		return
@@ -1814,6 +1821,9 @@ func _deferred_swap(node: Node, framework_script: Script, path: String) -> void:
 	# Direct _ready() instead of NOTIFICATION_READY: notification re-resolves
 	# @onready, which crashes on missing child nodes (per RTVModLib).
 	if node.is_inside_tree() and node.has_method("_ready"):
+		if _ready_is_coroutine_by_path.has(path) \
+				and not _ready_is_coroutine_by_path[path]:
+			node.set("_rtv_ready_done", true)
 		node._ready()
 
 	_swap_count += 1
@@ -3342,6 +3352,8 @@ func _generate_hook_pack() -> String:
 		for fe in parsed["functions"]:
 			if not fe["is_static"]:
 				hookable_count += 1
+			if fe["name"] == "_ready" and not fe["is_static"]:
+				_ready_is_coroutine_by_path[parsed["path"]] = bool(fe["is_coroutine"])
 		if hookable_count == 0:
 			continue
 
