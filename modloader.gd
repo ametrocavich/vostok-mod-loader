@@ -2536,7 +2536,13 @@ func seq() -> int:
 func _dispatch(hook_name: String, args: Array) -> void:
 	if not _hooks.has(hook_name):
 		return
-	for entry in _hooks[hook_name]:
+	# Snapshot before iterating so callbacks that hook()/unhook() mid-dispatch
+	# see consistent semantics: hooks registered during dispatch don't fire
+	# in the CURRENT dispatch (they join the next one), and the new hook()'s
+	# sort_custom on the live array can't re-enter our iteration. Matches
+	# C03/C16/C17/C18 test expectations.
+	var entries: Array = (_hooks[hook_name] as Array).duplicate()
+	for entry in entries:
 		_seq += 1
 		var cb: Callable = entry["callback"]
 		cb.callv(args)
@@ -2544,7 +2550,8 @@ func _dispatch(hook_name: String, args: Array) -> void:
 func _dispatch_deferred(hook_name: String, args: Array) -> void:
 	if not _hooks.has(hook_name):
 		return
-	for entry in _hooks[hook_name]:
+	var entries: Array = (_hooks[hook_name] as Array).duplicate()
+	for entry in entries:
 		_seq += 1
 		var cb: Callable = entry["callback"]
 		cb.bindv(args).call_deferred()
