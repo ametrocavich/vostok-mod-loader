@@ -69,175 +69,249 @@ modworkshop=12345
 | `version` | Version string for update comparison |
 | `priority` | Load order weight. Higher = loads later = wins conflicts. Default 0. |
 | `[autoload]` | `Name="res://path.gd"` - instantiated as a Node after mods mount. Prefix with `!` for [early autoloads](#early-autoloads). |
-| `[hooks]` | Optional. See [Hooks](#hooks). |
+| `[rtvmodlib]` | `needs=Controller,Camera,...` to opt in to framework wrappers. See [Hooks](#hooks). |
 | `[updates] modworkshop` | ModWorkshop ID for update checking |
 
 Mods without `mod.txt` still mount as resource packs. Their files override vanilla resources, but no autoloads run.
 
 ## Hooks
 
-Hooks let you intercept methods on vanilla `class_name` scripts without replacing the whole file. Multiple mods can hook the same method.
+The hook system uses tetrahydroc's exact RTVModLib API. The wrapper generation pattern and the examples in this section are his design and work. A mod loader should provide a stable hook layer for mods to build on, so the codegen and runtime are bundled into this loader's baseline. The same hook code works against either implementation.
+
+Mods opt in per-script via `[rtvmodlib] needs=` in mod.txt and register callbacks at runtime through `Engine.get_meta("RTVModLib")`.
 
 ### How it works
 
-At startup the mod loader detokenizes every `class_name` script in the game, wraps each method with a dispatch imposter, and applies the result via `take_over_path()`. Mods just call `add_hook()` from their autoload. No `[hooks]` section in mod.txt needed.
+At launch the loader detokenizes every `res://Scripts/*.gd`, generates a `Framework<Name>.gd` wrapper for each method, and zips them into `user://modloader_hooks/framework_pack.zip` mounted at `res://modloader_hooks/`. Each wrapper extends the vanilla script and emits dispatch calls (pre / post / replace / deferred-callback) around every instance method.
 
-Unhooked methods have a fast-path that skips the dispatch entirely (single dictionary lookup, no array allocation). Only methods with active hooks pay the full dispatch cost.
+Wrappers are inert until a mod requests them. A wrapper is only applied to its vanilla script if at least one enabled mod declares `[rtvmodlib] needs=<ScriptName>`. Application uses `take_over_path()` for non-class_name scripts and a `node_added` swap for class_name scripts.
 
-Vanilla source is cached between launches. The cache rebuilds automatically when the game updates or the modloader version changes.
+If `RTVModLib.vmz` (tetrahydroc's standalone mod) is enabled, the loader stands down so the two don't double-swap. The API surface is the same in both, so mods don't need to know which is active.
 
-### add_hook()
+### Opting in
 
-Call this from your autoload's `_ready()`:
+Add a `[rtvmodlib]` section to `mod.txt`:
 
-```gdscript
-ModLoader.add_hook(
-    script_path: String,   # res:// path to the script
-    method_name: String,   # name of the method to hook
-    callback: Callable,    # your function
-    before: bool = true    # true = before hook, false = after hook
-)
-```
-
-The script must have a `class_name` and the method must be defined in that script (not just inherited).
-
-### Before hooks
-
-Fires before the vanilla method. Receives the instance and an args array:
-
-```gdscript
-func my_hook(instance: Object, args: Array) -> Variant:
-    # instance - the object (null for static methods)
-    # args - [arg0, arg1, ...] matching the method's parameters
-    #
-    # Mutate args in-place to change what vanilla receives:
-    #   args[0] = new_value
-    #
-    # Return true to skip the vanilla method entirely.
-    pass
-```
-
-### After hooks
-
-Fires after the vanilla method. Gets the instance, args, and a result wrapper:
-
-```gdscript
-func my_hook(instance: Object, args: Array, result: Array) -> void:
-    # result - [return_value] or [] for void methods
-    # Mutate result[0] to change the return value.
-    pass
-```
-
-### Example: faster doors
-
-Makes doors open 10x faster by changing `openSpeed` after vanilla `_ready` runs.
-
-**mod.txt:**
 ```ini
-[mod]
-name="Fast Doors"
-id="fast_doors"
-version="1.0.0"
-
-[autoload]
-FastDoors="res://FastDoors/Main.gd"
+[rtvmodlib]
+needs="controller,camera,door"
 ```
 
-**FastDoors/Main.gd:**
+Names are case-insensitive and match the script filename without `.gd`. Only requested scripts get wrapped; everything else stays vanilla.
+
+### Registering hooks
+
+`Engine.get_meta("RTVModLib")` returns the hook registry once the modloader has registered itself. The wrappers aren't applied until later in the same frame, so connect to `frameworks_ready` (or call your handler directly if `_is_ready` is already true):
+
 ```gdscript
 extends Node
 
-func _ready() -> void:
-    ModLoader.add_hook(
-        "res://Scripts/Door.gd",
-        "_ready",
-        _on_door_ready,
-        false  # after hook
-    )
+var _lib = null
 
-func _on_door_ready(instance: Object, args: Array, result: Array) -> void:
-    if instance and "openSpeed" in instance:
-        instance.openSpeed = 40.0  # default is 4.0
+func _ready():
+    if Engine.has_meta("RTVModLib"):
+        var lib = Engine.get_meta("RTVModLib")
+        if lib._is_ready:
+            _on_lib_ready()
+        else:
+            lib.frameworks_ready.connect(_on_lib_ready)
+
+func _on_lib_ready():
+    _lib = Engine.get_meta("RTVModLib")
+    _lib.hook("controller-jump-pre", _on_jump_pre)
+
+func _on_jump_pre():
+    _lib._caller.jumpVelocity = 20.0
 ```
 
-### Example: low gravity
+### Hook names
 
-Halves gravity by mutating the delta argument on every physics frame.
+Format: `<scriptname>-<methodname>[-suffix]`, all lowercase. The script name is the filename without `.gd`. The method name is the original, lowercased, including any leading underscore.
 
-**mod.txt:**
-```ini
-[mod]
-name="Low Gravity"
-id="low_gravity"
-version="1.0.0"
+| Suffix | Behavior |
+|--------|----------|
+| `-pre` | Before the original. Stackable across mods. |
+| `-post` | After the original. Stackable. |
+| `-callback` | After the original via `call_deferred`. Stackable. |
+| (none) | Replace. First-registered owns it; later registrations return `-1`. |
 
-[autoload]
-LowGravity="res://LowGravity/Main.gd"
+Examples: `pickup-_ready-post`, `controller-jump-pre`, `door-interact-callback`, `hitbox-applydamage` (replace).
+
+### API
+
+All members live on the meta object returned by `Engine.get_meta("RTVModLib")`.
+
+| Member | Type | Purpose |
+|--------|------|---------|
+| `frameworks_ready` | signal | Emitted once after wrappers are mounted and applied. |
+| `_is_ready` | bool | True once `frameworks_ready` has emitted. |
+| `_caller` | Node | The instance dispatching the current hook. Valid only inside a callback. |
+| `_skip_super` | bool | Set by `skip_super()` during a replace hook. |
+| `hook(name, callback, priority=100)` | int | Register. Returns hook id, or `-1` if a replace hook is already owned. Lower priority runs first (default 100). |
+| `unhook(id)` | void | Remove by id. |
+| `has_hooks(name)` | bool | Any registrations at this name. |
+| `has_replace(name)` | bool | Replace hook registered at this bare name. |
+| `get_replace_owner(name)` | int | Owner id, or `-1` if none. Lets a mod detect a conflict and fall back to `-pre` / `-post`. |
+| `skip_super()` | void | Inside a replace hook, prevents the original method from running. |
+| `seq()` | int | Monotonic dispatch counter (debug). |
+
+### Callback signatures
+
+Callbacks receive the same argument list as the wrapped method. The source instance is in `_caller`:
+
+```gdscript
+func _on_movement_pre(delta: float) -> void:
+    var ctrl = Engine.get_meta("RTVModLib")._caller
+    ctrl.walkSpeed = 10.0
 ```
 
-**LowGravity/Main.gd:**
+For zero-arg methods (like `_ready`), the callback takes no arguments:
+
+```gdscript
+func _on_ready_post() -> void:
+    var pickup = Engine.get_meta("RTVModLib")._caller
+    pickup.gravity_scale = 0.5
+```
+
+### Replace hooks
+
+```gdscript
+_lib.hook("hitbox-applydamage", _god_mode)
+
+func _god_mode(damage):
+    _lib.skip_super()  # original ApplyDamage won't run
+```
+
+Only one replace per name. `hook()` returns `-1` if another mod already owns the slot. Use `get_replace_owner()` or check the return value and fall back to a `-pre` or `-post` hook so two mods can coexist.
+
+### Examples
+
+The three examples below are tetrahydroc's, copied from his RTVModLib README.
+
+#### AI Kill Tracker
+
 ```gdscript
 extends Node
 
-func _ready() -> void:
-    ModLoader.add_hook(
-        "res://Scripts/Controller.gd",
-        "Gravity",
-        _low_gravity,
-        true  # before hook
-    )
+# Tracks AI kills and prints a summary
 
-func _low_gravity(instance: Object, args: Array) -> void:
-    if args.size() > 0:
-        args[0] = args[0] * 0.5
+var _lib = null
+var _kills: Dictionary = {}  # ai_type -> count
+
+func _ready():
+    if Engine.has_meta("RTVModLib"):
+        var lib = Engine.get_meta("RTVModLib")
+        if lib._is_ready:
+            _on_lib_ready()
+        else:
+            lib.frameworks_ready.connect(_on_lib_ready)
+
+func _on_lib_ready():
+    _lib = Engine.get_meta("RTVModLib")
+    _lib.hook("ai-death-post", _on_ai_death, 50)
+    print("Kill Tracker: Loaded")
+
+func _on_ai_death(direction = null, force = null):
+    # AI.Death(direction, force) was called -- an AI just died
+    _kills["total"] = _kills.get("total", 0) + 1
+    print("Kills: " + str(_kills["total"]))
 ```
 
-### Skipping vanilla
+`mod.txt`:
 
-Return `true` from a before hook to prevent the original method from running:
+```ini
+[mod]
+name="Kill Tracker"
+id="kill-tracker"
+version="1.0.0"
+
+[autoload]
+KillTracker="res://KillTracker/Main.gd"
+
+[rtvmodlib]
+needs="ai"
+```
+
+#### Custom Trader Prices
 
 ```gdscript
-func _skip_loot(instance: Object, args: Array) -> bool:
-    return true  # vanilla GenerateLoot won't run
+extends Node
+
+# Doubles all trader prices
+
+var _lib = null
+
+func _ready():
+    if Engine.has_meta("RTVModLib"):
+        var lib = Engine.get_meta("RTVModLib")
+        if lib._is_ready:
+            _on_lib_ready()
+        else:
+            lib.frameworks_ready.connect(_on_lib_ready)
+
+func _on_lib_ready():
+    _lib = Engine.get_meta("RTVModLib")
+    _lib.hook("interface-calculatedeal-post", _modify_prices)
+
+func _modify_prices():
+    # Runs after CalculateDeal -- modify the displayed values
+    var scene = get_tree().current_scene
+    var interface = scene.get_node_or_null("Core/UI/Interface")
+    if interface and interface.requestValue:
+        var current = int(interface.requestValue.text)
+        interface.requestValue.text = str(current * 2)
 ```
 
-Be careful with skip hooks on methods that manage game state (like `Jump` or `Movement`). Skipping a method that other code depends on can cause side effects.
+#### Replace Hook with Fallback
 
-### Multiple mods on the same method
+```gdscript
+extends Node
 
-- Before hooks run in load order (by `priority`). If one returns `true`, later before hooks, the vanilla method, and after hooks are all skipped.
-- When nothing skips, all after hooks run in order.
-- Registering the same Callable twice is a no-op.
+# Custom loot generation that falls back to vanilla if conditions aren't met
 
-### Hooks vs file replacement
+var _lib = null
 
-| | Hooks | File replacement |
-|---|---|---|
-| Multiple mods per script | Yes | Last loaded wins |
-| Survives game updates | Yes, cache rebuilds | May break |
-| Scope | Per-method | Whole file |
+func _ready():
+    if Engine.has_meta("RTVModLib"):
+        var lib = Engine.get_meta("RTVModLib")
+        if lib._is_ready:
+            _on_lib_ready()
+        else:
+            lib.frameworks_ready.connect(_on_lib_ready)
 
-### Backwards compatibility
+func _on_lib_ready():
+    _lib = Engine.get_meta("RTVModLib")
+    var id = _lib.hook("lootcontainer-generateloot", _custom_loot)
+    if id == -1:
+        # Another mod already owns this replace hook
+        print("MyMod: GenerateLoot replace hook rejected, using pre/post instead")
+        _lib.hook("lootcontainer-generateloot-post", _modify_loot_after)
 
-The `[hooks]` section in mod.txt is still recognized but no longer required. If present, entries are logged as hints. Mods using the old format continue to work without changes.
+func _custom_loot():
+    if some_condition:
+        _lib.skip_super()  # Skip vanilla loot gen
+        # Generate custom loot...
+    # If skip_super() not called, vanilla GenerateLoot runs normally
+```
 
 ### Limitations
 
-- **Typed arrays**: Scripts whose `class_name` is used as a typed array element type (`Array[SlotData]`, `Array[ItemData]`, etc) can't be wrapped. `take_over_path()` breaks Godot's internal type identity check for typed arrays ([godotengine/godot#97433](https://github.com/godotengine/godot/issues/97433)). The modloader detects these automatically and skips them. Currently 9 class names are excluded, mostly data/save classes. If a future game update adds typed array references to a gameplay script, hooks on that script would stop firing.
-- **Own methods only**. If a script doesn't override `_ready()`, you can't hook it. Only methods the script defines (not inherited) are wrapped.
-- **Per-frame overhead**. Unhooked methods cost one dictionary lookup per call. Methods with active hooks do the full dispatch (array allocation, callable iteration). On 314 wrapped methods with zero hooks active, there's no measurable performance impact.
-- **Source reconstruction**. Scripts are reconstructed from Godot's binary token format. Original comments and formatting are not preserved. The detokenizer handles Godot 4.0-4.6 token formats.
+- **Wrappers only over methods the script defines**. Inherited methods aren't wrapped.
+- **Static methods aren't wrapped**.
+- **Source reconstruction**: scripts are detokenized from binary tokens. Comments and exact formatting are not preserved. Covers Godot 4.0-4.6.
+- **Resource / data scripts skipped**: `*Data.gd` files (SlotData, ItemData, etc) and serialized resources aren't wrapped.
+- **No `ClassName.new()` interception**: class_name scripts are swapped via `node_added`, which catches scene-instantiated nodes but not direct `Foo.new()` constructions.
 
 ### Hook troubleshooting
 
-- **"add_hook() for unwrapped script"** - the script path isn't a wrapped `class_name` script. Check the path and that the script has a `class_name` declaration.
-- **"Cannot assign contents of Array[Object] to Array[Object]"** - a script whose `class_name` is used in typed arrays was wrapped. Shouldn't happen with auto-detection. Report an issue if it does.
-- **"hooked but also replaced by..."** - another mod replaces the same script file. Hooks wrap the modded version, not vanilla.
-- **Hook doesn't fire** - make sure you're calling `add_hook()` from `_ready()` in an autoload, not from a scene script. The hook needs to be registered before the method gets called.
-- **"Compiler bug: unresolved assign"** - Godot engine bug during compilation of certain scripts (e.g. KnifeRig.gd). Non-fatal, the script still works.
+- **`hook()` returns `-1`**: another mod owns the replace slot. Use `get_replace_owner()` to detect, then fall back to `-pre` or `-post`.
+- **Callback never fires**: either the framework isn't requested in `[rtvmodlib] needs=`, or you registered before `frameworks_ready` emitted. Always `await lib.frameworks_ready` if `_is_ready` is false.
+- **`_caller` is null**: read outside a callback, or in a `-callback` (deferred) hook after the source was freed. Snapshot `_caller` synchronously and reference the snapshot.
+- **Hook name doesn't match anything**: format is `<scriptname>-<methodname>[-suffix]` lowercase. Underscore-prefixed methods keep the underscore: `pickup-_ready-post`, not `pickup-ready-post`.
+- **`hooked but also replaced by ...`**: another mod replaces the same vanilla script via `[script_overrides]`. The wrapper's `super()` flows into the override, not vanilla.
 
 Hook cache: `%APPDATA%\Road to Vostok\modloader_hooks\`
-To force a full rebuild, delete the `modloader_hooks` folder and `mod_pass_state.cfg`.
+The cache is regenerated every launch. To force a clean state, delete the `modloader_hooks` folder.
 
 ## Early Autoloads
 
@@ -279,7 +353,7 @@ With Developer Mode enabled, a full conflict log is written to `%APPDATA%\Road t
 - **Package as `.vmz`** with forward-slash paths. Use 7-Zip, not .NET `ZipFile.CreateFromDirectory()` (writes backslashes).
 - **Include a `mod.txt`** at the archive root. Without it, autoloads won't run.
 - **Use `super()` in lifecycle methods.** Skipping it breaks other mods that override the same class.
-- **Prefer hooks over file replacement** when you only need to modify a few methods. Hooks compose across mods; file replacement doesn't.
+- **Prefer hooks over file replacement** when you only need to modify a few methods. Hooks compose across mods; file replacement doesn't. Declare the scripts you need in `[rtvmodlib] needs=`.
 - **If you replace Database.gd**, every `preload()` path must exist or the game breaks.
 - **`UpdateTooltip()` is inventory-only.** World-item tooltips come from `HUD._physics_process` reading `gameData.tooltip`.
 - **Test with other mods installed** and check the conflict report.
