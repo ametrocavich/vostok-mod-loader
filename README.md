@@ -79,6 +79,8 @@ The hook system preserves tetrahydroc's exact RTVModLib API surface -- `hook()` 
 
 The implementation under the hood is different. Rather than generating `Framework<Name>.gd` subclasses of vanilla and applying them via `take_over_path`, the loader rewrites vanilla source directly and ships it AT the vanilla `res://` path. Mod scripts that subclass vanilla get the same rewrite treatment shipped at their own path. Both rewrites land in a single hook pack mounted with `replace_files=true`; nothing on disk is modified.
 
+Mods that don't use RTVModLib at all also work unchanged. Because dispatch lives inside the vanilla script, a mod that just does `extends Camera` (or uses `take_over_path`, `[script_overrides]`, etc.) inherits hook dispatch for free -- the mod author doesn't need to know the loader exists.
+
 ### Why source-rewrite instead of extends-wrapper
 
 Both approaches aim at the same end state: hooks fire reliably regardless of whether an overhaul mod calls `super()`. They get there differently.
@@ -380,11 +382,16 @@ Regular autoloads (without `!`) load after all mods mount. Only use `!` when you
 
 ## Troubleshooting
 
-If the game crashes or gets stuck after enabling mods:
+**From the mod loader UI:** click **Reset to Vanilla** in the pre-launch window. Wipes the hook pack, pass state, override.cfg mod entries, and unchecks every mod; restarts into a clean vanilla run. Your mods stay in `mods/`.
+
+**If the game crashes or gets stuck:**
 
 - **Wait it out.** After 2 failed launches, the mod loader automatically resets to a clean state.
-- **Manual reset:** Create an empty file named `modloader_safe_mode` (no file extension) in the game folder. On next launch, the mod loader resets and deletes the file.
+- **Disable ModLoader entirely:** Create an empty file named `modloader_disabled` (no extension) in the game folder. On next launch, the mod loader skips all work -- no archives mount, no UI shows, no autoloads run. Delete the file to re-enable. Use this when ModLoader itself is broken and you can't reach the UI.
+- **Manual safe-mode reset:** Create an empty file named `modloader_safe_mode` (no extension) in the game folder. On next launch, the mod loader resets state and deletes the file.
 - **Full reset:** Delete `override.cfg` from the game folder and replace it with a fresh copy from the mod loader release.
+
+**Crash-safe recovery:** If the game is killed during the two-pass restart phase (before Pass 2 finishes applying the hook pack), ModLoader leaves a `user://modloader_pass2_dirty` marker. Next cold boot detects it and force-wipes hook pack + override.cfg + pass state before retrying -- so a half-written hook pack can't poison the next launch.
 
 ## Conflict Report
 
@@ -421,8 +428,10 @@ Conflict log: `%APPDATA%\Road to Vostok\modloader_conflicts.txt`
 ## Recovery (Technical Details)
 
 - **Heartbeat file:** `user://modloader_heartbeat.txt` is written at launch and deleted on success. If it persists, the mod loader increments a crash counter. After 2 crashes, it wipes `override.cfg` and all two-pass state.
-- **Safe mode:** An empty `modloader_safe_mode` file in the game folder triggers a full reset on next launch.
-- **State files:** `user://mod_pass_state.cfg` stores archive paths for the two-pass restart. Deleted after successful Pass 2.
+- **Pass 2 dirty marker:** `user://modloader_pass2_dirty` is written at the start of Pass 2 and deleted when Pass 2 finishes. If present on next cold boot, Pass 2 was interrupted (force-quit, crash, power loss) and the hook pack may be half-written. Static init detects the marker and force-wipes state before ModLoader runs.
+- **Disabled flag:** An empty `modloader_disabled` file in the game folder makes ModLoader sit idle for that session. Static init resets override.cfg, pass state, and the hook pack, then returns immediately. The UI never shows. Delete the file to re-enable.
+- **Safe mode flag:** An empty `modloader_safe_mode` file triggers a one-shot full reset on next launch, then is deleted.
+- **State files:** `user://mod_pass_state.cfg` stores archive paths + hook pack path for the two-pass restart. Cleared by the Reset button, the disabled flag, by entering zero-mod state via the UI, or by a Pass 2 crash.
 
 ---
 
