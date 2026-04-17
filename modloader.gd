@@ -12,7 +12,9 @@ const UI_CONFIG_PATH := "user://mod_config.cfg"
 const CONFLICT_REPORT_PATH := "user://modloader_conflicts.txt"
 const PASS_STATE_PATH := "user://mod_pass_state.cfg"
 const HEARTBEAT_PATH := "user://modloader_heartbeat.txt"
+const PASS2_DIRTY_PATH := "user://modloader_pass2_dirty"
 const SAFE_MODE_FILE := "modloader_safe_mode"
+const DISABLED_FILE := "modloader_disabled"
 const MAX_RESTART_COUNT := 2
 
 const HOOK_PACK_DIR := "user://modloader_hooks"
@@ -137,10 +139,52 @@ var _re_filename_priority: RegEx
 # own overlay overrides applied at static init (e.g. hook pack for mod scripts).
 var _filescope_mounted: Dictionary = _mount_previous_session()
 
+static func _is_modloader_disabled() -> bool:
+	# Check for sentinel file in the game exe directory. When present, ModLoader
+	# skips all work: no archives mount, no UI shows, no autoloads instantiate.
+	# Use this as a nuclear escape hatch when modloader itself is broken or the
+	# user wants guaranteed vanilla behavior without navigating the UI.
+	var exe_dir := OS.get_executable_path().get_base_dir()
+	return FileAccess.file_exists(exe_dir.path_join(DISABLED_FILE))
+
+# Force all persistent state back to a vanilla baseline: clean override.cfg,
+# delete pass state, wipe the hook pack directory. Safe to call when any of
+# these artifacts are missing. Shared cleanup for the disabled sentinel,
+# crashed-Pass-2 recovery, and (via instance wrapper) the UI reset button.
+static func _static_force_vanilla_state(reason: String, log_lines: PackedStringArray) -> void:
+	log_lines.append("[FileScope] RESET (" + reason + "): forcing vanilla state")
+	_static_reset_override_cfg(log_lines)
+	if FileAccess.file_exists(PASS_STATE_PATH):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(PASS_STATE_PATH))
+		log_lines.append("[FileScope] RESET (" + reason + "): wiped pass state")
+	if FileAccess.file_exists(PASS2_DIRTY_PATH):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(PASS2_DIRTY_PATH))
+		log_lines.append("[FileScope] RESET (" + reason + "): cleared pass2 dirty marker")
+	_static_wipe_hook_cache()
+	log_lines.append("[FileScope] RESET (" + reason + "): wiped hook pack")
+
 static func _mount_previous_session() -> Dictionary:
 	var mounted: Dictionary = {}
 	var log_lines: PackedStringArray = []
 	log_lines.append("[FileScope] _mount_previous_session() starting")
+
+	# Nuclear escape hatch: sentinel file in game dir skips everything and
+	# resets persistent state so next launch is clean vanilla. This boot may
+	# log errors about failed mod autoloads (override.cfg was read before we
+	# got here), but the reset takes effect for the NEXT launch.
+	if _is_modloader_disabled():
+		_static_force_vanilla_state("modloader_disabled sentinel", log_lines)
+		_write_filescope_log(log_lines)
+		return mounted
+
+	# Crashed Pass 2 recovery: if the dirty marker survived, the previous
+	# Pass 2 was interrupted before cleanup (force-quit, crash, power loss).
+	# Hook pack may be half-written; pass state + override.cfg reference a
+	# state we can't trust. Full wipe forces Pass 1 to regenerate cleanly.
+	if FileAccess.file_exists(PASS2_DIRTY_PATH):
+		_static_force_vanilla_state("pass 2 crashed mid-run", log_lines)
+		_write_filescope_log(log_lines)
+		return mounted
 
 	# PRE-INIT cache snapshot: at class-level static init, before we do ANY
 	# work (including hook pack mount), which of the known-pinned scripts
@@ -469,6 +513,11 @@ func _ready() -> void:
 	if _has_loaded:
 		return
 	_has_loaded = true
+	# Honor disabled sentinel. Static init already cleaned persistent state,
+	# so we just sit idle for this session. User removes the file to re-enable.
+	if _is_modloader_disabled():
+		print("[ModLoader] disabled via sentinel file -- sitting idle")
+		return
 	await get_tree().process_frame
 	_compile_regex()
 	# Hook _load_all_mods completion to mount our test pack AFTER mod re-mounts.
@@ -875,6 +924,18 @@ func _run_pass_1() -> void:
 		_log_info("Preparing two-pass restart -- %d archive(s)" % archive_paths.size())
 		if sections.prepend.size() > 0:
 			_log_info("  %d early autoload(s) in [autoload_prepend]" % sections.prepend.size())
+		# Generate hook pack NOW, before restart, so next session's static-init
+		# mount has a fresh pack for the current mod set. Without this, when
+		# the pack is missing (first-ever session, after Reset, after mod-set
+		# change) Godot pins class_name scripts (Camera, WeaponRig, Door, etc.)
+		# as PCK-bytecode during [autoload_prepend] boot and Pass 2's fallback
+		# (CACHE_MODE_IGNORE + take_over_path) can't recover them. Verified
+		# 2026-04-17: 40/126 rewrites silently die after Reset otherwise.
+		# The current session's mount + activate from _generate_hook_pack is
+		# wasted (we're about to quit), but cheap and correct.
+		_detect_tetra_modlib()
+		_register_rtv_modlib_meta()
+		_generate_hook_pack()
 		_write_heartbeat()
 		var err := _write_override_cfg(sections.prepend)
 		if err != OK:
@@ -951,6 +1012,12 @@ func _finish_single_pass() -> void:
 
 func _run_pass_2() -> void:
 	_log_info("Pass 2 -- %d archive(s) mounted at file-scope" % _filescope_mounted.size())
+	# Write dirty marker first thing. If Pass 2 crashes before cleanup below,
+	# next launch's static init detects the marker and force-wipes state.
+	var _dirty_f := FileAccess.open(PASS2_DIRTY_PATH, FileAccess.WRITE)
+	if _dirty_f:
+		_dirty_f.store_string(str(Time.get_unix_time_from_system()))
+		_dirty_f.close()
 	# Restore script overrides from pass state and apply before hooks.
 	var _pass_cfg := ConfigFile.new()
 	if _pass_cfg.load(PASS_STATE_PATH) == OK:
@@ -1013,6 +1080,11 @@ func _run_pass_2() -> void:
 	_connect_node_swap()
 	_emit_frameworks_ready()
 	_delete_heartbeat()
+	# Pass 2 reached cleanup -- clear the dirty marker so next launch knows we
+	# finished without crashing. If reload_current_scene below fails we still
+	# want the marker gone; the state we wrote IS consistent at this point.
+	if FileAccess.file_exists(PASS2_DIRTY_PATH):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(PASS2_DIRTY_PATH))
 	if not _filescope_mounted.is_empty() or not _archive_file_sets.is_empty() or _pending_autoloads.size() > 0:
 		var err := get_tree().reload_current_scene()
 		if err != OK:
@@ -1193,6 +1265,30 @@ func _save_ui_config() -> void:
 	cfg.set_value("settings", "developer_mode", _developer_mode)
 	cfg.save(UI_CONFIG_PATH)
 
+# UI Reset-to-Vanilla action: wipe all persistent mod state and restart. Used
+# by the "Reset to Vanilla" button. Uncheck all mods in memory so mod_config.cfg
+# loses the enabled flags, then call the shared static cleanup helper. Restart
+# the game so the clean slate actually takes effect.
+func _reset_to_vanilla_and_restart(win: Window) -> void:
+	_log_info("[Reset] User triggered Reset to Vanilla")
+	for entry in _ui_mod_entries:
+		entry["enabled"] = false
+	_save_ui_config()
+	var log_lines := PackedStringArray()
+	_static_force_vanilla_state("UI reset button", log_lines)
+	for line in log_lines:
+		_log_info(line)
+	if is_instance_valid(win):
+		win.queue_free()
+	# Strip --modloader-restart so the relaunch is a clean Pass 1, not a Pass 2
+	# that would expect pass state we just deleted.
+	var restart_args: Array = []
+	for a in OS.get_cmdline_args():
+		if a != "--modloader-restart":
+			restart_args.append(a)
+	OS.set_restart_on_exit(true, restart_args)
+	get_tree().quit()
+
 # UI
 
 func show_mod_ui() -> void:
@@ -1261,6 +1357,10 @@ func show_mod_ui() -> void:
 	hint.modulate = Color(0.45, 0.45, 0.45)
 	bottom.add_child(hint)
 
+	var reset_btn := Button.new()
+	reset_btn.text = "  Reset to Vanilla  "
+	reset_btn.custom_minimum_size = Vector2(150, 36)
+	reset_btn.tooltip_text = "Wipe all mod state (hook pack, override.cfg, cached archives) and restart the game clean. Use this when mods are stuck or you want a guaranteed vanilla launch."
 	var launch_btn := Button.new()
 	launch_btn.text = "  Launch Game  "
 	launch_btn.custom_minimum_size = Vector2(130, 36)
@@ -1271,16 +1371,24 @@ func show_mod_ui() -> void:
 	ls_n.border_width_left = 1; ls_n.border_width_right = 1
 	ls_n.content_margin_left = 10; ls_n.content_margin_right = 10
 	launch_btn.add_theme_stylebox_override("normal", ls_n)
+	reset_btn.add_theme_stylebox_override("normal", ls_n.duplicate())
 	var ls_h := ls_n.duplicate()
 	ls_h.bg_color = Color(0.10, 0.10, 0.10)
 	ls_h.border_color = Color(0.55, 0.55, 0.55)
 	launch_btn.add_theme_stylebox_override("hover", ls_h)
+	reset_btn.add_theme_stylebox_override("hover", ls_h.duplicate())
 	var ls_p := ls_n.duplicate()
 	ls_p.bg_color = Color(0.03, 0.03, 0.03)
 	launch_btn.add_theme_stylebox_override("pressed", ls_p)
+	reset_btn.add_theme_stylebox_override("pressed", ls_p.duplicate())
 	launch_btn.add_theme_color_override("font_color", Color(0.88, 0.88, 0.88))
 	launch_btn.add_theme_color_override("font_hover_color", Color(1.0, 1.0, 1.0))
+	reset_btn.add_theme_color_override("font_color", Color(0.70, 0.55, 0.55))
+	reset_btn.add_theme_color_override("font_hover_color", Color(1.0, 0.70, 0.70))
+	bottom.add_child(reset_btn)
 	bottom.add_child(launch_btn)
+
+	reset_btn.pressed.connect(func(): _reset_to_vanilla_and_restart(win))
 
 	# Closing the window with X should behave the same as clicking Launch.
 	win.close_requested.connect(func(): launch_btn.pressed.emit())
