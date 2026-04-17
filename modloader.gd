@@ -104,6 +104,7 @@ var _hook_swap_map: Dictionary = {}      # res_path -> framework GDScript
 var _original_scripts: Dictionary = {}   # res_path -> vanilla script ref (UID identity)
 var _vanilla_id_to_path: Dictionary = {} # script.get_instance_id() -> res_path
 var _class_name_to_path: Dictionary = {} # "Camera" -> "res://Scripts/Camera.gd"
+var _all_game_script_paths: Array[String] = []  # res://Scripts/*.gd (from PCK parse)
 var _node_swap_connected := false
 var _swap_count: int = 0
 var _rtv_modlib_registered := false      # true if Engine.set_meta("RTVModLib", ...) was us
@@ -1685,17 +1686,17 @@ func _activate_hooked_scripts() -> void:
 		_log_info("[RTVModLib] activated %d framework override(s)" % activated)
 
 # Case-insensitive filename match. class_name map covers most; fall back to
-# Scripts/ enumeration for non-class_name frameworks (Audio, Cables, etc.).
+# PCK-parsed script list for non-class_name frameworks (Interface, Task, AI,
+# Audio, Cables, etc.). DirAccess can't list PCK contents in 4.6, so we use
+# the path list populated by _enumerate_game_scripts().
 func _resolve_framework_vanilla_path(key_lower: String) -> String:
 	for cn: String in _class_name_to_path:
 		var path: String = _class_name_to_path[cn]
 		if path.get_file().get_basename().to_lower() == key_lower:
 			return path
-	for fname in DirAccess.get_files_at("res://Scripts/"):
-		if not fname.ends_with(".gd"):
-			continue
-		if fname.get_basename().to_lower() == key_lower:
-			return "res://Scripts/" + fname
+	for script_path: String in _all_game_script_paths:
+		if script_path.get_file().get_basename().to_lower() == key_lower:
+			return script_path
 	return ""
 
 # class_name scripts can't be take_over_path'd safely: Resource::set_path
@@ -2744,6 +2745,7 @@ func _enumerate_game_scripts() -> Array[String]:
 				scripts.append(canonical)
 		_log_info("[RTVCodegen] parsed %s -- %d total file(s), %d .gd script(s) under res://Scripts/" \
 				% [cand, paths.size(), scripts.size()])
+		_all_game_script_paths = scripts
 		return scripts
 	return []
 
@@ -3558,6 +3560,12 @@ static func _static_resolve_remaps(archive_path: String) -> int:
 			continue
 		var target: String = cfg.get_value("remap", "path", "")
 		if target.is_empty():
+			continue
+		# Skip remaps pointing to .godot/exported/ bakes. These are Godot's own
+		# pre-compiled scenes; loading them eagerly before mod scripts are
+		# registered causes UID resolution failures (MCM breaks). Godot will
+		# resolve these lazily via the .remap files when actually needed.
+		if target.begins_with("res://.godot/exported/"):
 			continue
 		var original_path := f.trim_suffix(".remap")
 		if not original_path.begins_with("res://"):
