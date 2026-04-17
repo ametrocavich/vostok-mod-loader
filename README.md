@@ -1,81 +1,52 @@
-# Road to Vostok — Community Mod Loader
+# Road to Vostok - Community Mod Loader
 
-A community-built mod loader for **Road to Vostok** (Godot 4). Adds a launcher UI before the game starts, letting you enable/disable mods, set load order, and check for updates.
+Mod loader for Road to Vostok (Godot 4.6). Adds a pre-game UI for managing mods, load order, and updates.
 
----
+## Requirements
+
+- Road to Vostok (PC, Steam)
+- Mods packaged as `.vmz` or `.pck` files
 
 ## Installation
 
-Both files go in the **game installation folder** (next to `RTV.exe`):
+1. Copy `override.cfg` and `modloader.gd` into the game folder:
+   ```
+   C:\Program Files (x86)\Steam\steamapps\common\Road to Vostok\
+   ```
 
-```
-C:\Program Files (x86)\Steam\steamapps\common\Road to Vostok\
-```
+2. Create a `mods` folder if it doesn't exist:
+   ```
+   C:\Program Files (x86)\Steam\steamapps\common\Road to Vostok\mods\
+   ```
 
-1. Copy `override.cfg` and `modloader.gd` into the game folder.
+3. Drop `.vmz` mod files into `mods/`.
 
-2. Create a `mods` folder inside the game folder if it doesn't exist.
-
-3. Place your `.vmz` mod files inside the `mods` folder.
-
-4. Launch the game normally. The mod loader UI will appear before the main menu.
-
-**That's it.** No AppData setup needed — everything lives in one folder.
-
----
+4. Launch the game. The mod loader UI appears before the main menu.
 
 ## Installing Mods
 
-Drop `.vmz` mod files into the `mods` folder. The mod loader finds them automatically on next launch.
+Drop `.vmz` files into the `mods` folder. They show up automatically on next launch.
 
-If a mod was distributed as a `.zip` file, rename it to `.vmz` before placing it in the mods folder.
+`.pck` files also work but have no mod.txt metadata, autoloads, or update checking. If a mod was distributed as a `.zip`, rename it to `.vmz`.
 
----
+| Format | Notes |
+|--------|-------|
+| `.vmz` | Road to Vostok's native mod format (renamed zip) |
+| `.pck` | Godot PCK - mount only, no mod.txt or autoloads |
 
-## Using the Launcher
+## Launcher UI
 
-When you start the game, the mod loader window opens with two tabs:
+The mod loader opens with two tabs:
 
-### Mods
-Enable or disable mods with checkboxes. The **priority number** controls load order — higher number loads later and wins when two mods change the same file. The **Load Order** panel on the right shows the final order in real time.
+**Mods** - Lists detected mods with checkboxes and a priority spinbox. Higher priority loads later and wins file conflicts. The load order panel on the right updates in real time.
 
-### Updates
-Click **Check for Updates** to see if any of your mods have newer versions available on ModWorkshop.
+**Updates** - If mods include ModWorkshop info in `mod.txt`, you can check for and download updates here.
 
-### Settings
-Toggle **Developer Mode** to enable the Compatibility tab and verbose conflict logging. Off by default — only needed for mod authors or troubleshooting.
+Click **Launch Game** or close the window to start.
 
-Click **Launch Game** when you're ready to play.
+## mod.txt
 
----
-
-## Troubleshooting
-
-If the game crashes or gets stuck after enabling mods:
-
-- **Wait it out.** After 2 failed launches, the mod loader automatically resets to a clean state.
-- **Manual reset:** Create an empty file named `modloader_safe_mode` (no file extension) in the game folder. On next launch, the mod loader resets and deletes the file.
-- **Full reset:** Delete `override.cfg` from the game folder and replace it with a fresh copy from the mod loader release.
-
----
-
-## Uninstalling
-
-Delete `override.cfg` and `modloader.gd` from the game folder. The `mods` folder and its contents can be removed separately.
-
-Settings are stored in `%APPDATA%\Road to Vostok\mod_config.cfg` and can be deleted safely.
-
----
-
-# For Mod Authors
-
-Everything below is for mod developers.
-
----
-
-## mod.txt Reference
-
-Mod archives must contain a `mod.txt` file at their root:
+Mods can include a `mod.txt` at the root of their archive. All string values need to be quoted.
 
 ```ini
 [mod]
@@ -85,7 +56,7 @@ version="1.0.0"
 priority=0
 
 [autoload]
-MyModMain="res://MyMod/Main.gd"
+MyModMain="res://MyModMain/Main.gd"
 
 [updates]
 modworkshop=12345
@@ -93,51 +64,201 @@ modworkshop=12345
 
 | Field | Description |
 |---|---|
-| `name` | Display name shown in the UI (must be quoted) |
-| `id` | Unique identifier — duplicates are skipped |
-| `version` | Semver string used for update comparison |
-| `priority` | Load order number. Higher = loads later = wins. Default 0 |
-| `[autoload]` | `Name="res://path/to/script.gd"` — instantiated as a Node after all mods mount |
-| `[autoload]` `!` prefix | `Name="!res://path.gd"` — loads **before** game autoloads (see Early Autoloads) |
-| `[updates] modworkshop` | ModWorkshop mod ID for update checking |
+| `name` | Display name in the UI |
+| `id` | Unique ID. Duplicates are skipped. |
+| `version` | Version string for update comparison |
+| `priority` | Load order weight. Higher = loads later = wins conflicts. Default 0. |
+| `[autoload]` | `Name="res://path.gd"` - instantiated as a Node after mods mount. Prefix with `!` for [early autoloads](#early-autoloads). |
+| `[hooks]` | Optional. See [Hooks](#hooks). |
+| `[updates] modworkshop` | ModWorkshop ID for update checking |
 
-String values must be quoted. Mods without `mod.txt` will mount but show a warning.
+Mods without `mod.txt` still mount as resource packs. Their files override vanilla resources, but no autoloads run.
 
-### Supported archive formats
+## Hooks
 
-| Format | Notes |
-|--------|-------|
-| `.vmz` | Road to Vostok's native mod format (renamed zip) |
-| `.zip` | Must be renamed to `.vmz` before use |
-| `.pck` | Godot PCK — mount only, no mod.txt or autoloads |
+Hooks let you intercept methods on vanilla `class_name` scripts without replacing the whole file. Multiple mods can hook the same method.
 
-### Load priority
+### How it works
 
-Higher number = loads later = wins any file conflict. Default is `0`. Equal priority sorts alphabetically.
+At startup the mod loader detokenizes every `class_name` script in the game, wraps each method with a dispatch imposter, and applies the result via `take_over_path()`. Mods just call `add_hook()` from their autoload. No `[hooks]` section in mod.txt needed.
 
-Priority controls both which archive's files win *and* which mod's `take_over_path()` executes last — it's the main tool for resolving conflicts between mods that touch the same scripts.
+Unhooked methods have a fast-path that skips the dispatch entirely (single dictionary lookup, no array allocation). Only methods with active hooks pay the full dispatch cost.
 
----
+Vanilla source is cached between launches. The cache rebuilds automatically when the game updates or the modloader version changes.
 
-## Early Autoloads (Two-Pass Loading)
+### add_hook()
 
-Most mods load **after** the game's core systems (Loader, Database, Simulation) are already initialized. If your mod needs to run **before** those systems — for example, to modify the shelter list before `Loader._ready()` validates saves — prefix its autoload path with `!`:
+Call this from your autoload's `_ready()`:
+
+```gdscript
+ModLoader.add_hook(
+    script_path: String,   # res:// path to the script
+    method_name: String,   # name of the method to hook
+    callback: Callable,    # your function
+    before: bool = true    # true = before hook, false = after hook
+)
+```
+
+The script must have a `class_name` and the method must be defined in that script (not just inherited).
+
+### Before hooks
+
+Fires before the vanilla method. Receives the instance and an args array:
+
+```gdscript
+func my_hook(instance: Object, args: Array) -> Variant:
+    # instance - the object (null for static methods)
+    # args - [arg0, arg1, ...] matching the method's parameters
+    #
+    # Mutate args in-place to change what vanilla receives:
+    #   args[0] = new_value
+    #
+    # Return true to skip the vanilla method entirely.
+    pass
+```
+
+### After hooks
+
+Fires after the vanilla method. Gets the instance, args, and a result wrapper:
+
+```gdscript
+func my_hook(instance: Object, args: Array, result: Array) -> void:
+    # result - [return_value] or [] for void methods
+    # Mutate result[0] to change the return value.
+    pass
+```
+
+### Example: faster doors
+
+Makes doors open 10x faster by changing `openSpeed` after vanilla `_ready` runs.
+
+**mod.txt:**
+```ini
+[mod]
+name="Fast Doors"
+id="fast_doors"
+version="1.0.0"
+
+[autoload]
+FastDoors="res://FastDoors/Main.gd"
+```
+
+**FastDoors/Main.gd:**
+```gdscript
+extends Node
+
+func _ready() -> void:
+    ModLoader.add_hook(
+        "res://Scripts/Door.gd",
+        "_ready",
+        _on_door_ready,
+        false  # after hook
+    )
+
+func _on_door_ready(instance: Object, args: Array, result: Array) -> void:
+    if instance and "openSpeed" in instance:
+        instance.openSpeed = 40.0  # default is 4.0
+```
+
+### Example: low gravity
+
+Halves gravity by mutating the delta argument on every physics frame.
+
+**mod.txt:**
+```ini
+[mod]
+name="Low Gravity"
+id="low_gravity"
+version="1.0.0"
+
+[autoload]
+LowGravity="res://LowGravity/Main.gd"
+```
+
+**LowGravity/Main.gd:**
+```gdscript
+extends Node
+
+func _ready() -> void:
+    ModLoader.add_hook(
+        "res://Scripts/Controller.gd",
+        "Gravity",
+        _low_gravity,
+        true  # before hook
+    )
+
+func _low_gravity(instance: Object, args: Array) -> void:
+    if args.size() > 0:
+        args[0] = args[0] * 0.5
+```
+
+### Skipping vanilla
+
+Return `true` from a before hook to prevent the original method from running:
+
+```gdscript
+func _skip_loot(instance: Object, args: Array) -> bool:
+    return true  # vanilla GenerateLoot won't run
+```
+
+Be careful with skip hooks on methods that manage game state (like `Jump` or `Movement`). Skipping a method that other code depends on can cause side effects.
+
+### Multiple mods on the same method
+
+- Before hooks run in load order (by `priority`). If one returns `true`, later before hooks, the vanilla method, and after hooks are all skipped.
+- When nothing skips, all after hooks run in order.
+- Registering the same Callable twice is a no-op.
+
+### Hooks vs file replacement
+
+| | Hooks | File replacement |
+|---|---|---|
+| Multiple mods per script | Yes | Last loaded wins |
+| Survives game updates | Yes, cache rebuilds | May break |
+| Scope | Per-method | Whole file |
+
+### Backwards compatibility
+
+The `[hooks]` section in mod.txt is still recognized but no longer required. If present, entries are logged as hints. Mods using the old format continue to work without changes.
+
+### Limitations
+
+- **Typed arrays**: Scripts whose `class_name` is used as a typed array element type (`Array[SlotData]`, `Array[ItemData]`, etc) can't be wrapped. `take_over_path()` breaks Godot's internal type identity check for typed arrays ([godotengine/godot#97433](https://github.com/godotengine/godot/issues/97433)). The modloader detects these automatically and skips them. Currently 9 class names are excluded, mostly data/save classes. If a future game update adds typed array references to a gameplay script, hooks on that script would stop firing.
+- **Own methods only**. If a script doesn't override `_ready()`, you can't hook it. Only methods the script defines (not inherited) are wrapped.
+- **Per-frame overhead**. Unhooked methods cost one dictionary lookup per call. Methods with active hooks do the full dispatch (array allocation, callable iteration). On 314 wrapped methods with zero hooks active, there's no measurable performance impact.
+- **Source reconstruction**. Scripts are reconstructed from Godot's binary token format. Original comments and formatting are not preserved. The detokenizer handles Godot 4.0-4.6 token formats.
+
+### Hook troubleshooting
+
+- **"add_hook() for unwrapped script"** - the script path isn't a wrapped `class_name` script. Check the path and that the script has a `class_name` declaration.
+- **"Cannot assign contents of Array[Object] to Array[Object]"** - a script whose `class_name` is used in typed arrays was wrapped. Shouldn't happen with auto-detection. Report an issue if it does.
+- **"hooked but also replaced by..."** - another mod replaces the same script file. Hooks wrap the modded version, not vanilla.
+- **Hook doesn't fire** - make sure you're calling `add_hook()` from `_ready()` in an autoload, not from a scene script. The hook needs to be registered before the method gets called.
+- **"Compiler bug: unresolved assign"** - Godot engine bug during compilation of certain scripts (e.g. KnifeRig.gd). Non-fatal, the script still works.
+
+Hook cache: `%APPDATA%\Road to Vostok\modloader_hooks\`
+To force a full rebuild, delete the `modloader_hooks` folder and `mod_pass_state.cfg`.
+
+## Early Autoloads
+
+Prefix an autoload with `!` to load it before the game's own autoloads:
 
 ```ini
 [autoload]
-ShelterFix="!res://ShelterMod/Fix.gd"
+EarlySetup="!res://MyMod/EarlySetup.gd"
 ```
 
-When the mod loader detects `!` prefix autoloads, it:
+This triggers a two-pass launch. The mod loader writes the autoload to `override.cfg`, restarts the game, and your node is in the scene tree before the game's autoloads run.
 
-1. Shows the config UI as usual
-2. Writes a temporary `override.cfg` that tells the engine to load these mods first
-3. Restarts the game automatically (~5 seconds)
-4. On the second launch, mods load before game autoloads — no UI is shown
+Regular autoloads (without `!`) load after all mods mount. Only use `!` when your mod genuinely needs to run before game autoloads.
 
-Mods without `!` are unaffected and never trigger a restart. Only use `!` when your mod genuinely needs to run before game autoloads — most mods don't.
+## Troubleshooting
 
----
+If the game crashes or gets stuck after enabling mods:
+
+- **Wait it out.** After 2 failed launches, the mod loader automatically resets to a clean state.
+- **Manual reset:** Create an empty file named `modloader_safe_mode` (no file extension) in the game folder. On next launch, the mod loader resets and deletes the file.
+- **Full reset:** Delete `override.cfg` from the game folder and replace it with a fresh copy from the mod loader release.
 
 ## Conflict Report
 
@@ -147,45 +268,28 @@ With Developer Mode enabled, a full conflict log is written to `%APPDATA%\Road t
 |---------|---------|
 | **CONFLICT** | Two mods ship the same file. Last-loaded wins. Adjust priorities. |
 | **SCRIPT CONFLICT** | Two mods both `take_over_path()` the same script. Hard incompatibility. |
-| **CHAIN OK / CHAIN BROKEN** | Override chain via `super()` — OK means mods stack cleanly, BROKEN means one skips `super()`. |
+| **CHAIN OK / CHAIN BROKEN** | Override chain via `super()`. OK means mods stack cleanly, BROKEN means one skips `super()`. |
 | **DATABASE OVERRIDE** | A mod replaced `Database.gd`. Normal for overhauls, may block other mods' scene overrides. |
 | **OVERHAUL** | 5+ core script overrides. Likely incompatible with other overhaul mods. |
 | **NO SUPER** | Lifecycle method override without `super()`. Breaks other mods in the chain. |
 | **BAD ZIP** | Backslash file paths in the archive. Re-pack with 7-Zip. |
-
----
 
 ## Best Practices
 
 - **Package as `.vmz`** with forward-slash paths. Use 7-Zip, not .NET `ZipFile.CreateFromDirectory()` (writes backslashes).
 - **Include a `mod.txt`** at the archive root. Without it, autoloads won't run.
 - **Use `super()` in lifecycle methods.** Skipping it breaks other mods that override the same class.
-- **Prefer `extends + super()` over `take_over_path()`** for commonly-overridden scripts. It composes across mods; flat `take_over_path()` doesn't.
+- **Prefer hooks over file replacement** when you only need to modify a few methods. Hooks compose across mods; file replacement doesn't.
 - **If you replace Database.gd**, every `preload()` path must exist or the game breaks.
 - **`UpdateTooltip()` is inventory-only.** World-item tooltips come from `HUD._physics_process` reading `gameData.tooltip`.
 - **Test with other mods installed** and check the conflict report.
 
----
+## Uninstalling
 
-## VostokMods Compatibility
+Delete `override.cfg` and `modloader.gd` from the game folder. The `mods` folder and its contents can be removed separately.
 
-Mods packaged for [VostokMods](https://github.com/Ryhon0/VostokMods) generally work with this loader.
-
-| Feature | Status |
-|---------|--------|
-| `.vmz` archives | Supported |
-| `mod.txt` format | Supported |
-| `[mod] priority` | Supported |
-| Filename priority prefix (`100-ModName.vmz`) | Supported |
-| `!` early autoload prefix | Supported |
-
-### Features that require VostokMods
-
-VostokMods runs as a separate launcher before Godot starts. This loader runs inside the game, so it cannot:
-
-- **Merge `override.cfg`** — engine settings are read at startup before GDScript runs
-- **Register `class_name`** — global class cache is read-only at runtime (use path references instead)
-- **Extract native plugins** — GDExtension `.dll`/`.so` files must be on disk at startup
+Settings: `%APPDATA%\Road to Vostok\mod_config.cfg`
+Conflict log: `%APPDATA%\Road to Vostok\modloader_conflicts.txt`
 
 ---
 
