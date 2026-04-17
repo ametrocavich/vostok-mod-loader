@@ -221,7 +221,7 @@ static func _mount_previous_session() -> int:
 			var zip_path := _static_vmz_to_zip(path)
 			if not zip_path.is_empty() and ProjectSettings.load_resource_pack(zip_path):
 				var remaps := _static_resolve_remaps(zip_path)
-				log_lines.append("[FileScope]   MOUNTED (vmz→zip): " + path
+				log_lines.append("[FileScope]   MOUNTED (vmz->zip): " + path
 						+ (" (%d remaps)" % remaps if remaps > 0 else ""))
 				count += 1
 			else:
