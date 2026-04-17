@@ -3123,43 +3123,6 @@ func _log_override_timing_warnings() -> void:
 		_log_debug(mod_name + " uses overrideScript() on: " + target_list
 				+ " -- applies after scene reload")
 
-# After reload, do any live nodes actually match the override targets?
-func _audit_override_instances() -> void:
-	var override_targets: Dictionary = {}  # res_path -> mod_name
-	for mod_name: String in _mod_script_analysis:
-		var analysis: Dictionary = _mod_script_analysis[mod_name]
-		for path in (analysis["take_over_literal_paths"] as Array):
-			override_targets[path] = mod_name
-		if analysis["uses_dynamic_override"]:
-			for path in (analysis["extends_paths"] as Array):
-				override_targets[path] = mod_name
-
-	if override_targets.is_empty():
-		return
-
-	var live_script_paths: Dictionary = {}
-	_collect_live_scripts(get_tree().root, live_script_paths)
-
-	for target_path: String in override_targets:
-		var mod_name: String = override_targets[target_path]
-		if live_script_paths.has(target_path):
-			_log_debug("Override applied: " + target_path.get_file()
-					+ " -- " + str(live_script_paths[target_path]) + " node(s) [" + mod_name + "]")
-		else:
-			_log_debug("Override registered but 0 nodes use " + target_path.get_file()
-					+ " in current scene -- likely spawned at runtime [" + mod_name + "]")
-
-func _collect_live_scripts(root_node: Node, out: Dictionary) -> void:
-	var stack: Array[Node] = [root_node]
-	while not stack.is_empty():
-		var node: Node = stack.pop_back()
-		var script: Script = node.get_script() as Script
-		if script:
-			var path := script.resource_path
-			if path != "":
-				out[path] = (out.get(path, 0) as int) + 1
-		stack.append_array(node.get_children())
-
 # Two-pass helpers
 
 func _build_autoload_sections() -> Dictionary:
