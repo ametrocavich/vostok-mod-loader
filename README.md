@@ -435,6 +435,22 @@ Conflict log: `%APPDATA%\Road to Vostok\modloader_conflicts.txt`
 
 ---
 
+## Engine Compatibility
+
+Tested against Godot 4.6.1. Reviewed against the Godot 4.7 milestone as of April 2026 (feature freeze imminent, dev snapshot 5 released) -- no breaking changes identified within Road to Vostok's first-party mod support window.
+
+If a future Godot version changes how `res://` paths resolve inside mounted resource packs, this loader falls back to the extends-wrapper approach used by tetrahydroc's standalone `RTVModLib` mod: generating `Framework<Name>.gd` subclasses and applying them at runtime via `take_over_path`. That fallback handles the typical case, but has a known issue with overhaul mods like ImmersiveXP that extend vanilla via `class_name` (Godot [#83542](https://github.com/godotengine/godot/issues/83542)) -- the exact bug our current in-place rewrite sidesteps.
+
+The three specific engine behaviors that would trigger the fallback:
+
+1. **`load_resource_pack(replace_files=true)`** stops letting later mounts override earlier ones at the same `res://` path.
+2. **`.gd.remap`** resolution order changes so a self-referencing remap no longer preempts the PCK's redirect to compiled `.gdc`.
+3. **Empty `.gdc`** stops silently falling back to compiling the sibling `.gd`.
+
+Everything else in the loader -- mod discovery, autoload ordering via `[autoload_prepend]`, the hook API, crash recovery, the pre-game UI -- is unaffected by either scenario.
+
+---
+
 ## License
 
 MIT License
