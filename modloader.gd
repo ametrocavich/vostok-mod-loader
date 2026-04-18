@@ -95,6 +95,11 @@ var _archive_file_sets: Dictionary = {}
 # lowercase. A bare name (no suffix) is a replace hook (first-wins).
 signal frameworks_ready
 var _hooks: Dictionary = {}              # hook_name -> Array of {callback, priority, id}
+# Fast-path short-circuit: flipped true the first time any mod calls hook().
+# Dispatch wrappers skip the full _wrapper_active/_caller/_dispatch path
+# when no mod has hooked anything at all. Sticky -- stays true once set.
+# Same approach as godot-mod-loader's `_ModLoaderHooks.any_mod_hooked`.
+var _any_mod_hooked: bool = false
 var _next_id: int = 1
 var _skip_super: bool = false
 var _seq: int = 0
@@ -112,6 +117,7 @@ var _hook_swap_map: Dictionary = {}      # res_path -> framework GDScript
 var _original_scripts: Dictionary = {}   # res_path -> vanilla script ref (UID identity)
 var _vanilla_id_to_path: Dictionary = {} # script.get_instance_id() -> res_path
 var _class_name_to_path: Dictionary = {} # "Camera" -> "res://Scripts/Camera.gd"
+var _all_game_script_paths: Array[String] = []  # populated by _enumerate_game_scripts from PCK parse; DirAccess can't list PCK contents in 4.6
 var _node_swap_connected := false
 var _swap_count: int = 0
 var _rtv_modlib_registered := false      # true if Engine.set_meta("RTVModLib", ...) was us
@@ -2325,17 +2331,17 @@ func _activate_hooked_scripts() -> void:
 		_log_info("[RTVModLib] activated %d framework override(s)" % activated)
 
 # Case-insensitive filename match. class_name map covers most; fall back to
-# Scripts/ enumeration for non-class_name frameworks (Audio, Cables, etc.).
+# PCK-parsed script list for non-class_name frameworks (Interface, Task, AI,
+# Audio, Cables, etc.). DirAccess can't list PCK contents in 4.6, so we use
+# the path list populated by _enumerate_game_scripts(). Credit: tetrahydroc.
 func _resolve_framework_vanilla_path(key_lower: String) -> String:
 	for cn: String in _class_name_to_path:
 		var path: String = _class_name_to_path[cn]
 		if path.get_file().get_basename().to_lower() == key_lower:
 			return path
-	for fname in DirAccess.get_files_at("res://Scripts/"):
-		if not fname.ends_with(".gd"):
-			continue
-		if fname.get_basename().to_lower() == key_lower:
-			return "res://Scripts/" + fname
+	for script_path: String in _all_game_script_paths:
+		if script_path.get_file().get_basename().to_lower() == key_lower:
+			return script_path
 	return ""
 
 # class_name scripts can't be take_over_path'd safely: Resource::set_path
@@ -2495,6 +2501,8 @@ func hook(hook_name: String, callback: Callable, priority: int = 100) -> int:
 	var entry := { "callback": callback, "priority": priority, "id": _next_id }
 	(_hooks[hook_name] as Array).append(entry)
 	(_hooks[hook_name] as Array).sort_custom(func(a, b): return a["priority"] < b["priority"])
+	# Flip the global short-circuit so dispatch wrappers stop skipping.
+	_any_mod_hooked = true
 	var id := _next_id
 	_next_id += 1
 	return id
@@ -3564,6 +3572,11 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		out += "%sif !_lib:\n" % I1
 		out += "%sEngine.set_meta(\"_rtv_dispatch_no_lib\", int(Engine.get_meta(\"_rtv_dispatch_no_lib\", 0)) + 1)\n" % I2
 		out += "%sreturn %s%s\n" % [I2, aw, vanilla_call]
+		# Global short-circuit: if no mod has called hook() this session, the
+		# whole dispatch pipeline is dead weight. Single bool check skips
+		# ~10 dict ops + meta/prop/fn calls. Matches godot-mod-loader.
+		out += "%sif not _lib._any_mod_hooked:\n" % I1
+		out += "%sreturn %s%s\n" % [I2, aw, vanilla_call]
 		out += "%sif _lib._wrapper_active.has(\"%s\"):\n" % [I1, hook_base]
 		out += "%sreturn %s%s\n" % [I2, aw, vanilla_call]
 		out += "%s_lib._wrapper_active[\"%s\"] = true\n" % [I1, hook_base]
@@ -3593,6 +3606,10 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		out += "%svar _lib = Engine.get_meta(\"RTVModLib\") if Engine.has_meta(\"RTVModLib\") else null\n" % I1
 		out += "%sif !_lib:\n" % I1
 		out += "%sEngine.set_meta(\"_rtv_dispatch_no_lib\", int(Engine.get_meta(\"_rtv_dispatch_no_lib\", 0)) + 1)\n" % I2
+		out += "%s%s%s\n" % [I2, aw, vanilla_call]
+		out += "%sreturn\n" % I2
+		# Global short-circuit: see non-void branch above.
+		out += "%sif not _lib._any_mod_hooked:\n" % I1
 		out += "%s%s%s\n" % [I2, aw, vanilla_call]
 		out += "%sreturn\n" % I2
 		out += "%sif _lib._wrapper_active.has(\"%s\"):\n" % [I1, hook_base]
@@ -3749,6 +3766,7 @@ func _enumerate_game_scripts() -> Array[String]:
 				scripts.append(canonical)
 		_log_info("[RTVCodegen] parsed %s -- %d total file(s), %d .gd script(s) under res://Scripts/" \
 				% [cand, paths.size(), scripts.size()])
+		_all_game_script_paths = scripts
 		return scripts
 	return []
 
@@ -3814,6 +3832,25 @@ func _parse_pck_file_list(pck_path: String) -> PackedStringArray:
 	f.close()
 	return result
 
+# STABILITY canary B: probe the first readable vanilla script for its GDSC
+# tokenizer version. Returns 100 (Godot 4.0-4.4), 101 (Godot 4.5-4.6), or
+# -1 if the file isn't binary-tokenized / unreadable. Used to bail out
+# cleanly when Godot ships a new tokenizer format (v102+) rather than
+# cascading "Empty detokenized source" warnings through every script.
+func _probe_gdsc_version() -> int:
+	var probe_paths := ["res://Scripts/Camera.gd", "res://Scripts/Controller.gd",
+			"res://Scripts/Audio.gd", "res://Scripts/AI.gd"]
+	for p in probe_paths:
+		var raw := FileAccess.get_file_as_bytes(p)
+		if raw.size() < 12:
+			raw = FileAccess.get_file_as_bytes(p.replace(".gd", ".gdc"))
+			if raw.size() < 12:
+				continue
+		if raw.slice(0, 4).get_string_from_ascii() != _GDSC_MAGIC:
+			continue
+		return int(raw.decode_u32(4))
+	return -1
+
 # Build the framework pack: enumerate res://Scripts/*.gd, detokenize each via
 # _read_vanilla_source, parse + generate wrappers, zip them, mount the zip.
 #
@@ -3839,6 +3876,18 @@ func _generate_hook_pack() -> String:
 			if fname.begins_with("Framework") and fname.ends_with(".gd"):
 				DirAccess.remove_absolute(hook_dir.path_join(fname))
 		dir.list_dir_end()
+
+	# STABILITY canary B: verify the GDSC tokenizer format is one we support
+	# before any rewrite work. Loud, single-message failure beats 126 silent
+	# "Empty detokenized source" warnings.
+	var tok_version := _probe_gdsc_version()
+	if tok_version != -1 and tok_version != 100 and tok_version != 101:
+		_log_critical("[STABILITY] Unsupported GDSC tokenizer v%d on Godot %s. This ModLoader supports v100 (Godot 4.0-4.4) and v101 (Godot 4.5-4.6). Hook pack generation disabled -- script hooks will not fire. See README for supported Godot versions." \
+				% [tok_version, Engine.get_version_info().get("string", "unknown")])
+		return ""
+	if tok_version != -1:
+		_log_info("[STABILITY] Detokenizer compatible: GDSC v%d on Godot %s" \
+				% [tok_version, Engine.get_version_info().get("string", "unknown")])
 
 	if _defer_to_tetra_modlib:
 		_log_info("[Hooks] Deferred to tetra's RTVModLib -- wiped stale artifacts, skipping generation")
@@ -4008,6 +4057,16 @@ func _generate_hook_pack() -> String:
 		_log_debug("[RTVCodegen] Rewrote mod script %s (ext=%s, %d hooks) [%s]" \
 				% [cand["res_path"], vanilla_filename, hookable_count * 4, mod_name])
 
+	# STABILITY canary C: add a tiny known-content file to the hook pack so we
+	# can verify VFS mount precedence independently of the script-rewriting
+	# path. After mount, a FileAccess.get_file_as_string on this path should
+	# return the canary content -- if not, the pack mounted but isn't serving
+	# files and no rewrite will take effect this session.
+	var canary_content := "MODLOADER-VFS-CANARY-" + MODLOADER_VERSION
+	if zp.start_file("__modloader_canary__.txt") == OK:
+		zp.write_file(canary_content.to_utf8_buffer())
+		zp.close_file()
+
 	zp.close()
 	if mod_script_count > 0:
 		_log_info("[RTVCodegen] Rewrote %d mod subclass script(s), %d hook points -- composes with mods that bypass super()" \
@@ -4022,6 +4081,15 @@ func _generate_hook_pack() -> String:
 	# PCK's same-path entries in Godot's VFS layering.
 	if script_count > 0:
 		if ProjectSettings.load_resource_pack(HOOK_PACK_ZIP, true):
+			# STABILITY canary C readback: confirm VFS mount precedence works
+			# end-to-end. If the canary file isn't readable with expected
+			# content, the hook pack mounted but isn't serving files -- every
+			# rewrite will silently fall back to vanilla.
+			var canary_got := FileAccess.get_file_as_string("res://__modloader_canary__.txt")
+			if canary_got.begins_with("MODLOADER-VFS-CANARY-"):
+				_log_info("[STABILITY] VFS canary OK: hook pack mount precedence verified (%s)" % canary_got.strip_edges())
+			else:
+				_log_critical("[STABILITY] VFS canary FAILED (got '%s', expected MODLOADER-VFS-CANARY-*) -- hook pack mounted but files aren't served. Rewrites will not take effect this session." % canary_got.substr(0, 40))
 			_log_info("[RTVCodegen] Generated %d rewritten vanilla script(s), %d hook points -- pack mounted at res://" \
 					% [script_count, hook_count])
 			_activate_rewritten_scripts(packed_filenames)
@@ -4208,10 +4276,13 @@ func _activate_rewritten_scripts(filenames: Array[String]) -> void:
 	# rewrite compiled into the cached GDScript, the method list contains
 	# both the renamed vanilla (e.g. _rtv_vanilla_Movement) AND the
 	# dispatch wrapper at the original name (e.g. Movement).
+	var compile_proof_ok := 0
+	var compile_proof_fail: PackedStringArray = []
 	for fname: String in filenames:
 		var vp := "res://Scripts/" + fname
 		var s := load(vp) as GDScript
 		if s == null:
+			compile_proof_fail.append(fname)
 			continue
 		var methods := s.get_script_method_list()
 		var has_vanilla_rename := false
@@ -4226,6 +4297,30 @@ func _activate_rewritten_scripts(filenames: Array[String]) -> void:
 					break
 		_log_info("[RTVCodegen] COMPILE-PROOF %s: %d methods compiled, _rtv_vanilla_* present=%s (e.g. %s)" \
 				% [vp, methods.size(), has_vanilla_rename, sample_rename])
+		if has_vanilla_rename:
+			compile_proof_ok += 1
+		else:
+			compile_proof_fail.append(fname)
+
+	# STABILITY canary A: summarize COMPILE-PROOF results and alarm on
+	# catastrophic or critical-script failure. Silent breakage is the worst
+	# mode -- users should see a clear message if Godot changed something
+	# under us (VFS precedence, reload-parse behavior, cache eviction rules).
+	var critical_set: Dictionary = {"Controller.gd": true, "Camera.gd": true,
+			"WeaponRig.gd": true, "Door.gd": true, "Trader.gd": true,
+			"Hitbox.gd": true, "LootContainer.gd": true, "Pickup.gd": true}
+	var critical_failures: PackedStringArray = []
+	for f in compile_proof_fail:
+		if critical_set.has(f):
+			critical_failures.append(f)
+	if compile_proof_ok == 0 and filenames.size() > 0:
+		_log_critical("[STABILITY] ALL %d rewrites failed to take effect -- VFS mount, hook pack, or cache eviction is broken. Mods will NOT work this session. Click 'Reset to Vanilla' in the UI or create modloader_disabled in the game folder." % filenames.size())
+	elif critical_failures.size() > 0:
+		_log_critical("[STABILITY] Hook rewrites missing on critical scripts: %s. Hooks on these scripts will NOT fire this session (likely cache-pinning fallback failure)." % ", ".join(critical_failures))
+	else:
+		_log_info("[STABILITY] COMPILE-PROOF summary: %d/%d rewrites active%s" \
+				% [compile_proof_ok, filenames.size(),
+					(" (%d pinned-fallback)" % compile_proof_fail.size()) if compile_proof_fail.size() > 0 else ""])
 
 	# Autoload instance inspection: for the "Already in use" set, the
 	# script's get_script_method_list() shows our renames, BUT the live
@@ -5016,6 +5111,13 @@ static func _static_resolve_remaps(archive_path: String) -> int:
 			continue
 		var target: String = cfg.get_value("remap", "path", "")
 		if target.is_empty():
+			continue
+		# Skip remaps pointing to .godot/exported/ bakes. Mods like MCM ship
+		# their own .godot cache with pre-compiled scenes; eagerly take_over_path'ing
+		# those before mod scripts register causes UID resolution failures that
+		# break the mod's UI. Godot resolves these lazily via the .remap files
+		# when actually needed. Credit: tetrahydroc.
+		if target.begins_with("res://.godot/exported/"):
 			continue
 		var original_path := f.trim_suffix(".remap")
 		if not original_path.begins_with("res://"):
