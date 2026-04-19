@@ -1,5 +1,7 @@
 ## Metro Mod Loader -- community mod loader for Road to Vostok (Godot 4.6+).
 ## Loads .vmz/.pck archives from <game>/mods/ via a pre-game config window.
+## Unpacked folder mods are also recognized when Developer Mode is enabled
+## (toggle in the launcher's Mods tab).
 ## Two-pass architecture: mounts archives at file-scope, optionally restarts to
 ## prepend mod autoloads before the game's own autoloads via [autoload_prepend].
 extends Node
@@ -122,6 +124,7 @@ var _original_scripts: Dictionary = {}   # res_path -> vanilla script ref (UID i
 var _vanilla_id_to_path: Dictionary = {} # script.get_instance_id() -> res_path
 var _class_name_to_path: Dictionary = {} # "Camera" -> "res://Scripts/Camera.gd"
 var _all_game_script_paths: Array[String] = []  # populated by _enumerate_game_scripts from PCK parse; DirAccess can't list PCK contents in 4.6
+var _pck_zero_byte_paths: Dictionary = {}  # res_path -> true for entries the base game PCK ships as 0-byte (e.g. CasettePlayer.gd in RTV 4.6.1). Populated by _parse_pck_file_list; checked by detokenize + hook-gen to skip silently. These files are not hookable and any vanilla or mod preload() of them will fail at engine level -- not a modloader bug.
 var _scripts_with_scene_preloads: Dictionary = {}  # filename -> PackedStringArray of scene paths; scripts listed here are deferred from eager load+reload in _activate_rewritten_scripts. Rationale: their module-scope preload() fires at parse time; if we force-load them before mod autoloads run overrideScript(), scenes bake Script ext_resources to the pre-override vanilla. take_over_path then orphans those refs and instantiate() produces nodes with vanilla body, not mod body. Deferring to lazy-compile lets mod overrides run first -- the preload chain fires via extends resolution during mod's own overrideScript call, AFTER take_over_path took effect for prior targets. VFS mount precedence still serves our rewrite on lazy-load.
 var _node_swap_connected := false
 var _swap_count: int = 0
@@ -2336,6 +2339,16 @@ func _collect_needed_from_mods() -> Dictionary:
 			needed[(n as String).to_lower()] = true
 	return needed
 
+# DEAD-LOOP MARKER (verified 2026-04-18):
+# Function runs every launch but the body loop below never enters
+# _register_override, because the ResourceLoader.exists(Framework<X>.gd) gate
+# is always false: Framework<X>.gd files are no longer generated (see
+# _rtv_generate_override further down, zero callers). The early-return paths
+# (_defer_to_tetra_modlib, empty needed) and the no-op log line still fire as
+# documented. Kept for the pending dead-code cleanup pass; once removed the
+# whole [rtvmodlib] needs= -> node_added chain (this function plus
+# _register_override / _connect_node_swap / _on_node_added / _deferred_swap)
+# can go too.
 func _activate_hooked_scripts() -> void:
 	if _defer_to_tetra_modlib:
 		_log_info("[Hooks] Deferred to tetra's RTVModLib mod -- skipping activation")
@@ -2343,21 +2356,27 @@ func _activate_hooked_scripts() -> void:
 
 	var needed := _collect_needed_from_mods()
 	if needed.is_empty():
-		_log_info("[Hooks] No mod declared [rtvmodlib] needs -- nothing to activate")
 		return
+
+	# In the source-rewrite era, [rtvmodlib] needs= is a no-op: every hookable
+	# vanilla script gets dispatch automatically via the hook pack, so there
+	# are no per-framework Framework<Name>.gd files to activate. The declaration
+	# stays compatible with tetra's standalone RTVModLib mod; we just don't
+	# need to act on it here. Legacy Framework-subclass activation remains
+	# below for the (currently unused) [rtvmodlib] needs= -> node_added path
+	# but only fires if a Framework<Name>.gd exists in the pack.
+	_log_info("[RTVModLib] [rtvmodlib] needs declarations are no-op under source-rewrite (%d frameworks requested; all hookable scripts already dispatched via hook pack)" % needed.size())
 
 	var activated := 0
 	for key in needed.keys():
 		var vanilla_path := _resolve_framework_vanilla_path(key)
 		if vanilla_path == "":
-			_log_warning("[RTVModLib] requested framework '%s' has no vanilla script -- skipped" % key)
 			continue
 		# Load via the mounted pack (res://) rather than user://. GDScript's
 		# extends-chain resolution for class_name parents misbehaves for user://
 		# scripts in 4.6.
 		var framework_file := HOOK_PACK_MOUNT_BASE.path_join("Framework" + vanilla_path.get_file())
 		if not ResourceLoader.exists(framework_file):
-			_log_warning("[RTVModLib] Framework not in pack for '%s' at %s -- skipped" % [key, framework_file])
 			continue
 		if _register_override(framework_file, vanilla_path):
 			activated += 1
@@ -2379,6 +2398,12 @@ func _resolve_framework_vanilla_path(key_lower: String) -> String:
 			return script_path
 	return ""
 
+# DEAD CODE (verified 2026-04-18): only call site is _activate_hooked_scripts
+# above, gated behind a ResourceLoader.exists(Framework<X>.gd) check that's
+# always false under source-rewrite. Remove with the Step-E cleanup. Original
+# rationale comment preserved below in case the function ever needs to come
+# back.
+#
 # class_name scripts can't be take_over_path'd safely: Resource::set_path
 # doesn't clear global_name, so ScriptServer ends up with the moved script's
 # class_name colliding with the evicted original (corrupts the class, see
@@ -2425,6 +2450,10 @@ func _register_override(framework_path: String, expected_vanilla_path: String) -
 	_hook_swap_map[original_path] = script
 	return true
 
+# DEAD CODE EFFECTIVELY (verified 2026-04-18): function runs but always exits
+# at the _hook_swap_map.is_empty() check below, because _hook_swap_map is only
+# populated by _register_override (never called). The node_added signal never
+# connects, so _on_node_added below never fires either. Remove with Step E.
 func _connect_node_swap() -> void:
 	if _defer_to_tetra_modlib:
 		return
@@ -2436,6 +2465,8 @@ func _connect_node_swap() -> void:
 	_node_swap_connected = true
 	_log_info("[RTVModLib] node_added connected -- tracking %d script(s)" % _hook_swap_map.size())
 
+# DEAD CODE (verified 2026-04-18): node_added signal never connects (see
+# _connect_node_swap above), so this never fires. Remove with Step E.
 func _on_node_added(node: Node) -> void:
 	var node_script = node.get_script()
 	if node_script == null:
@@ -2460,6 +2491,10 @@ func _on_node_added(node: Node) -> void:
 	if node_script != framework_script:
 		call_deferred("_deferred_swap", node, framework_script, path)
 
+# DEAD CODE (verified 2026-04-18): only call site is _on_node_added (via
+# call_deferred), which itself never fires. Remove with Step E. Original
+# rationale comment preserved below.
+#
 # Swap a vanilla-script node to its framework wrapper: snapshot props,
 # set_script, restore, then fire _ready so the wrapper dispatches.
 #
@@ -2528,8 +2563,13 @@ func hook(hook_name: String, callback: Callable, priority: int = 100) -> int:
 			or hook_name.ends_with("-callback"))
 	if is_replace and _hooks.has(hook_name) and (_hooks[hook_name] as Array).size() > 0:
 		var owner_id: int = (_hooks[hook_name] as Array)[0]["id"]
-		push_warning("RTVModLib: replace hook '" + hook_name \
-				+ "' already owned (id=" + str(owner_id) + "), registration rejected")
+		# Info-level, not warning: rejection is normal API behavior (replace
+		# slots are single-owner by design). Caller checks the -1 return
+		# code. Promoting this to push_warning() made every test assertion
+		# and every mod-conflict check spam Godot's stderr even though it's
+		# expected. Debug-gated so verbose logs still show it when needed.
+		_log_debug("[RTVModLib] replace hook '%s' already owned (id=%d), registration rejected" \
+				% [hook_name, owner_id])
 		return -1
 	if not _hooks.has(hook_name):
 		_hooks[hook_name] = []
@@ -2774,6 +2814,11 @@ const _SPACE_AFTER := {
 }
 
 func _detokenize_script(script_path: String) -> String:
+	# Zero-byte PCK entries (base game ships CasettePlayer.gd empty in RTV
+	# 4.6.1) have nothing to decode. Return empty silently so callers don't
+	# misread this as an IO failure.
+	if _pck_zero_byte_paths.has(script_path):
+		return ""
 	# Try multiple methods to read raw bytes -- FileAccess on res:// can fail for
 	# PCK-embedded files depending on the container format (RSCC, encryption, etc.).
 	var raw := PackedByteArray()
@@ -3246,7 +3291,7 @@ func _rtv_parse_script(filename: String, source: String) -> Dictionary:
 			if body_line.begins_with("return ") and body_line.length() > 7:
 				has_return_value = true
 
-		# Explicit return type override (void → no value; anything else → has value).
+		# Explicit return type override (void -> no value; anything else -> has value).
 		if return_type != null and return_type != "void":
 			has_return_value = true
 		if return_type != null and return_type == "void":
@@ -3265,6 +3310,12 @@ func _rtv_parse_script(filename: String, source: String) -> Dictionary:
 
 	return script
 
+# DEAD CODE (verified 2026-04-18): zero callers. Grep `_rtv_generate_override(`
+# returns only this definition. Was the codegen for the original extends-wrapper
+# path; the source-rewrite era replaced it with _rtv_dispatch_inline_src below.
+# Kept as scaffolding in case the [rtvmodlib] needs= -> Framework<X>.gd path
+# ever needs to be revived. Remove with Step E.
+#
 # Produce one Framework<Name>.gd source. Three method templates (matching
 # generate_override in the Rust):
 #   _ready   -- has a _rtv_ready_done flag so super() doesn't double-fire
@@ -3668,6 +3719,80 @@ func _rtv_autofix_legacy_syntax(source: String) -> Dictionary:
 		"export": fix_export,
 	}
 
+# Comment out `<var>.reload()` lines inside mod helper functions that also
+# call `take_over_path`. Rationale: mod override helpers (RTVCoop's _override,
+# CustomItemTest's override_script, etc.) often do:
+#   var script = load(modPath); script.reload(); script.take_over_path(gamePath)
+# The reload() call is a no-op unless source changed between load and call.
+# Our hook pack owns the mod subclass source, so reload is always redundant.
+# Worse: if the mod had already set_script(script) on a live node earlier
+# (RTVCoop does this for /root/Loader), reload fails at gdscript.cpp:756 with
+# "Cannot reload script while instances exist." take_over_path succeeds right
+# after, so the override still works, but the error spams stderr each launch.
+# Stripping the reload eliminates the error with no behavior change.
+#
+# Scope: only strips lines where the stripped-edges content ends with
+# ".reload()" AND the enclosing function body contains ".take_over_path(".
+# Comments out with a "# modloader stripped" note so the change is visible
+# if a mod author inspects the rewritten source.
+#
+# Source must be LF-normalized by the caller.
+func _rtv_strip_helper_reload(source: String) -> Dictionary:
+	var lines: PackedStringArray = source.split("\n")
+	var out: PackedStringArray = PackedStringArray()
+	var stripped: int = 0
+	var i: int = 0
+	while i < lines.size():
+		var line: String = lines[i]
+		if not line.begins_with("func "):
+			out.append(line)
+			i += 1
+			continue
+		# Collect function body: header + subsequent indented lines.
+		var start: int = i
+		var end: int = i + 1
+		while end < lines.size():
+			var bl: String = lines[end]
+			if bl.length() > 0 and not (bl[0] == "\t" or bl[0] == " "):
+				break
+			end += 1
+		# Does this function body call take_over_path anywhere?
+		var has_tov: bool = false
+		for k in range(start, end):
+			if ".take_over_path(" in lines[k]:
+				has_tov = true
+				break
+		if has_tov:
+			for k in range(start, end):
+				var bl: String = lines[k]
+				var trimmed: String = bl.strip_edges()
+				# Match bare `<ident>.reload()` statement lines (nothing else
+				# on the line). Preserves the original indent and leaves a
+				# comment trail.
+				if trimmed.ends_with(".reload()") and not trimmed.begins_with("#"):
+					var before_paren: int = trimmed.find(".reload()")
+					var ident_part: String = trimmed.substr(0, before_paren)
+					var is_bare_call: bool = true
+					for c in ident_part:
+						if not (c == "_" or c == "." or (c >= "a" and c <= "z") \
+								or (c >= "A" and c <= "Z") or (c >= "0" and c <= "9")):
+							is_bare_call = false
+							break
+					if is_bare_call:
+						var indent_len: int = 0
+						while indent_len < bl.length() and (bl[indent_len] == "\t" or bl[indent_len] == " "):
+							indent_len += 1
+						var indent: String = bl.substr(0, indent_len)
+						out.append(indent + "# " + bl.substr(indent_len) + "  # modloader: stripped (redundant + fires Cannot-reload error if instance exists)")
+						stripped += 1
+						continue
+				out.append(bl)
+		else:
+			for k in range(start, end):
+				out.append(lines[k])
+		i = end
+	return {"source": "\n".join(out), "stripped": stripped}
+
 # Produces ONE inline dispatch wrapper that calls _rtv_vanilla_<name>(...).
 #
 # Mirrors _rtv_generate_override's templates but:
@@ -3949,7 +4074,7 @@ func _collect_module_scope_scene_preloads(source: String) -> PackedStringArray:
 				scenes.append(scene_path)
 	return scenes
 
-# Minimal PCK header + file-table parser. V2 (Godot 4.0–4.5) has 16 reserved
+# Minimal PCK header + file-table parser. V2 (Godot 4.0-4.5) has 16 reserved
 # dwords before the directory; V3 (Godot 4.6+) replaces them with an explicit
 # 64-bit directory offset. Reference: core/io/file_access_pack.cpp.
 func _parse_pck_file_list(pck_path: String) -> PackedStringArray:
@@ -4001,12 +4126,20 @@ func _parse_pck_file_list(pck_path: String) -> PackedStringArray:
 					% [pck_path, path_len, i])
 			break
 		var path := f.get_buffer(path_len).get_string_from_utf8()
-		f.get_64()        # offset
-		f.get_64()        # size
-		f.get_buffer(16)  # md5
-		f.get_32()        # per-file flags (V2 and V3)
+		f.get_64()              # offset
+		var size: int = f.get_64()
+		f.get_buffer(16)        # md5
+		f.get_32()              # per-file flags (V2 and V3)
 		if not path.is_empty():
 			result.append(path)
+			# Track zero-byte entries so downstream detokenize skips them
+			# silently instead of logging misleading "Cannot read bytes"
+			# warnings. The base game may ship empty .gd entries (e.g.
+			# CasettePlayer.gd in RTV 4.6.1) that we cannot hook and that
+			# any preload() call would fail regardless of modloader.
+			if size == 0 and path.ends_with(".gd"):
+				var res_path := path if path.begins_with("res://") else "res://" + path.trim_prefix("/")
+				_pck_zero_byte_paths[res_path] = true
 
 	f.close()
 	return result
@@ -4038,13 +4171,17 @@ func _probe_gdsc_version() -> int:
 # breaks for scripts loaded from user://, which shows up as broken super()
 # dispatch on class_name-wrapped scripts.
 func _generate_hook_pack(defer_activation: bool = false) -> String:
-	# Wipe prior-run artifacts even when deferring. Cheap + keeps mode-switches
-	# clean.
+	# Ensure hook dir exists. Don't remove the old framework_pack.zip here:
+	# in Pass 2 it's still mounted from static init, and VFS reads against
+	# the mounted pack fail noisily until we generate the new one (see the
+	# 8 spurious file_access_zip errors if you delete it). ZIPPacker.open
+	# overwrites on save anyway.
+	#
+	# We still sweep any Framework*.gd stragglers from the pre-source-rewrite
+	# era (when we generated per-framework wrapper files here). No-op in
+	# clean setups.
 	var hook_dir := ProjectSettings.globalize_path(HOOK_PACK_DIR)
 	DirAccess.make_dir_recursive_absolute(hook_dir)
-	var old_zip := ProjectSettings.globalize_path(HOOK_PACK_ZIP)
-	if FileAccess.file_exists(old_zip):
-		DirAccess.remove_absolute(old_zip)
 	var dir := DirAccess.open(hook_dir)
 	if dir != null:
 		dir.list_dir_begin()
@@ -4057,8 +4194,8 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		dir.list_dir_end()
 
 	# STABILITY canary B: verify the GDSC tokenizer format is one we support
-	# before any rewrite work. Loud, single-message failure beats 126 silent
-	# "Empty detokenized source" warnings.
+	# before any rewrite work. One loud, actionable message beats a flood of
+	# "Empty detokenized source" warnings, one per hookable script.
 	var tok_version := _probe_gdsc_version()
 	if tok_version != -1 and tok_version != 100 and tok_version != 101:
 		_log_critical("[STABILITY] Unsupported GDSC tokenizer v%d on Godot %s. This ModLoader supports v100 (Godot 4.0-4.4) and v101 (Godot 4.5-4.6). Hook pack generation disabled -- script hooks will not fire. See README for supported Godot versions." \
@@ -4095,6 +4232,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	# from COMPILE-PROOF log lines how many scripts fell into the
 	# GDScriptCache-pinned bucket vs the live-inline bucket.
 	var _step_b_allowlist: Array[String] = []
+	var zero_byte_skipped: int = 0
 	for script_path: String in script_paths:
 		var filename := script_path.get_file()
 
@@ -4102,6 +4240,12 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			_log_debug("[RTVCodegen] Skipped %s (runtime-sensitive)" % filename)
 			continue
 		if filename in RTV_RESOURCE_SERIALIZED_SKIP or filename in RTV_RESOURCE_DATA_SKIP:
+			continue
+		# Skip zero-byte PCK entries (base game ships empty .gd files for
+		# some scripts; CasettePlayer.gd in RTV 4.6.1). Detokenize cannot
+		# read content that doesn't exist. Not a modloader failure.
+		if _pck_zero_byte_paths.has(script_path):
+			zero_byte_skipped += 1
 			continue
 		if not _step_b_allowlist.is_empty() and filename not in _step_b_allowlist:
 			continue
@@ -4263,6 +4407,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		subclass_paths[mp["res_path"]] = true
 	var sibling_fixed := 0
 	var sibling_total_bodyless := 0
+	var sibling_total_reload_stripped := 0
 	var sibling_skipped_noop := 0
 	for archive_file: String in _archive_file_sets:
 		var paths_set: Dictionary = _archive_file_sets[archive_file]
@@ -4281,6 +4426,13 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			var norm := raw.replace("\r\n", "\n").replace("\r", "\n")
 			var af := _rtv_autofix_legacy_syntax(norm)
 			var fixed_src: String = af["source"]
+			# Second pass: strip redundant `.reload()` calls in helpers that
+			# also do take_over_path. Kills the "Cannot reload script while
+			# instances exist" error RTVCoop fires on every launch.
+			var rl := _rtv_strip_helper_reload(fixed_src)
+			fixed_src = rl["source"]
+			var reload_stripped: int = int(rl["stripped"])
+			sibling_total_reload_stripped += reload_stripped
 			if fixed_src == norm:
 				sibling_skipped_noop += 1
 				continue  # already clean, no overlay needed
@@ -4292,11 +4444,13 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			zp.close_file()
 			sibling_fixed += 1
 			sibling_total_bodyless += int(af["bodyless"])
+			if reload_stripped > 0:
+				_log_info("[Autofix] Stripped %d redundant .reload() call(s) from %s -- prevents Cannot-reload-while-instances-exist spam" % [reload_stripped, p])
 			_log_info("[Autofix] Patched sibling %s: bodyless=%d tool=%d onready=%d export=%d" \
 					% [p, af["bodyless"], af["tool"], af["onready"], af["export"]])
 	if sibling_fixed > 0:
-		_log_info("[Autofix] %d mod sibling script(s) repaired (%d bodyless blocks) -- packed into hook pack overlay (%d already clean, no overlay written)" \
-				% [sibling_fixed, sibling_total_bodyless, sibling_skipped_noop])
+		_log_info("[Autofix] %d mod sibling script(s) repaired (%d bodyless blocks, %d reload() stripped) -- packed into hook pack overlay (%d already clean, no overlay written)" \
+				% [sibling_fixed, sibling_total_bodyless, sibling_total_reload_stripped, sibling_skipped_noop])
 
 	# STABILITY canary C: add a tiny known-content file to the hook pack so we
 	# can verify VFS mount precedence independently of the script-rewriting
@@ -4320,6 +4474,9 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	# replace_files=true is the default in 4.6 but pass explicitly -- the whole
 	# design depends on our Scripts/*.gd + .gd.remap entries winning over the
 	# PCK's same-path entries in Godot's VFS layering.
+	if zero_byte_skipped > 0:
+		_log_info("[RTVCodegen] Skipped %d zero-byte PCK entry(ies) (base game ships empty .gd files -- not hookable, not a modloader failure): %s" \
+				% [zero_byte_skipped, ", ".join(_pck_zero_byte_paths.keys())])
 	if script_count > 0:
 		if defer_activation:
 			# Pass 1 pre-restart: write the zip + persist pass_state so Pass 2's
@@ -4870,8 +5027,13 @@ func _scan_gd_source(text: String, analysis: Dictionary) -> void:
 			(analysis["class_names"] as Array).append(cn)
 
 	if not analysis["uses_dynamic_override"]:
-		analysis["uses_dynamic_override"] = "get_base_script()" in text \
-				or "take_over_path(parentScript" in text
+		# Detect runtime overrides via any take_over_path() usage.
+		# Previous narrow match ("get_base_script()" + "take_over_path(parentScript")
+		# missed RTVCoop's pattern: script.take_over_path(gamePath) where
+		# gamePath is a literal arg. Broader check catches AI Overhaul's
+		# pattern (parentScript.resource_path), MCM's (parentScript arg),
+		# RTVCoop's (string literal), and any future variant.
+		analysis["uses_dynamic_override"] = "take_over_path(" in text
 
 	# UpdateTooltip() is inventory-UI only. World-item tooltips are written directly
 	# by HUD._physics_process from gameData.tooltip -- this override has no effect there.
@@ -5029,16 +5191,114 @@ func _verify_script_overrides() -> void:
 			# rewritten parent. Distinguish from actual cache-stale vanilla
 			# by looking for "extends \"res://Scripts/..." in the source.
 			var is_mod_subclass: bool = src.contains("extends \"res://Scripts/")
+			# Skip-listed vanilla scripts (RTV_SKIP_LIST: Explosion, Hit, Mine,
+			# Message, MuzzleFlash, ParticleInstance, TreeRenderer) are NOT
+			# rewritten by our hook pipeline because dispatch wrappers would
+			# break their runtime semantics (short-lived instances, coroutine
+			# lifetime, GPUParticles draw_pass corruption). Mod subclasses
+			# that extend these aren't rewritten either -- they rely on
+			# Godot's standard class-inheritance virtual dispatch. So
+			# "no _rtv_* methods" is the CORRECT state for these, not an
+			# error. Classify separately.
+			var is_skip_listed: bool = vp.get_file() in RTV_SKIP_LIST
 			var status: String
 			if has_mod_rename:
 				status = "OK: mod's script serves this path (has _rtv_mod_* methods)"
 			elif has_vanilla_rename and is_mod_subclass:
 				status = "OK: mod's subclass serves this path (no method overrides -- inherits vanilla dispatch)"
+			elif is_skip_listed and is_mod_subclass:
+				status = "OK: skip-listed vanilla (%s) -- mod subclass inherits unrewritten vanilla via Godot virtual dispatch (no hooks for runtime-sensitive classes)" % vp.get_file()
 			elif has_vanilla_rename:
 				status = "STALE: cache still serves vanilla -- overrideScript take_over_path did not win"
 			else:
 				status = "UNKNOWN: neither _rtv_mod_ nor _rtv_vanilla_ methods -- rewrite likely did not run"
 			_log_info("[OverrideVerify] %s | %s | %s | src_head=[%s]" % [mod_name, vp, status, src_head])
+
+	# Post-override autoload instance check. If any vanilla we hooked is also
+	# a game autoload, the autoload instance was created BEFORE any mod
+	# autoload ran overrideScript. take_over_path updates ResourceCache but
+	# NOT live instances (Resource::set_path only touches the cache; it does
+	# not walk the scene tree). So /root/<AutoloadName>.get_script() may
+	# still point at the rewritten vanilla (now orphaned after take_over_path
+	# cleared its path_cache), even though load(vanilla_path) returns mod's
+	# script. Report which autoloads actually got their instance script
+	# updated -- relevant for RTVCoop and any mod that overrides autoload
+	# scripts like Loader.gd, Settings.gd, etc.
+	var autoload_names: Array[String] = ["Database", "GameData", "Settings",
+			"Menu", "Loader", "Inputs", "Mode", "Profiler", "Simulation"]
+	var autoload_paths: Dictionary = {}  # autoload_name -> res://Scripts/<Name>.gd
+	for an: String in autoload_names:
+		autoload_paths[an] = "res://Scripts/" + an + ".gd"
+	var any_overridden_autoload := false
+	for an: String in autoload_names:
+		if expected_map.has(autoload_paths[an]):
+			any_overridden_autoload = true
+			break
+	if any_overridden_autoload:
+		_log_info("[AutoloadInstanceProbe] === Post-override autoload instance check ===")
+		var root := get_tree().root
+		var swap_count: int = 0
+		for an: String in autoload_names:
+			var ap: String = autoload_paths[an]
+			if not expected_map.has(ap):
+				continue
+			var node: Node = root.get_node_or_null(an)
+			if node == null:
+				_log_info("[AutoloadInstanceProbe] %s | node NOT in tree (not a live autoload)" % an)
+				continue
+			var iscr := node.get_script() as GDScript
+			if iscr == null:
+				_log_info("[AutoloadInstanceProbe] %s | node has no script attached" % an)
+				continue
+			var cur_has_mod: bool = false
+			for m0 in iscr.get_script_method_list():
+				if str(m0["name"]).begins_with("_rtv_mod_"):
+					cur_has_mod = true
+					break
+			# Auto-swap: game autoload was instantiated BEFORE any mod ran
+			# overrideScript, so its ScriptInstance still holds the pre-override
+			# rewritten vanilla (orphaned by take_over_path -- resource.cpp:92
+			# clears old path_cache entry but never walks the scene tree).
+			# load(ap) now returns the mod subclass from the remapped cache;
+			# set_script swaps the instance script in place. Inherited property
+			# slots (mod extends rewritten vanilla) survive via type overlap;
+			# any state built into vanilla-only slots by _ready is lost --
+			# unavoidable without engine-level refresh. Matches RTVCoop's manual
+			# set_script pattern for Loader.
+			var swapped: bool = false
+			if not cur_has_mod:
+				var new_scr: GDScript = load(ap) as GDScript
+				if new_scr != null and new_scr != iscr:
+					node.set_script(new_scr)
+					swapped = true
+					swap_count += 1
+					iscr = node.get_script() as GDScript
+			var ipath: String = iscr.resource_path if iscr != null else ""
+			var ihas_mod: bool = false
+			var ihas_vanilla: bool = false
+			if iscr != null:
+				for m in iscr.get_script_method_list():
+					var mn: String = str(m["name"])
+					if mn.begins_with("_rtv_mod_"): ihas_mod = true
+					elif mn.begins_with("_rtv_vanilla_"): ihas_vanilla = true
+					if ihas_mod and ihas_vanilla: break
+			var expected_mod: String = expected_map[ap]
+			var istatus: String
+			if ihas_mod:
+				istatus = "OK: instance runs mod's body (has _rtv_mod_* methods)"
+				if swapped:
+					istatus = "FIXED via set_script swap -- " + istatus
+			elif ipath == "" and ihas_vanilla:
+				istatus = "BROKEN: instance holds ORPHAN script (empty resource_path, _rtv_vanilla_* only) -- swap attempted but did not resolve"
+			elif ihas_vanilla:
+				istatus = "BROKEN: instance runs vanilla body (has _rtv_vanilla_* only; resource_path=%s)" % ipath
+			else:
+				istatus = "UNKNOWN: instance script has no _rtv_* methods"
+			_log_info("[AutoloadInstanceProbe] %s | expected mod=%s | instance_path=%s | %s" \
+					% [an, expected_mod, ipath if ipath != "" else "<empty>", istatus])
+		if swap_count > 0:
+			_log_info("[AutoloadInstanceProbe] Auto-swapped %d stale autoload instance(s) to mod body" % swap_count)
+
 	# Layer B: arm the node_added probe. One-shot per vanilla_path.
 	if expected_map.is_empty():
 		return
@@ -5087,9 +5347,22 @@ func _on_override_probe_node_added(node: Node) -> void:
 		if has_mod_rename and has_vanilla_rename:
 			break
 	var expected_mod: String = _override_probe_expected[sp]
+	# Skip-listed vanillas (RTV_SKIP_LIST) aren't rewritten; mod subclasses
+	# that extend them ride Godot's normal virtual dispatch and thus have
+	# neither _rtv_mod_ nor _rtv_vanilla_ method prefixes. Classify
+	# separately so we don't flag correct pass-through as STALE/UNKNOWN.
+	var is_skip_listed: bool = sp.get_file() in RTV_SKIP_LIST
 	var status: String
 	if has_mod_rename:
 		status = "OK: instance uses mod's script"
+	elif is_skip_listed:
+		# Verify pass-through: instance script should be a subclass of vanilla
+		# (mod's Override.gd extending res://Scripts/<SkipListed>.gd).
+		var src: String = (scr as GDScript).source_code if scr is GDScript else ""
+		if src.contains("extends \"res://Scripts/") or src.contains("extends\"res://Scripts/"):
+			status = "OK: skip-listed pass-through (instance is mod subclass extending unrewritten vanilla; methods resolve via Godot virtual dispatch)"
+		else:
+			status = "UNKNOWN: skip-listed vanilla but instance source doesn't extend res://Scripts/ -- possible bare vanilla (override did not take)"
 	elif has_vanilla_rename:
 		status = "STALE SCENE: instance uses vanilla -- PackedScene captured pre-override script binding (cache may be OK, but scene ext_resource is stale)"
 	else:
@@ -5138,7 +5411,14 @@ func _probe_tree_walk() -> void:
 			_log_info("[TREEWALK] %s | found %d instance(s); sample: %s (%s) script=%s has_mod_rename=%s chain_depth=%d expected_mod=%s" \
 					% [vp, info.count, info.name, info.cls, info.script_path, info.has_mod, info.depth, mod_name])
 		else:
-			_log_warning("[TREEWALK] %s | NO INSTANCES FOUND in scene tree after 12s. Mod declared override but no node carries this script -- either the class is never instantiated in this scene, or instances have a different script.resource_path than expected." \
+			# Not a warning: the probe runs at t+12s (typically still in menu
+			# or loading shelter) while most overrideScript targets only
+			# instantiate in World/Combat scenes loaded later (AI, Door,
+			# Pickup, Helicopter, etc.). An absent instance here is
+			# expected, not broken. InstanceProbe (node_added) verifies
+			# when instances actually spawn. Info-level keeps the signal
+			# without the false alarm.
+			_log_info("[TREEWALK] %s | not instantiated in current scene tree at t+12s (typical for classes that load with World scene; node_added probe will verify on spawn)" \
 					% vp)
 	# Dump top script paths by count. The expected paths above are included.
 	# Anything UNEXPECTED here that matches a class name pattern of something
@@ -5719,7 +5999,7 @@ func _parse_mod_txt(text: String) -> ConfigFile:
 		return null
 	return cfg
 
-# Folder → temp zip (developer mode)
+# Folder -> temp zip (developer mode)
 
 func zip_folder_to_temp(folder_path: String) -> String:
 	var folder_name := folder_path.get_file()
@@ -5806,7 +6086,7 @@ func download_and_replace_mod(target_path: String, modworkshop_id: int) -> bool:
 	if err != OK:
 		req.queue_free()
 		return false
-	# request_completed → [result, http_code, headers, body]
+	# request_completed -> [result, http_code, headers, body]
 	var res: Array = await req.request_completed
 	req.queue_free()
 
