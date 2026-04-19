@@ -104,6 +104,93 @@ func _verify_script_overrides() -> void:
 			else:
 				status = "UNKNOWN: neither _rtv_mod_ nor _rtv_vanilla_ methods -- rewrite likely did not run"
 			_log_info("[OverrideVerify] %s | %s | %s | src_head=[%s]" % [mod_name, vp, status, src_head])
+
+	# Post-override autoload instance check. If any vanilla we hooked is also
+	# a game autoload, the autoload instance was created BEFORE any mod
+	# autoload ran overrideScript. take_over_path updates ResourceCache but
+	# NOT live instances (Resource::set_path only touches the cache; it does
+	# not walk the scene tree). So /root/<AutoloadName>.get_script() may
+	# still point at the rewritten vanilla (now orphaned after take_over_path
+	# cleared its path_cache), even though load(vanilla_path) returns mod's
+	# script. Report which autoloads actually got their instance script
+	# updated, and auto-swap the stale ones. Relevant for RTVCoop and any
+	# mod that overrides autoload scripts like Loader.gd, Settings.gd, etc.
+	var autoload_names: Array[String] = ["Database", "GameData", "Settings",
+			"Menu", "Loader", "Inputs", "Mode", "Profiler", "Simulation"]
+	var autoload_paths: Dictionary = {}  # autoload_name -> res://Scripts/<Name>.gd
+	for an: String in autoload_names:
+		autoload_paths[an] = "res://Scripts/" + an + ".gd"
+	var any_overridden_autoload := false
+	for an: String in autoload_names:
+		if expected_map.has(autoload_paths[an]):
+			any_overridden_autoload = true
+			break
+	if any_overridden_autoload:
+		_log_info("[AutoloadInstanceProbe] === Post-override autoload instance check ===")
+		var root := get_tree().root
+		var swap_count: int = 0
+		for an: String in autoload_names:
+			var ap: String = autoload_paths[an]
+			if not expected_map.has(ap):
+				continue
+			var node: Node = root.get_node_or_null(an)
+			if node == null:
+				_log_info("[AutoloadInstanceProbe] %s | node NOT in tree (not a live autoload)" % an)
+				continue
+			var iscr := node.get_script() as GDScript
+			if iscr == null:
+				_log_info("[AutoloadInstanceProbe] %s | node has no script attached" % an)
+				continue
+			var cur_has_mod: bool = false
+			for m0 in iscr.get_script_method_list():
+				if str(m0["name"]).begins_with("_rtv_mod_"):
+					cur_has_mod = true
+					break
+			# Auto-swap: game autoload was instantiated BEFORE any mod ran
+			# overrideScript, so its ScriptInstance still holds the pre-override
+			# rewritten vanilla (orphaned by take_over_path -- resource.cpp:92
+			# clears old path_cache entry but never walks the scene tree).
+			# load(ap) now returns the mod subclass from the remapped cache;
+			# set_script swaps the instance script in place. Inherited property
+			# slots (mod extends rewritten vanilla) survive via type overlap;
+			# any state built into vanilla-only slots by _ready is lost --
+			# unavoidable without engine-level refresh. Matches RTVCoop's manual
+			# set_script pattern for Loader, and Godot's own reload_scripts
+			# pattern at gdscript.cpp:2419.
+			var swapped: bool = false
+			if not cur_has_mod:
+				var new_scr: GDScript = load(ap) as GDScript
+				if new_scr != null and new_scr != iscr:
+					node.set_script(new_scr)
+					swapped = true
+					swap_count += 1
+					iscr = node.get_script() as GDScript
+			var ipath: String = iscr.resource_path if iscr != null else ""
+			var ihas_mod: bool = false
+			var ihas_vanilla: bool = false
+			if iscr != null:
+				for m in iscr.get_script_method_list():
+					var mn: String = str(m["name"])
+					if mn.begins_with("_rtv_mod_"): ihas_mod = true
+					elif mn.begins_with("_rtv_vanilla_"): ihas_vanilla = true
+					if ihas_mod and ihas_vanilla: break
+			var expected_mod: String = expected_map[ap]
+			var istatus: String
+			if ihas_mod:
+				istatus = "OK: instance runs mod's body (has _rtv_mod_* methods)"
+				if swapped:
+					istatus = "FIXED via set_script swap -- " + istatus
+			elif ipath == "" and ihas_vanilla:
+				istatus = "BROKEN: instance holds ORPHAN script (empty resource_path, _rtv_vanilla_* only) -- swap attempted but did not resolve"
+			elif ihas_vanilla:
+				istatus = "BROKEN: instance runs vanilla body (has _rtv_vanilla_* only; resource_path=%s)" % ipath
+			else:
+				istatus = "UNKNOWN: instance script has no _rtv_* methods"
+			_log_info("[AutoloadInstanceProbe] %s | expected mod=%s | instance_path=%s | %s" \
+					% [an, expected_mod, ipath if ipath != "" else "<empty>", istatus])
+		if swap_count > 0:
+			_log_info("[AutoloadInstanceProbe] Auto-swapped %d stale autoload instance(s) to mod body" % swap_count)
+
 	# Layer B: arm the node_added probe. One-shot per vanilla_path.
 	if expected_map.is_empty():
 		return
