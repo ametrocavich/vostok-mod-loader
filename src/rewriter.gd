@@ -9,11 +9,9 @@
 ## Also owns: regex compilation, parse-script, autofix legacy syntax,
 ## indent detection, bare-super rewriting, mod-subclass scanning.
 ##
-## Historical note: the legacy _rtv_generate_override function emits
-## Framework<Name>.gd subclass wrappers (same output shape as tetra's Rust
-## codegen over a gdre_tools decompile, modulo line endings). Retained for
-## the extends-wrapper fallback path; the main rewriter emits inline
-## dispatch wrappers instead.
+## Note: the legacy _rtv_generate_override function emits Framework<Name>.gd
+## subclass wrappers for the extends-wrapper fallback path. The main rewriter
+## emits inline dispatch wrappers instead.
 
 func _compile_regex() -> void:
 	_re_take_over = RegEx.new()
