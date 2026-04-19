@@ -84,10 +84,6 @@ const RTV_ENGINE_VOID_METHODS: Array[String] = [
 	"_enter_tree", "_exit_tree", "_notification",
 ]
 
-# mod_id of RTVModLib.vmz. When it's enabled we back off so we don't
-# double-swap the same scripts.
-const RTV_MODLIB_MOD_ID := "rtv-mod-lib"
-
 var _mods_dir: String = ""
 var _developer_mode := false
 var _has_loaded := false
@@ -133,8 +129,6 @@ var _all_game_script_paths: Array[String] = []  # populated by _enumerate_game_s
 var _scripts_with_scene_preloads: Dictionary = {}  # filename -> PackedStringArray of scene paths; scripts listed here are deferred from eager load+reload in _activate_rewritten_scripts. Rationale: their module-scope preload() fires at parse time; if we force-load them before mod autoloads run overrideScript(), scenes bake Script ext_resources to the pre-override vanilla. take_over_path then orphans those refs and instantiate() produces nodes with vanilla body, not mod body. Deferring to lazy-compile lets mod overrides run first -- the preload chain fires via extends resolution during mod's own overrideScript call, AFTER take_over_path took effect for prior targets. VFS mount precedence still serves our rewrite on lazy-load.
 var _node_swap_connected := false
 var _swap_count: int = 0
-var _rtv_modlib_registered := false      # true if Engine.set_meta("RTVModLib", ...) was us
-var _defer_to_tetra_modlib := false      # true if tetra's mod is loaded -- we stand down
 var _ready_is_coroutine_by_path: Dictionary = {}  # res_path -> bool. Sync (false) means
                                                   # _deferred_swap pre-sets _rtv_ready_done
                                                   # so super() doesn't re-run vanilla _ready.
