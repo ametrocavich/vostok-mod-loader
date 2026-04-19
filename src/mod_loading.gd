@@ -231,17 +231,6 @@ func _apply_script_overrides() -> void:
 	if applied > 0:
 		_log_info("[Overrides] Applied %d script override(s)" % applied)
 
-# --- RTVModLib runtime (port of Main.gd) ------------------------------------
-# Mods opt in via mod.txt:
-#     [rtvmodlib]
-#     needs=["LootContainer","Trader"]    # array literal
-#     needs=LootContainer,Trader           # or comma string
-# Only requested frameworks get take_over_path'd. Matches RTVModLib's
-# per-script opt-in instead of wrapping every game script.
-
-# If RTVModLib.vmz is loaded, we stand down -- both of us doing take_over_path
-# + node_added would double-swap every instance.
-
 func scan_and_register_archive_claims(archive_path: String, mod_name: String,
 		archive_file: String, load_index: int) -> void:
 	var zr := ZIPReader.new()
@@ -353,8 +342,12 @@ func _scan_gd_source(text: String, analysis: Dictionary) -> void:
 			(analysis["class_names"] as Array).append(cn)
 
 	if not analysis["uses_dynamic_override"]:
-		analysis["uses_dynamic_override"] = "get_base_script()" in text \
-				or "take_over_path(parentScript" in text
+		# Previous narrow match (get_base_script() + take_over_path(parentScript)
+		# missed RTVCoop's pattern: script.take_over_path(gamePath) where gamePath
+		# is a literal arg that doesn't start with "parentScript". Matching any
+		# take_over_path() call is a superset that still catches AI Overhaul /
+		# MCM / other parentScript-style callers.
+		analysis["uses_dynamic_override"] = "take_over_path(" in text
 
 	# UpdateTooltip() is inventory-UI only. World-item tooltips are written directly
 	# by HUD._physics_process from gameData.tooltip -- this override has no effect there.

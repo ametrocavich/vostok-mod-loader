@@ -27,9 +27,15 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	# clean.
 	var hook_dir := ProjectSettings.globalize_path(HOOK_PACK_DIR)
 	DirAccess.make_dir_recursive_absolute(hook_dir)
-	var old_zip := ProjectSettings.globalize_path(HOOK_PACK_ZIP)
-	if FileAccess.file_exists(old_zip):
-		DirAccess.remove_absolute(old_zip)
+	# Do NOT delete the old hook pack zip here. If a previous session mounted
+	# it via ProjectSettings.load_resource_pack (_mount_previous_session), the
+	# VFS still holds a file handle to the zip. Deleting the file on disk
+	# invalidates that handle, causing every VFS read that routes through the
+	# hook pack overlay to fail at core/io/file_access_zip.cpp:137 with "Cannot
+	# open file". In practice that breaks any load() of a path present in the
+	# overlay -- including rewritten vanilla scripts and sibling-rewritten mod
+	# autoload scripts. ZIPPacker.open below opens for write and atomically
+	# replaces the file on save, so leaving the old file in place is safe.
 	var dir := DirAccess.open(hook_dir)
 	if dir != null:
 		dir.list_dir_begin()
@@ -42,8 +48,8 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		dir.list_dir_end()
 
 	# STABILITY canary B: verify the GDSC tokenizer format is one we support
-	# before any rewrite work. Loud, single-message failure beats 126 silent
-	# "Empty detokenized source" warnings.
+	# before any rewrite work. One loud, actionable message beats a flood of
+	# "Empty detokenized source" warnings, one per hookable script.
 	var tok_version := _probe_gdsc_version()
 	if tok_version != -1 and tok_version != 100 and tok_version != 101:
 		_log_critical("[STABILITY] Unsupported GDSC tokenizer v%d on Godot %s. This ModLoader supports v100 (Godot 4.0-4.4) and v101 (Godot 4.5-4.6). Hook pack generation disabled -- script hooks will not fire. See README for supported Godot versions." \
@@ -61,6 +67,65 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		_log_warning("[RTVCodegen] script enumeration failed -- falling back to class_name list (%d)" % _class_name_to_path.size())
 		for path: String in _class_name_to_path.values():
 			script_paths.append(path)
+	# Skip-list breakdown -- gives the README an evidence trail for "we wrap N
+	# scripts, skip M". The actual rewritten count is logged below by the
+	# "Generated N rewritten" line; this just records the static skip-list sizes.
+	_log_info("[RTVCodegen] Skip lists: %d runtime-sensitive, %d data, %d serialized (total %d skipped from rewrite)" % [
+		RTV_SKIP_LIST.size(),
+		RTV_RESOURCE_DATA_SKIP.size(),
+		RTV_RESOURCE_SERIALIZED_SKIP.size(),
+		RTV_SKIP_LIST.size() + RTV_RESOURCE_DATA_SKIP.size() + RTV_RESOURCE_SERIALIZED_SKIP.size(),
+	])
+
+	# Pre-read mod sibling scripts BEFORE opening ZIPPacker on the hook pack.
+	# When the hook pack from a previous session is mounted via
+	# ProjectSettings.load_resource_pack, Godot holds a FileAccessZIP handle
+	# to the file. ZIPPacker.open below opens the same file for writing,
+	# which on Windows invalidates that read handle once the in-progress
+	# zip is modified. Any VFS read that routes through the hook pack
+	# overlay AFTER zp.open then fails with "Cannot open file" at
+	# file_access_zip.cpp:137, breaking mod autoload compilation.
+	# Reading here, while the old mount is still valid, keeps the sibling
+	# source snapshot safe. Writes happen later via zp.start_file.
+	#
+	# Emit EVERY iterated sibling into the new hook pack, not just ones
+	# autofix changed. Rationale: if a previous session's hook pack already
+	# owns a sibling path and we skip emitting it because autofix is
+	# idempotent, the new hook pack on disk won't contain that path. Godot's
+	# load_resource_pack(replace_files=true) gives the newest mount
+	# precedence, and VFS resolves paths against whichever mount claims
+	# them. If the new mount doesn't claim a path the old mount did, VFS
+	# can end up routing through the old (now stale-indexed) mount and
+	# fail at file_access_zip.cpp:141 (the unzGoToFilePos failure, distinct
+	# from :137's "Cannot open file"). Emitting unconditionally keeps the
+	# new pack a superset of the old for every sibling path we read, so
+	# there are no holes for the stale mount to answer.
+	var sibling_fixes: Dictionary = {}  # p -> {fixed_src, af, reload_stripped, changed}
+	for archive_file: String in _archive_file_sets:
+		var paths_set: Dictionary = _archive_file_sets[archive_file]
+		for p: String in paths_set:
+			if not p.ends_with(".gd"):
+				continue
+			if p.begins_with("res://Scripts/"):
+				continue  # vanilla, handled in the main rewrite loop
+			if not ResourceLoader.exists(p):
+				continue
+			var raw := FileAccess.get_file_as_string(p)
+			if raw.is_empty():
+				continue
+			var norm := raw.replace("\r\n", "\n").replace("\r", "\n")
+			var af := _rtv_autofix_legacy_syntax(norm)
+			var fixed_src: String = af["source"]
+			# Strip redundant `.reload()` calls in helpers that also do
+			# take_over_path. Eliminates RTVCoop's Cannot-reload spam.
+			var rl := _rtv_strip_helper_reload(fixed_src)
+			fixed_src = rl["source"]
+			sibling_fixes[p] = {
+				"fixed_src": fixed_src,
+				"af": af,
+				"reload_stripped": int(rl["stripped"]),
+				"changed": fixed_src != norm,
+			}
 
 	var zip_abs := ProjectSettings.globalize_path(HOOK_PACK_ZIP)
 	var zp := ZIPPacker.new()
@@ -77,6 +142,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	# from COMPILE-PROOF log lines how many scripts fell into the
 	# GDScriptCache-pinned bucket vs the live-inline bucket.
 	var _step_b_allowlist: Array[String] = []
+	var zero_byte_skipped: int = 0
 	for script_path: String in script_paths:
 		var filename := script_path.get_file()
 
@@ -84,6 +150,12 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			_log_debug("[RTVCodegen] Skipped %s (runtime-sensitive)" % filename)
 			continue
 		if filename in RTV_RESOURCE_SERIALIZED_SKIP or filename in RTV_RESOURCE_DATA_SKIP:
+			continue
+		# Skip zero-byte PCK entries (base game ships empty .gd files for
+		# some scripts; CasettePlayer.gd in RTV 4.6.1). Detokenize cannot
+		# read content that doesn't exist. Not a modloader failure.
+		if _pck_zero_byte_paths.has(script_path):
+			zero_byte_skipped += 1
 			continue
 		if not _step_b_allowlist.is_empty() and filename not in _step_b_allowlist:
 			continue
@@ -248,45 +320,48 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	# replace_files=true precedence then serves the fixed version to
 	# Godot's parser, restoring the pre-hooks compat surface for mods
 	# with bodyless `if` blocks and Godot-3-era annotations.
+	# Write pre-collected sibling autofix results to the hook pack. Reads
+	# happened earlier (before zp.open); here we just emit the fixed bytes.
+	# Skip any sibling whose path was also packed as a mod subclass earlier
+	# in this call -- the mod subclass rewrite is the canonical version,
+	# and double-packing would leave two entries in the zip.
 	var subclass_paths: Dictionary = {}
 	for mp in mod_packed:
 		subclass_paths[mp["res_path"]] = true
 	var sibling_fixed := 0
+	var sibling_carried := 0
 	var sibling_total_bodyless := 0
-	var sibling_skipped_noop := 0
-	for archive_file: String in _archive_file_sets:
-		var paths_set: Dictionary = _archive_file_sets[archive_file]
-		for p: String in paths_set:
-			if not p.ends_with(".gd"):
-				continue
-			if p.begins_with("res://Scripts/"):
-				continue  # vanilla, handled upstream
-			if subclass_paths.has(p):
-				continue  # already packed via mod-subclass rewrite
-			if not ResourceLoader.exists(p):
-				continue
-			var raw := FileAccess.get_file_as_string(p)
-			if raw.is_empty():
-				continue
-			var norm := raw.replace("\r\n", "\n").replace("\r", "\n")
-			var af := _rtv_autofix_legacy_syntax(norm)
-			var fixed_src: String = af["source"]
-			if fixed_src == norm:
-				sibling_skipped_noop += 1
-				continue  # already clean, no overlay needed
-			var zip_rel: String = p.trim_prefix("res://")
-			if zp.start_file(zip_rel) != OK:
-				_log_warning("[Autofix] Failed to pack sibling zip entry %s" % zip_rel)
-				continue
-			zp.write_file(fixed_src.to_utf8_buffer())
-			zp.close_file()
+	var sibling_total_reload_stripped := 0
+	for p: String in sibling_fixes:
+		if subclass_paths.has(p):
+			continue
+		var fix: Dictionary = sibling_fixes[p]
+		var fixed_src: String = fix["fixed_src"]
+		var af: Dictionary = fix["af"]
+		var reload_stripped: int = int(fix["reload_stripped"])
+		var changed: bool = bool(fix["changed"])
+		var zip_rel: String = p.trim_prefix("res://")
+		if zp.start_file(zip_rel) != OK:
+			_log_warning("[Autofix] Failed to pack sibling zip entry %s" % zip_rel)
+			continue
+		zp.write_file(fixed_src.to_utf8_buffer())
+		zp.close_file()
+		if changed:
 			sibling_fixed += 1
 			sibling_total_bodyless += int(af["bodyless"])
+			sibling_total_reload_stripped += reload_stripped
+			if reload_stripped > 0:
+				_log_info("[Autofix] Stripped %d redundant .reload() call(s) from %s -- prevents Cannot-reload-while-instances-exist spam" % [reload_stripped, p])
 			_log_info("[Autofix] Patched sibling %s: bodyless=%d tool=%d onready=%d export=%d" \
 					% [p, af["bodyless"], af["tool"], af["onready"], af["export"]])
+		else:
+			sibling_carried += 1
 	if sibling_fixed > 0:
-		_log_info("[Autofix] %d mod sibling script(s) repaired (%d bodyless blocks) -- packed into hook pack overlay (%d already clean, no overlay written)" \
-				% [sibling_fixed, sibling_total_bodyless, sibling_skipped_noop])
+		_log_info("[Autofix] %d mod sibling script(s) repaired (%d bodyless blocks, %d reload() stripped) -- packed into hook pack overlay" \
+				% [sibling_fixed, sibling_total_bodyless, sibling_total_reload_stripped])
+	if sibling_carried > 0:
+		_log_debug("[Autofix] Carried %d unchanged mod sibling script(s) forward into new hook pack -- preserves VFS coverage across regen" \
+				% sibling_carried)
 
 	# STABILITY canary C: add a tiny known-content file to the hook pack so we
 	# can verify VFS mount precedence independently of the script-rewriting
@@ -310,6 +385,9 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	# replace_files=true is the default in 4.6 but pass explicitly -- the whole
 	# design depends on our Scripts/*.gd + .gd.remap entries winning over the
 	# PCK's same-path entries in Godot's VFS layering.
+	if zero_byte_skipped > 0:
+		_log_info("[RTVCodegen] Skipped %d zero-byte PCK entry(ies) (base game ships empty .gd files -- not hookable, not a modloader failure): %s" \
+				% [zero_byte_skipped, ", ".join(_pck_zero_byte_paths.keys())])
 	if script_count > 0:
 		if defer_activation:
 			# Pass 1 pre-restart: write the zip + persist pass_state so Pass 2's
@@ -639,6 +717,32 @@ func _activate_rewritten_scripts(filenames: Array[String]) -> void:
 					break
 			_log_info("[RTVCodegen] AUTOLOAD-CHECK %s: script=%s script_has_rename=%s instance_has_rename=%s" \
 					% [aname, scr.resource_path, has_rename, instance_methods_has_rename])
+
+	# Registry smoke probe (runs unconditionally). Verifies tetra's
+	# const->dict rewrite + _get() injection on Database actually
+	# executed and serves scenes at runtime. Without this, a silent
+	# regression in the Database transform would only surface when a
+	# mod's lib.register() call returned stale data -- this probe
+	# catches it at boot instead.
+	var db_node: Node = get_tree().root.get_node_or_null("Database")
+	if db_node == null:
+		_log_warning("[RegistryProbe] Database autoload not in tree -- cannot verify const->dict transform")
+	elif not ("_rtv_vanilla_scenes" in db_node):
+		_log_warning("[RegistryProbe] Database._rtv_vanilla_scenes missing -- const->dict rewrite did not execute; lib.register/override will not see vanilla ids")
+	else:
+		var vs: Dictionary = db_node._rtv_vanilla_scenes
+		var scene_count: int = vs.size()
+		if scene_count == 0:
+			_log_warning("[RegistryProbe] Database._rtv_vanilla_scenes empty -- regex extracted no entries from Database.gd; check vanilla const syntax")
+		else:
+			var probe_key: String = vs.keys()[0]
+			var probe_result = db_node.get(probe_key)
+			if probe_result is PackedScene:
+				_log_info("[RegistryProbe] Database: _rtv_vanilla_scenes=%d entries; get('%s') returns PackedScene -- const->dict transform + _get() injection OK" \
+						% [scene_count, probe_key])
+			else:
+				_log_warning("[RegistryProbe] Database: _rtv_vanilla_scenes=%d entries but get('%s') returned %s (not PackedScene) -- _get() injection broken" \
+						% [scene_count, probe_key, type_string(typeof(probe_result))])
 
 	# Reset counters before probes. The dispatch template increments
 	# _rtv_dispatch_count on entry, _rtv_dispatch_no_lib when the _lib

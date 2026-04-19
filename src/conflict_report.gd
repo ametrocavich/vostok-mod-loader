@@ -94,16 +94,115 @@ func _verify_script_overrides() -> void:
 			# rewritten parent. Distinguish from actual cache-stale vanilla
 			# by looking for "extends \"res://Scripts/..." in the source.
 			var is_mod_subclass: bool = src.contains("extends \"res://Scripts/")
+			# Skip-listed vanilla scripts (RTV_SKIP_LIST: Explosion, Hit, Mine,
+			# Message, MuzzleFlash, ParticleInstance, TreeRenderer) are NOT
+			# rewritten by our hook pipeline because dispatch wrappers would
+			# break their runtime semantics (short-lived instances, coroutine
+			# lifetime, GPUParticles draw_pass corruption). Mod subclasses
+			# that extend these aren't rewritten either -- they rely on
+			# Godot's standard class-inheritance virtual dispatch. So
+			# "no _rtv_* methods" is the CORRECT state for these, not an
+			# error. Classify separately.
+			var is_skip_listed: bool = vp.get_file() in RTV_SKIP_LIST
 			var status: String
 			if has_mod_rename:
 				status = "OK: mod's script serves this path (has _rtv_mod_* methods)"
 			elif has_vanilla_rename and is_mod_subclass:
 				status = "OK: mod's subclass serves this path (no method overrides -- inherits vanilla dispatch)"
+			elif is_skip_listed and is_mod_subclass:
+				status = "OK: skip-listed vanilla (%s) -- mod subclass inherits unrewritten vanilla via Godot virtual dispatch (no hooks for runtime-sensitive classes)" % vp.get_file()
 			elif has_vanilla_rename:
 				status = "STALE: cache still serves vanilla -- overrideScript take_over_path did not win"
 			else:
 				status = "UNKNOWN: neither _rtv_mod_ nor _rtv_vanilla_ methods -- rewrite likely did not run"
 			_log_info("[OverrideVerify] %s | %s | %s | src_head=[%s]" % [mod_name, vp, status, src_head])
+
+	# Post-override autoload instance check. If any vanilla we hooked is also
+	# a game autoload, the autoload instance was created BEFORE any mod
+	# autoload ran overrideScript. take_over_path updates ResourceCache but
+	# NOT live instances (Resource::set_path only touches the cache; it does
+	# not walk the scene tree). So /root/<AutoloadName>.get_script() may
+	# still point at the rewritten vanilla (now orphaned after take_over_path
+	# cleared its path_cache), even though load(vanilla_path) returns mod's
+	# script. Report which autoloads actually got their instance script
+	# updated, and auto-swap the stale ones. Relevant for RTVCoop and any
+	# mod that overrides autoload scripts like Loader.gd, Settings.gd, etc.
+	var autoload_names: Array[String] = ["Database", "GameData", "Settings",
+			"Menu", "Loader", "Inputs", "Mode", "Profiler", "Simulation"]
+	var autoload_paths: Dictionary = {}  # autoload_name -> res://Scripts/<Name>.gd
+	for an: String in autoload_names:
+		autoload_paths[an] = "res://Scripts/" + an + ".gd"
+	var any_overridden_autoload := false
+	for an: String in autoload_names:
+		if expected_map.has(autoload_paths[an]):
+			any_overridden_autoload = true
+			break
+	if any_overridden_autoload:
+		_log_info("[AutoloadInstanceProbe] === Post-override autoload instance check ===")
+		var root := get_tree().root
+		var swap_count: int = 0
+		for an: String in autoload_names:
+			var ap: String = autoload_paths[an]
+			if not expected_map.has(ap):
+				continue
+			var node: Node = root.get_node_or_null(an)
+			if node == null:
+				_log_info("[AutoloadInstanceProbe] %s | node NOT in tree (not a live autoload)" % an)
+				continue
+			var iscr := node.get_script() as GDScript
+			if iscr == null:
+				_log_info("[AutoloadInstanceProbe] %s | node has no script attached" % an)
+				continue
+			var cur_has_mod: bool = false
+			for m0 in iscr.get_script_method_list():
+				if str(m0["name"]).begins_with("_rtv_mod_"):
+					cur_has_mod = true
+					break
+			# Auto-swap: game autoload was instantiated BEFORE any mod ran
+			# overrideScript, so its ScriptInstance still holds the pre-override
+			# rewritten vanilla (orphaned by take_over_path -- resource.cpp:92
+			# clears old path_cache entry but never walks the scene tree).
+			# load(ap) now returns the mod subclass from the remapped cache;
+			# set_script swaps the instance script in place. Inherited property
+			# slots (mod extends rewritten vanilla) survive via type overlap;
+			# any state built into vanilla-only slots by _ready is lost --
+			# unavoidable without engine-level refresh. Matches RTVCoop's manual
+			# set_script pattern for Loader, and Godot's own reload_scripts
+			# pattern at gdscript.cpp:2419.
+			var swapped: bool = false
+			if not cur_has_mod:
+				var new_scr: GDScript = load(ap) as GDScript
+				if new_scr != null and new_scr != iscr:
+					node.set_script(new_scr)
+					swapped = true
+					swap_count += 1
+					iscr = node.get_script() as GDScript
+			var ipath: String = iscr.resource_path if iscr != null else ""
+			var ihas_mod: bool = false
+			var ihas_vanilla: bool = false
+			if iscr != null:
+				for m in iscr.get_script_method_list():
+					var mn: String = str(m["name"])
+					if mn.begins_with("_rtv_mod_"): ihas_mod = true
+					elif mn.begins_with("_rtv_vanilla_"): ihas_vanilla = true
+					if ihas_mod and ihas_vanilla: break
+			var expected_mod: String = expected_map[ap]
+			var istatus: String
+			if ihas_mod:
+				istatus = "OK: instance runs mod's body (has _rtv_mod_* methods)"
+				if swapped:
+					istatus = "FIXED via set_script swap -- " + istatus
+			elif ipath == "" and ihas_vanilla:
+				istatus = "BROKEN: instance holds ORPHAN script (empty resource_path, _rtv_vanilla_* only) -- swap attempted but did not resolve"
+			elif ihas_vanilla:
+				istatus = "BROKEN: instance runs vanilla body (has _rtv_vanilla_* only; resource_path=%s)" % ipath
+			else:
+				istatus = "UNKNOWN: instance script has no _rtv_* methods"
+			_log_info("[AutoloadInstanceProbe] %s | expected mod=%s | instance_path=%s | %s" \
+					% [an, expected_mod, ipath if ipath != "" else "<empty>", istatus])
+		if swap_count > 0:
+			_log_info("[AutoloadInstanceProbe] Auto-swapped %d stale autoload instance(s) to mod body" % swap_count)
+
 	# Layer B: arm the node_added probe. One-shot per vanilla_path.
 	if expected_map.is_empty():
 		return
@@ -152,9 +251,22 @@ func _on_override_probe_node_added(node: Node) -> void:
 		if has_mod_rename and has_vanilla_rename:
 			break
 	var expected_mod: String = _override_probe_expected[sp]
+	# Skip-listed vanillas (RTV_SKIP_LIST) aren't rewritten; mod subclasses
+	# that extend them ride Godot's normal virtual dispatch and thus have
+	# neither _rtv_mod_ nor _rtv_vanilla_ method prefixes. Classify
+	# separately so we don't flag correct pass-through as STALE/UNKNOWN.
+	var is_skip_listed: bool = sp.get_file() in RTV_SKIP_LIST
 	var status: String
 	if has_mod_rename:
 		status = "OK: instance uses mod's script"
+	elif is_skip_listed:
+		# Verify pass-through: instance script should be a subclass of vanilla
+		# (mod's Override.gd extending res://Scripts/<SkipListed>.gd).
+		var src: String = (scr as GDScript).source_code if scr is GDScript else ""
+		if src.contains("extends \"res://Scripts/") or src.contains("extends\"res://Scripts/"):
+			status = "OK: skip-listed pass-through (instance is mod subclass extending unrewritten vanilla; methods resolve via Godot virtual dispatch)"
+		else:
+			status = "UNKNOWN: skip-listed vanilla but instance source doesn't extend res://Scripts/ -- possible bare vanilla (override did not take)"
 	elif has_vanilla_rename:
 		status = "STALE SCENE: instance uses vanilla -- PackedScene captured pre-override script binding (cache may be OK, but scene ext_resource is stale)"
 	else:
@@ -203,7 +315,14 @@ func _probe_tree_walk() -> void:
 			_log_info("[TREEWALK] %s | found %d instance(s); sample: %s (%s) script=%s has_mod_rename=%s chain_depth=%d expected_mod=%s" \
 					% [vp, info.count, info.name, info.cls, info.script_path, info.has_mod, info.depth, mod_name])
 		else:
-			_log_warning("[TREEWALK] %s | NO INSTANCES FOUND in scene tree after 12s. Mod declared override but no node carries this script -- either the class is never instantiated in this scene, or instances have a different script.resource_path than expected." \
+			# Not a warning: the probe runs at t+12s (typically still in menu
+			# or loading shelter) while most overrideScript targets only
+			# instantiate in World/Combat scenes loaded later (AI, Door,
+			# Pickup, Helicopter, etc.). An absent instance here is
+			# expected, not broken. InstanceProbe (node_added) verifies
+			# when instances actually spawn. Info-level keeps the signal
+			# without the false alarm.
+			_log_info("[TREEWALK] %s | not instantiated in current scene tree at t+12s (typical for classes that load with World scene; node_added probe will verify on spawn)" \
 					% vp)
 	# Dump top script paths by count. The expected paths above are included.
 	# Anything UNEXPECTED here that matches a class name pattern of something

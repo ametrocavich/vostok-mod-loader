@@ -36,24 +36,40 @@ func _collect_needed_from_mods() -> Dictionary:
 	return needed
 
 
+# DEAD-LOOP MARKER (verified 2026-04-19):
+# Function runs every launch but the body loop below never enters
+# _register_override, because the ResourceLoader.exists(Framework<X>.gd) gate
+# is always false: Framework<X>.gd files are no longer generated (see
+# _rtv_generate_override further down, zero callers). The early-return paths
+# (_defer_to_tetra_modlib, empty needed) and the no-op log line still fire as
+# documented. Kept for the pending dead-code cleanup pass; once removed the
+# whole [rtvmodlib] needs= -> node_added chain (this function plus
+# _register_override / _connect_node_swap / _on_node_added / _deferred_swap)
+# can go too.
 func _activate_hooked_scripts() -> void:
 	var needed := _collect_needed_from_mods()
 	if needed.is_empty():
-		_log_info("[Hooks] No mod declared [rtvmodlib] needs -- nothing to activate")
 		return
+
+	# In the source-rewrite era, [rtvmodlib] needs= is a no-op: every hookable
+	# vanilla script gets dispatch automatically via the hook pack, so there
+	# are no per-framework Framework<Name>.gd files to activate. The declaration
+	# stays compatible with tetra's standalone RTVModLib mod; we just don't
+	# need to act on it here. Legacy Framework-subclass activation remains
+	# below for the (currently unused) [rtvmodlib] needs= -> node_added path
+	# but only fires if a Framework<Name>.gd exists in the pack.
+	_log_info("[RTVModLib] [rtvmodlib] needs declarations are no-op under source-rewrite (%d frameworks requested; all hookable scripts already dispatched via hook pack)" % needed.size())
 
 	var activated := 0
 	for key in needed.keys():
 		var vanilla_path := _resolve_framework_vanilla_path(key)
 		if vanilla_path == "":
-			_log_warning("[RTVModLib] requested framework '%s' has no vanilla script -- skipped" % key)
 			continue
 		# Load via the mounted pack (res://) rather than user://. GDScript's
 		# extends-chain resolution for class_name parents misbehaves for user://
 		# scripts in 4.6.
 		var framework_file := HOOK_PACK_MOUNT_BASE.path_join("Framework" + vanilla_path.get_file())
 		if not ResourceLoader.exists(framework_file):
-			_log_warning("[RTVModLib] Framework not in pack for '%s' at %s -- skipped" % [key, framework_file])
 			continue
 		if _register_override(framework_file, vanilla_path):
 			activated += 1
@@ -75,6 +91,12 @@ func _resolve_framework_vanilla_path(key_lower: String) -> String:
 			return script_path
 	return ""
 
+# DEAD CODE (verified 2026-04-19): only call site is _activate_hooked_scripts
+# above, gated behind a ResourceLoader.exists(Framework<X>.gd) check that's
+# always false under source-rewrite. Remove with the Step-E cleanup. Original
+# rationale comment preserved below in case the function ever needs to come
+# back.
+#
 # class_name scripts can't be take_over_path'd safely: Resource::set_path
 # doesn't clear global_name, so ScriptServer ends up with the moved script's
 # class_name colliding with the evicted original (corrupts the class, see
@@ -123,6 +145,10 @@ func _register_override(framework_path: String, expected_vanilla_path: String) -
 	_hook_swap_map[original_path] = script
 	return true
 
+# DEAD CODE EFFECTIVELY (verified 2026-04-19): function runs but always exits
+# at the _hook_swap_map.is_empty() check below, because _hook_swap_map is only
+# populated by _register_override (never called). The node_added signal never
+# connects, so _on_node_added below never fires either. Remove with Step E.
 func _connect_node_swap() -> void:
 	if _node_swap_connected:
 		return
@@ -132,6 +158,8 @@ func _connect_node_swap() -> void:
 	_node_swap_connected = true
 	_log_info("[RTVModLib] node_added connected -- tracking %d script(s)" % _hook_swap_map.size())
 
+# DEAD CODE (verified 2026-04-19): node_added signal never connects (see
+# _connect_node_swap above), so this never fires. Remove with Step E.
 func _on_node_added(node: Node) -> void:
 	var node_script = node.get_script()
 	if node_script == null:
@@ -156,6 +184,10 @@ func _on_node_added(node: Node) -> void:
 	if node_script != framework_script:
 		call_deferred("_deferred_swap", node, framework_script, path)
 
+# DEAD CODE (verified 2026-04-19): only call site is _on_node_added (via
+# call_deferred), which itself never fires. Remove with Step E. Original
+# rationale comment preserved below.
+#
 # Swap a vanilla-script node to its framework wrapper: snapshot props,
 # set_script, restore, then fire _ready so the wrapper dispatches.
 #
