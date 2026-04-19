@@ -83,6 +83,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	# from COMPILE-PROOF log lines how many scripts fell into the
 	# GDScriptCache-pinned bucket vs the live-inline bucket.
 	var _step_b_allowlist: Array[String] = []
+	var zero_byte_skipped: int = 0
 	for script_path: String in script_paths:
 		var filename := script_path.get_file()
 
@@ -90,6 +91,12 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			_log_debug("[RTVCodegen] Skipped %s (runtime-sensitive)" % filename)
 			continue
 		if filename in RTV_RESOURCE_SERIALIZED_SKIP or filename in RTV_RESOURCE_DATA_SKIP:
+			continue
+		# Skip zero-byte PCK entries (base game ships empty .gd files for
+		# some scripts; CasettePlayer.gd in RTV 4.6.1). Detokenize cannot
+		# read content that doesn't exist. Not a modloader failure.
+		if _pck_zero_byte_paths.has(script_path):
+			zero_byte_skipped += 1
 			continue
 		if not _step_b_allowlist.is_empty() and filename not in _step_b_allowlist:
 			continue
@@ -316,6 +323,9 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	# replace_files=true is the default in 4.6 but pass explicitly -- the whole
 	# design depends on our Scripts/*.gd + .gd.remap entries winning over the
 	# PCK's same-path entries in Godot's VFS layering.
+	if zero_byte_skipped > 0:
+		_log_info("[RTVCodegen] Skipped %d zero-byte PCK entry(ies) (base game ships empty .gd files -- not hookable, not a modloader failure): %s" \
+				% [zero_byte_skipped, ", ".join(_pck_zero_byte_paths.keys())])
 	if script_count > 0:
 		if defer_activation:
 			# Pass 1 pre-restart: write the zip + persist pass_state so Pass 2's

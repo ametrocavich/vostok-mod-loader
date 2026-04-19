@@ -83,6 +83,11 @@ const _SPACE_AFTER := {
 }
 
 func _detokenize_script(script_path: String) -> String:
+	# Zero-byte PCK entries (base game ships CasettePlayer.gd empty in RTV
+	# 4.6.1) have nothing to decode. Return empty silently so callers don't
+	# misread this as an IO failure.
+	if _pck_zero_byte_paths.has(script_path):
+		return ""
 	# Try multiple methods to read raw bytes -- FileAccess on res:// can fail for
 	# PCK-embedded files depending on the container format (RSCC, encryption, etc.).
 	var raw := PackedByteArray()
