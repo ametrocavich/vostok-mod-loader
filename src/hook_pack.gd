@@ -27,9 +27,15 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	# clean.
 	var hook_dir := ProjectSettings.globalize_path(HOOK_PACK_DIR)
 	DirAccess.make_dir_recursive_absolute(hook_dir)
-	var old_zip := ProjectSettings.globalize_path(HOOK_PACK_ZIP)
-	if FileAccess.file_exists(old_zip):
-		DirAccess.remove_absolute(old_zip)
+	# Do NOT delete the old hook pack zip here. If a previous session mounted
+	# it via ProjectSettings.load_resource_pack (_mount_previous_session), the
+	# VFS still holds a file handle to the zip. Deleting the file on disk
+	# invalidates that handle, causing every VFS read that routes through the
+	# hook pack overlay to fail at core/io/file_access_zip.cpp:137 with "Cannot
+	# open file". In practice that breaks any load() of a path present in the
+	# overlay -- including rewritten vanilla scripts and sibling-rewritten mod
+	# autoload scripts. ZIPPacker.open below opens for write and atomically
+	# replaces the file on save, so leaving the old file in place is safe.
 	var dir := DirAccess.open(hook_dir)
 	if dir != null:
 		dir.list_dir_begin()

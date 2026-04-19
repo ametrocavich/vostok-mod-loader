@@ -39,21 +39,27 @@ func _collect_needed_from_mods() -> Dictionary:
 func _activate_hooked_scripts() -> void:
 	var needed := _collect_needed_from_mods()
 	if needed.is_empty():
-		_log_info("[Hooks] No mod declared [rtvmodlib] needs -- nothing to activate")
 		return
+
+	# In the source-rewrite era, [rtvmodlib] needs= is a no-op: every hookable
+	# vanilla script gets dispatch automatically via the hook pack, so there
+	# are no per-framework Framework<Name>.gd files to activate. The declaration
+	# stays compatible with tetra's standalone RTVModLib mod; we just don't
+	# need to act on it here. Legacy Framework-subclass activation remains
+	# below for the (currently unused) [rtvmodlib] needs= -> node_added path
+	# but only fires if a Framework<Name>.gd exists in the pack.
+	_log_info("[RTVModLib] [rtvmodlib] needs declarations are no-op under source-rewrite (%d frameworks requested; all hookable scripts already dispatched via hook pack)" % needed.size())
 
 	var activated := 0
 	for key in needed.keys():
 		var vanilla_path := _resolve_framework_vanilla_path(key)
 		if vanilla_path == "":
-			_log_warning("[RTVModLib] requested framework '%s' has no vanilla script -- skipped" % key)
 			continue
 		# Load via the mounted pack (res://) rather than user://. GDScript's
 		# extends-chain resolution for class_name parents misbehaves for user://
 		# scripts in 4.6.
 		var framework_file := HOOK_PACK_MOUNT_BASE.path_join("Framework" + vanilla_path.get_file())
 		if not ResourceLoader.exists(framework_file):
-			_log_warning("[RTVModLib] Framework not in pack for '%s' at %s -- skipped" % [key, framework_file])
 			continue
 		if _register_override(framework_file, vanilla_path):
 			activated += 1
