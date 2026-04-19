@@ -56,7 +56,7 @@ Not a virus scanner. Catches lazy / copy-paste attacks (the dropper screenshot t
 - `scan_mod` -- top-level entry called from `_build_archive_entry` / `_build_folder_entry`
 - 13 rules grouped into solo red triggers (`os_crash`, `disable_save_safety`), process-spawn, runtime-code-build, and obfuscation families
 - `compute_risk_level` returns `RISK_CLEAN` (0) or `RISK_RED` (2). Red fires on solo triggers, both obfuscation patterns together, or any obfuscation/runtime-code paired with a process spawn
-- `.gd` / `.tscn` / `.tres` get full text scans (with GDScript line-comment stripping so docstrings mentioning API names don't false-positive); `.scn` / `.res` / `.gdc` get byte-search for binary-safe rule patterns
+- `.gd` / `.tscn` / `.tres` / `.gdshader` get full text scans (with GDScript line-comment stripping so docstrings mentioning API names don't false-positive); `.scn` / `.res` / `.gdc` get byte-search for binary-safe rule patterns
 - `.pck` mods scanned via local `_security_pck_list_with_offsets` that mirrors `pck_enumeration._parse_pck_file_list` but also returns offsets so individual blobs can be extracted without mounting
 
 Test fixtures under `tests/security_scan_fixtures/`: `clean_mod`, `dropper_mod` (combo trigger), `os_misuse_mod` (solo triggers).
