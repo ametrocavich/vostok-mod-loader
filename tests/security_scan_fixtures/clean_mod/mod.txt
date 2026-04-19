@@ -1,0 +1,4 @@
+[mod]
+name="ScanTest - clean (no findings)"
+id="scantest_clean"
+priority=0

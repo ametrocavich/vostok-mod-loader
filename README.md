@@ -28,6 +28,12 @@ Two tabs:
 
 Click **Launch Game** or close the window to start.
 
+### Guardrails
+
+The launcher does a static scan of every mod's source for a small set of patterns that have been seen in actual malicious mods (obfuscated string decoding paired with process spawning, anti-debug crashes, ransomware-setup calls). Mods that match get a small red "suspicious code" tag in the list, and clicking **Launch Game** with one enabled pops a confirmation dialog before the game starts.
+
+This is **not** a virus scanner. It catches lazy / copy-paste attacks; a determined attacker with the modloader source can write around the patterns. Loading is never silently blocked -- you can confirm and launch any mod. The scanner exists to slow down the obvious cases, nothing more. Always install mods from sources you trust.
+
 ## Authoring a Mod
 
 Package your mod as a `.vmz` archive (rename a `.zip` to `.vmz`) with a `mod.txt` at the root. All string values must be quoted.
