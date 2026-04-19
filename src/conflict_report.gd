@@ -94,11 +94,23 @@ func _verify_script_overrides() -> void:
 			# rewritten parent. Distinguish from actual cache-stale vanilla
 			# by looking for "extends \"res://Scripts/..." in the source.
 			var is_mod_subclass: bool = src.contains("extends \"res://Scripts/")
+			# Skip-listed vanilla scripts (RTV_SKIP_LIST: Explosion, Hit, Mine,
+			# Message, MuzzleFlash, ParticleInstance, TreeRenderer) are NOT
+			# rewritten by our hook pipeline because dispatch wrappers would
+			# break their runtime semantics (short-lived instances, coroutine
+			# lifetime, GPUParticles draw_pass corruption). Mod subclasses
+			# that extend these aren't rewritten either -- they rely on
+			# Godot's standard class-inheritance virtual dispatch. So
+			# "no _rtv_* methods" is the CORRECT state for these, not an
+			# error. Classify separately.
+			var is_skip_listed: bool = vp.get_file() in RTV_SKIP_LIST
 			var status: String
 			if has_mod_rename:
 				status = "OK: mod's script serves this path (has _rtv_mod_* methods)"
 			elif has_vanilla_rename and is_mod_subclass:
 				status = "OK: mod's subclass serves this path (no method overrides -- inherits vanilla dispatch)"
+			elif is_skip_listed and is_mod_subclass:
+				status = "OK: skip-listed vanilla (%s) -- mod subclass inherits unrewritten vanilla via Godot virtual dispatch (no hooks for runtime-sensitive classes)" % vp.get_file()
 			elif has_vanilla_rename:
 				status = "STALE: cache still serves vanilla -- overrideScript take_over_path did not win"
 			else:
@@ -239,9 +251,22 @@ func _on_override_probe_node_added(node: Node) -> void:
 		if has_mod_rename and has_vanilla_rename:
 			break
 	var expected_mod: String = _override_probe_expected[sp]
+	# Skip-listed vanillas (RTV_SKIP_LIST) aren't rewritten; mod subclasses
+	# that extend them ride Godot's normal virtual dispatch and thus have
+	# neither _rtv_mod_ nor _rtv_vanilla_ method prefixes. Classify
+	# separately so we don't flag correct pass-through as STALE/UNKNOWN.
+	var is_skip_listed: bool = sp.get_file() in RTV_SKIP_LIST
 	var status: String
 	if has_mod_rename:
 		status = "OK: instance uses mod's script"
+	elif is_skip_listed:
+		# Verify pass-through: instance script should be a subclass of vanilla
+		# (mod's Override.gd extending res://Scripts/<SkipListed>.gd).
+		var src: String = (scr as GDScript).source_code if scr is GDScript else ""
+		if src.contains("extends \"res://Scripts/") or src.contains("extends\"res://Scripts/"):
+			status = "OK: skip-listed pass-through (instance is mod subclass extending unrewritten vanilla; methods resolve via Godot virtual dispatch)"
+		else:
+			status = "UNKNOWN: skip-listed vanilla but instance source doesn't extend res://Scripts/ -- possible bare vanilla (override did not take)"
 	elif has_vanilla_rename:
 		status = "STALE SCENE: instance uses vanilla -- PackedScene captured pre-override script binding (cache may be OK, but scene ext_resource is stale)"
 	else:
