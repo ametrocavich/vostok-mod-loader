@@ -155,7 +155,7 @@ func _collect_module_scope_scene_preloads(source: String) -> PackedStringArray:
 				scenes.append(scene_path)
 	return scenes
 
-# Minimal PCK header + file-table parser. V2 (Godot 4.0–4.5) has 16 reserved
+# Minimal PCK header + file-table parser. V2 (Godot 4.0-4.5) has 16 reserved
 # dwords before the directory; V3 (Godot 4.6+) replaces them with an explicit
 # 64-bit directory offset. Reference: core/io/file_access_pack.cpp.
 func _parse_pck_file_list(pck_path: String) -> PackedStringArray:
@@ -207,12 +207,20 @@ func _parse_pck_file_list(pck_path: String) -> PackedStringArray:
 					% [pck_path, path_len, i])
 			break
 		var path := f.get_buffer(path_len).get_string_from_utf8()
-		f.get_64()        # offset
-		f.get_64()        # size
-		f.get_buffer(16)  # md5
-		f.get_32()        # per-file flags (V2 and V3)
+		f.get_64()              # offset
+		var size: int = f.get_64()
+		f.get_buffer(16)        # md5
+		f.get_32()              # per-file flags (V2 and V3)
 		if not path.is_empty():
 			result.append(path)
+			# Track zero-byte entries so downstream detokenize skips them
+			# silently instead of logging misleading "Cannot read bytes"
+			# warnings. The base game may ship empty .gd entries (e.g.
+			# CasettePlayer.gd in RTV 4.6.1) that we cannot hook and that
+			# any preload() call would fail regardless of modloader.
+			if size == 0 and path.ends_with(".gd"):
+				var res_path := path if path.begins_with("res://") else "res://" + path.trim_prefix("/")
+				_pck_zero_byte_paths[res_path] = true
 
 	f.close()
 	return result

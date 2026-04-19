@@ -149,7 +149,7 @@ func _rtv_parse_script(filename: String, source: String) -> Dictionary:
 			if body_line.begins_with("return ") and body_line.length() > 7:
 				has_return_value = true
 
-		# Explicit return type override (void → no value; anything else → has value).
+		# Explicit return type override (void -> no value; anything else -> has value).
 		if return_type != null and return_type != "void":
 			has_return_value = true
 		if return_type != null and return_type == "void":
@@ -168,6 +168,12 @@ func _rtv_parse_script(filename: String, source: String) -> Dictionary:
 
 	return script
 
+# DEAD CODE (verified 2026-04-19): zero callers. Grep `_rtv_generate_override(`
+# returns only this definition. Was the codegen for the original extends-wrapper
+# path; the source-rewrite era replaced it with _rtv_dispatch_inline_src below.
+# Kept as scaffolding in case the [rtvmodlib] needs= -> Framework<X>.gd path
+# ever needs to be revived. Remove with Step E.
+#
 # Produce one Framework<Name>.gd source. Three method templates (matching
 # generate_override in the Rust):
 #   _ready   -- has a _rtv_ready_done flag so super() doesn't double-fire
@@ -675,6 +681,80 @@ func _rtv_autofix_legacy_syntax(source: String) -> Dictionary:
 		"onready": fix_onready,
 		"export": fix_export,
 	}
+
+# Comment out `<var>.reload()` lines inside mod helper functions that also
+# call `take_over_path`. Rationale: mod override helpers (RTVCoop's _override,
+# CustomItemTest's override_script, etc.) often do:
+#   var script = load(modPath); script.reload(); script.take_over_path(gamePath)
+# The reload() call is a no-op unless source changed between load and call.
+# Our hook pack owns the mod subclass source, so reload is always redundant.
+# Worse: if the mod had already set_script(script) on a live node earlier
+# (RTVCoop does this for /root/Loader), reload fails at gdscript.cpp:756 with
+# "Cannot reload script while instances exist." take_over_path succeeds right
+# after, so the override still works, but the error spams stderr each launch.
+# Stripping the reload eliminates the error with no behavior change.
+#
+# Scope: only strips lines where the stripped-edges content ends with
+# ".reload()" AND the enclosing function body contains ".take_over_path(".
+# Comments out with a "# modloader stripped" note so the change is visible
+# if a mod author inspects the rewritten source.
+#
+# Source must be LF-normalized by the caller.
+func _rtv_strip_helper_reload(source: String) -> Dictionary:
+	var lines: PackedStringArray = source.split("\n")
+	var out: PackedStringArray = PackedStringArray()
+	var stripped: int = 0
+	var i: int = 0
+	while i < lines.size():
+		var line: String = lines[i]
+		if not line.begins_with("func "):
+			out.append(line)
+			i += 1
+			continue
+		# Collect function body: header + subsequent indented lines.
+		var start: int = i
+		var end: int = i + 1
+		while end < lines.size():
+			var bl: String = lines[end]
+			if bl.length() > 0 and not (bl[0] == "\t" or bl[0] == " "):
+				break
+			end += 1
+		# Does this function body call take_over_path anywhere?
+		var has_tov: bool = false
+		for k in range(start, end):
+			if ".take_over_path(" in lines[k]:
+				has_tov = true
+				break
+		if has_tov:
+			for k in range(start, end):
+				var bl: String = lines[k]
+				var trimmed: String = bl.strip_edges()
+				# Match bare `<ident>.reload()` statement lines (nothing else
+				# on the line). Preserves the original indent and leaves a
+				# comment trail.
+				if trimmed.ends_with(".reload()") and not trimmed.begins_with("#"):
+					var before_paren: int = trimmed.find(".reload()")
+					var ident_part: String = trimmed.substr(0, before_paren)
+					var is_bare_call: bool = true
+					for c in ident_part:
+						if not (c == "_" or c == "." or (c >= "a" and c <= "z") \
+								or (c >= "A" and c <= "Z") or (c >= "0" and c <= "9")):
+							is_bare_call = false
+							break
+					if is_bare_call:
+						var indent_len: int = 0
+						while indent_len < bl.length() and (bl[indent_len] == "\t" or bl[indent_len] == " "):
+							indent_len += 1
+						var indent: String = bl.substr(0, indent_len)
+						out.append(indent + "# " + bl.substr(indent_len) + "  # modloader: stripped (redundant + fires Cannot-reload error if instance exists)")
+						stripped += 1
+						continue
+				out.append(bl)
+		else:
+			for k in range(start, end):
+				out.append(lines[k])
+		i = end
+	return {"source": "\n".join(out), "stripped": stripped}
 
 # Produces ONE inline dispatch wrapper that calls _rtv_vanilla_<name>(...).
 #

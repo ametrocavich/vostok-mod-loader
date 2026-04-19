@@ -45,8 +45,13 @@ func hook(hook_name: String, callback: Callable, priority: int = 100) -> int:
 			or hook_name.ends_with("-callback"))
 	if is_replace and _hooks.has(hook_name) and (_hooks[hook_name] as Array).size() > 0:
 		var owner_id: int = (_hooks[hook_name] as Array)[0]["id"]
-		push_warning("RTVModLib: replace hook '" + hook_name \
-				+ "' already owned (id=" + str(owner_id) + "), registration rejected")
+		# Info-level, not warning: rejection is normal API behavior (replace
+		# slots are single-owner by design). Caller checks the -1 return
+		# code. Promoting this to push_warning() made every test assertion
+		# and every mod-conflict check spam Godot's stderr even though it's
+		# expected. Debug-gated so verbose logs still show it when needed.
+		_log_debug("[RTVModLib] replace hook '%s' already owned (id=%d), registration rejected" \
+				% [hook_name, owner_id])
 		return -1
 	if not _hooks.has(hook_name):
 		_hooks[hook_name] = []

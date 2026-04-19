@@ -5,7 +5,7 @@ Mod loader for Road to Vostok (Godot 4.6). Adds a pre-game UI for managing mods,
 ## Requirements
 
 - Road to Vostok (PC, Steam)
-- Mods packaged as `.vmz` or `.pck` files
+- Mods packaged as `.vmz` or `.pck`. Unpacked folders are also accepted in Developer Mode.
 
 ## Installation
 
@@ -68,7 +68,7 @@ modworkshop=12345
 | `id` | Unique ID. Duplicates are skipped. |
 | `version` | Version string for update comparison |
 | `priority` | Load order weight. Higher = loads later = wins conflicts. Default 0. |
-| `[autoload]` | `Name="res://path.gd"` - instantiated as a Node after mods mount. Prefix with `!` for [early autoloads](#early-autoloads). |
+| `[autoload]` | `Name="res://path.gd"` (or `"res://path.tscn"`) -- instantiated as a Node after mods mount. Prefix with `!` for [early autoloads](#early-autoloads). |
 | `[updates] modworkshop` | ModWorkshop ID for update checking |
 
 Mods without `mod.txt` still mount as resource packs. Their files override vanilla resources, but no autoloads run.
@@ -77,7 +77,7 @@ Mods without `mod.txt` still mount as resource packs. Their files override vanil
 
 The hook system preserves tetrahydroc's exact RTVModLib API surface -- `hook()` / `unhook()` / `_caller` / `skip_super()` / `frameworks_ready`, hook-name format, callback signatures. Mod code written against RTVModLib runs unchanged here.
 
-The implementation under the hood is different. Rather than generating `Framework<Name>.gd` subclasses of vanilla and applying them via `take_over_path`, the loader rewrites vanilla source directly and ships it AT the vanilla `res://` path. Mod scripts that subclass vanilla get the same rewrite treatment shipped at their own path. Both rewrites land in a single hook pack mounted with `replace_files=true`; nothing on disk is modified.
+The implementation under the hood is different. Rather than generating `Framework<Name>.gd` subclasses of vanilla and applying them via `take_over_path`, the loader rewrites vanilla source directly and ships it AT the vanilla `res://` path. Mod scripts that subclass vanilla get the same rewrite treatment shipped at their own path. Both rewrites land in a single hook pack mounted with `replace_files=true`. The pack itself is written to `user://modloader_hooks/`, but no game files or mod archives are modified.
 
 Mods that don't use RTVModLib at all also work unchanged. Because dispatch lives inside the vanilla script, a mod that just does `extends Camera` (or uses `take_over_path`, `[script_overrides]`, etc.) inherits hook dispatch for free -- the mod author doesn't need to know the loader exists.
 
@@ -87,7 +87,7 @@ Both approaches aim at the same end state: hooks fire reliably regardless of whe
 
 **The extends-wrapper approach** (tetrahydroc's RTVModLib standalone, and this loader's earlier generations) builds a subclass `FrameworkController extends Controller`, puts hook dispatch in the wrapper's method overrides, then `take_over_path`s the wrapper onto `res://Scripts/Controller.gd`. When a mod like ImmersiveXP also `take_over_path`s the same vanilla path, the framework wrapper gets applied AFTER the mod and ends up on top of the chain. Wrapper's `Movement(delta)` dispatches, then `super()` calls into the mod's `Movement`, which may or may not call `super()` to vanilla. Hooks fire regardless of the mod's super() call because the wrapper's dispatch is above both.
 
-That works in theory. In practice it trips [Godot bug #83542](https://github.com/godotengine/godot/issues/83542) for class_name scripts that a mod has already taken over: `Resource::set_path(take_over=true)` clears `ResourceCache` but not `ScriptServer::global_classes`, so `extends "res://Scripts/Controller.gd"` compiles against the orphaned class-name registration and emits `Could not find class "Controller"`. With IXP enabled that broke four framework wrappers (Controller, Camera, Door, WeaponRig) -- the four IXP overrides. Hooks on those scripts silently stopped working.
+That works in theory. In practice it trips [Godot bug #83542](https://github.com/godotengine/godot/issues/83542) for class_name scripts that a mod has already taken over: `Resource::set_path(take_over=true)` clears `ResourceCache` but not `ScriptServer::global_classes`, so `extends "res://Scripts/Controller.gd"` compiles against the orphaned class-name registration and emits `Could not find class "Controller"`. ImmersiveXP `overrideScript()`s 21 vanilla scripts; six of those target `class_name`'d vanillas (Controller, Camera, Door, WeaponRig, Item, Mine), and those six are the ones that trip #83542 under the extends-wrapper approach. Hooks on those scripts stop working.
 
 **This loader's source-rewrite approach** avoids ever triggering #83542 by not using `extends "res://Scripts/X.gd"` at the loader level. The rewritten vanilla ships at the vanilla path itself, with `class_name` intact, so the class registry stays consistent with what's actually at the path. The class_name-swap crash path (`Resource::set_path` not clearing `global_name`) is also moot because nothing is being moved off its canonical path by the loader.
 
@@ -95,41 +95,54 @@ Mod-subclass rewriting plays the same role as "apply framework wrapper on top of
 
 ### Scope of this approach
 
-- **Every vanilla method gets dispatch.** No `[rtvmodlib] needs=` opt-in. The rewrite generator ships wrappers for every hookable vanilla script under `res://Scripts/` (126 in the tested RTV build, minus the skip lists for runtime-sensitive and serialized-resource scripts).
+- **Every vanilla method gets dispatch.** No `[rtvmodlib] needs=` opt-in. The rewrite generator ships wrappers for every hookable vanilla script under `res://Scripts/`. In the current RTV build that's 161 scripts (5,776 hook points) out of 176 total -- 15 are skipped: 7 runtime-sensitive (`MuzzleFlash`, `Hit`, `Explosion`, etc., where dispatch-wrapper overhead breaks short-lived effects or coroutine timing), 7 data/save resource scripts (whose path is embedded in saved files, so wrapping would break save-load), and 1 zero-byte PCK stub the game ships (`CasettePlayer.gd`). Exact counts for your install appear in the boot log: `[RTVCodegen] parsed RTV.pck -- N total file(s), M .gd script(s) under res://Scripts/`, `[RTVCodegen] Skip lists: ...`, and `[RTVCodegen] Generated K rewritten vanilla script(s), L hook points`.
 - **Mods that subclass vanilla get rewritten too.** Any `.gd` file in an enabled mod's archive whose first non-trivial line is `extends "res://Scripts/<X>.gd"` (where `<X>` is a vanilla we hook) gets the same rename+dispatch transform shipped at the mod's own path.
 - **Timing.** The hook pack is mounted with `replace_files=true` at ModLoader's class-level static init, before any game autoload runs. Mod autoloads that do `load(...).take_over_path(...)` on our rewritten files inherit our wrappers via their `extends` chain.
 - **Scene-preloaded vanilla deferred to lazy-compile.** Some vanilla scripts (e.g. `AISpawner.gd`) have module-scope `preload()` of PackedScenes whose `ext_resource` references other vanilla scripts (e.g. `AI_Bandit.tscn` referencing `AI.gd`). Compiling those vanillas eagerly would fire their scene preloads before mod autoloads run, baking ext_resource Script references against the pre-override cache. `take_over_path` then clears those references' paths to empty (per `Resource::set_path`), and scene instances spawn with orphan scripts. To avoid this, vanilla scripts with module-scope scene preloads are skipped from eager compile. They lazy-compile via VFS mount precedence after mod overrides have run, so scenes resolve ext_resources against the post-override cache.
 - **Legacy-GDScript autofix.** Mod sibling scripts (non-subclass `.gd` files in the archive, typically preloaded from subclasses) are scanned for Godot-3-era patterns -- bodyless `if`/`elif`/`else` blocks, `tool` / `onready var` / `export var` -- and rewritten to strict-parser-compatible Godot 4 form. The fixed source lands in the hook pack overlay; the mod's `.vmz` stays untouched. Necessary because `script.reload()` inside a mod's `overrideScript` cascades strict re-parse through preloaded siblings, rejecting patterns that Godot's lenient first-compile would have tolerated.
 - **Post-ready `take_over_path` not covered.** If a mod does `take_over_path` on a vanilla script AFTER `frameworks_ready` has emitted (rather than during its autoload), we rely on the incoming script's own `extends` chain to route through our rewrite. If the mod's replacement script is a file-backed subclass of the vanilla we hook, it's already been rewritten in the hook pack. If it's a fully runtime-constructed script, it won't have dispatch.
-- **`RTVModLib.vmz` coexistence.** If tetrahydroc's standalone RTVModLib mod is enabled, this loader stands down so the two don't double-swap. The `Engine.get_meta("RTVModLib")` API surface is the same in both, so mods don't need to branch on which is active.
+- **`RTVModLib.vmz` coexistence.** If tetrahydroc's standalone RTVModLib mod is also enabled, both systems will try to wrap the same vanilla scripts -- this isn't supported, pick one. (`_register_rtv_modlib_meta` refuses to overwrite an existing `Engine.get_meta("RTVModLib")` and logs a warning, but the rest of the loader still runs.) The `Engine.get_meta("RTVModLib")` API surface (`hook` / `unhook` / `_caller` / `skip_super` / `frameworks_ready`, etc.) is identical between the two, so mod code is portable across whichever ends up registered first.
 
 ### How it works
 
-At launch the loader walks `RTV.pck`'s file table, detokenizes every `res://Scripts/*.gd` from its compiled bytecode, and rewrites each one:
+At launch the loader walks `RTV.pck`'s file table, detokenizes every `res://Scripts/*.gd` from its compiled bytecode, and rewrites each one. Vanilla `Controller.Movement(delta)` (a void method) ends up looking like the following in the hook pack. Diagnostic instrumentation emitted by the generator (per-hook firing counters in `Engine.meta` for runtime tracking) is omitted here for readability; see `_rtv_dispatch_inline_src` in modloader.gd for the full output.
 
 ```gdscript
-# Vanilla Controller.gd (simplified)
+# Vanilla Controller.gd (body simplified)
 func Movement(delta):
     velocity.x = move_x * walkSpeed
     move_and_slide()
 
 # Rewritten Controller.gd shipped in the hook pack
-func _rtv_vanilla_Movement(delta):           # original body, renamed
+func _rtv_vanilla_Movement(delta):    # original body, renamed
     velocity.x = move_x * walkSpeed
     move_and_slide()
 
-func Movement(delta):                        # new dispatch wrapper
-    var _lib = Engine.get_meta("RTVModLib", null)
-    if !_lib: return _rtv_vanilla_Movement(delta)
+func Movement(delta):                 # new dispatch wrapper
+    var _lib = Engine.get_meta("RTVModLib") if Engine.has_meta("RTVModLib") else null
+    if !_lib:
+        _rtv_vanilla_Movement(delta)
+        return
+    # Fast path: no mod has called hook() this session.
+    if not _lib._any_mod_hooked:
+        _rtv_vanilla_Movement(delta)
+        return
+    # Re-entry guard: a mod's wrapper called super() into here. Run vanilla and bail.
     if _lib._wrapper_active.has("controller-movement"):
-        return _rtv_vanilla_Movement(delta)   # re-entry guard
+        _rtv_vanilla_Movement(delta)
+        return
     _lib._wrapper_active["controller-movement"] = true
     _lib._caller = self
     _lib._dispatch("controller-movement-pre", [delta])
     var _repl = _lib._get_hooks("controller-movement")
     if _repl.size() > 0:
+        var _prev_skip = _lib._skip_super
+        _lib._skip_super = false
         _repl[0].callv([delta])
-        if !_lib._skip_super: _rtv_vanilla_Movement(delta)
+        var _did_skip = _lib._skip_super
+        _lib._skip_super = _prev_skip
+        if !_did_skip:
+            _rtv_vanilla_Movement(delta)
     else:
         _rtv_vanilla_Movement(delta)
     _lib._dispatch("controller-movement-post", [delta])
@@ -152,7 +165,7 @@ The pack is mounted via `ProjectSettings.load_resource_pack(zip, replace_files=t
 Mods like IXP ship scripts that `extends "res://Scripts/Camera.gd"` and override a subset of methods. The loader also rewrites those at codegen time:
 
 - Scan every enabled mod's `.vmz`. Find `.gd` files whose first non-trivial line is `extends "res://Scripts/<X>.gd"` where `<X>` is a vanilla we hook.
-- Apply the same rename+dispatch transform, but with a distinct prefix (`_rtv_mod_<name>` instead of `_rtv_vanilla_<name>`) so the mod body doesn't shadow vanilla's via virtual dispatch.
+- Apply the same rename+dispatch transform, but with the prefix `_rtv_mod_` (literal, not per-mod) instead of `_rtv_vanilla_` so the mod body doesn't shadow vanilla's via virtual dispatch.
 - Ship the rewritten mod script at its own path (e.g. `ImmersiveXP/Camera.gd`) in the same hook pack with `replace_files=true`. The mod's `.vmz` is never modified.
 - When IXP's autoload calls `load("res://ImmersiveXP/Camera.gd")`, mount precedence returns our rewritten version. IXP's existing `overrideScript()` logic then `take_over_path`s our rewritten IXP Camera onto the vanilla path. Dispatch fires from IXP's wrapper regardless of whether IXP's body calls `super()`.
 
@@ -179,7 +192,10 @@ func _on_lib_ready():
     _lib = Engine.get_meta("RTVModLib")
     _lib.hook("controller-jump-pre", _on_jump_pre)
 
-func _on_jump_pre():
+func _on_jump_pre(_delta):
+    # Callback signature must match the wrapped method.
+    # Controller.Jump(_delta) takes one arg, so the dispatcher calls
+    # callv([delta]) -- a zero-arg callback would raise CALL_ERROR.
     _lib._caller.jumpVelocity = 20.0
 ```
 
@@ -204,12 +220,12 @@ All members live on the meta object returned by `Engine.get_meta("RTVModLib")`.
 |--------|------|---------|
 | `frameworks_ready` | signal | Emitted once after wrappers are mounted and applied. |
 | `_is_ready` | bool | True once `frameworks_ready` has emitted. |
-| `_caller` | Node | The instance dispatching the current hook. Valid only inside a callback. |
+| `_caller` | Node | Instance whose method triggered dispatch. Set before each callback, never reset -- outside a callback it's the last dispatched instance (stale, possibly freed). Snapshot synchronously if you need it later. |
 | `_skip_super` | bool | Set by `skip_super()` during a replace hook. |
 | `hook(name, callback, priority=100)` | int | Register. Returns hook id, or `-1` if a replace hook is already owned. Lower priority runs first (default 100). |
 | `unhook(id)` | void | Remove by id. |
 | `has_hooks(name)` | bool | Any registrations at this name. |
-| `has_replace(name)` | bool | Replace hook registered at this bare name. |
+| `has_replace(name)` | bool | True if any hook is registered at this name. To detect a replace owner specifically, pass the bare name -- presence at a bare key implies a replace, since `hook()` only allows one. (Implementation is currently identical to `has_hooks()`.) |
 | `get_replace_owner(name)` | int | Owner id, or `-1` if none. Lets a mod detect a conflict and fall back to `-pre` / `-post`. |
 | `skip_super()` | void | Inside a replace hook, prevents the original method from running. |
 | `seq()` | int | Monotonic dispatch counter (debug). |
@@ -245,7 +261,7 @@ Only one replace per name. `hook()` returns `-1` if another mod already owns the
 
 ### Examples
 
-The three examples below are tetrahydroc's, copied from his RTVModLib README.
+The three examples below are adapted from tetrahydroc's RTVModLib README.
 
 #### AI Kill Tracker
 
@@ -363,9 +379,9 @@ func _custom_loot():
 
 - **`hook()` returns `-1`**: another mod owns the replace slot. Use `get_replace_owner()` to detect, then fall back to `-pre` or `-post`.
 - **Callback never fires**: you registered before `frameworks_ready` emitted. Always `await lib.frameworks_ready` if `_is_ready` is false. All hookable scripts are wrapped by default, so no opt-in is needed.
-- **`_caller` is null**: read outside a callback, or in a `-callback` (deferred) hook after the source was freed. Snapshot `_caller` synchronously and reference the snapshot.
+- **`_caller` is wrong or invalid**: the loader sets `_caller` before each dispatch and never clears it. Reading outside your hook (or from a `-callback` deferred handler) returns either the LAST dispatched instance (stale) or, if that source was freed, an invalid reference. Snapshot `_caller` synchronously inside your hook and reference the snapshot afterward.
 - **Hook name doesn't match anything**: format is `<scriptname>-<methodname>[-suffix]` lowercase. Underscore-prefixed methods keep the underscore: `pickup-_ready-post`, not `pickup-ready-post`.
-- **`hooked but also replaced by ...`**: another mod replaces the same vanilla script via `[script_overrides]`. The wrapper's `super()` flows into the override, not vanilla.
+- **`[RTVCodegen] <path> is rewritten and also overridden by <mod> -- override displaces the rewrite, hooks won't fire for that path`**: another mod ships a `[script_overrides]` entry for the same vanilla script. The override displaces our rewrite at that path, so dispatch never fires for nodes that use it.
 
 Hook cache: `%APPDATA%\Road to Vostok\modloader_hooks\`
 The cache is regenerated every launch. To force a clean state, delete the `modloader_hooks` folder.
@@ -379,7 +395,7 @@ Prefix an autoload with `!` to load it before the game's own autoloads:
 EarlySetup="!res://MyMod/EarlySetup.gd"
 ```
 
-This triggers a two-pass launch. The mod loader writes the autoload to `override.cfg`, restarts the game, and your node is in the scene tree before the game's autoloads run.
+This works via the loader's two-pass restart sequence: on Pass 1 the mod loader writes the autoload into `override.cfg`'s `[autoload_prepend]` section, then restarts; on Pass 2 your node is in the scene tree before the game's autoloads run. (The two-pass restart fires whenever any enabled mod changes the persisted state, not specifically because of the `!` prefix -- the early autoload just takes effect on the second pass.)
 
 Regular autoloads (without `!`) load after all mods mount. Only use `!` when your mod genuinely needs to run before game autoloads.
 
@@ -391,14 +407,14 @@ Regular autoloads (without `!`) load after all mods mount. Only use `!` when you
 
 - **Wait it out.** After 2 failed launches, the mod loader automatically resets to a clean state.
 - **Disable ModLoader entirely:** Create an empty file named `modloader_disabled` (no extension) in the game folder. On next launch, the mod loader skips all work -- no archives mount, no UI shows, no autoloads run. Delete the file to re-enable. Use this when ModLoader itself is broken and you can't reach the UI.
-- **Manual safe-mode reset:** Create an empty file named `modloader_safe_mode` (no extension) in the game folder. On next launch, the mod loader resets state and deletes the file.
+- **Manual safe-mode reset:** Create an empty file named `modloader_safe_mode` (no extension) in the game folder. On next launch, the mod loader resets `override.cfg`, deletes pass state, clears the heartbeat, then deletes the safe-mode file. Note: this does NOT wipe the hook pack -- use **Reset to Vanilla** or `modloader_disabled` for a full reset.
 - **Full reset:** Delete `override.cfg` from the game folder and replace it with a fresh copy from the mod loader release.
 
 **Crash-safe recovery:** If the game is killed during the two-pass restart phase (before Pass 2 finishes applying the hook pack), ModLoader leaves a `user://modloader_pass2_dirty` marker. Next cold boot detects it and force-wipes hook pack + override.cfg + pass state before retrying -- so a half-written hook pack can't poison the next launch.
 
 ## Conflict Report
 
-With Developer Mode enabled, a copy of the runtime log is written to `%APPDATA%\Road to Vostok\modloader_conflicts.txt` after each launch. Look for these markers:
+With Developer Mode enabled, the modloader's own log buffer (everything emitted via `[ModLoader]` lines) is written to `%APPDATA%\Road to Vostok\modloader_conflicts.txt` after each launch. Look for these markers:
 
 | Message | Meaning |
 |---------|---------|
@@ -407,7 +423,7 @@ With Developer Mode enabled, a copy of the runtime log is written to `%APPDATA%\
 | **DATABASE OVERRIDE** | A mod replaced `Scripts/Database.gd`. Normal for overhauls, may block other mods' scene overrides. |
 | **BAD ZIP** | Backslash file paths in the archive. Re-pack with 7-Zip. |
 
-The summary block also lists how many framework overrides the loader applied this run and which hooks had registrations.
+The summary block also lists which hooks had registrations. (Under source-rewrite the "Framework Overrides Active" section in the summary stays silent -- that section is for the dormant `[rtvmodlib] needs=` -> `Framework<Name>.gd` path, which doesn't populate `_hook_swap_map` under the current source-rewrite mechanism.)
 
 ## Best Practices
 
@@ -416,7 +432,7 @@ The summary block also lists how many framework overrides the loader applied thi
 - **Use `super()` in lifecycle methods.** Skipping it breaks other mods that override the same class.
 - **Prefer hooks over file replacement** when you only need to modify a few methods. Hooks compose across mods; file replacement doesn't. All vanilla scripts are hooked automatically, just register callbacks through `Engine.get_meta("RTVModLib")`.
 - **If you replace Database.gd**, every `preload()` path must exist or the game breaks.
-- **`UpdateTooltip()` is inventory-only.** World-item tooltips come from `HUD._physics_process` reading `gameData.tooltip`.
+- **`UpdateTooltip()` is the world-item tooltip path.** Each interactable (`Pickup`, `Door`, `Bed`, `Fire`, `LootContainer`, `Trader`, `Furniture`, etc.) implements `UpdateTooltip()`, which writes to `gameData.tooltip`; `HUD._physics_process` polls and renders. To change a world tooltip, hook the relevant class's `UpdateTooltip` (e.g. `lootcontainer-updatetooltip-post`).
 - **Test with other mods installed** and check the conflict report.
 
 ## Contributing
@@ -434,9 +450,9 @@ Conflict log: `%APPDATA%\Road to Vostok\modloader_conflicts.txt`
 
 ## Recovery (Technical Details)
 
-- **Heartbeat file:** `user://modloader_heartbeat.txt` is written at launch and deleted on success. If it persists, the mod loader increments a crash counter. After 2 crashes, it wipes `override.cfg` and all two-pass state.
+- **Heartbeat file:** `user://modloader_heartbeat.txt` is written at launch and deleted on success. The restart counter (stored in pass state) is incremented every time the loader writes pass state for a Pass 2 restart -- so it ticks on every modloader-triggered restart, not on heartbeat detection. If the next launch finds a leftover heartbeat AND the counter is at or above `MAX_RESTART_COUNT` (2), the loader wipes `override.cfg` and all two-pass state to break the loop. Otherwise it logs a warning and clears the heartbeat.
 - **Pass 2 dirty marker:** `user://modloader_pass2_dirty` is written at the start of Pass 2 and deleted when Pass 2 finishes. If present on next cold boot, Pass 2 was interrupted (force-quit, crash, power loss) and the hook pack may be half-written. Static init detects the marker and force-wipes state before ModLoader runs.
-- **Disabled flag:** An empty `modloader_disabled` file in the game folder makes ModLoader sit idle for that session. Static init resets override.cfg, pass state, and the hook pack, then returns immediately. The UI never shows. Delete the file to re-enable.
+- **Disabled flag:** An empty `modloader_disabled` file in the game folder makes ModLoader sit idle for that session. Static init resets `override.cfg`, deletes pass state, clears the pass-2 dirty marker, and wipes the hook pack, then returns immediately. The UI never shows. Delete the file to re-enable.
 - **Safe mode flag:** An empty `modloader_safe_mode` file triggers a one-shot full reset on next launch, then is deleted.
 - **State files:** `user://mod_pass_state.cfg` stores archive paths + hook pack path for the two-pass restart. Cleared by the Reset button, the disabled flag, by entering zero-mod state via the UI, or by a Pass 2 crash.
 
@@ -444,9 +460,9 @@ Conflict log: `%APPDATA%\Road to Vostok\modloader_conflicts.txt`
 
 ## Engine Compatibility
 
-Tested against Godot 4.6.1. Reviewed against the Godot 4.7 milestone as of April 2026 (feature freeze imminent, dev snapshot 5 released) -- no breaking changes identified within Road to Vostok's first-party mod support window.
+Tested against Godot 4.6.1 (the version Road to Vostok ships with -- verifiable in the boot banner: `Godot Engine v4.6.1.stable.official.14d19694e`). Reviewed against the Godot 4.7 milestone -- no breaking changes identified within Road to Vostok's first-party mod support window.
 
-If a future Godot version changes how `res://` paths resolve inside mounted resource packs, the hook pack's mount-precedence recipe (`.gd` + `.remap` + empty `.gdc`) will stop winning over the PCK. The `[STABILITY] VFS canary FAILED` alarm trips on first launch and the loader logs a critical error. Users can fall back to tetrahydroc's standalone `RTVModLib` mod, which uses the extends-wrapper approach (`Framework<Name>.gd` subclasses applied at runtime via `take_over_path`). The fallback handles the typical case, but has a known issue with overhaul mods like ImmersiveXP that extend vanilla via `class_name` (Godot [#83542](https://github.com/godotengine/godot/issues/83542)) -- the exact bug our current in-place rewrite sidesteps.
+If a future Godot version changes how `res://` paths resolve inside mounted resource packs, the hook pack's mount-precedence recipe (`.gd` + `.gd.remap` + empty `.gdc`) will stop winning over the PCK. The `[STABILITY] VFS canary FAILED` alarm trips on first launch and the loader logs a critical error. Users can fall back to tetrahydroc's standalone `RTVModLib` mod, which uses the extends-wrapper approach (`Framework<Name>.gd` subclasses applied at runtime via `take_over_path`). The fallback handles the typical case, but trips Godot [#83542](https://github.com/godotengine/godot/issues/83542) on overhaul mods that `take_over_path` on `class_name`'d vanilla scripts: the take-over orphans vanilla's `class_name` registration in `ScriptServer`, after which extends-by-path resolution against that vanilla fails with `Could not find class`. ImmersiveXP triggers this on Controller, Camera, Door, WeaponRig, Item, and Mine (the six vanilla scripts in IXP's `overrideScript()` list that declare `class_name`). Our source-rewrite sidesteps the bug by never calling `take_over_path` on a `class_name`'d vanilla.
 
 The three specific engine behaviors that would trigger the fallback:
 
