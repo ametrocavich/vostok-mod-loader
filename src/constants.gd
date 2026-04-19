@@ -3,7 +3,16 @@
 ## These must appear in the compiled modloader.gd before any function body
 ## that references them.
 
+# release-please bumps MODLOADER_VERSION automatically via Conventional Commits:
+#   feat: ... -> minor bump
+#   fix: ...  -> patch bump
+#   feat!: or BREAKING CHANGE: -> major bump
+# The major/minor/patch accessors parse this single source of truth so mods can
+# compare against it without hand-maintaining a second set of constants.
+# x-release-please-start-version
 const MODLOADER_VERSION := "2.3.1"
+# x-release-please-end
+
 const MODLOADER_RES_PATH := "res://modloader.gd"
 const MOD_DIR := "mods"
 const TMP_DIR := "user://vmz_mount_cache"
