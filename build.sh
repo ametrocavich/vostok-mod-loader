@@ -22,7 +22,6 @@ FILES=(
     # Static-init boot layer
     "$SRC/boot.gd"
     # Mod discovery + loading
-    "$SRC/security_scan.gd"
     "$SRC/mod_discovery.gd"
     "$SRC/mod_loading.gd"
     "$SRC/conflict_report.gd"

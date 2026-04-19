@@ -1,33 +1,37 @@
 ## ----- hooks_api.gd -----
 ## Public surface that mods call via Engine.get_meta("RTVModLib"):
-## hook/unhook/has_hooks/has_replace/get_replace_owner/skip_super/seq, the
-## version accessors, plus the internal dispatch helpers. Also owns
-## frameworks_ready emission.
+## hook/unhook/has_hooks/has_replace/get_replace_owner/skip_super/seq plus
+## the internal dispatch helpers. Also owns frameworks_ready emission and
+## the tetra-mod detection used by the legacy extends-wrapper path.
 
-# Version accessors. Mods call these to gate features on modloader version:
-#   if lib.major_version() >= 3: use_new_api()
-static func version() -> String:
-	return MODLOADER_VERSION
-
-static func major_version() -> int:
-	return int(MODLOADER_VERSION.split(".")[0])
-
-static func minor_version() -> int:
-	return int(MODLOADER_VERSION.split(".")[1])
-
-static func patch_version() -> int:
-	return int(MODLOADER_VERSION.split(".")[2])
+func _detect_tetra_modlib() -> void:
+	_defer_to_tetra_modlib = false
+	for entry in _ui_mod_entries:
+		if not entry.get("enabled", false):
+			continue
+		if str(entry.get("mod_id", "")) == RTV_MODLIB_MOD_ID:
+			_defer_to_tetra_modlib = true
+			_log_info("[RTVModLib] tetra's '%s' mod detected -- modloader will not register its own RTVModLib meta" \
+					% RTV_MODLIB_MOD_ID)
+			return
 
 func _register_rtv_modlib_meta() -> void:
+	if _defer_to_tetra_modlib:
+		return
 	if Engine.has_meta("RTVModLib"):
 		_log_warning("[RTVModLib] Engine.meta 'RTVModLib' already set -- not overwriting")
 		return
 	Engine.set_meta("RTVModLib", self)
+	_rtv_modlib_registered = true
 	_log_info("[RTVModLib] modloader registered as Engine.meta('RTVModLib')")
 
 # Mods that await Engine.get_meta("RTVModLib").frameworks_ready block until
-# we fire this.
+# we fire this. No-op when deferring to tetra -- his RTVLib.gd emits its own.
 func _emit_frameworks_ready() -> void:
+	if _defer_to_tetra_modlib:
+		return
+	if not _rtv_modlib_registered:
+		return
 	_is_ready = true
 	frameworks_ready.emit()
 	_log_info("[RTVModLib] frameworks_ready emitted")
@@ -45,13 +49,8 @@ func hook(hook_name: String, callback: Callable, priority: int = 100) -> int:
 			or hook_name.ends_with("-callback"))
 	if is_replace and _hooks.has(hook_name) and (_hooks[hook_name] as Array).size() > 0:
 		var owner_id: int = (_hooks[hook_name] as Array)[0]["id"]
-		# Info-level, not warning: rejection is normal API behavior (replace
-		# slots are single-owner by design). Caller checks the -1 return
-		# code. Promoting this to push_warning() made every test assertion
-		# and every mod-conflict check spam Godot's stderr even though it's
-		# expected. Debug-gated so verbose logs still show it when needed.
-		_log_debug("[RTVModLib] replace hook '%s' already owned (id=%d), registration rejected" \
-				% [hook_name, owner_id])
+		push_warning("RTVModLib: replace hook '" + hook_name \
+				+ "' already owned (id=" + str(owner_id) + "), registration rejected")
 		return -1
 	if not _hooks.has(hook_name):
 		_hooks[hook_name] = []
