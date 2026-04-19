@@ -347,6 +347,14 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, rename_pref
 		_log_info("[Autofix] %s: %d bodyless block(s), %d @tool, %d @onready, %d @export -- legacy syntax normalized" \
 				% [parsed.get("filename", "?"), autofix["bodyless"], autofix["tool"], autofix["onready"], autofix["export"]])
 
+	# Database-specific transform: convert `const X = preload("...")` lines
+	# into a _rtv_vanilla_scenes dictionary. This makes Database.get(name)
+	# go through _get() (which checks mod overrides first) instead of
+	# resolving via direct const lookup -- mods can then override the
+	# scene returned for any vanilla name.
+	if rename_prefix == "_rtv_vanilla_" and parsed.get("filename", "") == "Database.gd":
+		src = _rtv_rewrite_database_constants(src)
+
 	# Pass 1: rename top-level "func <name>(" to "func _rtv_vanilla_<name>("
 	# AND rewrite bare super() calls inside that body to super.<name>().
 	# Only matches at line start (static methods already filtered). Inner-class
@@ -398,7 +406,103 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, rename_pref
 	for fe in hookable:
 		appended += _rtv_dispatch_inline_src(fe, prefix, indent, rename_prefix) + "\n"
 
+	# Per-script registry injections. Only apply to vanilla rewrites (not mod
+	# subclasses) so we don't stamp the _rtv_registry_* fields onto every mod
+	# that inherits from a registry-bearing class. Registry handler on the
+	# loader writes into these injected fields at runtime.
+	if rename_prefix == "_rtv_vanilla_":
+		appended += _rtv_registry_injection(parsed["filename"], indent)
+
 	return "\n".join(lines) + appended
+
+# Per-script registry injection. Scripts with a matching entry in the
+# REGISTRY_INJECTIONS map below get extra code appended: a runtime dict for
+# mod-registered entries and a _get() override that serves them transparently.
+# Vanilla game code calling Node.get(name) falls through to _get() when the
+# name isn't a declared property/const, which is how we expose mod data
+# without modifying the vanilla lookup call sites.
+func _rtv_registry_injection(filename: String, indent: String) -> String:
+	match filename:
+		"Database.gd":
+			var inj := _rtv_inject_database_registry(indent)
+			_log_info("[RTVCodegen] Injected registry into %s (%d chars)" % [filename, inj.length()])
+			return inj
+		_:
+			return ""
+
+func _rtv_inject_database_registry(indent: String) -> String:
+	# Database.gd is just an appendix here. The REAL transform is done up
+	# front in _rtv_rewrite_database_constants(): every vanilla `const X =
+	# preload(...)` is converted to an entry in _rtv_vanilla_scenes, so
+	# Database.get() can route through _get() and pick up mod overrides.
+	#
+	# What this appendix adds:
+	#   _rtv_mod_scenes[name]      -> new scenes mods registered (lib.register)
+	#   _rtv_override_scenes[name] -> scenes mods overrode (lib.override)
+	#   _get()                     -> lookup order: override > mod > vanilla
+	var I1 := indent
+	return "\n\n# --- Metro mod loader registry injection ---\n" \
+		+ "var _rtv_mod_scenes: Dictionary = {}\n" \
+		+ "var _rtv_override_scenes: Dictionary = {}\n" \
+		+ "\n" \
+		+ "func _get(property: StringName):\n" \
+		+ I1 + "var key := String(property)\n" \
+		+ I1 + "if _rtv_override_scenes.has(key):\n" \
+		+ I1 + I1 + "return _rtv_override_scenes[key]\n" \
+		+ I1 + "if _rtv_mod_scenes.has(key):\n" \
+		+ I1 + I1 + "return _rtv_mod_scenes[key]\n" \
+		+ I1 + "if _rtv_vanilla_scenes.has(key):\n" \
+		+ I1 + I1 + "return _rtv_vanilla_scenes[key]\n" \
+		+ I1 + "return null\n"
+
+# Walks Database.gd's source, moves every top-level `const X = preload("...")`
+# into a single _rtv_vanilla_scenes dictionary var. All other content
+# (extends, @export, @tool, functions, non-preload consts) stays put.
+#
+# Why: GDScript's compile-time const lookup bypasses _get(), so mods can't
+# override what Database.get("Potato") returns. Consts can't be shadowed at
+# runtime. Moving them into a dict lets _get() see every name and route
+# through the mod override layer.
+#
+# ExecuteUpdate() in @tool mode reads get_script_constant_map() to build
+# LT_Master at edit time. That's editor-only and irrelevant to runtime
+# modding, but we also swap that call for an iteration over
+# _rtv_vanilla_scenes so @tool still works if someone opens the script.
+func _rtv_rewrite_database_constants(source: String) -> String:
+	var lines: PackedStringArray = source.split("\n")
+	var entries: PackedStringArray = []  # "KEY = PRELOAD"
+	var out_lines: PackedStringArray = []
+	# Regex: top-level `const NAME = preload("path")` with optional trailing
+	# comment. Captures the name and the full preload expression verbatim so
+	# we don't disturb whitespace/quoting.
+	var re := RegEx.new()
+	re.compile('^const\\s+(\\w+)\\s*=\\s*(preload\\s*\\(\\s*"[^"]+"\\s*\\))\\s*$')
+	for line: String in lines:
+		var m := re.search(line)
+		if m != null:
+			entries.append("\t\"%s\": %s," % [m.get_string(1), m.get_string(2)])
+			continue
+		out_lines.append(line)
+	if entries.is_empty():
+		return source
+	# Inject the dict var right after the extends/script-annotation preamble.
+	# Safe place: before any function. Walk until we find the first `func ` or
+	# class_name and insert above it. If none found, append at end.
+	var dict_block := "\n# --- Metro mod loader: vanilla scene dict (rewritten from const declarations) ---\n" \
+		+ "var _rtv_vanilla_scenes: Dictionary = {\n" \
+		+ "\n".join(entries) + "\n" \
+		+ "}\n"
+	var insert_at := -1
+	for i in out_lines.size():
+		var trimmed: String = (out_lines[i] as String).strip_edges()
+		if trimmed.begins_with("func ") or trimmed.begins_with("static func "):
+			insert_at = i
+			break
+	if insert_at < 0:
+		return "\n".join(out_lines) + dict_block
+	var before := out_lines.slice(0, insert_at)
+	var after := out_lines.slice(insert_at)
+	return "\n".join(before) + "\n" + dict_block + "\n" + "\n".join(after)
 
 # Rewrite bare `super(` / `super (` in a line to `super.<method>(`. Preserves
 # the rest of the line verbatim. Skips `super.<something>(` (already explicit),
