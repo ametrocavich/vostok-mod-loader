@@ -17,6 +17,9 @@ const MODLOADER_RES_PATH := "res://modloader.gd"
 const MOD_DIR := "mods"
 const TMP_DIR := "user://vmz_mount_cache"
 const UI_CONFIG_PATH := "user://mod_config.cfg"
+# Sentinel value for `[settings] active_profile` written by Reset to Vanilla.
+# Has no stored sections -- `_apply_profile_to_entries` treats it as "all off".
+const VANILLA_PROFILE := "__vanilla__"
 const CONFLICT_REPORT_PATH := "user://modloader_conflicts.txt"
 const PASS_STATE_PATH := "user://mod_pass_state.cfg"
 const HEARTBEAT_PATH := "user://modloader_heartbeat.txt"
@@ -86,6 +89,11 @@ const RTV_ENGINE_VOID_METHODS: Array[String] = [
 
 var _mods_dir: String = ""
 var _developer_mode := false
+var _active_profile := "Default"
+var _ui_window: Window = null
+# Bottom-bar label used as a makeshift status hint because Godot's native
+# tooltips get layered behind our always_on_top launcher and aren't visible.
+var _ui_hint_label: Label = null
 var _has_loaded := false
 var _last_mod_txt_status := "none"
 var _database_replaced_by := ""
