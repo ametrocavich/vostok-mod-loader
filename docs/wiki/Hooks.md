@@ -210,6 +210,113 @@ Why the fallback matters ([hook_pack.gd:538-545](https://github.com/ametrocavich
 
 Scripts with module-scope `preload("res://...tscn|.scn")` are deferred from eager compile (the `_scripts_with_scene_preloads` set). VFS mount precedence still serves the rewrite when game code lazy-loads these paths after mod overrides have run -- this avoids baking Script ext_resources in scenes to the pre-override vanilla. See [Limitations](Limitations).
 
+## Worked examples
+
+The three examples below are adapted from tetrahydroc's RTVModLib README.
+
+### AI Kill Tracker
+
+```gdscript
+extends Node
+
+# Tracks AI kills and prints a summary
+
+var _lib = null
+var _kills: Dictionary = {}  # ai_type -> count
+
+func _ready():
+    if Engine.has_meta("RTVModLib"):
+        var lib = Engine.get_meta("RTVModLib")
+        if lib._is_ready:
+            _on_lib_ready()
+        else:
+            lib.frameworks_ready.connect(_on_lib_ready)
+
+func _on_lib_ready():
+    _lib = Engine.get_meta("RTVModLib")
+    _lib.hook("ai-death-post", _on_ai_death, 50)
+    print("Kill Tracker: Loaded")
+
+func _on_ai_death(direction = null, force = null):
+    # AI.Death(direction, force) was called -- an AI just died.
+    _kills["total"] = _kills.get("total", 0) + 1
+    print("Kills: " + str(_kills["total"]))
+```
+
+`mod.txt`:
+
+```ini
+[mod]
+name="Kill Tracker"
+id="kill-tracker"
+version="1.0.0"
+
+[autoload]
+KillTracker="res://KillTracker/Main.gd"
+```
+
+### Custom Trader Prices
+
+```gdscript
+extends Node
+
+# Doubles all trader prices
+
+var _lib = null
+
+func _ready():
+    if Engine.has_meta("RTVModLib"):
+        var lib = Engine.get_meta("RTVModLib")
+        if lib._is_ready:
+            _on_lib_ready()
+        else:
+            lib.frameworks_ready.connect(_on_lib_ready)
+
+func _on_lib_ready():
+    _lib = Engine.get_meta("RTVModLib")
+    _lib.hook("interface-calculatedeal-post", _modify_prices)
+
+func _modify_prices():
+    # Runs after CalculateDeal -- modify the displayed values.
+    var scene = get_tree().current_scene
+    var interface = scene.get_node_or_null("Core/UI/Interface")
+    if interface and interface.requestValue:
+        var current = int(interface.requestValue.text)
+        interface.requestValue.text = str(current * 2)
+```
+
+### Replace hook with fallback
+
+```gdscript
+extends Node
+
+# Custom loot generation that falls back to vanilla if conditions aren't met
+
+var _lib = null
+
+func _ready():
+    if Engine.has_meta("RTVModLib"):
+        var lib = Engine.get_meta("RTVModLib")
+        if lib._is_ready:
+            _on_lib_ready()
+        else:
+            lib.frameworks_ready.connect(_on_lib_ready)
+
+func _on_lib_ready():
+    _lib = Engine.get_meta("RTVModLib")
+    var id = _lib.hook("lootcontainer-generateloot", _custom_loot)
+    if id == -1:
+        # Another mod already owns this replace hook.
+        print("MyMod: GenerateLoot replace hook rejected, using pre/post instead")
+        _lib.hook("lootcontainer-generateloot-post", _modify_loot_after)
+
+func _custom_loot():
+    if some_condition:
+        _lib.skip_super()  # Skip vanilla loot gen
+        # Generate custom loot...
+    # If skip_super() not called, vanilla GenerateLoot runs normally.
+```
+
 ## Related
 
 - [Stability-Canaries](Stability-Canaries) -- runtime probes that alarm when the dispatch chain breaks
