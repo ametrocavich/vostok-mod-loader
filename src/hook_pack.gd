@@ -4,6 +4,17 @@
 ## three-entry recipe per script (.gd + .gd.remap + empty .gdc), mount it,
 ## and force-activate the rewritten scripts in Godot's ResourceCache.
 
+# Scripts that carry rewriter-injected registry helpers. These MUST be
+# force-activated (bypass the scene-preload deferral) so the injected fields
+# are live on autoload instances when mods call lib.register(). Keep in
+# sync with the match statement in _rtv_registry_injection().
+const REGISTRY_TARGETS: Array[String] = [
+	"Database.gd",
+]
+
+func _is_registry_target(filename: String) -> bool:
+	return filename in REGISTRY_TARGETS
+
 # Build the framework pack: enumerate res://Scripts/*.gd, detokenize each via
 # _read_vanilla_source, parse + generate wrappers, zip them, mount the zip.
 #
@@ -113,8 +124,16 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		# so the preload fires later, AFTER mod autoloads run overrideScript().
 		# VFS mount precedence (.gd + .remap + empty .gdc) still serves our
 		# rewrite when game code lazy-compiles the script at first reference.
+		#
+		# EXCEPTION: scripts with registry injections MUST be force-activated
+		# so the injected _rtv_mod_scenes / _rtv_override_scenes / _get()
+		# are live on the autoload instance when mods call lib.register().
+		# Lazy-compile would leave the autoload running vanilla bytecode.
+		# Registry-target scripts don't have the ext_resource staleness
+		# problem because mods don't take_over_path them -- they use the
+		# registry API instead.
 		var scene_preloads := _collect_module_scope_scene_preloads(source)
-		if scene_preloads.size() > 0:
+		if scene_preloads.size() > 0 and not _is_registry_target(filename):
 			_scripts_with_scene_preloads[filename] = scene_preloads
 
 		var rewritten := _rtv_rewrite_vanilla_source(source, parsed)
