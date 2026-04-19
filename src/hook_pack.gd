@@ -68,6 +68,44 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		for path: String in _class_name_to_path.values():
 			script_paths.append(path)
 
+	# Pre-read mod sibling scripts BEFORE opening ZIPPacker on the hook pack.
+	# When the hook pack from a previous session is mounted via
+	# ProjectSettings.load_resource_pack, Godot holds a FileAccessZIP handle
+	# to the file. ZIPPacker.open below opens the same file for writing,
+	# which on Windows invalidates that read handle once the in-progress
+	# zip is modified. Any VFS read that routes through the hook pack
+	# overlay AFTER zp.open then fails with "Cannot open file" at
+	# file_access_zip.cpp:137, breaking mod autoload compilation.
+	# Reading here, while the old mount is still valid, keeps the sibling
+	# source snapshot safe. Writes happen later via zp.start_file.
+	var sibling_fixes: Dictionary = {}  # p -> {fixed_src, af (Dictionary), reload_stripped}
+	for archive_file: String in _archive_file_sets:
+		var paths_set: Dictionary = _archive_file_sets[archive_file]
+		for p: String in paths_set:
+			if not p.ends_with(".gd"):
+				continue
+			if p.begins_with("res://Scripts/"):
+				continue  # vanilla, handled in the main rewrite loop
+			if not ResourceLoader.exists(p):
+				continue
+			var raw := FileAccess.get_file_as_string(p)
+			if raw.is_empty():
+				continue
+			var norm := raw.replace("\r\n", "\n").replace("\r", "\n")
+			var af := _rtv_autofix_legacy_syntax(norm)
+			var fixed_src: String = af["source"]
+			# Strip redundant `.reload()` calls in helpers that also do
+			# take_over_path. Eliminates RTVCoop's Cannot-reload spam.
+			var rl := _rtv_strip_helper_reload(fixed_src)
+			fixed_src = rl["source"]
+			if fixed_src == norm:
+				continue  # already clean, no overlay needed
+			sibling_fixes[p] = {
+				"fixed_src": fixed_src,
+				"af": af,
+				"reload_stripped": int(rl["stripped"]),
+			}
+
 	var zip_abs := ProjectSettings.globalize_path(HOOK_PACK_ZIP)
 	var zp := ZIPPacker.new()
 	if zp.open(zip_abs) != OK:
@@ -261,55 +299,40 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	# replace_files=true precedence then serves the fixed version to
 	# Godot's parser, restoring the pre-hooks compat surface for mods
 	# with bodyless `if` blocks and Godot-3-era annotations.
+	# Write pre-collected sibling autofix results to the hook pack. Reads
+	# happened earlier (before zp.open); here we just emit the fixed bytes.
+	# Skip any sibling whose path was also packed as a mod subclass earlier
+	# in this call -- the mod subclass rewrite is the canonical version,
+	# and double-packing would leave two entries in the zip.
 	var subclass_paths: Dictionary = {}
 	for mp in mod_packed:
 		subclass_paths[mp["res_path"]] = true
 	var sibling_fixed := 0
 	var sibling_total_bodyless := 0
 	var sibling_total_reload_stripped := 0
-	var sibling_skipped_noop := 0
-	for archive_file: String in _archive_file_sets:
-		var paths_set: Dictionary = _archive_file_sets[archive_file]
-		for p: String in paths_set:
-			if not p.ends_with(".gd"):
-				continue
-			if p.begins_with("res://Scripts/"):
-				continue  # vanilla, handled upstream
-			if subclass_paths.has(p):
-				continue  # already packed via mod-subclass rewrite
-			if not ResourceLoader.exists(p):
-				continue
-			var raw := FileAccess.get_file_as_string(p)
-			if raw.is_empty():
-				continue
-			var norm := raw.replace("\r\n", "\n").replace("\r", "\n")
-			var af := _rtv_autofix_legacy_syntax(norm)
-			var fixed_src: String = af["source"]
-			# Second pass: strip redundant `.reload()` calls in helpers that
-			# also do take_over_path. Kills the "Cannot reload script while
-			# instances exist" error RTVCoop fires on every launch.
-			var rl := _rtv_strip_helper_reload(fixed_src)
-			fixed_src = rl["source"]
-			var reload_stripped: int = int(rl["stripped"])
-			sibling_total_reload_stripped += reload_stripped
-			if fixed_src == norm:
-				sibling_skipped_noop += 1
-				continue  # already clean, no overlay needed
-			var zip_rel: String = p.trim_prefix("res://")
-			if zp.start_file(zip_rel) != OK:
-				_log_warning("[Autofix] Failed to pack sibling zip entry %s" % zip_rel)
-				continue
-			zp.write_file(fixed_src.to_utf8_buffer())
-			zp.close_file()
-			sibling_fixed += 1
-			sibling_total_bodyless += int(af["bodyless"])
-			if reload_stripped > 0:
-				_log_info("[Autofix] Stripped %d redundant .reload() call(s) from %s -- prevents Cannot-reload-while-instances-exist spam" % [reload_stripped, p])
-			_log_info("[Autofix] Patched sibling %s: bodyless=%d tool=%d onready=%d export=%d" \
-					% [p, af["bodyless"], af["tool"], af["onready"], af["export"]])
+	for p: String in sibling_fixes:
+		if subclass_paths.has(p):
+			continue
+		var fix: Dictionary = sibling_fixes[p]
+		var fixed_src: String = fix["fixed_src"]
+		var af: Dictionary = fix["af"]
+		var reload_stripped: int = int(fix["reload_stripped"])
+		var zip_rel: String = p.trim_prefix("res://")
+		if zp.start_file(zip_rel) != OK:
+			_log_warning("[Autofix] Failed to pack sibling zip entry %s" % zip_rel)
+			continue
+		zp.write_file(fixed_src.to_utf8_buffer())
+		zp.close_file()
+		sibling_fixed += 1
+		sibling_total_bodyless += int(af["bodyless"])
+		sibling_total_reload_stripped += reload_stripped
+		if reload_stripped > 0:
+			_log_info("[Autofix] Stripped %d redundant .reload() call(s) from %s -- prevents Cannot-reload-while-instances-exist spam" % [reload_stripped, p])
+		_log_info("[Autofix] Patched sibling %s: bodyless=%d tool=%d onready=%d export=%d" \
+				% [p, af["bodyless"], af["tool"], af["onready"], af["export"]])
 	if sibling_fixed > 0:
-		_log_info("[Autofix] %d mod sibling script(s) repaired (%d bodyless blocks, %d reload() stripped) -- packed into hook pack overlay (%d already clean, no overlay written)" \
-				% [sibling_fixed, sibling_total_bodyless, sibling_total_reload_stripped, sibling_skipped_noop])
+		_log_info("[Autofix] %d mod sibling script(s) repaired (%d bodyless blocks, %d reload() stripped) -- packed into hook pack overlay" \
+				% [sibling_fixed, sibling_total_bodyless, sibling_total_reload_stripped])
 
 	# STABILITY canary C: add a tiny known-content file to the hook pack so we
 	# can verify VFS mount precedence independently of the script-rewriting
