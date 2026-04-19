@@ -35,12 +35,12 @@ Dependencies flow top-down -- earlier files may not reference code defined later
 
 ### Invariants enforced by build.sh
 
-Post-concat sanity checks ([build.sh:58-70](https://github.com/ametrocavich/vostok-mod-loader/blob/development/build.sh#L58)):
+Post-concat sanity checks ([build.sh:57-69](https://github.com/ametrocavich/vostok-mod-loader/blob/development/build.sh#L57)):
 
 - **Exactly one `extends` line**, and it must be at the very top ([header.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/header.gd)).
 - **At most one `class_name`** declaration (currently there is none -- the loader is ModLoader autoload).
 
-Missing source file aborts before concat ([build.sh:46-49](https://github.com/ametrocavich/vostok-mod-loader/blob/development/build.sh#L46)).
+Missing source file aborts before concat ([build.sh:46-48](https://github.com/ametrocavich/vostok-mod-loader/blob/development/build.sh#L46)).
 
 ### Running it
 

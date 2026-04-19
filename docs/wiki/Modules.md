@@ -14,7 +14,7 @@ All module-scope `const`, `var`, and `signal` declarations. Everything has to la
 
 - `MODLOADER_VERSION` at [constants.gd:13](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L13) -- release-please bumps this via Conventional Commits, bracketed by `x-release-please-start/end` markers
 - `RTV_SKIP_LIST` (7 scripts), `RTV_RESOURCE_SERIALIZED_SKIP` (11), `RTV_RESOURCE_DATA_SKIP` (25) -- scripts the rewriter refuses to touch, each with inline rationale
-- `_filescope_mounted := _mount_previous_session()` at [constants.gd:175](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L175) -- a module-scope var with a function-call initializer. This is what triggers the static-init mount before `_ready`
+- `_filescope_mounted := _mount_previous_session()` at [constants.gd:161](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L161) -- a module-scope var with a function-call initializer. This is what triggers the static-init mount before `_ready`
 
 ### [logging.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/logging.gd)
 
@@ -34,7 +34,7 @@ Includes both static functions (callable from static init before instance state 
 
 The largest domain. Owns:
 
-- `_mount_previous_session` at [boot.gd:32](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L32) -- the static-init entry point triggered by `constants.gd:175`
+- `_mount_previous_session` at [boot.gd:32](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L32) -- the static-init entry point triggered by `constants.gd:161`
 - Sentinel handling (disabled, safe mode, Pass 2 dirty marker)
 - `override.cfg` reading + writing (`_write_override_cfg`, `_restore_clean_override_cfg`)
 - Pass state persistence (`_write_pass_state`, `_compute_state_hash`)
@@ -47,18 +47,6 @@ See [Architecture](Architecture) for the control flow.
 
 ## Discovery + loading
 
-### [security_scan.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/security_scan.gd)
-
-Lightweight static scanner. Reads each file inside a candidate mod (`.vmz`/`.zip`, `.pck`, or developer-mode folder) WITHOUT mounting it and looks for combinations of GDScript patterns that are nearly diagnostic of known malware.
-
-Not a virus scanner. Catches lazy / copy-paste attacks (the dropper screenshot that motivated this branch); a determined attacker with the modloader source can write around the rules. Loading is never blocked. The launcher shows a "suspicious code" tag on flagged mods and pops a confirmation dialog at Launch time.
-
-- `scan_mod` -- top-level entry called from `_build_archive_entry` / `_build_folder_entry`
-- 13 rules grouped into solo red triggers (`os_crash`, `disable_save_safety`), process-spawn, runtime-code-build, and obfuscation families
-- `compute_risk_level` returns `RISK_CLEAN` (0) or `RISK_RED` (2). Red fires on solo triggers, both obfuscation patterns together, or any obfuscation/runtime-code paired with a process spawn
-- `.gd` / `.tscn` / `.tres` / `.gdshader` get full text scans (with GDScript line-comment stripping so docstrings mentioning API names don't false-positive); `.scn` / `.res` / `.gdc` get byte-search for binary-safe rule patterns
-- `.pck` mods scanned via local `_security_pck_list_with_offsets` that mirrors `pck_enumeration._parse_pck_file_list` but also returns offsets so individual blobs can be extracted without mounting
-
 ### [mod_discovery.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd)
 
 Scans `<exe>/mods/`, parses mod.txt metadata, handles ModWorkshop version checks and downloads. No mounting -- that's `mod_loading`.
@@ -66,7 +54,6 @@ Scans `<exe>/mods/`, parses mod.txt metadata, handles ModWorkshop version checks
 - `collect_mod_metadata` at [mod_discovery.gd:7](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd#L7) -- the main scanner
 - `compare_versions` -- semver-ish with `v` prefix tolerance
 - `fetch_latest_modworkshop_versions` / `download_and_replace_mod` -- chunked HTTP against `api.modworkshop.net`
-- `_log_security_findings` -- emits `[ModScan]` summary + per-rule lines to the boot log when `entry["security_findings"]` is non-empty
 
 ### [mod_loading.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_loading.gd)
 
@@ -95,7 +82,7 @@ Two-layer override verification:
 
 Pre-game launcher window. Two tabs (Mods, Updates), dark theme, Reset-to-Vanilla action. Closing the window equals clicking Launch Game.
 
-- `show_mod_ui` at [ui.gd:871](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L871)
+- `show_mod_ui` at [ui.gd:70](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L70)
 - `build_mods_tab` / `build_updates_tab` -- tab content
 - `make_dark_theme` -- Theme resource with pure-black backgrounds
 - `_reset_to_vanilla_and_restart` -- unchecks every mod, calls `_static_force_vanilla_state`, strips `--modloader-restart` from cmdline so the relaunch is a clean Pass 1

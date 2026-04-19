@@ -47,7 +47,7 @@ needs=["Controller", "Camera"]
 | `version` | string | `""` | Used by the Updates tab to compare against ModWorkshop |
 | `priority` | int | 0 (or parsed from filename prefix) | Higher loads later, wins file conflicts. Clamped to `-999..999` |
 
-**VostokMods compat**: if the archive filename matches `^(-?\d+)-(.*)`, the numeric prefix is used as a fallback priority when `[mod] priority` isn't set. Example: `100-BetterAI.vmz` loads with `priority=100`. See [mod_discovery.gd:119-131](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd#L119).
+**VostokMods compat**: if the archive filename matches `^(-?\d+)-(.*)`, the numeric prefix is used as a fallback priority when `[mod] priority` isn't set. Example: `100-BetterAI.vmz` loads with `priority=100`. See [mod_discovery.gd:73-85](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd#L73).
 
 ### `[autoload]` section
 
@@ -77,7 +77,7 @@ Duplicate autoload names are logged and skipped (first wins). Paths not present 
 |---|---|---|
 | `modworkshop` | int | ModWorkshop mod id. Enables the Updates tab for this mod |
 
-Version compare uses [mod_discovery.gd:195 `compare_versions`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd#L195) -- splits on `.`, strips `v`/`V` prefix, pads shorter side with `"0"`, lexicographic int comparison.
+Version compare uses [mod_discovery.gd:138 `compare_versions`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd#L138) -- splits on `.`, strips `v`/`V` prefix, pads shorter side with `"0"`, lexicographic int comparison.
 
 ### `[script_overrides]` section
 
@@ -156,4 +156,4 @@ CONFLICT: res://Scripts/SomeFile.gd
     [2] ModB via ModB.vmz <-- wins
 ```
 
-Within equal priority, load order is stable: mod_name ascii-lowercase, then filename. See [mod_discovery.gd:184 `_compare_load_order`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd#L184).
+Within equal priority, load order is stable: mod_name ascii-lowercase, then filename. See [mod_discovery.gd:127 `_compare_load_order`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd#L127).

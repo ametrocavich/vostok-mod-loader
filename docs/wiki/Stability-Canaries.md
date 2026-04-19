@@ -93,7 +93,7 @@ Boot-time probes that alarm loudly when something the loader depends on silently
 
 **Effect**: unchecks every mod in memory, saves config, calls `_static_force_vanilla_state` (same cleanup as the disabled sentinel), strips `--modloader-restart` from cmdline args, and restarts the game clean.
 
-**Source**: [ui.gd:418 `_reset_to_vanilla_and_restart`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L418).
+**Source**: [ui.gd:48 `_reset_to_vanilla_and_restart`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L48).
 
 **When to use**: mods loaded but the game crashes or behaves badly. User clicks the button, gets a guaranteed vanilla next launch.
 

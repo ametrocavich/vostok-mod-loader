@@ -4,17 +4,17 @@ Dev mode is a per-user setting that unlocks folder-mod loading, verbose logging,
 
 ## How to enable
 
-UI toolbar checkbox in the Mods tab: **Developer Mode** ([ui.gd:1302-1329](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L1302)). Toggle persists to `[settings] developer_mode` in `user://mod_config.cfg`.
+UI toolbar checkbox in the Mods tab: **Developer Mode** ([ui.gd:294-315](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L294)). Toggle persists to `[settings] developer_mode` in `user://mod_config.cfg`.
 
-Loading the saved value runs at Pass-1 boot via [ui.gd:14 `_load_developer_mode_setting`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L14). Log line `"Developer mode: ON"` if enabled.
+Loading the saved value runs at Pass-1 boot via [ui.gd:7 `_load_developer_mode_setting`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L7). Log line `"Developer mode: ON"` if enabled.
 
 ## What it unlocks
 
 ### 1. Unpacked folder mods
 
-Subdirectories of `<exe>/mods/` are recognized as mod archives and zipped to `user://vmz_mount_cache/<name>_dev.zip` on the fly. Without dev mode, subdirectories are ignored ([mod_discovery.gd:29](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd#L29)).
+Subdirectories of `<exe>/mods/` are recognized as mod archives and zipped to `user://vmz_mount_cache/<name>_dev.zip` on the fly. Without dev mode, subdirectories are ignored ([mod_discovery.gd:25](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd#L25)).
 
-Folder entries show `[dev folder]` label in red in the UI ([ui.gd:1506-1511](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L1506)).
+Folder entries show `[dev folder]` label in red in the UI ([ui.gd:441-446](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L441)).
 
 Use case: in-development mods you haven't packaged yet.
 

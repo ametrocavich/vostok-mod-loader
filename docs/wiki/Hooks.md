@@ -41,7 +41,7 @@ if lib.has_replace("weaponrig-shoot"):
 
 ## Hook names
 
-Hook names follow this convention (documented at [constants.gd:116-117](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L116)):
+Hook names follow this convention (documented at [constants.gd:102-103](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L102)):
 
 ```
 <scriptname>-<methodname>[-pre|-post|-callback]
@@ -118,7 +118,7 @@ Void methods, coroutines (`await`), and engine lifecycle methods (`_ready` et al
 Source: [hooks_api.gd:42-65](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd#L42).
 
 1. Detect replace vs. aspect: `is_replace = not (name ends_with "-pre/-post/-callback")`.
-2. If replace and `_hooks[name]` is non-empty: debug-log the rejection, return `-1`. (Debug-level, not warning -- rejection is normal API behavior per the comment at [hooks_api.gd:48-52](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd#L48). Promoting to `push_warning` spammed stderr for expected conflicts.)
+2. If replace and `_hooks[name]` is non-empty: debug-log the rejection, return `-1`. (Debug-level, not warning -- rejection is normal API behavior per the comment at [hooks_api.gd:49-53](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd#L49). Promoting to `push_warning` spammed stderr for expected conflicts.)
 3. Create entry `{callback, priority, id}`, append to `_hooks[name]`, sort by priority ascending.
 4. Set `_any_mod_hooked = true` (sticky).
 5. Return `id`, increment `_next_id`.
@@ -209,113 +209,6 @@ Scripts fall into one of three buckets:
 Why the fallback matters ([hook_pack.gd:538-545](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L538)): for scripts originally compiled from `.gdc` bytecode (Camera, WeaponRig -- pre-compiled by the engine during startup because they're referenced by the initial scene graph), `reload()` doesn't re-parse from the mutated `source_code` -- it re-reads bytecode. `CACHE_MODE_IGNORE` goes through `_path_remap -> our .gd` with a fresh source compile.
 
 Scripts with module-scope `preload("res://...tscn|.scn")` are deferred from eager compile (the `_scripts_with_scene_preloads` set). VFS mount precedence still serves the rewrite when game code lazy-loads these paths after mod overrides have run -- this avoids baking Script ext_resources in scenes to the pre-override vanilla. See [Limitations](Limitations).
-
-## Worked examples
-
-The three examples below are adapted from tetrahydroc's RTVModLib README.
-
-### AI Kill Tracker
-
-```gdscript
-extends Node
-
-# Tracks AI kills and prints a summary
-
-var _lib = null
-var _kills: Dictionary = {}  # ai_type -> count
-
-func _ready():
-    if Engine.has_meta("RTVModLib"):
-        var lib = Engine.get_meta("RTVModLib")
-        if lib._is_ready:
-            _on_lib_ready()
-        else:
-            lib.frameworks_ready.connect(_on_lib_ready)
-
-func _on_lib_ready():
-    _lib = Engine.get_meta("RTVModLib")
-    _lib.hook("ai-death-post", _on_ai_death, 50)
-    print("Kill Tracker: Loaded")
-
-func _on_ai_death(direction = null, force = null):
-    # AI.Death(direction, force) was called -- an AI just died.
-    _kills["total"] = _kills.get("total", 0) + 1
-    print("Kills: " + str(_kills["total"]))
-```
-
-`mod.txt`:
-
-```ini
-[mod]
-name="Kill Tracker"
-id="kill-tracker"
-version="1.0.0"
-
-[autoload]
-KillTracker="res://KillTracker/Main.gd"
-```
-
-### Custom Trader Prices
-
-```gdscript
-extends Node
-
-# Doubles all trader prices
-
-var _lib = null
-
-func _ready():
-    if Engine.has_meta("RTVModLib"):
-        var lib = Engine.get_meta("RTVModLib")
-        if lib._is_ready:
-            _on_lib_ready()
-        else:
-            lib.frameworks_ready.connect(_on_lib_ready)
-
-func _on_lib_ready():
-    _lib = Engine.get_meta("RTVModLib")
-    _lib.hook("interface-calculatedeal-post", _modify_prices)
-
-func _modify_prices():
-    # Runs after CalculateDeal -- modify the displayed values.
-    var scene = get_tree().current_scene
-    var interface = scene.get_node_or_null("Core/UI/Interface")
-    if interface and interface.requestValue:
-        var current = int(interface.requestValue.text)
-        interface.requestValue.text = str(current * 2)
-```
-
-### Replace hook with fallback
-
-```gdscript
-extends Node
-
-# Custom loot generation that falls back to vanilla if conditions aren't met
-
-var _lib = null
-
-func _ready():
-    if Engine.has_meta("RTVModLib"):
-        var lib = Engine.get_meta("RTVModLib")
-        if lib._is_ready:
-            _on_lib_ready()
-        else:
-            lib.frameworks_ready.connect(_on_lib_ready)
-
-func _on_lib_ready():
-    _lib = Engine.get_meta("RTVModLib")
-    var id = _lib.hook("lootcontainer-generateloot", _custom_loot)
-    if id == -1:
-        # Another mod already owns this replace hook.
-        print("MyMod: GenerateLoot replace hook rejected, using pre/post instead")
-        _lib.hook("lootcontainer-generateloot-post", _modify_loot_after)
-
-func _custom_loot():
-    if some_condition:
-        _lib.skip_super()  # Skip vanilla loot gen
-        # Generate custom loot...
-    # If skip_super() not called, vanilla GenerateLoot runs normally.
-```
 
 ## Related
 

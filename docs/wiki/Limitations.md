@@ -18,7 +18,7 @@ Godot quirks and design constraints the loader works around or can't work around
 
 ## Scripts deliberately not rewritten
 
-Runtime-sensitive scripts in `RTV_SKIP_LIST` at [constants.gd:50-58](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L50). Dispatch wrappers break their runtime semantics:
+Runtime-sensitive scripts in `RTV_SKIP_LIST` at [constants.gd:47-55](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L47). Dispatch wrappers break their runtime semantics:
 
 | Script | Reason |
 |---|---|
@@ -32,9 +32,9 @@ Runtime-sensitive scripts in `RTV_SKIP_LIST` at [constants.gd:50-58](https://git
 
 Hooks on methods in these scripts won't fire. Mods should hook alternative call sites.
 
-Resource-serialized scripts at [constants.gd:62-67](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L62) (save data -- `CharacterSave`, `ContainerSave`, `FurnitureSave`, `ItemSave`, `Preferences`, `ShelterSave`, `SlotData`, `SwitchSave`, `TraderSave`, `Validator`, `WorldSave`) aren't rewritten -- `ResourceSaver` embeds the script path into user save files, and wrapping the script would make saves mod-dependent.
+Resource-serialized scripts at [constants.gd:59-64](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L59) (save data -- `CharacterSave`, `ContainerSave`, `FurnitureSave`, `ItemSave`, `Preferences`, `ShelterSave`, `SlotData`, `SwitchSave`, `TraderSave`, `Validator`, `WorldSave`) aren't rewritten -- `ResourceSaver` embeds the script path into user save files, and wrapping the script would make saves mod-dependent.
 
-Data-resource scripts at [constants.gd:71-80](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L71) (25 entries: `AIWeaponData`, `AttachmentData`, `ItemData`, `LootTable`, `Recipes`, etc.) aren't rewritten -- they're loaded from `res://` only, have no call sites to intercept. Mods should hook the consumers instead.
+Data-resource scripts at [constants.gd:68-77](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L68) (25 entries: `AIWeaponData`, `AttachmentData`, `ItemData`, `LootTable`, `Recipes`, etc.) aren't rewritten -- they're loaded from `res://` only, have no call sites to intercept. Mods should hook the consumers instead.
 
 ## Scene-preload deferred compile
 
