@@ -315,7 +315,14 @@ func _probe_tree_walk() -> void:
 			_log_info("[TREEWALK] %s | found %d instance(s); sample: %s (%s) script=%s has_mod_rename=%s chain_depth=%d expected_mod=%s" \
 					% [vp, info.count, info.name, info.cls, info.script_path, info.has_mod, info.depth, mod_name])
 		else:
-			_log_warning("[TREEWALK] %s | NO INSTANCES FOUND in scene tree after 12s. Mod declared override but no node carries this script -- either the class is never instantiated in this scene, or instances have a different script.resource_path than expected." \
+			# Not a warning: the probe runs at t+12s (typically still in menu
+			# or loading shelter) while most overrideScript targets only
+			# instantiate in World/Combat scenes loaded later (AI, Door,
+			# Pickup, Helicopter, etc.). An absent instance here is
+			# expected, not broken. InstanceProbe (node_added) verifies
+			# when instances actually spawn. Info-level keeps the signal
+			# without the false alarm.
+			_log_info("[TREEWALK] %s | not instantiated in current scene tree at t+12s (typical for classes that load with World scene; node_added probe will verify on spawn)" \
 					% vp)
 	# Dump top script paths by count. The expected paths above are included.
 	# Anything UNEXPECTED here that matches a class name pattern of something
