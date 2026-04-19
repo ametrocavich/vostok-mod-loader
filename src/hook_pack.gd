@@ -67,6 +67,15 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		_log_warning("[RTVCodegen] script enumeration failed -- falling back to class_name list (%d)" % _class_name_to_path.size())
 		for path: String in _class_name_to_path.values():
 			script_paths.append(path)
+	# Skip-list breakdown -- gives the README an evidence trail for "we wrap N
+	# scripts, skip M". The actual rewritten count is logged below by the
+	# "Generated N rewritten" line; this just records the static skip-list sizes.
+	_log_info("[RTVCodegen] Skip lists: %d runtime-sensitive, %d data, %d serialized (total %d skipped from rewrite)" % [
+		RTV_SKIP_LIST.size(),
+		RTV_RESOURCE_DATA_SKIP.size(),
+		RTV_RESOURCE_SERIALIZED_SKIP.size(),
+		RTV_SKIP_LIST.size() + RTV_RESOURCE_DATA_SKIP.size() + RTV_RESOURCE_SERIALIZED_SKIP.size(),
+	])
 
 	# Pre-read mod sibling scripts BEFORE opening ZIPPacker on the hook pack.
 	# When the hook pack from a previous session is mounted via
