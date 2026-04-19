@@ -78,7 +78,20 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	# file_access_zip.cpp:137, breaking mod autoload compilation.
 	# Reading here, while the old mount is still valid, keeps the sibling
 	# source snapshot safe. Writes happen later via zp.start_file.
-	var sibling_fixes: Dictionary = {}  # p -> {fixed_src, af (Dictionary), reload_stripped}
+	#
+	# Emit EVERY iterated sibling into the new hook pack, not just ones
+	# autofix changed. Rationale: if a previous session's hook pack already
+	# owns a sibling path and we skip emitting it because autofix is
+	# idempotent, the new hook pack on disk won't contain that path. Godot's
+	# load_resource_pack(replace_files=true) gives the newest mount
+	# precedence, and VFS resolves paths against whichever mount claims
+	# them. If the new mount doesn't claim a path the old mount did, VFS
+	# can end up routing through the old (now stale-indexed) mount and
+	# fail at file_access_zip.cpp:141 (the unzGoToFilePos failure, distinct
+	# from :137's "Cannot open file"). Emitting unconditionally keeps the
+	# new pack a superset of the old for every sibling path we read, so
+	# there are no holes for the stale mount to answer.
+	var sibling_fixes: Dictionary = {}  # p -> {fixed_src, af, reload_stripped, changed}
 	for archive_file: String in _archive_file_sets:
 		var paths_set: Dictionary = _archive_file_sets[archive_file]
 		for p: String in paths_set:
@@ -98,12 +111,11 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			# take_over_path. Eliminates RTVCoop's Cannot-reload spam.
 			var rl := _rtv_strip_helper_reload(fixed_src)
 			fixed_src = rl["source"]
-			if fixed_src == norm:
-				continue  # already clean, no overlay needed
 			sibling_fixes[p] = {
 				"fixed_src": fixed_src,
 				"af": af,
 				"reload_stripped": int(rl["stripped"]),
+				"changed": fixed_src != norm,
 			}
 
 	var zip_abs := ProjectSettings.globalize_path(HOOK_PACK_ZIP)
@@ -308,6 +320,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	for mp in mod_packed:
 		subclass_paths[mp["res_path"]] = true
 	var sibling_fixed := 0
+	var sibling_carried := 0
 	var sibling_total_bodyless := 0
 	var sibling_total_reload_stripped := 0
 	for p: String in sibling_fixes:
@@ -317,22 +330,29 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		var fixed_src: String = fix["fixed_src"]
 		var af: Dictionary = fix["af"]
 		var reload_stripped: int = int(fix["reload_stripped"])
+		var changed: bool = bool(fix["changed"])
 		var zip_rel: String = p.trim_prefix("res://")
 		if zp.start_file(zip_rel) != OK:
 			_log_warning("[Autofix] Failed to pack sibling zip entry %s" % zip_rel)
 			continue
 		zp.write_file(fixed_src.to_utf8_buffer())
 		zp.close_file()
-		sibling_fixed += 1
-		sibling_total_bodyless += int(af["bodyless"])
-		sibling_total_reload_stripped += reload_stripped
-		if reload_stripped > 0:
-			_log_info("[Autofix] Stripped %d redundant .reload() call(s) from %s -- prevents Cannot-reload-while-instances-exist spam" % [reload_stripped, p])
-		_log_info("[Autofix] Patched sibling %s: bodyless=%d tool=%d onready=%d export=%d" \
-				% [p, af["bodyless"], af["tool"], af["onready"], af["export"]])
+		if changed:
+			sibling_fixed += 1
+			sibling_total_bodyless += int(af["bodyless"])
+			sibling_total_reload_stripped += reload_stripped
+			if reload_stripped > 0:
+				_log_info("[Autofix] Stripped %d redundant .reload() call(s) from %s -- prevents Cannot-reload-while-instances-exist spam" % [reload_stripped, p])
+			_log_info("[Autofix] Patched sibling %s: bodyless=%d tool=%d onready=%d export=%d" \
+					% [p, af["bodyless"], af["tool"], af["onready"], af["export"]])
+		else:
+			sibling_carried += 1
 	if sibling_fixed > 0:
 		_log_info("[Autofix] %d mod sibling script(s) repaired (%d bodyless blocks, %d reload() stripped) -- packed into hook pack overlay" \
 				% [sibling_fixed, sibling_total_bodyless, sibling_total_reload_stripped])
+	if sibling_carried > 0:
+		_log_debug("[Autofix] Carried %d unchanged mod sibling script(s) forward into new hook pack -- preserves VFS coverage across regen" \
+				% sibling_carried)
 
 	# STABILITY canary C: add a tiny known-content file to the hook pack so we
 	# can verify VFS mount precedence independently of the script-rewriting
