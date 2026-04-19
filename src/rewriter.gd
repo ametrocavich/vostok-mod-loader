@@ -149,7 +149,7 @@ func _rtv_parse_script(filename: String, source: String) -> Dictionary:
 			if body_line.begins_with("return ") and body_line.length() > 7:
 				has_return_value = true
 
-		# Explicit return type override (void → no value; anything else → has value).
+		# Explicit return type override (void -> no value; anything else -> has value).
 		if return_type != null and return_type != "void":
 			has_return_value = true
 		if return_type != null and return_type == "void":
@@ -168,6 +168,12 @@ func _rtv_parse_script(filename: String, source: String) -> Dictionary:
 
 	return script
 
+# DEAD CODE (verified 2026-04-19): zero callers. Grep `_rtv_generate_override(`
+# returns only this definition. Was the codegen for the original extends-wrapper
+# path; the source-rewrite era replaced it with _rtv_dispatch_inline_src below.
+# Kept as scaffolding in case the [rtvmodlib] needs= -> Framework<X>.gd path
+# ever needs to be revived. Remove with Step E.
+#
 # Produce one Framework<Name>.gd source. Three method templates (matching
 # generate_override in the Rust):
 #   _ready   -- has a _rtv_ready_done flag so super() doesn't double-fire

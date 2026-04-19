@@ -181,7 +181,7 @@ func download_and_replace_mod(target_path: String, modworkshop_id: int) -> bool:
 	if err != OK:
 		req.queue_free()
 		return false
-	# request_completed → [result, http_code, headers, body]
+	# request_completed -> [result, http_code, headers, body]
 	var res: Array = await req.request_completed
 	req.queue_free()
 

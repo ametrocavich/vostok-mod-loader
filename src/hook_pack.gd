@@ -48,8 +48,8 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		dir.list_dir_end()
 
 	# STABILITY canary B: verify the GDSC tokenizer format is one we support
-	# before any rewrite work. Loud, single-message failure beats 126 silent
-	# "Empty detokenized source" warnings.
+	# before any rewrite work. One loud, actionable message beats a flood of
+	# "Empty detokenized source" warnings, one per hookable script.
 	var tok_version := _probe_gdsc_version()
 	if tok_version != -1 and tok_version != 100 and tok_version != 101:
 		_log_critical("[STABILITY] Unsupported GDSC tokenizer v%d on Godot %s. This ModLoader supports v100 (Godot 4.0-4.4) and v101 (Godot 4.5-4.6). Hook pack generation disabled -- script hooks will not fire. See README for supported Godot versions." \

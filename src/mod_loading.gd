@@ -231,17 +231,6 @@ func _apply_script_overrides() -> void:
 	if applied > 0:
 		_log_info("[Overrides] Applied %d script override(s)" % applied)
 
-# --- RTVModLib runtime (port of Main.gd) ------------------------------------
-# Mods opt in via mod.txt:
-#     [rtvmodlib]
-#     needs=["LootContainer","Trader"]    # array literal
-#     needs=LootContainer,Trader           # or comma string
-# Only requested frameworks get take_over_path'd. Matches RTVModLib's
-# per-script opt-in instead of wrapping every game script.
-
-# If RTVModLib.vmz is loaded, we stand down -- both of us doing take_over_path
-# + node_added would double-swap every instance.
-
 func scan_and_register_archive_claims(archive_path: String, mod_name: String,
 		archive_file: String, load_index: int) -> void:
 	var zr := ZIPReader.new()

@@ -155,7 +155,7 @@ func _collect_module_scope_scene_preloads(source: String) -> PackedStringArray:
 				scenes.append(scene_path)
 	return scenes
 
-# Minimal PCK header + file-table parser. V2 (Godot 4.0–4.5) has 16 reserved
+# Minimal PCK header + file-table parser. V2 (Godot 4.0-4.5) has 16 reserved
 # dwords before the directory; V3 (Godot 4.6+) replaces them with an explicit
 # 64-bit directory offset. Reference: core/io/file_access_pack.cpp.
 func _parse_pck_file_list(pck_path: String) -> PackedStringArray:
