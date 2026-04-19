@@ -551,6 +551,21 @@ func _compute_state_hash(archive_paths: PackedStringArray, prepend_autoloads: Ar
 	for entry in _pending_script_overrides:
 		parts.append("so:%s=%s" % [entry["vanilla_path"], entry["mod_script_path"]])
 	parts.append("ml:" + MODLOADER_VERSION)
+	# Include modloader.gd's mtime so any rebuild of the loader itself
+	# triggers a restart, even when the mod set is unchanged. Rationale:
+	# _finish_with_existing_mounts regenerates the hook pack in place on
+	# a process that already has the old pack mounted. ZIPPacker.open
+	# rewrites the file but ProjectSettings.load_resource_pack dedupes by
+	# path (see lifecycle.gd comment), so the re-mount is a no-op and the
+	# VFS keeps the OLD mount's cached file offsets. If the new pack's
+	# entry layout differs from the old pack's (common when the rewriter
+	# changes between builds), every read of a moved entry fails at
+	# file_access_zip.cpp:141 (unzGoToFilePos on a stale offset). Forcing
+	# a restart on modloader rebuild means Pass 2's fresh engine mounts
+	# the new pack with a fresh index -- no stale cache to fight.
+	var self_mtime: int = FileAccess.get_modified_time("res://modloader.gd")
+	if self_mtime > 0:
+		parts.append("ml_mtime:%d" % self_mtime)
 	return "\n".join(parts).md5_text()
 
 func _write_heartbeat() -> void:
