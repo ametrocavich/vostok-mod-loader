@@ -1,0 +1,48 @@
+name: release-please
+
+on:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      # Parse Conventional Commits since the last tag. Bumps MODLOADER_VERSION
+      # in src/constants.gd (the only file release-please touches directly) and
+      # updates CHANGELOG.md. When the resulting PR merges, release-please
+      # creates the tag + GitHub Release.
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # Only run the build + asset upload when a release was just created.
+      - uses: actions/checkout@v4
+        if: ${{ steps.release.outputs.release_created }}
+
+      # Concatenate src/*.gd into modloader.gd. This is the artifact users
+      # install; the repo editing surface is the src/ tree.
+      - name: Build modloader.gd from src/
+        if: ${{ steps.release.outputs.release_created }}
+        run: |
+          chmod +x build.sh
+          ./build.sh
+
+      # Attach the freshly built modloader.gd + the repo's override.cfg to
+      # the release. The installers download from
+      # /releases/latest/download/<file>.
+      - name: Upload release assets
+        if: ${{ steps.release.outputs.release_created }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag_name }}
+        run: |
+          gh release upload "$TAG" modloader.gd override.cfg --clobber

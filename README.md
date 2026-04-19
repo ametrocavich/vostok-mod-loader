@@ -419,6 +419,10 @@ The summary block also lists how many framework overrides the loader applied thi
 - **`UpdateTooltip()` is inventory-only.** World-item tooltips come from `HUD._physics_process` reading `gameData.tooltip`.
 - **Test with other mods installed** and check the conflict report.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the branch model, Conventional Commit format, and build instructions. The short version: edit files in `src/`, run `./build.sh`, open PRs against the `development` branch with titles like `feat: ...` or `fix: ...`.
+
 ## Uninstalling
 
 Delete `override.cfg` and `modloader.gd` from the game folder. The `mods` folder and its contents can be removed separately.
