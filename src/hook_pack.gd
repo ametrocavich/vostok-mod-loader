@@ -689,6 +689,32 @@ func _activate_rewritten_scripts(filenames: Array[String]) -> void:
 			_log_info("[RTVCodegen] AUTOLOAD-CHECK %s: script=%s script_has_rename=%s instance_has_rename=%s" \
 					% [aname, scr.resource_path, has_rename, instance_methods_has_rename])
 
+	# Registry smoke probe (runs unconditionally). Verifies tetra's
+	# const->dict rewrite + _get() injection on Database actually
+	# executed and serves scenes at runtime. Without this, a silent
+	# regression in the Database transform would only surface when a
+	# mod's lib.register() call returned stale data -- this probe
+	# catches it at boot instead.
+	var db_node: Node = get_tree().root.get_node_or_null("Database")
+	if db_node == null:
+		_log_warning("[RegistryProbe] Database autoload not in tree -- cannot verify const->dict transform")
+	elif not ("_rtv_vanilla_scenes" in db_node):
+		_log_warning("[RegistryProbe] Database._rtv_vanilla_scenes missing -- const->dict rewrite did not execute; lib.register/override will not see vanilla ids")
+	else:
+		var vs: Dictionary = db_node._rtv_vanilla_scenes
+		var scene_count: int = vs.size()
+		if scene_count == 0:
+			_log_warning("[RegistryProbe] Database._rtv_vanilla_scenes empty -- regex extracted no entries from Database.gd; check vanilla const syntax")
+		else:
+			var probe_key: String = vs.keys()[0]
+			var probe_result = db_node.get(probe_key)
+			if probe_result is PackedScene:
+				_log_info("[RegistryProbe] Database: _rtv_vanilla_scenes=%d entries; get('%s') returns PackedScene -- const->dict transform + _get() injection OK" \
+						% [scene_count, probe_key])
+			else:
+				_log_warning("[RegistryProbe] Database: _rtv_vanilla_scenes=%d entries but get('%s') returned %s (not PackedScene) -- _get() injection broken" \
+						% [scene_count, probe_key, type_string(typeof(probe_result))])
+
 	# Reset counters before probes. The dispatch template increments
 	# _rtv_dispatch_count on entry, _rtv_dispatch_no_lib when the _lib
 	# null-check trips, and _rtv_dispatch_by_hook per hook_base.
