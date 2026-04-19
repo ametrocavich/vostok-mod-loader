@@ -1190,6 +1190,38 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 			order_list.add_child(lbl)
 
+	# -- Missing from this profile --------------------------------------------
+	# Mods the active profile references but that aren't on disk. Shown at the
+	# top of the list so they get attention before the regular mod rows; each
+	# has a Remove button to strip the orphaned keys from the profile. Future:
+	# offer to download via modworkshop if an id is stored.
+	var missing_files := _missing_mods_in_active_profile()
+	if not missing_files.is_empty():
+		var missing_hdr := Label.new()
+		missing_hdr.text = "Missing from this profile"
+		missing_hdr.modulate = Color(1.0, 0.55, 0.55)
+		missing_hdr.add_theme_font_size_override("font_size", 11)
+		list.add_child(missing_hdr)
+		list.add_child(HSeparator.new())
+		for fn: String in missing_files:
+			var miss_row := HBoxContainer.new()
+			list.add_child(miss_row)
+			var miss_lbl := Label.new()
+			miss_lbl.text = fn + "  --  not installed"
+			miss_lbl.modulate = Color(1.0, 0.45, 0.45)
+			miss_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			miss_row.add_child(miss_lbl)
+			var remove_btn := Button.new()
+			remove_btn.text = "Remove"
+			remove_btn.tooltip_text = "Strip this entry from the active profile"
+			miss_row.add_child(remove_btn)
+			var captured := fn
+			remove_btn.pressed.connect(func():
+				_remove_missing_entry_from_profile(captured)
+				_rebuild_mods_tab(tabs)
+			)
+			list.add_child(HSeparator.new())
+
 	# -- Column headers --------------------------------------------------------
 
 	var header_row := HBoxContainer.new()
@@ -1296,37 +1328,6 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			refresh_order.call()
 			_save_ui_config()
 		)
-
-	# -- Missing from this profile --------------------------------------------
-	# Mods the active profile references but that aren't on disk. Shown as red
-	# stub rows with a Remove button to strip the orphaned entry from the
-	# profile. Future: offer to download via modworkshop if an id is stored.
-	var missing_files := _missing_mods_in_active_profile()
-	if not missing_files.is_empty():
-		var missing_hdr := Label.new()
-		missing_hdr.text = "Missing from this profile"
-		missing_hdr.modulate = Color(1.0, 0.55, 0.55)
-		missing_hdr.add_theme_font_size_override("font_size", 11)
-		list.add_child(missing_hdr)
-		list.add_child(HSeparator.new())
-		for fn: String in missing_files:
-			var row := HBoxContainer.new()
-			list.add_child(row)
-			var miss_lbl := Label.new()
-			miss_lbl.text = fn + "  --  not installed"
-			miss_lbl.modulate = Color(1.0, 0.45, 0.45)
-			miss_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			row.add_child(miss_lbl)
-			var remove_btn := Button.new()
-			remove_btn.text = "Remove"
-			remove_btn.tooltip_text = "Strip this entry from the active profile"
-			row.add_child(remove_btn)
-			var captured := fn
-			remove_btn.pressed.connect(func():
-				_remove_missing_entry_from_profile(captured)
-				_rebuild_mods_tab(tabs)
-			)
-			list.add_child(HSeparator.new())
 
 	refresh_order.call()
 	return outer
