@@ -37,7 +37,7 @@ Produces `modloader.gd` at the repo root by concatenating `src/*.gd` in the
 order defined in `build.sh`'s `FILES` array. Run after any source change and
 before testing in-game.
 
-`modloader.gd` is **not committed** to the repo, it's a build artifact
+`modloader.gd` is **not committed** to the repo — it's a build artifact
 shipped as a release asset. The installer scripts download it from
 `/releases/latest/download/modloader.gd`.
 
@@ -108,7 +108,7 @@ entry is useful.
 
 ### Branch naming
 
-No specific format required release-please only reads commit/PR titles, not
+No specific format required — release-please only reads commit/PR titles, not
 branch names. Name your feature branches whatever makes sense.
 
 ## Checklist before opening a PR

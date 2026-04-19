@@ -1,8 +1,22 @@
 ## ----- hooks_api.gd -----
 ## Public surface that mods call via Engine.get_meta("RTVModLib"):
-## hook/unhook/has_hooks/has_replace/get_replace_owner/skip_super/seq plus
-## the internal dispatch helpers. Also owns frameworks_ready emission and
-## the tetra-mod detection used by the legacy extends-wrapper path.
+## hook/unhook/has_hooks/has_replace/get_replace_owner/skip_super/seq, the
+## version accessors, plus the internal dispatch helpers. Also owns
+## frameworks_ready emission and tetra-mod detection.
+
+# Version accessors. Mods call these to gate features on modloader version:
+#   if lib.major_version() >= 3: use_new_api()
+static func version() -> String:
+	return MODLOADER_VERSION
+
+static func major_version() -> int:
+	return int(MODLOADER_VERSION.split(".")[0])
+
+static func minor_version() -> int:
+	return int(MODLOADER_VERSION.split(".")[1])
+
+static func patch_version() -> int:
+	return int(MODLOADER_VERSION.split(".")[2])
 
 func _detect_tetra_modlib() -> void:
 	_defer_to_tetra_modlib = false
