@@ -353,8 +353,12 @@ func _scan_gd_source(text: String, analysis: Dictionary) -> void:
 			(analysis["class_names"] as Array).append(cn)
 
 	if not analysis["uses_dynamic_override"]:
-		analysis["uses_dynamic_override"] = "get_base_script()" in text \
-				or "take_over_path(parentScript" in text
+		# Previous narrow match (get_base_script() + take_over_path(parentScript)
+		# missed RTVCoop's pattern: script.take_over_path(gamePath) where gamePath
+		# is a literal arg that doesn't start with "parentScript". Matching any
+		# take_over_path() call is a superset that still catches AI Overhaul /
+		# MCM / other parentScript-style callers.
+		analysis["uses_dynamic_override"] = "take_over_path(" in text
 
 	# UpdateTooltip() is inventory-UI only. World-item tooltips are written directly
 	# by HUD._physics_process from gameData.tooltip -- this override has no effect there.
