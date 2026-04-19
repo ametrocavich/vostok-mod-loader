@@ -1,0 +1,39 @@
+name: wiki-sync
+
+on:
+  push:
+    branches:
+      - development
+      - master
+    paths:
+      - docs/wiki/**
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Push docs/wiki to GitHub Wiki
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.wiki.git" wiki
+          rsync -a --delete --exclude='.git' docs/wiki/ wiki/
+          cd wiki
+          git config user.name  "wiki-sync[bot]"
+          git config user.email "actions@github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No wiki changes."
+          else
+            git commit -m "sync from ${REPO}@${SHA}"
+            git push
+          fi
