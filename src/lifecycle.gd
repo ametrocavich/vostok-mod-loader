@@ -82,6 +82,7 @@ func _run_pass_1() -> void:
 		# polluted by the PCK's pre-compiled class_name scripts, so activation
 		# here would fire a misleading "hooks WILL NOT fire" STABILITY alarm
 		# seconds before Pass 2's fresh engine gets 126/126 inline-live.
+		_detect_tetra_modlib()
 		_register_rtv_modlib_meta()
 		_generate_hook_pack(true)
 		_write_heartbeat()
@@ -113,6 +114,7 @@ func _finish_with_existing_mounts() -> void:
 	# Engine.get_meta("RTVModLib") is live by the time they call .hook().
 	# Script overrides were already applied in _run_pass_1() before the hash
 	# check; no need to re-apply from pass state.
+	_detect_tetra_modlib()
 	_register_rtv_modlib_meta()
 	_generate_hook_pack()
 	for entry in _pending_autoloads:
@@ -136,6 +138,7 @@ func _finish_with_existing_mounts() -> void:
 			return
 
 func _finish_single_pass() -> void:
+	_detect_tetra_modlib()
 	_register_rtv_modlib_meta()
 	_generate_hook_pack()
 	for entry in _pending_autoloads:
@@ -183,6 +186,7 @@ func _run_pass_2() -> void:
 	_load_ui_config()
 
 	load_all_mods("Pass 2")
+	_detect_tetra_modlib()
 	_register_rtv_modlib_meta()
 	_generate_hook_pack()
 	# After load_all_mods re-mounts mod archives (wiping our IXP/Controller
