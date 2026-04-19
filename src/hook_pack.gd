@@ -266,6 +266,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		subclass_paths[mp["res_path"]] = true
 	var sibling_fixed := 0
 	var sibling_total_bodyless := 0
+	var sibling_total_reload_stripped := 0
 	var sibling_skipped_noop := 0
 	for archive_file: String in _archive_file_sets:
 		var paths_set: Dictionary = _archive_file_sets[archive_file]
@@ -284,6 +285,13 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			var norm := raw.replace("\r\n", "\n").replace("\r", "\n")
 			var af := _rtv_autofix_legacy_syntax(norm)
 			var fixed_src: String = af["source"]
+			# Second pass: strip redundant `.reload()` calls in helpers that
+			# also do take_over_path. Kills the "Cannot reload script while
+			# instances exist" error RTVCoop fires on every launch.
+			var rl := _rtv_strip_helper_reload(fixed_src)
+			fixed_src = rl["source"]
+			var reload_stripped: int = int(rl["stripped"])
+			sibling_total_reload_stripped += reload_stripped
 			if fixed_src == norm:
 				sibling_skipped_noop += 1
 				continue  # already clean, no overlay needed
@@ -295,11 +303,13 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			zp.close_file()
 			sibling_fixed += 1
 			sibling_total_bodyless += int(af["bodyless"])
+			if reload_stripped > 0:
+				_log_info("[Autofix] Stripped %d redundant .reload() call(s) from %s -- prevents Cannot-reload-while-instances-exist spam" % [reload_stripped, p])
 			_log_info("[Autofix] Patched sibling %s: bodyless=%d tool=%d onready=%d export=%d" \
 					% [p, af["bodyless"], af["tool"], af["onready"], af["export"]])
 	if sibling_fixed > 0:
-		_log_info("[Autofix] %d mod sibling script(s) repaired (%d bodyless blocks) -- packed into hook pack overlay (%d already clean, no overlay written)" \
-				% [sibling_fixed, sibling_total_bodyless, sibling_skipped_noop])
+		_log_info("[Autofix] %d mod sibling script(s) repaired (%d bodyless blocks, %d reload() stripped) -- packed into hook pack overlay (%d already clean, no overlay written)" \
+				% [sibling_fixed, sibling_total_bodyless, sibling_total_reload_stripped, sibling_skipped_noop])
 
 	# STABILITY canary C: add a tiny known-content file to the hook pack so we
 	# can verify VFS mount precedence independently of the script-rewriting
