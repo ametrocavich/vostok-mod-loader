@@ -37,10 +37,6 @@ func _collect_needed_from_mods() -> Dictionary:
 
 
 func _activate_hooked_scripts() -> void:
-	if _defer_to_tetra_modlib:
-		_log_info("[Hooks] Deferred to tetra's RTVModLib mod -- skipping activation")
-		return
-
 	var needed := _collect_needed_from_mods()
 	if needed.is_empty():
 		_log_info("[Hooks] No mod declared [rtvmodlib] needs -- nothing to activate")
@@ -68,7 +64,7 @@ func _activate_hooked_scripts() -> void:
 # Case-insensitive filename match. class_name map covers most; fall back to
 # PCK-parsed script list for non-class_name frameworks (Interface, Task, AI,
 # Audio, Cables, etc.). DirAccess can't list PCK contents in 4.6, so we use
-# the path list populated by _enumerate_game_scripts(). Credit: tetrahydroc.
+# the path list populated by _enumerate_game_scripts().
 func _resolve_framework_vanilla_path(key_lower: String) -> String:
 	for cn: String in _class_name_to_path:
 		var path: String = _class_name_to_path[cn]
@@ -113,7 +109,9 @@ func _register_override(framework_path: String, expected_vanilla_path: String) -
 				_vanilla_id_to_path[bid] = original_path
 		base = base.get_base_script() as GDScript
 
-	# class_name guard (tetra's fix for WeaponRig crash).
+	# class_name guard: take_over_path on a class_name script corrupts the
+	# C++ class cache, crashing on knife draw (WeaponRig case). Skip for
+	# class_name scripts; the node_added swap handles those instead.
 	var global_name: StringName = parent_script.get_global_name()
 	if global_name == &"" or String(global_name) == "":
 		script.take_over_path(original_path)
@@ -126,8 +124,6 @@ func _register_override(framework_path: String, expected_vanilla_path: String) -
 	return true
 
 func _connect_node_swap() -> void:
-	if _defer_to_tetra_modlib:
-		return
 	if _node_swap_connected:
 		return
 	if _hook_swap_map.is_empty():
@@ -210,18 +206,6 @@ func _deferred_swap(node: Node, framework_script: Script, path: String) -> void:
 	_swap_count += 1
 	if _swap_count <= 50:
 		_log_info("[RTVModLib] Runtime swapped %s on %s" % [path.get_file(), node.name])
-
-# --- Hook API (port of tetra's RTVLib.gd) -----------------------------------
-# Mods call these via Engine.get_meta("RTVModLib").
-
-## Register a hook. Returns a hook ID for removal, or -1 if rejected.
-## hook_name examples:
-##   "interface-open-pre"       - runs before original (stackable)
-##   "interface-open-post"      - runs after original (stackable)
-##   "interface-open-callback"  - deferred after original (stackable)
-##   "interface-open"           - REPLACE the original (first-wins, only one allowed)
-## callback: Callable to invoke
-## priority: lower = runs first (default 100). Ignored for replace hooks.
 
 # Recursively walk the scene tree, collecting nodes whose attached script
 # (or any ancestor in its extends chain) has the given class_name. Base
