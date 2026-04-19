@@ -42,9 +42,6 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		_log_info("[STABILITY] Detokenizer compatible: GDSC v%d on Godot %s" \
 				% [tok_version, Engine.get_version_info().get("string", "unknown")])
 
-	if _defer_to_tetra_modlib:
-		_log_info("[Hooks] Deferred to tetra's RTVModLib -- wiped stale artifacts, skipping generation")
-		return ""
 	if _loaded_mod_ids.is_empty():
 		return ""
 
