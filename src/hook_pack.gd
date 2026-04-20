@@ -801,31 +801,14 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 				_log_warning("[RegistryProbe] Database: _rtv_vanilla_scenes=%d entries but get('%s') returned %s (not PackedScene) -- _get() injection broken" \
 						% [scene_count, probe_key, type_string(typeof(probe_result))])
 
-	# Reset counters before probes. The dispatch template increments
-	# _rtv_dispatch_count on entry, _rtv_dispatch_no_lib when the _lib
-	# null-check trips, and _rtv_dispatch_by_hook per hook_base.
-	Engine.set_meta("_rtv_dispatch_count", 0)
-	Engine.set_meta("_rtv_dispatch_no_lib", 0)
-	Engine.set_meta("_rtv_dispatch_by_hook", {})
 	# 30s gives the player time to get into gameplay so controller-level
-	# hooks can fire at least once.
+	# hooks can fire at least once. HOOK-API summary only; the per-wrapper
+	# dispatch counter was removed 2026-04-20 because its 2 Engine.set_meta
+	# calls per invocation cost ~0.37s CPU/sec on hot paths like
+	# hud-_physics_process and interface-_physics_process (93K calls/sec each).
 	get_tree().create_timer(30.0).timeout.connect(func():
-		var n: int = int(Engine.get_meta("_rtv_dispatch_count", 0))
-		var no_lib: int = int(Engine.get_meta("_rtv_dispatch_no_lib", 0))
-		var by_hook: Dictionary = Engine.get_meta("_rtv_dispatch_by_hook", {})
 		var pc: Dictionary = Engine.get_meta("_rtv_probe_counts", {})
 		var fa: Dictionary = Engine.get_meta("_rtv_probe_first_args", {})
-		if n > 0:
-			_log_info("[RTVCodegen] DISPATCH-LIVE: %d wrapper call(s) in 30s (no-lib fallback=%d)" % [n, no_lib])
-		else:
-			_log_critical("[RTVCodegen] DISPATCH-DEAD: 0 wrapper calls in 30s -- game code not hitting rewrite")
-		# Sort by count desc and log top 15
-		var pairs: Array = []
-		for k: String in by_hook:
-			pairs.append([k, int(by_hook[k])])
-		pairs.sort_custom(func(a, b): return a[1] > b[1])
-		for i in range(min(15, pairs.size())):
-			_log_info("[RTVCodegen]   hook_base=%s count=%d" % [pairs[i][0], pairs[i][1]])
 		# HOOK-API per-probe breakdown across phases:
 		var total := 0
 		for k: String in ["loader_pp", "simulation_proc", "profiler_proc",

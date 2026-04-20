@@ -786,19 +786,6 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 	var I3: String = indent + indent + indent
 
 	var out := ""
-	# Dispatch-live probe: one counter per hook_base via Engine meta dict,
-	# plus a one-shot print the first time each wrapper fires. That
-	# gives a definitive list of every wrapper that executes at runtime
-	# AND proves the wrapper body actually runs (not just that source
-	# matches). Remove in Step E.
-	var probe: String = ""
-	probe += "%svar _rtv_bh = Engine.get_meta(\"_rtv_dispatch_by_hook\", {}) as Dictionary\n" % I1
-	probe += "%svar _rtv_prev = int(_rtv_bh.get(\"%s\", 0))\n" % [I1, hook_base]
-	probe += "%s_rtv_bh[\"%s\"] = _rtv_prev + 1\n" % [I1, hook_base]
-	probe += "%sEngine.set_meta(\"_rtv_dispatch_by_hook\", _rtv_bh)\n" % I1
-	probe += "%sEngine.set_meta(\"_rtv_dispatch_count\", int(Engine.get_meta(\"_rtv_dispatch_count\", 0)) + 1)\n" % I1
-	probe += "%sif _rtv_prev == 0:\n" % I1
-	probe += "%sprint(\"[RTV-WRAPPER-FIRST] %s\")\n" % [I2, hook_base]
 	# Step C re-entry guard: when a mod's rewritten wrapper fires and its body
 	# calls super() into vanilla's rewritten wrapper, the nested wrapper would
 	# dispatch again. Guard checks _lib._wrapper_active for this hook_base and
@@ -806,11 +793,13 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 	# vanilla body. One dispatch per logical call regardless of chain depth.
 	if not is_void:
 		out += "%s\n" % sig
-		out += probe
-		out += "%svar _lib = Engine.get_meta(\"RTVModLib\") if Engine.has_meta(\"RTVModLib\") else null\n" % I1
-		out += "%sif !_lib:\n" % I1
-		out += "%sEngine.set_meta(\"_rtv_dispatch_no_lib\", int(Engine.get_meta(\"_rtv_dispatch_no_lib\", 0)) + 1)\n" % I2
+		# Engine.get_meta with a Nil default still prints an error when the key
+		# is absent (Godot 4.6 Object::get_meta at object.cpp:1155). Guard with
+		# has_meta so early-boot wrappers that fire before _register_rtv_modlib_meta
+		# (e.g. the 16 preempted class_name scripts) don't flood the log.
+		out += "%sif not Engine.has_meta(\"RTVModLib\"):\n" % I1
 		out += "%sreturn %s%s\n" % [I2, aw, vanilla_call]
+		out += "%svar _lib = Engine.get_meta(\"RTVModLib\")\n" % I1
 		# Global short-circuit: if no mod has called hook() this session, the
 		# whole dispatch pipeline is dead weight. Single bool check skips
 		# ~10 dict ops + meta/prop/fn calls. Matches godot-mod-loader.
@@ -849,12 +838,11 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		out += "%sreturn _result\n" % I1
 	else:
 		out += "%s\n" % sig
-		out += probe
-		out += "%svar _lib = Engine.get_meta(\"RTVModLib\") if Engine.has_meta(\"RTVModLib\") else null\n" % I1
-		out += "%sif !_lib:\n" % I1
-		out += "%sEngine.set_meta(\"_rtv_dispatch_no_lib\", int(Engine.get_meta(\"_rtv_dispatch_no_lib\", 0)) + 1)\n" % I2
+		# Same has_meta guard as non-void branch above.
+		out += "%sif not Engine.has_meta(\"RTVModLib\"):\n" % I1
 		out += "%s%s%s\n" % [I2, aw, vanilla_call]
 		out += "%sreturn\n" % I2
+		out += "%svar _lib = Engine.get_meta(\"RTVModLib\")\n" % I1
 		# Global short-circuit: see non-void branch above.
 		out += "%sif not _lib._any_mod_hooked:\n" % I1
 		out += "%s%s%s\n" % [I2, aw, vanilla_call]
