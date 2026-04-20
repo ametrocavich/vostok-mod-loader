@@ -217,14 +217,16 @@ static func _mount_previous_session() -> Dictionary:
 	# First-ever session: no pass_state entry, skip. Pass 1 will generate
 	# and activate this session -- Camera/WeaponRig fall back to PCK
 	# bytecode that first run. Second session onward: pre-mount works.
-	# Fallback to HOOK_PACK_ZIP constant if pass_state lost the key
-	# (e.g. after a version-mismatch wipe). The zip survives on disk.
+	# No fallback by filename: per-session filenames mean a lost pass_state
+	# entry leaves us with orphan files we can't distinguish. Let Pass 1
+	# regenerate from scratch; the orphan-cleanup pass below sweeps them.
 	var hook_pack: String = cfg.get_value("state", "hook_pack_path", "") as String
-	if hook_pack == "":
-		var fallback_abs := ProjectSettings.globalize_path(HOOK_PACK_ZIP)
-		if FileAccess.file_exists(fallback_abs):
-			hook_pack = HOOK_PACK_ZIP
-			log_lines.append("[FileScope] HOOK PACK path missing from pass_state -- using fallback: " + HOOK_PACK_ZIP)
+	# Orphan cleanup: previous sessions may have left framework_pack_*.zip
+	# files behind (Windows can't delete the currently-mounted one mid-session).
+	# At static-init the engine has mounted nothing yet, so deleting every pack
+	# EXCEPT the one pass_state points at is safe. Prevents unbounded growth
+	# for users cycling large mod sets over many sessions.
+	_static_cleanup_orphan_hook_packs(hook_pack, log_lines)
 	if hook_pack != "":
 		var hook_abs: String = hook_pack if not hook_pack.begins_with("user://") \
 				else ProjectSettings.globalize_path(hook_pack)
@@ -318,8 +320,42 @@ static func _static_reset_override_cfg(log_lines: PackedStringArray) -> void:
 	f.close()
 	log_lines.append("[FileScope] override.cfg reset to clean [autoload_prepend] state")
 
+static func _static_cleanup_orphan_hook_packs(keep_path: String, log_lines: PackedStringArray) -> void:
+	# Delete every framework_pack_*.zip in HOOK_PACK_DIR except keep_path.
+	# Called at static-init BEFORE any hook-pack mount, so the VFS holds no
+	# handles to these files. Safe to delete them on every platform. If
+	# keep_path is empty (no pass_state entry, or no hook pack yet) every
+	# file matching the pattern is treated as orphan.
+	var pack_dir := ProjectSettings.globalize_path(HOOK_PACK_DIR)
+	if not DirAccess.dir_exists_absolute(pack_dir):
+		return
+	var keep_abs := ProjectSettings.globalize_path(keep_path) if keep_path != "" else ""
+	var dir := DirAccess.open(pack_dir)
+	if dir == null:
+		return
+	dir.list_dir_begin()
+	var removed := 0
+	while true:
+		var fname := dir.get_next()
+		if fname == "":
+			break
+		if not fname.begins_with(HOOK_PACK_PREFIX) or not fname.ends_with(".zip"):
+			continue
+		var full := pack_dir.path_join(fname)
+		if keep_abs != "" and full == keep_abs:
+			continue
+		DirAccess.remove_absolute(full)
+		removed += 1
+	dir.list_dir_end()
+	if removed > 0:
+		log_lines.append("[FileScope] Cleaned %d orphan hook pack(s) from prior session(s)" % removed)
+
 static func _static_wipe_hook_cache() -> void:
-	# Wipe every Framework*.gd we previously generated (cheap to regenerate).
+	# Wipe every Framework*.gd we previously generated (cheap to regenerate)
+	# and every framework_pack_*.zip (per-session hook packs). On Windows,
+	# a zip currently mounted by Godot's VFS may refuse deletion (open handle);
+	# the orphan-cleanup pass in _mount_previous_session catches stragglers
+	# on the next fresh-engine launch.
 	var pack_dir := ProjectSettings.globalize_path(HOOK_PACK_DIR)
 	if DirAccess.dir_exists_absolute(pack_dir):
 		var pdir := DirAccess.open(pack_dir)
@@ -330,6 +366,8 @@ static func _static_wipe_hook_cache() -> void:
 				if pname == "":
 					break
 				if pname.begins_with("Framework") and pname.ends_with(".gd"):
+					DirAccess.remove_absolute(pack_dir.path_join(pname))
+				elif pname.begins_with(HOOK_PACK_PREFIX) and pname.ends_with(".zip"):
 					DirAccess.remove_absolute(pack_dir.path_join(pname))
 			pdir.list_dir_end()
 	var cache_dir := ProjectSettings.globalize_path(VANILLA_CACHE_DIR)
@@ -497,20 +535,20 @@ func _write_override_cfg(prepend_autoloads: Array[Dictionary]) -> Error:
 		DirAccess.remove_absolute(tmp)
 	return err
 
-func _persist_hook_pack_state() -> void:
+func _persist_hook_pack_state(pack_path: String) -> void:
 	# Write hook_pack_path to pass_state so _mount_previous_session() can
 	# mount it at static init in the next session. Piggybacks on the
 	# existing pass_state ConfigFile -- doesn't overwrite other keys.
 	var cfg := ConfigFile.new()
 	cfg.load(PASS_STATE_PATH)  # OK if missing; we populate below
-	cfg.set_value("state", "hook_pack_path", HOOK_PACK_ZIP)
+	cfg.set_value("state", "hook_pack_path", pack_path)
 	# Store exe mtime alongside so _mount_previous_session's existing
 	# exe-mtime check also invalidates the hook pack on game updates.
 	cfg.set_value("state", "hook_pack_exe_mtime", FileAccess.get_modified_time(OS.get_executable_path()))
 	if cfg.get_value("state", "modloader_version", "") == "":
 		cfg.set_value("state", "modloader_version", MODLOADER_VERSION)
 	if cfg.save(PASS_STATE_PATH) == OK:
-		_log_info("[RTVCodegen] Persisted hook pack path for next-session static-init mount")
+		_log_info("[RTVCodegen] Persisted hook pack path for next-session static-init mount: " + pack_path.get_file())
 
 func _write_pass_state(archive_paths: PackedStringArray, state_hash: String = "") -> Error:
 	var cfg := ConfigFile.new()
