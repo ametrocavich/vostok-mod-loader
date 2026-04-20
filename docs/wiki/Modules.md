@@ -14,7 +14,7 @@ All module-scope `const`, `var`, and `signal` declarations. Everything has to la
 
 - `MODLOADER_VERSION` at [constants.gd:13](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L13) -- release-please bumps this via Conventional Commits, bracketed by `x-release-please-start/end` markers
 - `RTV_SKIP_LIST` (7 scripts), `RTV_RESOURCE_SERIALIZED_SKIP` (11), `RTV_RESOURCE_DATA_SKIP` (25) -- scripts the rewriter refuses to touch, each with inline rationale
-- `_filescope_mounted := _mount_previous_session()` at [constants.gd:161](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L161) -- a module-scope var with a function-call initializer. This is what triggers the static-init mount before `_ready`
+- `_filescope_mounted := _mount_previous_session()` at [constants.gd:175](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L175) -- a module-scope var with a function-call initializer. This is what triggers the static-init mount before `_ready`
 
 ### [logging.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/logging.gd)
 
@@ -34,7 +34,7 @@ Includes both static functions (callable from static init before instance state 
 
 The largest domain. Owns:
 
-- `_mount_previous_session` at [boot.gd:32](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L32) -- the static-init entry point triggered by `constants.gd:161`
+- `_mount_previous_session` at [boot.gd:32](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L32) -- the static-init entry point triggered by `constants.gd:175`
 - Sentinel handling (disabled, safe mode, Pass 2 dirty marker)
 - `override.cfg` reading + writing (`_write_override_cfg`, `_restore_clean_override_cfg`)
 - Pass state persistence (`_write_pass_state`, `_compute_state_hash`)
@@ -95,7 +95,7 @@ Two-layer override verification:
 
 Pre-game launcher window. Two tabs (Mods, Updates), dark theme, Reset-to-Vanilla action. Closing the window equals clicking Launch Game.
 
-- `show_mod_ui` at [ui.gd:70](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L70)
+- `show_mod_ui` at [ui.gd:871](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L871)
 - `build_mods_tab` / `build_updates_tab` -- tab content
 - `make_dark_theme` -- Theme resource with pure-black backgrounds
 - `_reset_to_vanilla_and_restart` -- unchecks every mod, calls `_static_force_vanilla_state`, strips `--modloader-restart` from cmdline so the relaunch is a clean Pass 1

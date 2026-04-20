@@ -41,7 +41,7 @@ if lib.has_replace("weaponrig-shoot"):
 
 ## Hook names
 
-Hook names follow this convention (documented at [constants.gd:102-103](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L102)):
+Hook names follow this convention (documented at [constants.gd:116-117](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L116)):
 
 ```
 <scriptname>-<methodname>[-pre|-post|-callback]
@@ -118,7 +118,7 @@ Void methods, coroutines (`await`), and engine lifecycle methods (`_ready` et al
 Source: [hooks_api.gd:42-65](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd#L42).
 
 1. Detect replace vs. aspect: `is_replace = not (name ends_with "-pre/-post/-callback")`.
-2. If replace and `_hooks[name]` is non-empty: debug-log the rejection, return `-1`. (Debug-level, not warning -- rejection is normal API behavior per the comment at [hooks_api.gd:49-53](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd#L49). Promoting to `push_warning` spammed stderr for expected conflicts.)
+2. If replace and `_hooks[name]` is non-empty: debug-log the rejection, return `-1`. (Debug-level, not warning -- rejection is normal API behavior per the comment at [hooks_api.gd:48-52](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd#L48). Promoting to `push_warning` spammed stderr for expected conflicts.)
 3. Create entry `{callback, priority, id}`, append to `_hooks[name]`, sort by priority ascending.
 4. Set `_any_mod_hooked = true` (sticky).
 5. Return `id`, increment `_next_id`.
