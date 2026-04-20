@@ -921,13 +921,35 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 						% [scene_count, probe_key, type_string(typeof(probe_result))])
 
 	# 30s gives the player time to get into gameplay so controller-level
-	# hooks can fire at least once. HOOK-API summary only; the per-wrapper
-	# dispatch counter was removed 2026-04-20 because its 2 Engine.set_meta
-	# calls per invocation cost ~0.37s CPU/sec on hot paths like
-	# hud-_physics_process and interface-_physics_process (93K calls/sec each).
+	# hooks can fire at least once. HOOK-API summary only by default;
+	# dev-mode adds the per-method dispatch counter printout (fed by
+	# _dispatch_counts incremented inside each wrapper after the
+	# _any_mod_hooked short-circuit -- see _rtv_dispatch_inline_src).
+	_dispatch_counts.clear()
 	get_tree().create_timer(30.0).timeout.connect(func():
 		var pc: Dictionary = Engine.get_meta("_rtv_probe_counts", {})
 		var fa: Dictionary = Engine.get_meta("_rtv_probe_first_args", {})
+		# Dispatch counts (dev mode only). Show top 15 hot methods + flag
+		# any that exceed 10000 calls in 30s -- those are runaway candidates
+		# (e.g. a mod's _ready firing in a loop).
+		if _developer_mode and _dispatch_counts.size() > 0:
+			var pairs: Array = []
+			for k: String in _dispatch_counts:
+				pairs.append([k, int(_dispatch_counts[k])])
+			pairs.sort_custom(func(a, b): return a[1] > b[1])
+			_log_info("[RTVCodegen] DISPATCH-COUNT top %d / %d tracked methods (dev mode, 30s window):" \
+					% [min(15, pairs.size()), pairs.size()])
+			for i in range(min(15, pairs.size())):
+				var warn := "  !!HOT!!" if pairs[i][1] > 10000 else ""
+				_log_info("[RTVCodegen]   %-48s %d%s" % [pairs[i][0], pairs[i][1], warn])
+			# Extra: list any method exceeding the runaway threshold explicitly
+			# so "why is the game laggy" is greppable.
+			var runaway: Array = []
+			for p in pairs:
+				if p[1] > 10000:
+					runaway.append("%s=%d" % [p[0], p[1]])
+			if runaway.size() > 0:
+				_log_critical("[RTVCodegen] RUNAWAY methods (>10000 calls/30s): %s -- a mod is likely calling one of these from a loop or frequent callback" % ", ".join(runaway))
 		# HOOK-API per-probe breakdown across phases:
 		var total := 0
 		for k: String in ["loader_pp", "simulation_proc", "profiler_proc",

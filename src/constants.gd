@@ -124,6 +124,12 @@ var _archive_file_sets: Dictionary = {}
 # lowercase. A bare name (no suffix) is a replace hook (first-wins).
 signal frameworks_ready
 var _hooks: Dictionary = {}              # hook_name -> Array of {callback, priority, id}
+# Dev-mode-only: per-hook_base dispatch counter. Incremented inside each
+# wrapper AFTER the _any_mod_hooked short-circuit when _developer_mode is
+# true. Summary at 30s timer in _activate_rewritten_scripts pinpoints
+# runaway method calls (e.g. connect-already-connected error spam from a
+# _ready firing thousands of times).
+var _dispatch_counts: Dictionary = {}
 # Fast-path short-circuit: flipped true the first time any mod calls hook().
 # Dispatch wrappers skip the full _wrapper_active/_caller/_dispatch path
 # when no mod has hooked anything at all. Sticky -- stays true once set.
