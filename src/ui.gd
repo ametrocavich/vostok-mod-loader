@@ -61,17 +61,52 @@ func _apply_profile_to_entries(cfg: ConfigFile, profile: String) -> void:
 	var en_sec := "profile." + profile + ".enabled"
 	var pr_sec := "profile." + profile + ".priority"
 	for entry in _ui_mod_entries:
-		var fn: String = entry["file_name"]
+		var pk: String = entry["profile_key"]
+		entry.erase("profile_version_mismatch")
+		# Resolve once, reuse for both enabled and priority lookups. Exact
+		# profile_key match first; if missing, fall back to id-prefix match
+		# ("<mod_id>@*") so a version bump doesn't silently drop the entry --
+		# we carry over the stored state and flag the mismatch for the UI.
+		var resolved_key := ""
+		if cfg.has_section_key(en_sec, pk) or cfg.has_section_key(pr_sec, pk):
+			resolved_key = pk
+		elif not pk.begins_with("zip:"):
+			resolved_key = _find_stored_key_for_mod_id(cfg, profile, entry["mod_id"])
+			if resolved_key != "" and resolved_key != pk:
+				entry["profile_version_mismatch"] = {
+					"stored":  _version_from_profile_key(resolved_key),
+					"current": entry["version"],
+				}
 		if is_vanilla:
 			entry["enabled"] = false
-		elif cfg.has_section_key(en_sec, fn):
-			entry["enabled"] = bool(cfg.get_value(en_sec, fn))
+		elif resolved_key != "" and cfg.has_section_key(en_sec, resolved_key):
+			entry["enabled"] = bool(cfg.get_value(en_sec, resolved_key))
 		else:
 			entry["enabled"] = true
 		if entry["ext"] == "zip":
 			entry["enabled"] = false
-		if cfg.has_section_key(pr_sec, fn):
-			entry["priority"] = int(str(cfg.get_value(pr_sec, fn)))
+		if resolved_key != "" and cfg.has_section_key(pr_sec, resolved_key):
+			entry["priority"] = int(str(cfg.get_value(pr_sec, resolved_key)))
+
+# Find a stored profile key matching an entry's mod_id but with a different
+# version, so a version bump doesn't orphan the profile entry. Returns "" if
+# no such key exists. The "@" sentinel guards against partial-id collisions
+# (e.g., "foo" matching "foobar@1.0").
+func _find_stored_key_for_mod_id(cfg: ConfigFile, profile: String, mod_id: String) -> String:
+	var prefix := mod_id + "@"
+	for suffix: String in [".enabled", ".priority"]:
+		var sec := "profile." + profile + suffix
+		if cfg.has_section(sec):
+			for key: String in cfg.get_section_keys(sec):
+				if key.begins_with(prefix):
+					return key
+	return ""
+
+func _version_from_profile_key(key: String) -> String:
+	var at := key.find("@")
+	if at < 0:
+		return ""
+	return key.substr(at + 1)
 
 func _list_profiles_in_cfg(cfg: ConfigFile) -> Array[String]:
 	var names: Array[String] = []
@@ -119,14 +154,32 @@ func _save_ui_config() -> void:
 		# Rewrite the active profile's sections fresh so removed mods don't linger.
 		var en_sec := "profile." + _active_profile + ".enabled"
 		var pr_sec := "profile." + _active_profile + ".priority"
+		# Snapshot stored state for folder mods that dev-mode-off filtered out
+		# of _ui_mod_entries -- otherwise the erase+rewrite below would drop
+		# their enabled/priority entries and the user loses those settings the
+		# moment they save with dev mode disabled.
+		var preserved_enabled: Dictionary = {}
+		var preserved_priority: Dictionary = {}
+		if not _hidden_folder_profile_keys.is_empty() and cfg.has_section(en_sec):
+			for key: String in cfg.get_section_keys(en_sec):
+				if _hidden_folder_profile_keys.has(key):
+					preserved_enabled[key] = cfg.get_value(en_sec, key)
+		if not _hidden_folder_profile_keys.is_empty() and cfg.has_section(pr_sec):
+			for key: String in cfg.get_section_keys(pr_sec):
+				if _hidden_folder_profile_keys.has(key):
+					preserved_priority[key] = cfg.get_value(pr_sec, key)
 		if cfg.has_section(en_sec):
 			cfg.erase_section(en_sec)
 		if cfg.has_section(pr_sec):
 			cfg.erase_section(pr_sec)
 		for entry in _ui_mod_entries:
-			var fn: String = entry["file_name"]
-			cfg.set_value(en_sec, fn, entry["enabled"])
-			cfg.set_value(pr_sec, fn, entry["priority"])
+			var pk: String = entry["profile_key"]
+			cfg.set_value(en_sec, pk, entry["enabled"])
+			cfg.set_value(pr_sec, pk, entry["priority"])
+		for k in preserved_enabled.keys():
+			cfg.set_value(en_sec, k, preserved_enabled[k])
+		for k in preserved_priority.keys():
+			cfg.set_value(pr_sec, k, preserved_priority[k])
 
 	cfg.set_value("settings", "developer_mode", _developer_mode)
 	cfg.set_value("settings", "active_profile", _active_profile)
@@ -291,9 +344,11 @@ func _profile_to_json_string(profile_name: String) -> String:
 		"priority":          priority,
 	}, "  ")
 
-# File_names that the active profile references but which aren't present in
-# _ui_mod_entries (mod archives that were deleted or renamed since the profile
-# was saved). Rendered as red stub rows in the Mods list.
+# Profile keys that the active profile references but whose mod isn't in
+# _ui_mod_entries (archives deleted, or renamed ZIPs for mods without a
+# mod.txt id). Keys whose id prefix matches an installed mod with a different
+# version are treated as present -- _apply_profile_to_entries resolves those
+# via id-prefix fallback and flags the mismatch. Rendered as red stub rows.
 func _missing_mods_in_active_profile() -> Array[String]:
 	var cfg := ConfigFile.new()
 	if cfg.load(UI_CONFIG_PATH) != OK:
@@ -302,25 +357,39 @@ func _missing_mods_in_active_profile() -> Array[String]:
 	if not cfg.has_section(en_sec):
 		return []
 	var present: Dictionary = {}
+	var ids_installed: Dictionary = {}
 	for entry in _ui_mod_entries:
-		present[entry["file_name"]] = true
+		present[entry["profile_key"]] = true
+		if not entry["profile_key"].begins_with("zip:"):
+			ids_installed[entry["mod_id"]] = true
+	# Folder mods filtered out by dev-mode-off are on disk but hidden from
+	# _ui_mod_entries; treat them as present so the user doesn't see every
+	# dev mod flagged as deleted when they toggle the setting.
+	for key in _hidden_folder_profile_keys.keys():
+		present[key] = true
+	for mid in _hidden_folder_ids.keys():
+		ids_installed[mid] = true
 	var missing: Array[String] = []
 	for key: String in cfg.get_section_keys(en_sec):
-		if not present.has(key):
-			missing.append(key)
+		if present.has(key):
+			continue
+		var at := key.find("@")
+		if at > 0 and ids_installed.has(key.substr(0, at)):
+			continue
+		missing.append(key)
 	missing.sort()
 	return missing
 
-# Strip an orphaned entry (file_name) from the active profile's sections.
-# Called from the "Remove" button on a missing-mod stub row.
-func _remove_missing_entry_from_profile(file_name: String) -> void:
+# Strip an orphaned stored key from the active profile's sections. Called
+# from the "Remove" button on a missing-mod stub row.
+func _remove_missing_entry_from_profile(stored_key: String) -> void:
 	var cfg := ConfigFile.new()
 	if cfg.load(UI_CONFIG_PATH) != OK:
 		return
 	for suffix: String in [".enabled", ".priority"]:
 		var sec := "profile." + _active_profile + suffix
-		if cfg.has_section(sec) and cfg.has_section_key(sec, file_name):
-			cfg.erase_section_key(sec, file_name)
+		if cfg.has_section(sec) and cfg.has_section_key(sec, stored_key):
+			cfg.erase_section_key(sec, stored_key)
 	cfg.save(UI_CONFIG_PATH)
 
 # Keep only letters, digits, space, underscore, hyphen. Strip edges. Reject
@@ -1355,7 +1424,8 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			var miss_row := HBoxContainer.new()
 			list.add_child(miss_row)
 			var miss_lbl := Label.new()
-			miss_lbl.text = fn + "  --  not installed"
+			var display := fn.trim_prefix("zip:")
+			miss_lbl.text = display + "  --  not installed"
 			miss_lbl.modulate = Color(1.0, 0.45, 0.45)
 			miss_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			miss_row.add_child(miss_lbl)
@@ -1445,6 +1515,21 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			warn.modulate = Color(1.0, 0.6, 0.2)
 			warn.add_theme_font_size_override("font_size", 11)
 			name_col.add_child(warn)
+
+		# Profile was saved with a different version of this mod. Surface the
+		# change so the user knows their enabled/priority state was carried
+		# over across the upgrade/downgrade rather than silently re-defaulted.
+		var vm: Dictionary = entry.get("profile_version_mismatch", {})
+		if not vm.is_empty():
+			var stored_v: String = str(vm.get("stored", ""))
+			var current_v: String = str(vm.get("current", ""))
+			var stored_disp := stored_v if stored_v != "" else "(unset)"
+			var current_disp := current_v if current_v != "" else "(unset)"
+			var vm_lbl := Label.new()
+			vm_lbl.text = "profile version: " + stored_disp + " -> " + current_disp
+			vm_lbl.modulate = Color(1.0, 0.6, 0.2)
+			vm_lbl.add_theme_font_size_override("font_size", 11)
+			name_col.add_child(vm_lbl)
 
 		# Scanner indicator. Only renders for RED risk -- mods whose source
 		# combines patterns that are nearly diagnostic of malware (dropper
