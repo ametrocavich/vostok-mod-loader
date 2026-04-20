@@ -99,6 +99,12 @@ var _last_mod_txt_status := "none"
 var _database_replaced_by := ""
 
 var _ui_mod_entries: Array[Dictionary] = []
+# profile_keys for folder mods that exist on disk but were skipped from entries
+# because developer mode is off. Orphan-scan treats these as present so
+# disabling dev mode doesn't spam the UI with false "missing" rows for dev
+# mods the user still has installed.
+var _hidden_folder_profile_keys: Dictionary = {}
+var _hidden_folder_ids: Dictionary = {}
 var _pending_autoloads: Array[Dictionary] = []
 var _report_lines: Array[String] = []
 var _loaded_mod_ids: Dictionary = {}
