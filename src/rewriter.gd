@@ -29,6 +29,13 @@ func _compile_regex() -> void:
 	# VostokMods compat: "100-ModName.vmz" encodes priority in the filename.
 	_re_filename_priority = RegEx.new()
 	_re_filename_priority.compile('^(-?\\d+)-(.*)')
+	# .hook("<prefix>-<method>[-pre|-post|-callback]") -- matches any
+	# `.hook("ident-` string literal. Used by scan pass to figure out which
+	# vanilla scripts a mod will dispatch through at runtime even when it
+	# doesn't extend them. The prefix captured here is the lowercase script
+	# stem (e.g. "controller", "camera").
+	_re_hook_call = RegEx.new()
+	_re_hook_call.compile('\\.hook\\s*\\(\\s*"([A-Za-z_][\\w]*)-')
 
 # Mod metadata collection (no mounting)
 
