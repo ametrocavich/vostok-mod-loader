@@ -27,6 +27,10 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	# clean.
 	var hook_dir := ProjectSettings.globalize_path(HOOK_PACK_DIR)
 	DirAccess.make_dir_recursive_absolute(hook_dir)
+	# Per-call unique filename. Each _generate_hook_pack invocation writes a
+	# new file at a new path so load_resource_pack mounts fresh (no path-dedup
+	# stale offsets). Old files get cleaned up at next static-init.
+	var pack_zip_rel := HOOK_PACK_DIR.path_join("%s_%d.zip" % [HOOK_PACK_PREFIX, Time.get_ticks_msec()])
 	# Do NOT delete the old hook pack zip here. If a previous session mounted
 	# it via ProjectSettings.load_resource_pack (_mount_previous_session), the
 	# VFS still holds a file handle to the zip. Deleting the file on disk
@@ -180,7 +184,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		if zr != null:
 			zr.close()
 
-	var zip_abs := ProjectSettings.globalize_path(HOOK_PACK_ZIP)
+	var zip_abs := ProjectSettings.globalize_path(pack_zip_rel)
 	var zp := ZIPPacker.new()
 	if zp.open(zip_abs) != OK:
 		_log_critical("[RTVCodegen] Failed to create framework pack zip at %s" % zip_abs)
@@ -452,8 +456,8 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			# we restart and Pass 2 gets 126/126 inline-live.
 			_log_info("[RTVCodegen] Generated %d rewritten vanilla script(s), %d hook points -- activation deferred to Pass 2 fresh engine" \
 					% [script_count, hook_count])
-			_persist_hook_pack_state()
-		elif ProjectSettings.load_resource_pack(HOOK_PACK_ZIP, true):
+			_persist_hook_pack_state(pack_zip_rel)
+		elif ProjectSettings.load_resource_pack(pack_zip_rel, true):
 			# STABILITY canary C readback: confirm VFS mount precedence works
 			# end-to-end. If the canary file isn't readable with expected
 			# content, the hook pack mounted but isn't serving files -- every
@@ -463,14 +467,14 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 				_log_info("[STABILITY] VFS canary OK: hook pack mount precedence verified (%s)" % canary_got.strip_edges())
 			else:
 				_log_critical("[STABILITY] VFS canary FAILED (got '%s', expected MODLOADER-VFS-CANARY-*) -- hook pack mounted but files aren't served. Rewrites will not take effect this session." % canary_got.substr(0, 40))
-			_log_info("[RTVCodegen] Generated %d rewritten vanilla script(s), %d hook points -- pack mounted at res://" \
-					% [script_count, hook_count])
-			_activate_rewritten_scripts(packed_filenames)
+			_log_info("[RTVCodegen] Generated %d rewritten vanilla script(s), %d hook points -- pack mounted at res:// (%s)" \
+					% [script_count, hook_count, pack_zip_rel.get_file()])
+			_activate_rewritten_scripts(packed_filenames, pack_zip_rel)
 		else:
 			_log_critical("[RTVCodegen] Failed to mount hook pack at %s -- rewrites won't load" % zip_abs)
 	else:
 		_log_info("[RTVCodegen] No scripts rewritten -- no pack mounted")
-	return HOOK_PACK_ZIP
+	return pack_zip_rel
 
 # Force the game's ResourceCache entry for each rewritten vanilla path to use
 # our source. Necessary because:
@@ -488,7 +492,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 # Verified 2026-04-17: 158 wrapper calls in 4s across 5 scripts (physics
 # tick rate on active Camera/Controller nodes).
 
-func _activate_rewritten_scripts(filenames: Array[String]) -> void:
+func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) -> void:
 	# Scripts whose module-scope preload() pulls in a PackedScene are deferred
 	# from eager load+reload. Loading them here would fire their preload()
 	# chain BEFORE mod autoloads call overrideScript(), baking Script
@@ -627,7 +631,7 @@ func _activate_rewritten_scripts(filenames: Array[String]) -> void:
 	# autoloads compile class_name scripts from the PCK's .gdc. Only
 	# then can we rewire pre-compiled scripts like Camera and WeaponRig
 	# (ScriptServer.class_cache pins their bytecode once compiled).
-	_persist_hook_pack_state()
+	_persist_hook_pack_state(pack_path)
 
 	# End-to-end proof: register REAL hooks via the public RTVModLib API
 	# on well-known Controller/Camera/Door methods. If these fire at

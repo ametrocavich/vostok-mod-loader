@@ -29,7 +29,14 @@ const DISABLED_FILE := "modloader_disabled"
 const MAX_RESTART_COUNT := 2
 
 const HOOK_PACK_DIR := "user://modloader_hooks"
-const HOOK_PACK_ZIP := "user://modloader_hooks/framework_pack.zip"
+# Hook pack filename: "<prefix>_<timestamp_ms>.zip". A fresh filename per
+# _generate_hook_pack call sidesteps ProjectSettings.load_resource_pack's
+# path-dedup (a same-path re-mount is a no-op and the VFS keeps stale file
+# offsets from the original mount -- FileAccess reads return prior-session
+# bytes even though ZIPPacker rewrote the file on disk). Different filename
+# = new mount = fresh offsets. Orphan files from prior sessions are cleaned
+# up at static-init in _mount_previous_session before any mount happens.
+const HOOK_PACK_PREFIX := "framework_pack"
 const HOOK_PACK_MOUNT_BASE := "res://modloader_hooks"
 const VANILLA_CACHE_DIR := "user://modloader_hooks/vanilla"
 const MODWORKSHOP_VERSIONS_URL := "https://api.modworkshop.net/mods/versions"
