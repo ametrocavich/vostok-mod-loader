@@ -16,16 +16,25 @@ func collect_mod_metadata() -> Array[Dictionary]:
 		return entries
 	var seen: Dictionary = {}
 	var skipped_files: Array[String] = []
+	_hidden_folder_profile_keys.clear()
+	_hidden_folder_ids.clear()
 	dir.list_dir_begin()
 	while true:
 		var entry_name := dir.get_next()
 		if entry_name == "":
 			break
 		if dir.current_is_dir():
-			if _developer_mode and not entry_name.begins_with("."):
+			if entry_name.begins_with("."):
+				continue
+			if _developer_mode:
 				if not seen.has(entry_name):
 					seen[entry_name] = true
 					entries.append(_build_folder_entry(_mods_dir, entry_name))
+			else:
+				# Record the folder's profile_key so orphan-detection knows the
+				# mod is still on disk, just filtered. Without this, disabling
+				# dev mode would flag every installed dev folder as "missing".
+				_record_hidden_folder(_mods_dir, entry_name)
 			continue
 		var ext := entry_name.get_extension().to_lower()
 		if ext not in ["vmz", "zip", "pck"]:
@@ -71,6 +80,17 @@ func _build_folder_entry(mods_dir: String, dir_name: String) -> Dictionary:
 	_log_security_findings(entry)
 	return entry
 
+# Track a folder mod that's on disk but excluded from _ui_mod_entries because
+# developer mode is off. Lets the orphan scan tell "dev-filtered" apart from
+# "truly deleted" when rendering the missing-from-profile list.
+func _record_hidden_folder(mods_dir: String, dir_name: String) -> void:
+	var folder_path := mods_dir.path_join(dir_name)
+	var cfg: ConfigFile = read_mod_config_folder(folder_path)
+	var entry := _entry_from_config(cfg, dir_name, folder_path, "folder")
+	_hidden_folder_profile_keys[entry["profile_key"]] = true
+	if not entry["profile_key"].begins_with("zip:"):
+		_hidden_folder_ids[entry["mod_id"]] = true
+
 # Surface scanner findings in the boot log alongside the discovery summary.
 # Logged at INFO -- findings are *disclosures* of "this mod uses these
 # notable APIs", not warnings of malice. The UI surfaces the same data
@@ -92,7 +112,9 @@ func _log_security_findings(entry: Dictionary) -> void:
 func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, ext: String) -> Dictionary:
 	var mod_name := file_name
 	var mod_id   := file_name
+	var version  := ""
 	var priority := 0
+	var has_mod_id := false
 
 	# VostokMods compat: parse "100-ModName.vmz" filename priority prefix.
 	# The prefix is stripped from mod_name/mod_id defaults and used as fallback priority.
@@ -110,7 +132,10 @@ func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, e
 
 	if cfg:
 		mod_name = str(cfg.get_value("mod", "name", mod_name))
-		mod_id   = str(cfg.get_value("mod", "id",   mod_id))
+		if cfg.has_section_key("mod", "id"):
+			mod_id = str(cfg.get_value("mod", "id"))
+			has_mod_id = true
+		version = str(cfg.get_value("mod", "version", ""))
 		if cfg.has_section_key("mod", "priority"):
 			priority = int(str(cfg.get_value("mod", "priority")))
 		elif has_filename_priority:
@@ -118,9 +143,17 @@ func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, e
 	elif has_filename_priority:
 		priority = filename_priority
 	priority = clampi(priority, PRIORITY_MIN, PRIORITY_MAX)
+
+	# Profile key identifies the mod across ZIP renames. Uses "<id>@<version>"
+	# when mod.txt declares an id (empty version allowed, yielding "<id>@"),
+	# otherwise falls back to "zip:<file_name>" -- without a declared id the
+	# filename is all we have and renames still orphan those profile entries.
+	var profile_key := ("zip:" + file_name) if not has_mod_id else (mod_id + "@" + version)
+
 	var entry := {
 		"file_name": file_name, "full_path": full_path, "ext": ext,
-		"mod_name": mod_name, "mod_id": mod_id,
+		"mod_name": mod_name, "mod_id": mod_id, "version": version,
+		"profile_key": profile_key,
 		"priority": priority, "enabled": true,
 		"cfg": cfg, "mod_txt_status": _last_mod_txt_status,
 	}
