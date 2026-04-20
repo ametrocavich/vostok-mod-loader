@@ -417,6 +417,142 @@ func _wire_hint(c: Control, text: String) -> void:
 			_ui_hint_label.text = default_text
 	)
 
+# Modal opens from the red "suspicious code" tag on a mod row. Lists the
+# specific patterns the scanner matched. Dismiss-only -- the actual
+# launch-time gate lives in _confirm_red_launch.
+func _show_security_findings_dialog(entry: Dictionary) -> void:
+	var findings: Array = entry.get("security_findings", [])
+	if findings.is_empty():
+		return
+	var d := AcceptDialog.new()
+	var mod_name := str(entry.get("mod_name", "?"))
+	d.title = "Suspicious code in " + mod_name
+	d.ok_button_text = "Close"
+	d.min_size = Vector2(580, 420)
+
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(560, 380)
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	d.add_child(scroll)
+
+	var body := VBoxContainer.new()
+	body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	body.add_theme_constant_override("separation", 12)
+	scroll.add_child(body)
+
+	var intro := Label.new()
+	intro.text = "The scanner found patterns in this mod's code that are commonly used by malware " \
+			+ "(obfuscated string decoding combined with process spawning, anti-debug calls, etc.). " \
+			+ "If you don't trust this mod, do not enable it."
+	intro.modulate = Color(0.95, 0.6, 0.6)
+	intro.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	intro.add_theme_font_size_override("font_size", 11)
+	body.add_child(intro)
+
+	body.add_child(HSeparator.new())
+
+	var rule_color := Color(0.95, 0.4, 0.4)
+	for f: Dictionary in findings:
+		var card := VBoxContainer.new()
+		card.add_theme_constant_override("separation", 4)
+		body.add_child(card)
+
+		var rule_lbl := Label.new()
+		rule_lbl.text = str(f.get("rule", "?"))
+		rule_lbl.modulate = rule_color
+		rule_lbl.add_theme_font_size_override("font_size", 13)
+		card.add_child(rule_lbl)
+
+		var desc_lbl := Label.new()
+		desc_lbl.text = str(f.get("description", ""))
+		desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		desc_lbl.add_theme_font_size_override("font_size", 11)
+		card.add_child(desc_lbl)
+
+		var loc := str(f.get("file", "?"))
+		if int(f.get("line", 0)) > 0:
+			loc += ":" + str(f.get("line"))
+		var loc_lbl := Label.new()
+		loc_lbl.text = loc
+		loc_lbl.modulate = Color(0.55, 0.55, 0.55)
+		loc_lbl.add_theme_font_size_override("font_size", 10)
+		card.add_child(loc_lbl)
+
+		var preview := str(f.get("preview", ""))
+		if not preview.is_empty():
+			var pre_lbl := Label.new()
+			pre_lbl.text = "  " + preview
+			pre_lbl.modulate = Color(0.78, 0.85, 0.6)
+			pre_lbl.add_theme_font_size_override("font_size", 11)
+			pre_lbl.autowrap_mode = TextServer.AUTOWRAP_OFF
+			pre_lbl.clip_text = true
+			card.add_child(pre_lbl)
+
+		body.add_child(HSeparator.new())
+
+	_attach_ui_dialog(d)
+	d.confirmed.connect(d.queue_free)
+	d.close_requested.connect(d.queue_free)
+	d.popup_centered()
+
+# Mod entries that are currently enabled AND scored RED by the scanner.
+# Used to gate Launch when the user has any of these toggled on.
+func _enabled_red_mods() -> Array:
+	var out: Array = []
+	for entry in _ui_mod_entries:
+		if entry.get("enabled", false) and int(entry.get("risk_level", 0)) == 2:
+			out.append(entry)
+	return out
+
+# Launch-time confirmation when one or more enabled mods are scored RED.
+# Returns true if the user confirms launch, false if they go back. Loading
+# is never silently bypassed; the user must explicitly acknowledge.
+#
+# Uses plain dialog_text so Godot auto-sizes the window to its content.
+# A custom VBoxContainer body would let the window grow off-screen.
+func _confirm_red_launch(red_mods: Array) -> bool:
+	var d := ConfirmationDialog.new()
+	d.title = "Suspicious mods enabled"
+	d.ok_button_text = "Launch anyway"
+	d.cancel_button_text = "Go back"
+	d.dialog_autowrap = true
+	# Width floor so the autowrap doesn't squeeze the text into a narrow
+	# column; height left to grow with the mod list.
+	d.min_size = Vector2(560, 120)
+
+	var lines := PackedStringArray()
+	lines.append("The scanner found patterns in the following mod(s) that are commonly used by malware. If you don't trust them, go back and disable them before launching.")
+	lines.append("")
+	for entry: Dictionary in red_mods:
+		lines.append("    " + str(entry.get("mod_name", "?")))
+	d.dialog_text = "\n".join(lines)
+
+	_attach_ui_dialog(d)
+	# Force dialog above the always_on_top launcher. Without this, clicking
+	# the launcher's X (which routes to the same Launch handler) sometimes
+	# parents-off the dialog behind the launcher and leaves input frozen.
+	d.exclusive = true
+	d.always_on_top = true
+	# Red text on the destructive button so "Launch anyway" reads as the
+	# risky option. Same modulate trick as _show_vanilla_confirm.
+	d.get_ok_button().modulate = Color(1.0, 0.55, 0.55)
+
+	# Single-result polling: lambdas mark done + capture the choice.
+	# Array used because GDScript closures hold object references.
+	var state := [false, false]  # [done, confirmed]
+	d.confirmed.connect(func():
+		state[0] = true
+		state[1] = true)
+	d.canceled.connect(func(): state[0] = true)
+	d.close_requested.connect(func(): state[0] = true)
+	d.popup_centered()
+	d.grab_focus()
+	while not state[0]:
+		await get_tree().process_frame
+	d.queue_free()
+	return state[1]
+
 # Vanilla dropdown entry: confirm, then run the full reset-and-restart flow.
 # Cancel rebuilds the Mods tab so the dropdown reverts from "Vanilla" back to
 # the currently-active profile.
@@ -772,7 +908,19 @@ func show_mod_ui() -> void:
 	updates_tab.name = "Updates"
 	tabs.add_child(updates_tab)
 
-	await launch_btn.pressed
+	# Launch loop. If any enabled mod has the scanner's RED risk_level,
+	# show a confirmation dialog before proceeding. Cancel returns the
+	# user to the launcher so they can disable the flagged mod or
+	# reconsider; confirm proceeds. No gate when no red mods are enabled.
+	while true:
+		await launch_btn.pressed
+		var red_mods := _enabled_red_mods()
+		if red_mods.is_empty():
+			break
+		var proceed: bool = await _confirm_red_launch(red_mods)
+		if proceed:
+			break
+		# else: loop and wait for Launch again
 	_ui_window = null
 	_ui_hint_label = null
 	win.queue_free()
@@ -1297,6 +1445,26 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			warn.modulate = Color(1.0, 0.6, 0.2)
 			warn.add_theme_font_size_override("font_size", 11)
 			name_col.add_child(warn)
+
+		# Scanner indicator. Only renders for RED risk -- mods whose source
+		# combines patterns that are nearly diagnostic of malware (dropper
+		# trinity, anti-debug crash, ransomware setup). Yellow ("uses
+		# notable APIs") is computed and logged but deliberately not shown
+		# in the UI: most legit mods have at least one elevated API and
+		# surfacing every one would just generate help-channel noise.
+		# Loading is never blocked either way; the user judges.
+		var risk: int = int(entry.get("risk_level", 0))
+		if risk == 2:
+			var sec_btn := Button.new()
+			sec_btn.text = "suspicious code"
+			sec_btn.flat = true
+			sec_btn.modulate = Color(0.95, 0.4, 0.4)
+			sec_btn.add_theme_font_size_override("font_size", 11)
+			sec_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+			sec_btn.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+			name_col.add_child(sec_btn)
+			var captured_entry := entry
+			sec_btn.pressed.connect(func(): _show_security_findings_dialog(captured_entry))
 
 		# Vanilla has no stored profile; disable editing so auto-save can't
 		# create a ghost `profile.__vanilla__.*` section.
