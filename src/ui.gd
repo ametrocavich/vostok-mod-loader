@@ -529,6 +529,11 @@ func _confirm_red_launch(red_mods: Array) -> bool:
 	d.dialog_text = "\n".join(lines)
 
 	_attach_ui_dialog(d)
+	# Force dialog above the always_on_top launcher. Without this, clicking
+	# the launcher's X (which routes to the same Launch handler) sometimes
+	# parents-off the dialog behind the launcher and leaves input frozen.
+	d.exclusive = true
+	d.always_on_top = true
 	# Red text on the destructive button so "Launch anyway" reads as the
 	# risky option. Same modulate trick as _show_vanilla_confirm.
 	d.get_ok_button().modulate = Color(1.0, 0.55, 0.55)
@@ -542,6 +547,7 @@ func _confirm_red_launch(red_mods: Array) -> bool:
 	d.canceled.connect(func(): state[0] = true)
 	d.close_requested.connect(func(): state[0] = true)
 	d.popup_centered()
+	d.grab_focus()
 	while not state[0]:
 		await get_tree().process_frame
 	d.queue_free()
