@@ -369,10 +369,10 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, rename_pref
 	var autofix := _rtv_autofix_legacy_syntax(src)
 	src = autofix["source"]
 	var af_total: int = int(autofix["bodyless"]) + int(autofix["tool"]) \
-			+ int(autofix["onready"]) + int(autofix["export"])
+			+ int(autofix["onready"]) + int(autofix["export"]) + int(autofix.get("base", 0))
 	if af_total > 0:
-		_log_info("[Autofix] %s: %d bodyless block(s), %d @tool, %d @onready, %d @export -- legacy syntax normalized" \
-				% [parsed.get("filename", "?"), autofix["bodyless"], autofix["tool"], autofix["onready"], autofix["export"]])
+		_log_info("[Autofix] %s: %d bodyless, %d @tool, %d @onready, %d @export, %d base()->super -- legacy syntax normalized" \
+				% [parsed.get("filename", "?"), autofix["bodyless"], autofix["tool"], autofix["onready"], autofix["export"], autofix.get("base", 0)])
 
 	# Database-specific transform: convert `const X = preload("...")` lines
 	# into a _rtv_vanilla_scenes dictionary. This makes Database.get(name)
@@ -681,12 +681,47 @@ func _rtv_autofix_legacy_syntax(source: String) -> Dictionary:
 	var fix_tool := 0
 	var fix_onready := 0
 	var fix_export := 0
+	var fix_base := 0
+
+	# Pre-pass: track which method a line belongs to, so `base(...)` inside
+	# a method body can be rewritten to `super.<method>(...)`. Godot 3's
+	# `base()` is no longer valid in Godot 4; parser fails with
+	# `Function "base()" not found in base self` and the failure cascades
+	# through chain-via-extends. Single autofix converts the common case.
+	var current_method: String = ""
+	var method_line_indent: String = ""
 
 	for i in lines.size():
 		var line: String = lines[i]
 
-		# Annotation migrations (line-local rewrites).
+		# Track enclosing method for `base()` rewrite. Top-level line (no
+		# indent) with `func <name>(` opens a method; top-level line without
+		# that closes the prior method's scope.
 		var lead := _rtv_leading_indent(line)
+		if lead.is_empty() and not line.strip_edges().is_empty():
+			var stripped_top := line.strip_edges()
+			if stripped_top.begins_with("func "):
+				var open_paren := stripped_top.find("(")
+				if open_paren > 5:
+					current_method = stripped_top.substr(5, open_paren - 5).strip_edges()
+					method_line_indent = ""
+			elif stripped_top.begins_with("static func ") or stripped_top.begins_with("@"):
+				# Skip static funcs and annotations (they don't open a "self"
+				# method where base() would resolve).
+				current_method = ""
+			else:
+				current_method = ""
+
+		# Rewrite `base(` / `base (` to `super.<method>(` when inside a
+		# method body. Don't touch literal `.base(` calls (already qualified).
+		if not current_method.is_empty() and line.find("base(") >= 0:
+			var rewritten := _rtv_rewrite_bare_base(line, current_method)
+			if rewritten != line:
+				line = rewritten
+				fix_base += 1
+
+		# Annotation migrations (line-local rewrites).
+		lead = _rtv_leading_indent(line)
 		var body_text := line.substr(lead.length())
 		if i == 0 and body_text.strip_edges() == "tool":
 			line = lead + "@tool"
@@ -731,7 +766,47 @@ func _rtv_autofix_legacy_syntax(source: String) -> Dictionary:
 		"tool": fix_tool,
 		"onready": fix_onready,
 		"export": fix_export,
+		"base": fix_base,
 	}
+
+# Rewrite bare `base(args)` or `base (args)` in a line to `super.<method>(args)`.
+# Skips `self.base(`, `<ident>.base(`, etc. -- only rewrites standalone `base(`
+# (possibly preceded by `=`, `+`, `(`, `[`, `,`, or whitespace). Per-line so
+# strings/comments past a `#` stay unchanged.
+func _rtv_rewrite_bare_base(line: String, method_name: String) -> String:
+	var comment_start := line.find("#")
+	var head: String = line if comment_start < 0 else line.substr(0, comment_start)
+	var tail: String = "" if comment_start < 0 else line.substr(comment_start)
+	# Walk from left to right looking for the word `base` not preceded by a
+	# letter/digit/underscore/dot (i.e. not part of an identifier or already
+	# qualified). Replace with `super.<method>`.
+	var i := 0
+	var rewritten := ""
+	while i < head.length():
+		if i + 4 <= head.length() and head.substr(i, 4) == "base":
+			# Check preceding character (word-boundary).
+			var prev_ok := true
+			if i > 0:
+				var pc := head[i - 1]
+				if pc >= "a" and pc <= "z":
+					prev_ok = false
+				elif pc >= "A" and pc <= "Z":
+					prev_ok = false
+				elif pc >= "0" and pc <= "9":
+					prev_ok = false
+				elif pc == "_" or pc == ".":
+					prev_ok = false
+			# Check trailing char is `(` or whitespace-then-`(`.
+			var j := i + 4
+			while j < head.length() and (head[j] == " " or head[j] == "\t"):
+				j += 1
+			if prev_ok and j < head.length() and head[j] == "(":
+				rewritten += "super." + method_name
+				i += 4
+				continue
+		rewritten += head[i]
+		i += 1
+	return rewritten + tail
 
 # Comment out `<var>.reload()` lines inside mod helper functions that also
 # call `take_over_path`. Rationale: mod override helpers (RTVCoop's _override,
@@ -826,8 +901,17 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 	var is_void: bool = is_engine_void or not bool(fe["has_return_value"])
 	var aw: String = "await " if is_coro else ""
 
-	var sig: String = "func %s():" % method_name if params.is_empty() \
-			else "func %s(%s):" % [method_name, params]
+	# Preserve the return type annotation so callers can still type-infer
+	# from wrapper returns (e.g. `var chargeLen = self.ChargeShot()` when
+	# ChargeShot is `-> int`). Without the annotation, GDScript's strict
+	# parser infers Variant and rejects untyped var decls in chained mod
+	# subclasses, cascading parse failures through the extends chain.
+	var return_annot: String = ""
+	var rt = fe.get("return_type")
+	if rt != null and not (rt as String).is_empty():
+		return_annot = " -> " + (rt as String)
+	var sig: String = "func %s()%s:" % [method_name, return_annot] if params.is_empty() \
+			else "func %s(%s)%s:" % [method_name, params, return_annot]
 
 	# Indent levels. GDScript requires consistent tabs-or-spaces per file;
 	# IXP uses 4-space, vanilla RTV uses tabs. Caller passes the source's
