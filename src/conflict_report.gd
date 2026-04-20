@@ -237,8 +237,13 @@ func _on_override_probe_node_added(node: Node) -> void:
 	var sp: String = scr.resource_path
 	if not _override_probe_expected.has(sp):
 		return
-	if _override_probe_sampled.get(sp, true):
-		return  # already sampled (true means sampled)
+	# Always attempt the stale-script swap. Scene instances (UI panels,
+	# HUD, Interface, etc.) can be re-created on scene reloads and the
+	# fresh instance is bound to the baked ext_resource (= our rewritten
+	# vanilla, pre-override) rather than the chain tip. Sampled-once
+	# gating only suppresses the InstanceProbe LOG line; the swap check
+	# below runs every time so late instances get fixed.
+	var first_time: bool = not _override_probe_sampled.get(sp, false)
 	_override_probe_sampled[sp] = true
 	var has_mod_rename: bool = false
 	var has_vanilla_rename: bool = false
@@ -268,23 +273,40 @@ func _on_override_probe_node_added(node: Node) -> void:
 		else:
 			status = "UNKNOWN: skip-listed vanilla but instance source doesn't extend res://Scripts/ -- possible bare vanilla (override did not take)"
 	elif has_vanilla_rename:
-		status = "STALE SCENE: instance uses vanilla -- PackedScene captured pre-override script binding (cache may be OK, but scene ext_resource is stale)"
+		# STALE SCENE: PackedScene captured the pre-override script binding,
+		# so this instance is running vanilla-rewrite code instead of the mod
+		# chain's code. Attempt the same set_script swap AutoloadInstanceProbe
+		# does for autoloads -- load() the current script at the vanilla path
+		# (which is the take_over_path'd chain tip or single-mod winner) and
+		# replace the instance's script pointer. Inherited property slots
+		# survive via type overlap; state built in vanilla-only slots is lost
+		# (unavoidable without engine-level refresh, matches the RTVCoop
+		# set_script pattern and Godot reload_scripts behavior).
+		var new_scr: GDScript = load(sp) as GDScript
+		if new_scr != null and new_scr != scr:
+			# Sanity check: does the new script have _rtv_mod_* methods? If
+			# not, swapping wouldn't help.
+			var new_has_mod: bool = false
+			for m2 in new_scr.get_script_method_list():
+				if str(m2["name"]).begins_with("_rtv_mod_"):
+					new_has_mod = true
+					break
+			if new_has_mod:
+				node.set_script(new_scr)
+				status = "FIXED via set_script swap -- OK: instance now runs mod's body"
+			else:
+				status = "STALE SCENE: instance uses vanilla -- swap target also has no _rtv_mod_ methods, skipping"
+		else:
+			status = "STALE SCENE: instance uses vanilla -- could not resolve swap target (load returned null or same script)"
 	else:
 		status = "UNKNOWN: no renamed methods on instance script"
-	_log_info("[InstanceProbe] %s | node=%s (%s) | expected mod=%s | %s" \
-			% [sp, node.name, node.get_class(), expected_mod, status])
-	# Auto-disconnect once all expected paths have been sampled.
-	var all_sampled: bool = true
-	for v in _override_probe_sampled.values():
-		if not v:
-			all_sampled = false
-			break
-	if all_sampled and _override_probe_active:
-		_override_probe_active = false
-		if get_tree().node_added.is_connected(_on_override_probe_node_added):
-			get_tree().node_added.disconnect(_on_override_probe_node_added)
-		_log_info("[InstanceProbe] All %d path(s) sampled -- probe disconnected" \
-				% _override_probe_sampled.size())
+	# Only log once per path to keep the log readable, but the swap above
+	# runs every time so newly-created scene instances (e.g. UI panels
+	# respawned on scene reload) get fixed too. No disconnect -- we need
+	# to keep catching stale instances for the lifetime of the session.
+	if first_time:
+		_log_info("[InstanceProbe] %s | node=%s (%s) | expected mod=%s | %s" \
+				% [sp, node.name, node.get_class(), expected_mod, status])
 
 # Tree-walk fallback for InstanceProbe. Covers cases where node_added
 # signal missed a node (e.g. script assigned after tree entry, or script
