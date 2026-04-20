@@ -819,6 +819,12 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		out += "%sif _lib._wrapper_active.has(\"%s\"):\n" % [I1, hook_base]
 		out += "%sreturn %s%s\n" % [I2, aw, vanilla_call]
 		out += "%s_lib._wrapper_active[\"%s\"] = true\n" % [I1, hook_base]
+		# Save prior _caller so nested-wrapper clobbering inside the
+		# vanilla body (or replace hook) doesn't leak stale values to
+		# whoever called us. Re-set _caller before the post-dispatch so
+		# our post hooks see the correct caller even after nested
+		# wrappers fired during the body.
+		out += "%svar _rtv_prev_caller = _lib._caller\n" % I1
 		out += "%s_lib._caller = self\n" % I1
 		out += "%s_lib._dispatch(\"%s-pre\", %s)\n" % [I1, hook_base, args_array]
 		out += "%svar _result\n" % I1
@@ -835,9 +841,11 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		out += "%s_result = %s%s\n" % [I3, aw, vanilla_call]
 		out += "%selse:\n" % I1
 		out += "%s_result = %s%s\n" % [I2, aw, vanilla_call]
+		out += "%s_lib._caller = self\n" % I1
 		out += "%s_lib._dispatch(\"%s-post\", %s)\n" % [I1, hook_base, args_array]
 		out += "%s_lib._dispatch_deferred(\"%s-callback\", %s)\n" % [I1, hook_base, args_array]
 		out += "%s_lib._wrapper_active.erase(\"%s\")\n" % [I1, hook_base]
+		out += "%s_lib._caller = _rtv_prev_caller\n" % I1
 		out += "%sreturn _result\n" % I1
 	else:
 		out += "%s\n" % sig
@@ -855,6 +863,9 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		out += "%s%s%s\n" % [I2, aw, vanilla_call]
 		out += "%sreturn\n" % I2
 		out += "%s_lib._wrapper_active[\"%s\"] = true\n" % [I1, hook_base]
+		# See non-void branch above for rationale on save/re-set/restore
+		# of _caller. Same pattern, applied to the void-return template.
+		out += "%svar _rtv_prev_caller = _lib._caller\n" % I1
 		out += "%s_lib._caller = self\n" % I1
 		out += "%s_lib._dispatch(\"%s-pre\", %s)\n" % [I1, hook_base, args_array]
 		out += "%svar _repl = _lib._get_hooks(\"%s\")\n" % [I1, hook_base]
@@ -868,9 +879,11 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		out += "%s%s%s\n" % [I3, aw, vanilla_call]
 		out += "%selse:\n" % I1
 		out += "%s%s%s\n" % [I2, aw, vanilla_call]
+		out += "%s_lib._caller = self\n" % I1
 		out += "%s_lib._dispatch(\"%s-post\", %s)\n" % [I1, hook_base, args_array]
 		out += "%s_lib._dispatch_deferred(\"%s-callback\", %s)\n" % [I1, hook_base, args_array]
 		out += "%s_lib._wrapper_active.erase(\"%s\")\n" % [I1, hook_base]
+		out += "%s_lib._caller = _rtv_prev_caller\n" % I1
 	return out
 
 # Step C: mod-script extends scanner. For each enabled mod, walk the archive
