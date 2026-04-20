@@ -812,6 +812,15 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		# ~10 dict ops + meta/prop/fn calls. Matches godot-mod-loader.
 		out += "%sif not _lib._any_mod_hooked:\n" % I1
 		out += "%sreturn %s%s\n" % [I2, aw, vanilla_call]
+		# Dev-mode-only per-method dispatch counter. Gated by a property
+		# read so non-dev users pay ~1 branch per call; dev users see a
+		# top-15 summary at 30s that pinpoints runaway method calls (e.g.
+		# a mod's _ready firing 3000x -- typical cause of connect-already-
+		# connected error spam). Counts only hook dispatches (after the
+		# _any_mod_hooked short-circuit), not every wrapped call, so the
+		# total stays meaningful even with hundreds of wrapped methods.
+		out += "%sif _lib._developer_mode:\n" % I1
+		out += "%s_lib._dispatch_counts[\"%s\"] = int(_lib._dispatch_counts.get(\"%s\", 0)) + 1\n" % [I2, hook_base, hook_base]
 		out += "%sif _lib._wrapper_active.has(\"%s\"):\n" % [I1, hook_base]
 		out += "%sreturn %s%s\n" % [I2, aw, vanilla_call]
 		out += "%s_lib._wrapper_active[\"%s\"] = true\n" % [I1, hook_base]
@@ -854,6 +863,9 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		out += "%sif not _lib._any_mod_hooked:\n" % I1
 		out += "%s%s%s\n" % [I2, aw, vanilla_call]
 		out += "%sreturn\n" % I2
+		# Dev-mode-only per-method dispatch counter (see non-void branch).
+		out += "%sif _lib._developer_mode:\n" % I1
+		out += "%s_lib._dispatch_counts[\"%s\"] = int(_lib._dispatch_counts.get(\"%s\", 0)) + 1\n" % [I2, hook_base, hook_base]
 		out += "%sif _lib._wrapper_active.has(\"%s\"):\n" % [I1, hook_base]
 		out += "%s%s%s\n" % [I2, aw, vanilla_call]
 		out += "%sreturn\n" % I2
