@@ -1,4 +1,0 @@
-[mod]
-name="ScanTest - OS.kill / crash / create_instance / disable_save_safety"
-id="scantest_os_misuse"
-priority=0

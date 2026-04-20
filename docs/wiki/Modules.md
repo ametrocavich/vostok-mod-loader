@@ -59,8 +59,6 @@ Not a virus scanner. Catches lazy / copy-paste attacks (the dropper screenshot t
 - `.gd` / `.tscn` / `.tres` / `.gdshader` get full text scans (with GDScript line-comment stripping so docstrings mentioning API names don't false-positive); `.scn` / `.res` / `.gdc` get byte-search for binary-safe rule patterns
 - `.pck` mods scanned via local `_security_pck_list_with_offsets` that mirrors `pck_enumeration._parse_pck_file_list` but also returns offsets so individual blobs can be extracted without mounting
 
-Test fixtures under `tests/security_scan_fixtures/`: `clean_mod`, `dropper_mod` (combo trigger), `os_misuse_mod` (solo triggers).
-
 ### [mod_discovery.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd)
 
 Scans `<exe>/mods/`, parses mod.txt metadata, handles ModWorkshop version checks and downloads. No mounting -- that's `mod_loading`.

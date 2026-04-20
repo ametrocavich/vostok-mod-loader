@@ -1,4 +1,0 @@
-[mod]
-name="ScanTest - dropper pattern (byte decode + write + execute)"
-id="scantest_dropper"
-priority=0
