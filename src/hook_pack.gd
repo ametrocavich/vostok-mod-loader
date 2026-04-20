@@ -308,6 +308,11 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	var _step_b_allowlist: Array[String] = []
 	var zero_byte_skipped: int = 0
 	var surface_skipped: int = 0
+	# Capture {source, parsed} per wrapped vanilla. Needed later to pack
+	# pristine copies for chain-via-extends: chain-bottom mods extend
+	# res://_rtv_pristine_/Scripts/<X>.gd so their super() doesn't loop
+	# back through the take_over_path'd tip.
+	var vanilla_rewrites: Dictionary = {}
 	for script_path: String in script_paths:
 		var filename := script_path.get_file()
 
@@ -420,6 +425,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		script_count += 1
 		hook_count += hookable_count * 4  # pre/post/callback/replace per method
 		packed_filenames.append(filename)
+		vanilla_rewrites[filename] = { "source": source, "parsed": parsed }
 		_log_debug("[RTVCodegen] Rewrote Scripts/%s (%d hooks)" % [filename, hookable_count * 4])
 
 	# Step C: rewrite mod scripts that subclass a vanilla script we just
@@ -431,6 +437,67 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	for fn in packed_filenames:
 		vanilla_set[fn] = true
 	var mod_candidates := _scan_mod_extends_targets(vanilla_set)
+	# Chain-via-extends composition. Multiple mods extending the same vanilla
+	# used to be last-wins under take_over_path (9 of 10 Interface.gd mods
+	# orphaned as dead code, dropping their save data). Now we compose them
+	# into a single extends chain so every mod's body runs via Godot virtual
+	# dispatch.
+	#
+	# Chain order = load order ascending (lowest priority = bottom of chain,
+	# highest priority = tip). Tip's take_over_path still wins the vanilla
+	# path via normal mod autoload instantiation order. Tip's script extends
+	# the NEXT mod's script (via rewritten extends), which extends the one
+	# below, ..., down to the bottom mod which extends a PRISTINE vanilla
+	# copy at res://_rtv_pristine_/Scripts/<X>.gd. The pristine path is NOT
+	# touched by take_over_path so the chain never loops back through the
+	# tip. (Without the pristine, chain-bottom's extends "res://Scripts/X.gd"
+	# would resolve to the tip after take_over_path -> infinite recursion.)
+	var chain_groups: Dictionary = {}  # vanilla_filename -> sorted Array of candidates
+	for cand: Dictionary in mod_candidates:
+		var vf: String = cand["vanilla_filename"]
+		if not chain_groups.has(vf):
+			chain_groups[vf] = []
+		(chain_groups[vf] as Array).append(cand)
+	var chained_vanillas: Dictionary = {}  # vanilla_filename -> true (needs pristine copy packed)
+	for vf: String in chain_groups:
+		var arr: Array = chain_groups[vf]
+		if arr.size() < 2:
+			# Single-mod: no chain, standard rewrite (extends unchanged).
+			(arr[0] as Dictionary)["extends_override"] = ""
+			continue
+		arr.sort_custom(func(a, b): return int(a["load_index"]) < int(b["load_index"]))
+		chained_vanillas[vf] = true
+		var pristine_path := "res://_rtv_pristine_/Scripts/" + vf
+		for i in range(arr.size()):
+			var c: Dictionary = arr[i]
+			if i == 0:
+				c["extends_override"] = pristine_path
+			else:
+				c["extends_override"] = (arr[i-1] as Dictionary)["res_path"]
+		var summary: PackedStringArray = []
+		for c in arr:
+			summary.append("%s[p=%d]" % [c["mod_name"], c["load_index"]])
+		_log_info("[RTVCodegen] CHAIN %s composed (bottom -> tip): %s -- pristine at %s" \
+				% [vf, " -> ".join(summary), pristine_path])
+	# Pack pristine vanilla copies for every chained script. Pristine = same
+	# rewrite as res://Scripts/<X>.gd but with class_name stripped (duplicate
+	# class_name registration would conflict with the primary's slot in the
+	# PCK's global_script_class_cache.cfg). Lives at res://_rtv_pristine_/
+	# so take_over_path on res://Scripts/<X>.gd can't displace it; chain-
+	# bottom mod's extends always resolves to genuine vanilla content.
+	for vf: String in chained_vanillas:
+		if not vanilla_rewrites.has(vf):
+			_log_warning("[RTVCodegen] Chain target %s wasn't in vanilla rewrite set -- chain will fail" % vf)
+			continue
+		var info: Dictionary = vanilla_rewrites[vf]
+		var pristine_src := _rtv_rewrite_vanilla_source(info["source"], info["parsed"], "_rtv_vanilla_", "", true)
+		var pristine_zip_entry := "_rtv_pristine_/Scripts/" + vf
+		if zp.start_file(pristine_zip_entry) != OK:
+			_log_warning("[RTVCodegen] Failed to start pristine zip entry %s" % pristine_zip_entry)
+			continue
+		zp.write_file(pristine_src.to_utf8_buffer())
+		zp.close_file()
+		_log_debug("[RTVCodegen] Packed pristine %s for chain bottom" % pristine_zip_entry)
 	var mod_script_count := 0
 	var mod_hook_count := 0
 	var mod_packed: Array[Dictionary] = []  # {res_path, vanilla_filename}
@@ -439,6 +506,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		var vanilla_filename: String = cand["vanilla_filename"]
 		var mod_name: String = cand["mod_name"]
 		var source: String = cand["source"]
+		var ext_override: String = cand.get("extends_override", "")
 		# Parse using the VANILLA filename so hook_base is "controller-*"
 		# not "immersivexp/controller-*" -- single hook namespace per vanilla.
 		var parsed := _rtv_parse_script(vanilla_filename, source)
@@ -452,7 +520,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		# vanilla's _rtv_vanilla_ methods via virtual dispatch. Otherwise
 		# super._ready() -> vanilla wrapper -> _rtv_vanilla__ready() resolves
 		# back to the mod's override -> infinite loop.
-		var rewritten := _rtv_rewrite_vanilla_source(source, parsed, "_rtv_mod_")
+		var rewritten := _rtv_rewrite_vanilla_source(source, parsed, "_rtv_mod_", ext_override)
 		# Pack at the mod's own path. Mount replace_files=true wins over the
 		# mod's .vmz which also serves this path. Script stays a subclass of
 		# rewritten vanilla via extends; its body may or may not call super.
