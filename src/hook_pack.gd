@@ -929,27 +929,34 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 	get_tree().create_timer(30.0).timeout.connect(func():
 		var pc: Dictionary = Engine.get_meta("_rtv_probe_counts", {})
 		var fa: Dictionary = Engine.get_meta("_rtv_probe_first_args", {})
-		# Dispatch counts (dev mode only). Show top 15 hot methods + flag
-		# any that exceed 10000 calls in 30s -- those are runaway candidates
-		# (e.g. a mod's _ready firing in a loop).
+		# Dispatch counts (dev mode only). Show top 20 hot methods. No generic
+		# threshold -- hud/interface/character _physics_process legitimately
+		# hit 90K+ calls/sec × 30s instance counts, a count-based RUNAWAY
+		# flag would drown real anomalies in expected noise.
+		#
+		# Instead, call out _ready / _enter_tree / _init specifically: those
+		# fire once per node lifetime, so any count > 10 is a red flag that
+		# a mod is re-invoking them in a loop (typical cause of connect-
+		# already-connected error spam).
 		if _developer_mode and _dispatch_counts.size() > 0:
 			var pairs: Array = []
 			for k: String in _dispatch_counts:
 				pairs.append([k, int(_dispatch_counts[k])])
 			pairs.sort_custom(func(a, b): return a[1] > b[1])
 			_log_info("[RTVCodegen] DISPATCH-COUNT top %d / %d tracked methods (dev mode, 30s window):" \
-					% [min(15, pairs.size()), pairs.size()])
-			for i in range(min(15, pairs.size())):
-				var warn := "  !!HOT!!" if pairs[i][1] > 10000 else ""
-				_log_info("[RTVCodegen]   %-48s %d%s" % [pairs[i][0], pairs[i][1], warn])
-			# Extra: list any method exceeding the runaway threshold explicitly
-			# so "why is the game laggy" is greppable.
-			var runaway: Array = []
+					% [min(20, pairs.size()), pairs.size()])
+			for i in range(min(20, pairs.size())):
+				_log_info("[RTVCodegen]   %-48s %d" % [pairs[i][0], pairs[i][1]])
+			# Flag lifecycle methods that fire way more than they should.
+			var lifecycle_runaway: Array = []
 			for p in pairs:
-				if p[1] > 10000:
-					runaway.append("%s=%d" % [p[0], p[1]])
-			if runaway.size() > 0:
-				_log_critical("[RTVCodegen] RUNAWAY methods (>10000 calls/30s): %s -- a mod is likely calling one of these from a loop or frequent callback" % ", ".join(runaway))
+				var name: String = p[0]
+				if (name.ends_with("-_ready") or name.ends_with("-_enter_tree") \
+						or name.ends_with("-_init")) and int(p[1]) > 10:
+					lifecycle_runaway.append("%s=%d" % [name, p[1]])
+			if lifecycle_runaway.size() > 0:
+				_log_critical("[RTVCodegen] LIFECYCLE-RUNAWAY: %s -- these should fire once per node; elevated counts usually mean a mod is explicitly calling them from a loop or frequent callback, which cascades into connect-already-connected error spam" \
+						% ", ".join(lifecycle_runaway))
 		# HOOK-API per-probe breakdown across phases:
 		var total := 0
 		for k: String in ["loader_pp", "simulation_proc", "profiler_proc",
