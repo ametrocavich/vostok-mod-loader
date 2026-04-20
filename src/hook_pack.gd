@@ -100,17 +100,68 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	# from :137's "Cannot open file"). Emitting unconditionally keeps the
 	# new pack a superset of the old for every sibling path we read, so
 	# there are no holes for the stale mount to answer.
+	# Read directly from each mod archive via ZIPReader rather than via
+	# VFS. Going through FileAccess/ResourceLoader would walk every
+	# mounted overlay, and a previous-session hook pack is still mounted
+	# at this point, its stale copy of these same paths would win and
+	# we'd re-emit that stale snapshot into the new hook pack, preventing
+	# mod updates from ever taking effect between sessions. The archive
+	# path is the original on-disk .zip/.vmz (or cached .zip for .vmz);
+	# it always reflects the current mod version.
 	var sibling_fixes: Dictionary = {}  # p -> {fixed_src, af, reload_stripped, changed}
 	for archive_file: String in _archive_file_sets:
 		var paths_set: Dictionary = _archive_file_sets[archive_file]
+		var zr: ZIPReader = null
+		# Resolve the archive to a readable zip path. Loose folder mods
+		# and already-zipped .zip/.pck archives use archive_file as-is;
+		# .vmz mods use a cached .zip sibling the loader materialized
+		# during discovery (same pattern the rewriter's extends-scanner
+		# uses in _scan_mod_extends_targets).
+		var zip_path := archive_file
+		var ext := archive_file.get_extension().to_lower()
+		if ext == "vmz":
+			var cache_dir := ProjectSettings.globalize_path(TMP_DIR)
+			zip_path = cache_dir.path_join(archive_file.get_file().get_basename() + ".zip")
+		elif ext == "folder":
+			var folder_zip := ProjectSettings.globalize_path(TMP_DIR).path_join(archive_file.get_file() + "_dev.zip")
+			zip_path = folder_zip
+		if FileAccess.file_exists(zip_path):
+			zr = ZIPReader.new()
+			if zr.open(zip_path) != OK:
+				zr = null
 		for p: String in paths_set:
 			if not p.ends_with(".gd"):
 				continue
 			if p.begins_with("res://Scripts/"):
 				continue  # vanilla, handled in the main rewrite loop
-			if not ResourceLoader.exists(p):
+			if zr == null:
+				# Last-resort fallback: VFS read. Accepts the stale-overlay
+				# risk but keeps mods without a resolvable zip working.
+				if not ResourceLoader.exists(p):
+					continue
+				var raw_vfs := FileAccess.get_file_as_string(p)
+				if raw_vfs.is_empty():
+					continue
+				var norm_vfs := raw_vfs.replace("\r\n", "\n").replace("\r", "\n")
+				var af_vfs := _rtv_autofix_legacy_syntax(norm_vfs)
+				var fixed_vfs: String = af_vfs["source"]
+				var rl_vfs := _rtv_strip_helper_reload(fixed_vfs)
+				fixed_vfs = rl_vfs["source"]
+				sibling_fixes[p] = {
+					"fixed_src": fixed_vfs,
+					"af": af_vfs,
+					"reload_stripped": int(rl_vfs["stripped"]),
+					"changed": fixed_vfs != norm_vfs,
+				}
 				continue
-			var raw := FileAccess.get_file_as_string(p)
+			# Strip the res:// prefix to get the zip-internal entry name.
+			var entry := p.trim_prefix("res://")
+			if not (entry in zr.get_files()):
+				continue
+			var bytes := zr.read_file(entry)
+			if bytes.is_empty():
+				continue
+			var raw := bytes.get_string_from_utf8()
 			if raw.is_empty():
 				continue
 			var norm := raw.replace("\r\n", "\n").replace("\r", "\n")
@@ -126,6 +177,8 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 				"reload_stripped": int(rl["stripped"]),
 				"changed": fixed_src != norm,
 			}
+		if zr != null:
+			zr.close()
 
 	var zip_abs := ProjectSettings.globalize_path(HOOK_PACK_ZIP)
 	var zp := ZIPPacker.new()
