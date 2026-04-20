@@ -166,6 +166,7 @@ var _re_class_name: RegEx
 var _re_func: RegEx
 var _re_preload: RegEx
 var _re_filename_priority: RegEx
+var _re_hook_call: RegEx
 
 # Rewriter regex (compiled in _rtv_compile_codegen_regex)
 var _rtv_re_extends: RegEx

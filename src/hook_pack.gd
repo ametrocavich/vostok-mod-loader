@@ -15,6 +15,17 @@ const REGISTRY_TARGETS: Array[String] = [
 func _is_registry_target(filename: String) -> bool:
 	return filename in REGISTRY_TARGETS
 
+# Sum a per-mod analysis field across all scanned mods. Used for the
+# wrap-surface log line so we can see how many mods pushed a given
+# category into needed_paths.
+func _count_mods_field(field: String) -> int:
+	var n := 0
+	for mod_name: String in _mod_script_analysis:
+		var a: Dictionary = _mod_script_analysis[mod_name]
+		if (a.get(field, []) as Array).size() > 0:
+			n += 1
+	return n
+
 # Build the framework pack: enumerate res://Scripts/*.gd, detokenize each via
 # _read_vanilla_source, parse + generate wrappers, zip them, mount the zip.
 #
@@ -71,6 +82,102 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		_log_warning("[RTVCodegen] script enumeration failed -- falling back to class_name list (%d)" % _class_name_to_path.size())
 		for path: String in _class_name_to_path.values():
 			script_paths.append(path)
+	# Narrow the wrap surface to vanilla scripts that mods actually touch.
+	# Wrapping every vanilla (180 in RTV) fires dispatch on every method call
+	# of every class_name node, even ones no mod extends or hooks. v2.1.0's
+	# opt-in [hooks] model had ~zero overhead for untouched scripts; v3.0.0
+	# flipped to wrap-everything which burned ~93K calls/sec on hot paths
+	# like hud-_physics_process when 65 mods were loaded. Restore the opt-in
+	# semantics WITHOUT requiring mod-author changes by deriving the set from
+	# what the scan already captured.
+	#
+	# A vanilla script goes into needed_paths if ANY enabled mod:
+	#   1. extends "res://Scripts/<X>.gd"
+	#   2. take_over_path("res://Scripts/<X>.gd", ...)
+	#   3. calls .hook("<x>-<method>...", ...) where <x> is the lowercase stem
+	#
+	# Scripts not in the union run AS-IS (no dispatch wrapper, matches v2.1.0
+	# behavior for those specific paths). Their class_name registrations stay
+	# intact because we never touched them -- Godot's native compile path
+	# serves them with no overhead.
+	var prefix_to_path: Dictionary = {}
+	for sp: String in script_paths:
+		prefix_to_path[sp.get_file().get_basename().to_lower()] = sp
+	var needed_paths: Dictionary = {}
+	# Reverse map: vanilla_path -> Array of {mod, reason} entries. Diagnostics
+	# only; used right after to warn about multi-claim conflicts. When N>1
+	# mods override the same script via take_over_path, only the last call
+	# wins -- the others' bodies are orphaned and silently dead. Surfacing
+	# this as a CRITICAL saves hours of "why doesn't my mod work" debugging.
+	var claim_map: Dictionary = {}
+	for mod_name: String in _mod_script_analysis:
+		var analysis: Dictionary = _mod_script_analysis[mod_name]
+		for p: String in (analysis.get("extends_paths", []) as Array):
+			if p.begins_with("res://Scripts/"):
+				needed_paths[p] = true
+				if not claim_map.has(p):
+					claim_map[p] = []
+				(claim_map[p] as Array).append({"mod": mod_name, "reason": "extends"})
+		for p: String in (analysis.get("take_over_literal_paths", []) as Array):
+			if p.begins_with("res://Scripts/"):
+				needed_paths[p] = true
+				if not claim_map.has(p):
+					claim_map[p] = []
+				(claim_map[p] as Array).append({"mod": mod_name, "reason": "take_over_path"})
+		for pref: String in (analysis.get("hooked_script_prefixes", []) as Array):
+			if prefix_to_path.has(pref):
+				needed_paths[prefix_to_path[pref]] = true
+	# Hot-path scripts that game code compiles eagerly at static init
+	# (Camera, Controller, WeaponRig, Door, etc.) must stay wrapped even
+	# when no mod touches them -- they're in the pinned_probes list in
+	# boot.gd because Godot's class_cache pins their .gdc before any mod
+	# code runs. Wrapping them costs a dispatch call that short-circuits
+	# via _any_mod_hooked when no mod hooked them, so it's ~1 meta-read
+	# per call and still correct.
+	var _pinned_always_wrap: Array[String] = [
+		"res://Scripts/Camera.gd", "res://Scripts/Controller.gd",
+		"res://Scripts/Door.gd", "res://Scripts/Fish.gd",
+		"res://Scripts/Furniture.gd", "res://Scripts/GameData.gd",
+		"res://Scripts/Grenade.gd", "res://Scripts/Grid.gd",
+		"res://Scripts/Hitbox.gd", "res://Scripts/KnifeRig.gd",
+		"res://Scripts/LootContainer.gd", "res://Scripts/Lure.gd",
+		"res://Scripts/Pickup.gd", "res://Scripts/Settings.gd",
+		"res://Scripts/Trader.gd", "res://Scripts/WeaponRig.gd",
+	]
+	for pp in _pinned_always_wrap:
+		needed_paths[pp] = true
+	# REGISTRY_TARGETS (currently just Database.gd) carry injected registry
+	# fields that mods rely on via lib.register()/override(). Always wrap.
+	for rt_filename in REGISTRY_TARGETS:
+		needed_paths["res://Scripts/" + rt_filename] = true
+	_log_info("[RTVCodegen] Wrap surface: %d of %d vanilla scripts (extends=%d, take_over=%d, hook=%d, pinned=%d)" % [
+		needed_paths.size(),
+		script_paths.size(),
+		_count_mods_field("extends_paths"),
+		_count_mods_field("take_over_literal_paths"),
+		_count_mods_field("hooked_script_prefixes"),
+		_pinned_always_wrap.size() + REGISTRY_TARGETS.size(),
+	])
+	# Report multi-claim conflicts. take_over_path is last-wins by load order;
+	# claimants other than the last are orphaned -- their method bodies exist
+	# but the script Godot resolves at `res://Scripts/<X>.gd` is the winner's.
+	# If ANY of the 10 Interface.gd claimants in a typical big-mod-set loadout
+	# has the behavior a user cares about and isn't last in load order, that
+	# behavior silently vanishes. This warning gives the user a map.
+	var conflict_count := 0
+	for path: String in claim_map:
+		var claims: Array = claim_map[path]
+		if claims.size() < 2:
+			continue
+		conflict_count += 1
+		var claim_summaries: PackedStringArray = []
+		for c in claims:
+			claim_summaries.append("%s(%s)" % [c["mod"], c["reason"]])
+		_log_critical("[RTVCodegen] CONFLICT %s claimed by %d mods: %s -- take_over_path is last-wins, only one mod's code is live" \
+				% [path, claims.size(), ", ".join(claim_summaries)])
+	if conflict_count > 0:
+		_log_critical("[RTVCodegen] %d vanilla script(s) have overlapping claims -- see CONFLICT lines above. Disable duplicates to get predictable behavior." \
+				% conflict_count)
 	# Skip-list breakdown -- gives the README an evidence trail for "we wrap N
 	# scripts, skip M". The actual rewritten count is logged below by the
 	# "Generated N rewritten" line; this just records the static skip-list sizes.
@@ -200,6 +307,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	# GDScriptCache-pinned bucket vs the live-inline bucket.
 	var _step_b_allowlist: Array[String] = []
 	var zero_byte_skipped: int = 0
+	var surface_skipped: int = 0
 	for script_path: String in script_paths:
 		var filename := script_path.get_file()
 
@@ -215,6 +323,14 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			zero_byte_skipped += 1
 			continue
 		if not _step_b_allowlist.is_empty() and filename not in _step_b_allowlist:
+			continue
+		# Wrap-surface filter: no mod extends, take_over_paths, or hooks
+		# this script, and it's not a pinned-at-boot class_name. Skipping
+		# means the script stays pure vanilla at runtime -- no dispatch
+		# overhead, same behavior as v2.1.0 for this path.
+		if not needed_paths.has(script_path):
+			surface_skipped += 1
+			_log_debug("[RTVCodegen] Surface-skip %s (no mod extends/hooks/overrides)" % filename)
 			continue
 
 		# Warn if a [script_overrides] replacement is also in play. For rewritten
@@ -445,6 +561,9 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	if zero_byte_skipped > 0:
 		_log_info("[RTVCodegen] Skipped %d zero-byte PCK entry(ies) (base game ships empty .gd files -- not hookable, not a modloader failure): %s" \
 				% [zero_byte_skipped, ", ".join(_pck_zero_byte_paths.keys())])
+	if surface_skipped > 0:
+		_log_info("[RTVCodegen] Surface-skipped %d vanilla script(s) with no mod interaction -- they run native (no dispatch overhead)" \
+				% surface_skipped)
 	if script_count > 0:
 		if defer_activation:
 			# Pass 1 pre-restart: write the zip + persist pass_state so Pass 2's

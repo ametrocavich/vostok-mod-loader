@@ -267,6 +267,11 @@ func scan_and_register_archive_claims(archive_path: String, mod_name: String,
 		"preload_paths":           [],
 		"calls_base":              false, # uses base() instead of super() -- Godot 3 or removed method
 		"total_gd_files":          0,
+		# Script prefixes mod calls .hook() on (e.g. "controller", "camera").
+		# Used by _generate_hook_pack to decide which vanilla scripts need
+		# wrapping -- only ones mods actually interact with via extends,
+		# take_over_path, or runtime .hook() get wrapped.
+		"hooked_script_prefixes":  [],
 	}
 
 	for f in files:
@@ -275,8 +280,11 @@ func scan_and_register_archive_claims(archive_path: String, mod_name: String,
 			var gd_bytes := zr.read_file(f)
 			if gd_bytes.size() > 0:
 				var gd_text := gd_bytes.get_string_from_utf8()
-				if _developer_mode:
-					_scan_gd_source(gd_text, gd_analysis)
+				# Scan is unconditional now -- _generate_hook_pack relies on
+				# extends_paths + hooked_script_prefixes to narrow the wrap
+				# surface to what mods actually touch. Was dev-mode-only
+				# before we needed these fields for wrap decisions.
+				_scan_gd_source(gd_text, gd_analysis)
 				if _class_name_to_path.size() > 0:
 					_check_class_name_safety(gd_text, f, mod_name)
 
@@ -363,6 +371,16 @@ func _scan_gd_source(text: String, analysis: Dictionary) -> void:
 		var pl_path := m_pl.get_string(1)
 		if pl_path not in (analysis["preload_paths"] as Array):
 			(analysis["preload_paths"] as Array).append(pl_path)
+
+	# .hook("<prefix>-<method>[-suffix]") calls. Extract the leading prefix
+	# (lowercase script stem like "controller", "camera") so _generate_hook_pack
+	# can decide to wrap the corresponding vanilla script even when no mod
+	# extends it. Matches .hook("...") across whitespace + optional var receiver
+	# (e.g. lib.hook, Engine.get_meta("RTVModLib").hook, modlib.hook).
+	for m_hk in _re_hook_call.search_all(text):
+		var prefix := m_hk.get_string(1).to_lower()
+		if prefix not in (analysis["hooked_script_prefixes"] as Array):
+			(analysis["hooked_script_prefixes"] as Array).append(prefix)
 
 	# Method declarations -- needed for mod collision detection.
 	var func_matches := _re_func.search_all(text)
