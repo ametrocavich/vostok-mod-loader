@@ -322,27 +322,13 @@ func _rtv_generate_override(script: Dictionary) -> String:
 # _read_vanilla_source / _detokenize_script). Passing already-rewritten source
 # produces duplicate-function parse errors.
 
-func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, rename_prefix: String = "_rtv_vanilla_", extends_override: String = "", strip_class_name: bool = false) -> String:
+func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, rename_prefix: String = "_rtv_vanilla_") -> String:
 	# rename_prefix defaults to "_rtv_vanilla_" for vanilla scripts.
 	# Mod subclasses pass "_rtv_mod_" so the renamed mod body doesn't shadow
 	# vanilla's renamed body via virtual dispatch. Without this: mod's body
 	# is _rtv_vanilla_<name>, vanilla's body is ALSO _rtv_vanilla_<name>, and
 	# vanilla's wrapper calls _rtv_vanilla_<name>() on self -- which is a mod
 	# instance -- which dispatches to mod's body again. Infinite loop.
-	#
-	# extends_override: when non-empty, rewrite the top-level
-	# `extends "res://Scripts/<X>.gd"` line to `extends "<override>"`.
-	# Used for chain-via-extends: when N mods all override the same vanilla,
-	# we chain them so every mod's body runs via Godot virtual dispatch.
-	# Chain-bottom mod's override resolves to a pristine vanilla copy
-	# (at res://_rtv_pristine_/...) that isn't touched by take_over_path,
-	# breaking the vanilla_path self-reference cycle take_over_path would
-	# otherwise create.
-	#
-	# strip_class_name: drop `class_name <Ident>` declarations. Only true
-	# for the pristine vanilla copies -- they live at a non-registered path
-	# so their class_name would conflict with the primary vanilla's
-	# class_name registration in global_script_class_cache.cfg.
 	var hookable: Array = []
 	for fe in parsed["functions"]:
 		if fe["is_static"]:
@@ -381,36 +367,6 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, rename_pref
 	# scene returned for any vanilla name.
 	if rename_prefix == "_rtv_vanilla_" and parsed.get("filename", "") == "Database.gd":
 		src = _rtv_rewrite_database_constants(src)
-
-	# Chain-via-extends substitution. For a chained mod, redirect the
-	# top-level `extends "res://Scripts/<X>.gd"` (or `extends "res://<predecessor>/..."`)
-	# to whatever its chain predecessor lives at. Only the first matching
-	# extends line is rewritten -- GDScript only allows one extends per script.
-	if not extends_override.is_empty():
-		var new_lines: PackedStringArray = []
-		var replaced := false
-		for ln: String in src.split("\n"):
-			if not replaced:
-				var stripped := ln.strip_edges()
-				if stripped.begins_with("extends \"res://") or stripped.begins_with("extends\"res://"):
-					new_lines.append('extends "%s"' % extends_override)
-					replaced = true
-					continue
-			new_lines.append(ln)
-		src = "\n".join(new_lines)
-
-	# Strip class_name declarations. Pristine vanilla copies live at a
-	# non-registered path so their class_name would conflict with the
-	# primary vanilla's class_name registration. Chain-bottom mods extend
-	# the pristine copy, which has no class_name to conflict with.
-	if strip_class_name:
-		var cn_lines: PackedStringArray = []
-		for ln: String in src.split("\n"):
-			var stripped := ln.strip_edges()
-			if stripped.begins_with("class_name "):
-				continue
-			cn_lines.append(ln)
-		src = "\n".join(cn_lines)
 
 	# Pass 1: rename top-level "func <name>(" to "func _rtv_vanilla_<name>("
 	# AND rewrite bare super() calls inside that body to super.<name>().
