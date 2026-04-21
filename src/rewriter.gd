@@ -1,17 +1,17 @@
 ## ----- rewriter.gd -----
 ## Source-rewrite codegen. Given detokenized vanilla source + a parse
-## structure, produces a rewritten script where each non-static method is
-## renamed to _rtv_vanilla_<name> and dispatch wrappers are appended at the
-## original names. The wrappers fire pre/replace/post/callback hooks and
-## call the renamed body. Also rewrites mod subclass scripts (Step C) with
-## _rtv_mod_ prefix so hooks fire even when mods bypass super().
+## structure + an optional per-method mask, produces a rewritten script
+## where each non-static method in the mask (or every non-static method,
+## when the mask is empty) is renamed to _rtv_vanilla_<name> and a
+## dispatch wrapper is appended at the original name. The wrappers fire
+## pre/replace/post/callback hooks and call the renamed body.
+##
+## v2.4.0: mod-subclass rewrite removed (was the old Step C). Mods that
+## extend wrapped vanilla now compose via Godot's native extends
+## resolution -- no _rtv_mod_ prefix, no rewrite of mod source.
 ##
 ## Also owns: regex compilation, parse-script, autofix legacy syntax,
-## indent detection, bare-super rewriting, mod-subclass scanning.
-##
-## Note: the legacy _rtv_generate_override function emits Framework<Name>.gd
-## subclass wrappers for the extends-wrapper fallback path. The main rewriter
-## emits inline dispatch wrappers instead.
+## indent detection, bare-super rewriting.
 
 func _compile_regex() -> void:
 	_re_take_over = RegEx.new()
@@ -29,13 +29,16 @@ func _compile_regex() -> void:
 	# VostokMods compat: "100-ModName.vmz" encodes priority in the filename.
 	_re_filename_priority = RegEx.new()
 	_re_filename_priority.compile('^(-?\\d+)-(.*)')
-	# .hook("<prefix>-<method>[-pre|-post|-callback]") -- matches any
-	# `.hook("ident-` string literal. Used by scan pass to figure out which
-	# vanilla scripts a mod will dispatch through at runtime even when it
-	# doesn't extend them. The prefix captured here is the lowercase script
-	# stem (e.g. "controller", "camera").
+	# .hook("<prefix>-<method>[-pre|-post|-callback]") -- the first capture
+	# is the lowercase script stem (e.g. "controller"), the second is the
+	# declared method name. _generate_hook_pack uses the (prefix, method)
+	# pair to build a per-path, per-method wrap mask so only the methods a
+	# mod actually hooks get dispatch wrappers (matches godot-mod-loader's
+	# per-path method_mask). Unknown-suffix fallbacks are treated as plain
+	# methods (the -pre/-post/-callback suffix is a hook-dispatch variant,
+	# not a method-name distinction).
 	_re_hook_call = RegEx.new()
-	_re_hook_call.compile('\\.hook\\s*\\(\\s*"([A-Za-z_][\\w]*)-')
+	_re_hook_call.compile('\\.hook\\s*\\(\\s*"([A-Za-z_][\\w]*)-([A-Za-z_][\\w]*?)(?:-(?:pre|post|callback))?"')
 
 # Mod metadata collection (no mounting)
 
@@ -322,16 +325,19 @@ func _rtv_generate_override(script: Dictionary) -> String:
 # _read_vanilla_source / _detokenize_script). Passing already-rewritten source
 # produces duplicate-function parse errors.
 
-func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, rename_prefix: String = "_rtv_vanilla_") -> String:
-	# rename_prefix defaults to "_rtv_vanilla_" for vanilla scripts.
-	# Mod subclasses pass "_rtv_mod_" so the renamed mod body doesn't shadow
-	# vanilla's renamed body via virtual dispatch. Without this: mod's body
-	# is _rtv_vanilla_<name>, vanilla's body is ALSO _rtv_vanilla_<name>, and
-	# vanilla's wrapper calls _rtv_vanilla_<name>() on self -- which is a mod
-	# instance -- which dispatches to mod's body again. Infinite loop.
+func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask: Dictionary = {}) -> String:
+	# method_mask (v2.4.0): Dictionary[method_name, true] restricting which
+	# methods get renamed + wrapped. Empty = wrap every non-static method
+	# (used for REGISTRY_TARGETS where whole-script injection is needed).
+	# Non-empty = wrap only declared methods; matches godot-mod-loader's
+	# per-path method_mask. Other methods stay vanilla, no dispatch
+	# overhead, no rename.
+	var apply_mask: bool = not method_mask.is_empty()
 	var hookable: Array = []
 	for fe in parsed["functions"]:
 		if fe["is_static"]:
+			continue
+		if apply_mask and not method_mask.has(fe["name"]):
 			continue
 		hookable.append(fe)
 	if hookable.is_empty():
@@ -365,7 +371,7 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, rename_pref
 	# go through _get() (which checks mod overrides first) instead of
 	# resolving via direct const lookup -- mods can then override the
 	# scene returned for any vanilla name.
-	if rename_prefix == "_rtv_vanilla_" and parsed.get("filename", "") == "Database.gd":
+	if parsed.get("filename", "") == "Database.gd":
 		src = _rtv_rewrite_database_constants(src)
 
 	# Pass 1: rename top-level "func <name>(" to "func _rtv_vanilla_<name>("
@@ -399,7 +405,7 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, rename_pref
 						name_end -= 1
 					var method_name := line.substr(5, name_end - 5)
 					if hookable_names.has(method_name):
-						lines[i] = "func " + rename_prefix + method_name + line.substr(name_end)
+						lines[i] = "func _rtv_vanilla_" + method_name + line.substr(name_end)
 						current_hooked_method = method_name
 			continue
 		# Indented line: inside some block. If inside a renamed method, rewrite
@@ -417,14 +423,12 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, rename_pref
 	var prefix := _rtv_script_hook_prefix(parsed["filename"])
 	var appended := "\n\n# --- Metro mod loader inline hook dispatch wrappers ---\n"
 	for fe in hookable:
-		appended += _rtv_dispatch_inline_src(fe, prefix, indent, rename_prefix) + "\n"
+		appended += _rtv_dispatch_inline_src(fe, prefix, indent) + "\n"
 
-	# Per-script registry injections. Only apply to vanilla rewrites (not mod
-	# subclasses) so we don't stamp the _rtv_registry_* fields onto every mod
-	# that inherits from a registry-bearing class. Registry handler on the
-	# loader writes into these injected fields at runtime.
-	if rename_prefix == "_rtv_vanilla_":
-		appended += _rtv_registry_injection(parsed["filename"], indent)
+	# Per-script registry injections. The REGISTRY_TARGETS gate in
+	# _generate_hook_pack already ensures these only fire for declared
+	# registry-opt-in paths.
+	appended += _rtv_registry_injection(parsed["filename"], indent)
 
 	return "\n".join(lines) + appended
 
@@ -845,12 +849,12 @@ func _rtv_strip_helper_reload(source: String) -> Dictionary:
 #  - no _rtv_ready_done flag (same class, no inheritance-chain double-fire)
 #  - prepends `await` when the vanilla method is a coroutine
 
-func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "\t", rename_prefix: String = "_rtv_vanilla_") -> String:
+func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "\t") -> String:
 	var method_name: String = fe["name"]
 	var params: String = fe["params"]
 	var param_names_str: String = ", ".join(fe["param_names"])
 	var hook_base: String = "%s-%s" % [prefix, method_name.to_lower()]
-	var vanilla_call: String = "%s%s(%s)" % [rename_prefix, method_name, param_names_str]
+	var vanilla_call: String = "_rtv_vanilla_%s(%s)" % [method_name, param_names_str]
 	var args_array: String = "[]" if param_names_str.is_empty() else "[%s]" % param_names_str
 	var is_coro: bool = bool(fe["is_coroutine"])
 	var is_engine_void: bool = method_name in RTV_ENGINE_VOID_METHODS
@@ -976,100 +980,6 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		out += "%s_lib._wrapper_active.erase(\"%s\")\n" % [I1, hook_base]
 		out += "%s_lib._caller = _rtv_prev_caller\n" % I1
 	return out
-
-# Step C: mod-script extends scanner. For each enabled mod, walk the archive
-# looking for .gd files whose first non-trivial line is extends-by-literal
-# "res://Scripts/<X>.gd" where <X> is a vanilla script we already rewrite.
-# Those mod scripts get the same rename+dispatch-wrapper treatment, shipped
-# at their own res:// path, so hooks fire even when the mod replaces a
-# method without calling super().
-#
-# Returns Array of Dictionary: { mod_name, res_path, vanilla_filename,
-# source, load_index }. res_path is the mod's path (res://ModDir/X.gd),
-# vanilla_filename keys hook dispatch prefix ("Controller.gd" -> "controller").
-func _scan_mod_extends_targets(vanilla_filenames: Dictionary) -> Array:
-	var candidates: Array = []
-	var entries := _ui_mod_entries.duplicate()
-	entries.sort_custom(_compare_load_order)
-	var load_index := 0
-	for entry: Dictionary in entries:
-		if not entry["enabled"]:
-			continue
-		var mod_name: String = entry["mod_name"]
-		var archive_path: String = entry["full_path"]
-		var ext: String = entry["ext"]
-		# Resolve to zip path for ZIPReader access.
-		var abs_archive: String = archive_path
-		if ext == "vmz":
-			var cache_dir := ProjectSettings.globalize_path(TMP_DIR)
-			var cached := cache_dir.path_join(archive_path.get_file().get_basename() + ".zip")
-			if not FileAccess.file_exists(cached):
-				load_index += 1
-				continue
-			abs_archive = cached
-		elif ext == "folder":
-			# Folder mods materialize to a tmp zip during load_all_mods. Skip
-			# if that hasn't happened yet this session (rare path).
-			var folder_zip := ProjectSettings.globalize_path(TMP_DIR).path_join(
-					archive_path.get_file() + "_dev.zip")
-			if not FileAccess.file_exists(folder_zip):
-				load_index += 1
-				continue
-			abs_archive = folder_zip
-		elif ext != "zip" and ext != "pck":
-			load_index += 1
-			continue
-		var zr := ZIPReader.new()
-		if zr.open(abs_archive) != OK:
-			load_index += 1
-			continue
-		for f: String in zr.get_files():
-			var normalized := f.replace("\\", "/")
-			if normalized.get_extension().to_lower() != "gd":
-				continue
-			var bytes := zr.read_file(f)
-			if bytes.is_empty():
-				continue
-			var text := bytes.get_string_from_utf8()
-			var ext_target := _parse_extends_literal(text)
-			if ext_target.is_empty() or not ext_target.begins_with("res://Scripts/"):
-				continue
-			var vfn := ext_target.get_file()
-			if not vanilla_filenames.has(vfn):
-				continue
-			candidates.append({
-				"mod_name": mod_name,
-				"res_path": "res://" + normalized,
-				"vanilla_filename": vfn,
-				"source": text,
-				"load_index": load_index,
-			})
-		zr.close()
-		load_index += 1
-	return candidates
-
-# Parse first non-empty non-comment line for `extends "res://..."`. Returns
-# the quoted path, or "" if the script uses class-name extends, non-literal
-# extends (preload/load/variable), or something else.
-func _parse_extends_literal(source: String) -> String:
-	for raw in source.split("\n"):
-		var s := raw.strip_edges()
-		if s.is_empty() or s.begins_with("#"):
-			continue
-		# Skip tool/icon annotations that may precede extends.
-		if s.begins_with("@"):
-			continue
-		if not s.begins_with("extends"):
-			return ""
-		# "extends <target>" -- strip keyword + whitespace.
-		var rest := s.substr(7).strip_edges()
-		if rest.begins_with("\""):
-			var close := rest.find("\"", 1)
-			if close < 0:
-				return ""
-			return rest.substr(1, close - 1)
-		return ""
-	return ""
 
 # --- Script enumeration -----------------------------------------------------
 # DirAccess.get_files_at() returns at most 1 entry on res://Scripts/ in

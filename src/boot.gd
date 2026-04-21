@@ -52,62 +52,12 @@ static func _mount_previous_session() -> Dictionary:
 		_write_filescope_log(log_lines)
 		return mounted
 
-	# PRE-INIT cache snapshot + preempt list: class_name scripts that Godot
-	# boot-compiles (via autoload imports or initial scene graph references)
-	# get their PCK .gdc bytecode pinned in ScriptServer.class_cache before
-	# any ModLoader code runs. Once pinned, runtime rewire can't displace
-	# them. Preempt these at static init with CACHE_MODE_IGNORE to force our
-	# rewrite into the cache first.
-	#
-	# Not on the list:
-	#  - class_name scripts NOT referenced at boot (Inspect, Item, Slot,
-	#    Surface, Area, Mine, MuzzleFlash). Godot lazy-loads them on first
-	#    reference, hitting our VFS overlay. No preempt needed.
-	#  - Scripts without class_name (Bed, Cat, Menu, Loader, Database, etc.).
-	#    Same VFS-lazy-load path; our rewrite wins at first compile.
-	#
-	# Reduced from 43 entries (2026-04-18): 27 non-class_name entries cut
-	# after empirical verification that VFS lazy-load handles them.
-	var pinned_probes: Array[String] = [
-		"res://Scripts/Camera.gd",        # class_name Camera
-		"res://Scripts/Controller.gd",    # class_name Controller
-		"res://Scripts/Door.gd",          # class_name Door
-		"res://Scripts/Fish.gd",          # class_name Fish
-		"res://Scripts/Furniture.gd",     # class_name Furniture
-		"res://Scripts/GameData.gd",      # class_name GameData
-		"res://Scripts/Grenade.gd",       # class_name Grenade
-		"res://Scripts/Grid.gd",          # class_name Grid
-		"res://Scripts/Hitbox.gd",        # class_name Hitbox
-		"res://Scripts/KnifeRig.gd",      # class_name Knife
-		"res://Scripts/LootContainer.gd", # class_name LootContainer
-		"res://Scripts/Lure.gd",          # class_name Lure
-		"res://Scripts/Pickup.gd",        # class_name Pickup
-		"res://Scripts/Settings.gd",      # class_name Settings
-		"res://Scripts/Trader.gd",        # class_name Trader
-		"res://Scripts/WeaponRig.gd",     # class_name WeaponRig
-	]
-	var pre_cached_count := 0
-	var pre_cached_tokenized: PackedStringArray = []
-	var pre_cached_source: PackedStringArray = []
-	var pre_notloaded: PackedStringArray = []
-	for path in pinned_probes:
-		if ResourceLoader.has_cached(path):
-			pre_cached_count += 1
-			var s := load(path) as GDScript
-			if s != null and s.source_code.length() > 0:
-				pre_cached_source.append(path.get_file())
-			else:
-				pre_cached_tokenized.append(path.get_file())
-		else:
-			pre_notloaded.append(path.get_file())
-	log_lines.append("[FileScope] PRE-INIT cache: %d/%d probes already cached at static init" \
-			% [pre_cached_count, pinned_probes.size()])
-	if pre_cached_tokenized.size() > 0:
-		log_lines.append("[FileScope]   tokenized (PCK-compiled already): " + ", ".join(pre_cached_tokenized))
-	if pre_cached_source.size() > 0:
-		log_lines.append("[FileScope]   source-loaded (our take_over_path from prev session): " + ", ".join(pre_cached_source))
-	if pre_notloaded.size() > 0:
-		log_lines.append("[FileScope]   NOT YET LOADED (preempt window open): " + ", ".join(pre_notloaded))
+	# Pinned probes narrowed (v2.4.0): previously a hardcoded list of 16
+	# class_name scripts the game pre-compiles at boot. Now read from the
+	# pass_state's hook_pack_wrapped_paths key -- only scripts this modlist
+	# actually wrapped get CACHE_MODE_IGNORE preempt. Populated further
+	# down after pass_state loads; the cache-snapshot diagnostic now logs
+	# whatever the prior session wrapped.
 
 	var cfg := ConfigFile.new()
 	if cfg.load(PASS_STATE_PATH) != OK:
@@ -221,45 +171,58 @@ static func _mount_previous_session() -> Dictionary:
 	# entry leaves us with orphan files we can't distinguish. Let Pass 1
 	# regenerate from scratch; the orphan-cleanup pass below sweeps them.
 	var hook_pack: String = cfg.get_value("state", "hook_pack_path", "") as String
+	var wrapped_paths: PackedStringArray = cfg.get_value("state", "hook_pack_wrapped_paths", PackedStringArray())
 	# Orphan cleanup: previous sessions may have left framework_pack_*.zip
 	# files behind (Windows can't delete the currently-mounted one mid-session).
 	# At static-init the engine has mounted nothing yet, so deleting every pack
 	# EXCEPT the one pass_state points at is safe. Prevents unbounded growth
 	# for users cycling large mod sets over many sessions.
 	_static_cleanup_orphan_hook_packs(hook_pack, log_lines)
+	# Cache-snapshot diagnostic -- shows which wrapped scripts were already
+	# loaded into ResourceLoader by Godot's eager class_cache pass before
+	# we get a chance to preempt them. Useful for diagnosing "why didn't
+	# my hook fire" on pinned paths. Skipped when no wrapped_paths exist.
+	if wrapped_paths.size() > 0:
+		var pre_cached_count := 0
+		var pre_cached_tokenized: PackedStringArray = []
+		var pre_cached_source: PackedStringArray = []
+		var pre_notloaded: PackedStringArray = []
+		for path in wrapped_paths:
+			if ResourceLoader.has_cached(path):
+				pre_cached_count += 1
+				var s := load(path) as GDScript
+				if s != null and s.source_code.length() > 0:
+					pre_cached_source.append(path.get_file())
+				else:
+					pre_cached_tokenized.append(path.get_file())
+			else:
+				pre_notloaded.append(path.get_file())
+		log_lines.append("[FileScope] PRE-INIT cache: %d/%d wrapped scripts already cached at static init" \
+				% [pre_cached_count, wrapped_paths.size()])
+		if pre_cached_tokenized.size() > 0:
+			log_lines.append("[FileScope]   tokenized (PCK-compiled already): " + ", ".join(pre_cached_tokenized))
+		if pre_cached_source.size() > 0:
+			log_lines.append("[FileScope]   source-loaded (our take_over_path from prev session): " + ", ".join(pre_cached_source))
+		if pre_notloaded.size() > 0:
+			log_lines.append("[FileScope]   NOT YET LOADED (preempt window open): " + ", ".join(pre_notloaded))
 	if hook_pack != "":
 		var hook_abs: String = hook_pack if not hook_pack.begins_with("user://") \
 				else ProjectSettings.globalize_path(hook_pack)
 		if FileAccess.file_exists(hook_abs):
 			if ProjectSettings.load_resource_pack(hook_abs, true):
 				log_lines.append("[FileScope] HOOK PACK mounted at static init: " + hook_pack)
-				# CRITICAL: mounting alone isn't enough. Godot pre-compiles
-				# class_name scripts referenced by the initial scene graph
-				# (Camera, WeaponRig) BEFORE ModLoader._ready. Once they land
-				# in ScriptServer.class_cache as PCK-bytecode, no runtime
-				# rewire works. Force a fresh source-compile of every
-				# rewritten script RIGHT NOW while we're still at static
-				# init -- before game autoloads run, before any scene
-				# instantiates. take_over_path claims the canonical path
-				# in the cache so downstream load()s return our version.
+				# Preempt ONLY the scripts this modlist declared + wrapped
+				# (v2.4.0). Previous behavior was to preempt a hardcoded list
+				# of 16 class_name scripts regardless of whether a mod
+				# touched them. Narrowing to wrapped_paths ensures legacy
+				# modlists (zero declarations) never see static-init
+				# preemption at all -- Godot's native lazy-compile runs
+				# unmodified, byte-identical to v2.1.0 behavior.
 				var hzr := ZIPReader.new()
 				if hzr.open(hook_abs) == OK:
-					# Build fast-lookup set of "pinned probe" paths. Only these
-					# scripts are known to be pre-compiled by Godot during
-					# class_cache population (Camera/WeaponRig/Door/etc. in the
-					# initial scene graph + engine-class autoloads). Those
-					# genuinely need strict preempt to beat PCK .gdc pinning.
-					# Every OTHER vanilla script should be left to Godot's
-					# normal lenient lazy-compile path. Preempting them all
-					# with CACHE_MODE_IGNORE cascades strict mode through
-					# `extends "res://Scripts/X.gd"` into mod subclass scripts
-					# and their preloaded siblings, rejecting GDScript that
-					# lenient first-compile would have tolerated (e.g. AI
-					# Overhaul's AwarenessSystem.gd with bodyless `if` blocks
-					# -- Gotcha #5 in gdscript_rewrite_gotchas).
-					var probe_set: Dictionary = {}
-					for pp in pinned_probes:
-						probe_set[pp] = true
+					var wrapped_set: Dictionary = {}
+					for wp in wrapped_paths:
+						wrapped_set[wp] = true
 					var preloaded := 0
 					var preload_failed := 0
 					var skipped_lenient := 0
@@ -267,11 +230,11 @@ static func _mount_previous_session() -> Dictionary:
 						if not f.begins_with("Scripts/") or not f.ends_with(".gd"):
 							continue
 						var rpath := "res://" + f
-						if not probe_set.has(rpath):
-							# Not pre-compiled by Godot at class_cache init --
-							# skip strict preempt. VFS mount (replace_files=true)
-							# still serves our rewrite to Godot's lenient
-							# lazy-compile when game code first loads the path.
+						if not wrapped_set.has(rpath):
+							# Not declared as a wrapped target -- skip strict
+							# preempt. VFS mount (replace_files=true) still
+							# serves our rewrite to Godot's lenient lazy-
+							# compile when game code first loads the path.
 							skipped_lenient += 1
 							continue
 						var scr := ResourceLoader.load(rpath, "", ResourceLoader.CACHE_MODE_IGNORE) as GDScript
@@ -281,7 +244,7 @@ static func _mount_previous_session() -> Dictionary:
 						scr.take_over_path(rpath)
 						preloaded += 1
 					hzr.close()
-					log_lines.append("[FileScope] HOOK PACK preempted %d pinned script(s) at static init (%d failed, %d other vanilla left to lenient lazy-compile)" \
+					log_lines.append("[FileScope] HOOK PACK preempted %d wrapped script(s) at static init (%d failed, %d other vanilla left to lenient lazy-compile)" \
 							% [preloaded, preload_failed, skipped_lenient])
 			else:
 				log_lines.append("[FileScope] HOOK PACK mount FAILED: " + hook_pack)
@@ -535,20 +498,24 @@ func _write_override_cfg(prepend_autoloads: Array[Dictionary]) -> Error:
 		DirAccess.remove_absolute(tmp)
 	return err
 
-func _persist_hook_pack_state(pack_path: String) -> void:
-	# Write hook_pack_path to pass_state so _mount_previous_session() can
-	# mount it at static init in the next session. Piggybacks on the
-	# existing pass_state ConfigFile -- doesn't overwrite other keys.
+func _persist_hook_pack_state(pack_path: String, wrapped_paths: PackedStringArray = PackedStringArray()) -> void:
+	# Write hook_pack_path + wrapped_paths to pass_state so the next session
+	# (1) mounts the pack at static init and (2) preempts ONLY the declared
+	# scripts in _mount_previous_session's class_cache-pinning path.
+	# Piggybacks on the existing pass_state ConfigFile -- doesn't overwrite
+	# other keys.
 	var cfg := ConfigFile.new()
 	cfg.load(PASS_STATE_PATH)  # OK if missing; we populate below
 	cfg.set_value("state", "hook_pack_path", pack_path)
+	cfg.set_value("state", "hook_pack_wrapped_paths", wrapped_paths)
 	# Store exe mtime alongside so _mount_previous_session's existing
 	# exe-mtime check also invalidates the hook pack on game updates.
 	cfg.set_value("state", "hook_pack_exe_mtime", FileAccess.get_modified_time(OS.get_executable_path()))
 	if cfg.get_value("state", "modloader_version", "") == "":
 		cfg.set_value("state", "modloader_version", MODLOADER_VERSION)
 	if cfg.save(PASS_STATE_PATH) == OK:
-		_log_info("[RTVCodegen] Persisted hook pack path for next-session static-init mount: " + pack_path.get_file())
+		_log_info("[RTVCodegen] Persisted hook pack path for next-session static-init mount: %s (%d wrapped path(s))" \
+				% [pack_path.get_file(), wrapped_paths.size()])
 
 func _write_pass_state(archive_paths: PackedStringArray, state_hash: String = "") -> Error:
 	var cfg := ConfigFile.new()

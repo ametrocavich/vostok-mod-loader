@@ -63,7 +63,35 @@ modworkshop=12345
 
 Mods without `mod.txt` still mount as resource packs -- their files override vanilla resources, but no autoloads run.
 
-Full schema (including `[script_overrides]`, `[rtvmodlib] needs=`, the `!` prefix semantics, and packaging gotchas): see the [Mod-Format wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Mod-Format).
+### Opt-in hook declarations
+
+v2.4.0 uses an opt-in model: a modlist that declares nothing loads byte-identical to a vanilla setup (no wrap, no rewrite, no hook pack). Declarations turn on specific parts of the system.
+
+```ini
+[hooks]
+res://Scripts/Interface.gd = _ready, update_tooltip
+res://Scripts/Controller.gd = Movement
+
+[script_extend]
+res://Scripts/Camera.gd = res://MyMod/MyCamera.gd
+
+[registry]
+; declaring this section is enough to enable lib.register() / lib.override()
+```
+
+- **`[hooks]`** -- list methods by vanilla script path. Those methods get dispatch wrappers at runtime so your `.hook(...)` callbacks fire. Only declared methods are wrapped; everything else in the script stays vanilla. Scanning `.hook(...)` calls in your source also enrolls the corresponding method.
+- **`[script_extend]`** -- a full-script replacement that chains via Godot's `extends` resolution. Multiple mods can extend the same vanilla script; take_over_path runs in priority order, each override's `extends` resolves to the prior chain tip. `[script_overrides]` is kept as a legacy alias.
+- **`[registry]`** -- declaring this section enables `lib.register()` / `lib.override()` on Database.gd. Without it, the registry helpers never get injected and those calls return `false`.
+
+Full schema (including `[rtvmodlib] needs=`, the `!` prefix semantics, and packaging gotchas): see the [Mod-Format wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Mod-Format).
+
+### Migrating from v3.0.0
+
+v3.0.0 inferred the wrap surface from `extends`, `take_over_path`, and a pinned list, then rewrote mod source to auto-fire hooks even when mods replaced a method without calling `super()`. v2.4.0 removes the inference and the mod-source rewrite. If your mod relied on either, you need to declare intent:
+
+- If your mod calls `.hook(...)` but never declared a `[hooks]` section: no change needed -- scanner picks up the `.hook()` call.
+- If your mod's override replaced a vanilla method fully and expected hooks to fire via the old rewrite: add `super.method(...)` at the start of the override, OR add a `[hooks]` entry for that method.
+- If your mod used `lib.register()` / `lib.override()` without declaring `[registry]`: add the `[registry]` section.
 
 ## Hooks
 
@@ -95,7 +123,7 @@ Hook name format: `<scriptname>-<methodname>[-pre|-post|-callback]` lowercase. B
 
 The API is drop-in compatible with [tetrahydroc's RTVModLib mod](https://github.com/tetrahydroc/rtv-mod-lib) (`hook` / `unhook` / `_caller` / `skip_super` / `frameworks_ready`, same signatures). Mod code written against RTVModLib runs unchanged here.
 
-Full API reference, dispatch semantics, three-entry pack recipe, mod subclass rewriting, and worked examples: [Hooks wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Hooks).
+Full API reference, dispatch semantics, and three-entry pack recipe: [Hooks wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Hooks).
 
 ## Troubleshooting
 
@@ -113,8 +141,9 @@ More recovery detail (heartbeat, restart counter, crashed-Pass-2 dirty marker): 
 
 - **Package as `.vmz`** with forward-slash paths. Use 7-Zip, not .NET `ZipFile.CreateFromDirectory()` (writes backslashes, breaks mounting).
 - **Include a `mod.txt`** at the archive root. Without it, autoloads won't run.
-- **Use `super()` in lifecycle methods** (`_ready`, `_process`, etc.) when overriding vanilla scripts. Skipping it breaks other mods that override the same class.
-- **Prefer hooks over file replacement** when you only need to modify a few methods. Hooks compose across mods; file replacement doesn't. Every vanilla script is hooked automatically -- just register callbacks.
+- **Use `super()` in lifecycle methods** (`_ready`, `_process`, etc.) when overriding vanilla scripts. Skipping it breaks hook composition for other mods that hooked that method.
+- **Declare `[hooks]` or call `.hook(...)`** on the vanilla methods you care about. In v2.4.0, only declared methods get dispatch wrappers -- there's no auto-wrap surface anymore.
+- **Prefer hooks over file replacement** when you only need to modify a few methods. Hooks compose across mods; file replacement doesn't.
 - **Test with other mods installed** and check the conflict report (Developer Mode).
 
 ## Contributing
