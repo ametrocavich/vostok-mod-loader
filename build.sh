@@ -30,7 +30,23 @@ FILES=(
     "$SRC/ui.gd"
     # Public API (hooks + registry)
     "$SRC/hooks_api.gd"
+    # Registry dispatcher + per-section handlers. shared.gd holds helpers
+    # used by more than one section; each section file owns its own verb
+    # implementations. New sections: add a file here + match arm in registry.gd.
     "$SRC/registry.gd"
+    "$SRC/registry/shared.gd"
+    "$SRC/registry/scenes.gd"
+    "$SRC/registry/items.gd"
+    "$SRC/registry/loot.gd"
+    "$SRC/registry/sounds.gd"
+    "$SRC/registry/recipes.gd"
+    "$SRC/registry/events.gd"
+    "$SRC/registry/traders.gd"
+    "$SRC/registry/inputs.gd"
+    "$SRC/registry/loader.gd"
+    "$SRC/registry/ai.gd"
+    "$SRC/registry/fish.gd"
+    "$SRC/registry/resources.gd"
     "$SRC/framework_wrappers.gd"
     # Codegen pipeline
     "$SRC/gdsc_detokenizer.gd"
