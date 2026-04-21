@@ -19,6 +19,9 @@
 # in its mod.txt -- see _generate_hook_pack's wrap-surface build.
 const REGISTRY_TARGETS: Array[String] = [
 	"Database.gd",
+	"Loader.gd",
+	"AISpawner.gd",
+	"FishPool.gd",
 ]
 
 func _is_registry_target(filename: String) -> bool:
@@ -589,12 +592,32 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 		# scripts (Database, GameData, Inputs, Loader, Menu, etc.) -- and
 		# the reload isn't needed anyway since the compiled methods
 		# already include our _rtv_vanilla_* renames.
+		#
+		# Staleness caveat: across modloader releases, the rewriter may add
+		# new injected fields (registry dicts, new prelude code) that aren't
+		# in the static-init-preloaded script from the previous session. We
+		# detect this by comparing the cached script's source_code to the
+		# freshly-generated source we'd emit. If they diverge, we skip the
+		# "already live" shortcut and fall through to the reload path. This
+		# covers the common case where someone updates the modloader and
+		# launches: first run picks up the new rewriter output instead of
+		# silently running last session's stale cache.
 		var already_live := false
 		for m in cached.get_script_method_list():
 			if str(m["name"]).begins_with("_rtv_vanilla_"):
 				already_live = true
 				break
 		if already_live:
+			var fresh_source := FileAccess.get_file_as_string(vp)
+			if not fresh_source.is_empty() and fresh_source != cached.source_code:
+				_log_info("[RTVCodegen] activate %s: cached rewrite is stale (static-init had an older pack), forcing fresh+take_over_path" % vp)
+				var fresh := ResourceLoader.load(vp, "", ResourceLoader.CACHE_MODE_IGNORE) as GDScript
+				if fresh == null:
+					_log_critical("[RTVCodegen] activate %s: fresh load returned null -- skip" % vp)
+					continue
+				fresh.take_over_path(vp)
+				activated += 1
+				continue
 			preactivated += 1
 			activated += 1
 			continue

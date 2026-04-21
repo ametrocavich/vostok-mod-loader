@@ -5,6 +5,7 @@
 - [Architecture](Architecture)
 - [Modules](Modules)
 - [Hooks](Hooks)
+- [Registry](Registry)
 - [Mod-Format](Mod-Format)
 - [GDSC-Detokenizer](GDSC-Detokenizer)
 - [Stability-Canaries](Stability-Canaries)

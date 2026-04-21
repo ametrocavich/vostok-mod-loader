@@ -366,13 +366,29 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask
 		_log_info("[Autofix] %s: %d bodyless, %d @tool, %d @onready, %d @export, %d base()->super -- legacy syntax normalized" \
 				% [parsed.get("filename", "?"), autofix["bodyless"], autofix["tool"], autofix["onready"], autofix["export"], autofix.get("base", 0)])
 
-	# Database-specific transform: convert `const X = preload("...")` lines
-	# into a _rtv_vanilla_scenes dictionary. This makes Database.get(name)
-	# go through _get() (which checks mod overrides first) instead of
-	# resolving via direct const lookup -- mods can then override the
-	# scene returned for any vanilla name.
-	if parsed.get("filename", "") == "Database.gd":
-		src = _rtv_rewrite_database_constants(src)
+	# Per-script declaration-level transforms. Both cases make otherwise-
+	# compile-time-immutable declarations runtime-mutable so the registry
+	# can swap them under the hood.
+	if rename_prefix == "_rtv_vanilla_":
+		var fn: String = parsed.get("filename", "")
+		# Database.gd: convert `const X = preload("...")` -> _rtv_vanilla_scenes
+		# dict entries so Database.get(name) flows through _get() and sees mod
+		# overrides instead of resolving via direct const lookup.
+		if fn == "Database.gd":
+			src = _rtv_rewrite_database_constants(src)
+		# Loader.gd: convert `const shelters = [...]` -> var so the registry
+		# can append mod shelter names. Scene-path consts (const Cabin = "..."
+		# etc.) stay consts because LoadScene references them directly inside
+		# its body; we inject a mod-lookup prelude into LoadScene instead.
+		elif fn == "Loader.gd":
+			src = _rtv_rewrite_loader_shelters(src)
+		# AISpawner.gd: the vanilla if-elif that maps Zone -> agent is rewritten
+		# so each `agent = <name>` becomes `agent = _rtv_resolve_ai_type(zone,
+		# <name>)`. The helper (appended as part of registry injection) checks
+		# the override dict and returns that or the vanilla scene. Lets mods
+		# swap the agent spawned in any vanilla zone without touching _ready.
+		elif fn == "AISpawner.gd":
+			src = _rtv_rewrite_aispawner_agent_assignments(src)
 
 	# Pass 1: rename top-level "func <name>(" to "func _rtv_vanilla_<name>("
 	# AND rewrite bare super() calls inside that body to super.<name>().
@@ -416,6 +432,14 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask
 			continue
 		lines[i] = _rewrite_bare_super(line, current_hooked_method)
 
+	# Pass 1.5: function-body prelude injection. Some registries need a
+	# check at the TOP of a specific vanilla function body (e.g., Loader's
+	# LoadScene needs to consult _rtv_mod_scene_paths before the if-elif
+	# chain fires). The function was just renamed to _rtv_vanilla_<Name>,
+	# so we inject right after its signature line.
+	if rename_prefix == "_rtv_vanilla_":
+		lines = _rtv_apply_prelude_injections(parsed.get("filename", ""), lines, rename_prefix)
+
 	# Pass 2: append dispatch wrappers at EOF. Match the source's indent
 	# style -- GDScript rejects tab/space mixing in a single file. IXP uses
 	# 4-space indent; vanilla RTV uses tabs.
@@ -442,6 +466,14 @@ func _rtv_registry_injection(filename: String, indent: String) -> String:
 	match filename:
 		"Database.gd":
 			var inj := _rtv_inject_database_registry(indent)
+			_log_info("[RTVCodegen] Injected registry into %s (%d chars)" % [filename, inj.length()])
+			return inj
+		"Loader.gd":
+			var inj := _rtv_inject_loader_registry(indent)
+			_log_info("[RTVCodegen] Injected registry into %s (%d chars)" % [filename, inj.length()])
+			return inj
+		"AISpawner.gd":
+			var inj := _rtv_inject_aispawner_registry(indent)
 			_log_info("[RTVCodegen] Injected registry into %s (%d chars)" % [filename, inj.length()])
 			return inj
 		_:
@@ -520,6 +552,202 @@ func _rtv_rewrite_database_constants(source: String) -> String:
 	var before := out_lines.slice(0, insert_at)
 	var after := out_lines.slice(insert_at)
 	return "\n".join(before) + "\n" + dict_block + "\n" + "\n".join(after)
+
+# Loader.gd transform: `const shelters = [...]` -> `var shelters = [...]`.
+# GDScript consts can't be mutated, but the registry needs to append mod
+# shelter names at runtime. Only the one shelters line is affected; the
+# scene-path consts (const Cabin = "...", etc.) stay consts because
+# LoadScene's body references them by name directly. The prelude injection
+# handles mod scene paths without touching those consts.
+#
+# Also stashes a snapshot var `_rtv_vanilla_shelters` so the registry can
+# compute "what's vanilla vs mod" for integrity checks / revert.
+func _rtv_rewrite_loader_shelters(source: String) -> String:
+	var lines: PackedStringArray = source.split("\n")
+	var re := RegEx.new()
+	# Match: optional leading whitespace (shouldn't happen at top level but
+	# tolerate), "const shelters" followed by the rest of the declaration.
+	re.compile('^(\\s*)const\\s+shelters\\s*(=.*)$')
+	var changed := false
+	for i in lines.size():
+		var line: String = lines[i]
+		var m := re.search(line)
+		if m == null:
+			continue
+		lines[i] = m.get_string(1) + "var shelters " + m.get_string(2)
+		changed = true
+	if not changed:
+		return source
+	return "\n".join(lines)
+
+# Function-body prelude injection dispatcher. Returns lines array (may be
+# unchanged). Called after the rename pass -- the target function has
+# already been renamed to _rtv_vanilla_<Name>, so we look for the renamed
+# signature.
+func _rtv_apply_prelude_injections(filename: String, lines: PackedStringArray, rename_prefix: String) -> PackedStringArray:
+	match filename:
+		"Loader.gd":
+			return _rtv_inject_prelude(lines, rename_prefix + "LoadScene", _rtv_loader_loadscene_prelude())
+		"FishPool.gd":
+			return _rtv_inject_prelude(lines, rename_prefix + "_ready", _rtv_fishpool_ready_prelude())
+		_:
+			return lines
+
+# Finds `func <func_name>(` at top level and inserts `prelude_lines` right
+# after its signature (before any body code). The function was already
+# renamed by the rewriter's pass 1, so callers pass the renamed name.
+# If the function has multiple blank lines at the top of its body, the
+# prelude slots in before them.
+func _rtv_inject_prelude(lines: PackedStringArray, func_name: String, prelude_lines: PackedStringArray) -> PackedStringArray:
+	var needle := "func " + func_name + "("
+	var target := -1
+	for i in lines.size():
+		var line: String = lines[i]
+		if line.begins_with(needle):
+			target = i
+			break
+	if target < 0:
+		_log_info("[RTVCodegen] prelude injection: func %s not found (was it not parsed as hookable?)" % func_name)
+		return lines
+	var out: Array = []
+	for i in lines.size():
+		out.append(lines[i])
+		if i == target:
+			for pl in prelude_lines:
+				out.append(pl)
+	var result := PackedStringArray()
+	result.resize(out.size())
+	for k in out.size():
+		result[k] = out[k]
+	return result
+
+# The LoadScene prelude. Checks the mod + override scene-path dicts at
+# the top of the function; on match, sets `scenePath` and applies the
+# mod's gameData flag overrides. Does NOT early-return.
+#
+# Design rationale: vanilla LoadScene's structure is:
+#     FadeInLoading(); gameData.freeze = true
+#     <label visibility setup>
+#     if scene == "Cabin": scenePath = Cabin; <flags>
+#     elif ...
+#     <tail> await timer; get_tree().change_scene_to_file(scenePath)
+#
+# We insert right after the func signature, so our prelude runs BEFORE
+# the fade/label setup AND the if-elif. If the scene name is a mod
+# registration, we set scenePath + flags here. The if-elif then falls
+# through with no match (mod names aren't vanilla), and the tail code
+# picks up our scenePath for change_scene_to_file. Vanilla fade/label
+# setup still runs (harmless side-effects we want).
+#
+# This means mod scene_paths registrations:
+#   - reuse vanilla's full loading flow (fade, label, timer, scene change)
+#   - can override vanilla scenes (override takes precedence in the check)
+#   - don't need to replicate any vanilla scene-change logic
+func _rtv_loader_loadscene_prelude() -> PackedStringArray:
+	var p := PackedStringArray()
+	p.append("\t# --- Metro mod loader: scene_paths registry prelude ---")
+	p.append("\tvar _rtv_scene_entry: Dictionary = {}")
+	p.append("\tif _rtv_override_scene_paths.has(scene):")
+	p.append("\t\t_rtv_scene_entry = _rtv_override_scene_paths[scene]")
+	p.append("\telif _rtv_mod_scene_paths.has(scene):")
+	p.append("\t\t_rtv_scene_entry = _rtv_mod_scene_paths[scene]")
+	p.append("\tif not _rtv_scene_entry.is_empty():")
+	p.append("\t\tscenePath = _rtv_scene_entry.get(\"path\", \"\")")
+	# Apply gameData flags if the mod specified them. Defaults favor a
+	# generic non-shelter non-tutorial non-permadeath zone.
+	p.append("\t\tgameData.menu = _rtv_scene_entry.get(\"menu\", false)")
+	p.append("\t\tgameData.shelter = _rtv_scene_entry.get(\"shelter\", false)")
+	p.append("\t\tgameData.permadeath = _rtv_scene_entry.get(\"permadeath\", false)")
+	p.append("\t\tgameData.tutorial = _rtv_scene_entry.get(\"tutorial\", false)")
+	p.append("\t# Fall through: vanilla if-elif won't match mod names; the tail")
+	p.append("\t# runs change_scene_to_file(scenePath) with our path set above.")
+	return p
+
+func _rtv_inject_loader_registry(indent: String) -> String:
+	# Loader.gd registry appendix. Adds the two mod-scene-path dicts and a
+	# snapshot of the vanilla shelters list for integrity/revert.
+	#
+	# Note: _rtv_vanilla_shelters is captured at @onready time from the
+	# shelters var (which the const->var rewrite left populated with the
+	# vanilla list). The registry can diff shelters against this snapshot
+	# to tell vanilla entries apart from mod additions.
+	var I1 := indent
+	return "\n\n# --- Metro mod loader: Loader registry state ---\n" \
+		+ "var _rtv_mod_scene_paths: Dictionary = {}\n" \
+		+ "var _rtv_override_scene_paths: Dictionary = {}\n" \
+		+ "@onready var _rtv_vanilla_shelters: Array = shelters.duplicate()\n"
+
+# AISpawner.gd transform: rewrite each `agent = <name>` inside _ready() so
+# the assignment goes through the _rtv_resolve_ai_type helper (defined in
+# the registry appendix). That helper reads Engine.get_meta(
+# "_rtv_ai_overrides", {}) to decide between the vanilla scene and any
+# mod-registered replacement for the current zone.
+#
+# Pattern matched: the exact 5-line block `if zone == Zone.Foo: agent = bar`
+# -- we search for leading-whitespace + `agent =` and rewrite it. Only
+# vanilla fields (bandit/guard/military/punisher) should trigger this; any
+# other `agent = <literal>` outside those cases is left alone.
+func _rtv_rewrite_aispawner_agent_assignments(source: String) -> String:
+	var lines: PackedStringArray = source.split("\n")
+	# Regex: optional indent, "agent" "=" then an identifier (the vanilla
+	# preloaded name) with optional trailing comment/whitespace.
+	var re := RegEx.new()
+	re.compile('^(\\s*)agent\\s*=\\s*(\\w+)\\s*(#.*)?$')
+	for i in lines.size():
+		var line: String = lines[i]
+		var m := re.search(line)
+		if m == null:
+			continue
+		var indent := m.get_string(1)
+		var name := m.get_string(2)
+		# Leave numeric / keyword RHS alone (won't happen in vanilla but be safe).
+		if name in ["true", "false", "null"]:
+			continue
+		lines[i] = "%sagent = _rtv_resolve_ai_type(zone, %s)" % [indent, name]
+	return "\n".join(lines)
+
+# FishPool._ready() prelude: appends mod-registered species to the local
+# `species: Array[PackedScene]` var BEFORE vanilla's random-spawn loop
+# picks from it. The registry stores a flat list in Engine meta; each
+# FishPool instance filters by its own node name (or "all" as a wildcard).
+#
+# Dedupe: if a mod registers the same scene twice (or another mod does too),
+# we don't re-append. Keeps the random-pick weight stable when the same
+# scene would otherwise multiply.
+func _rtv_fishpool_ready_prelude() -> PackedStringArray:
+	var p := PackedStringArray()
+	p.append("\t# --- Metro mod loader: fish_species registry prelude ---")
+	p.append("\tvar _rtv_mod_fish: Array = Engine.get_meta(\"_rtv_fish_species\", [])")
+	p.append("\tfor _rtv_fe in _rtv_mod_fish:")
+	p.append("\t\tif _rtv_fe.pool_id == \"all\" or _rtv_fe.pool_id == name:")
+	p.append("\t\t\tif not (_rtv_fe.scene in species):")
+	p.append("\t\t\t\tspecies.append(_rtv_fe.scene)")
+	return p
+
+func _rtv_inject_aispawner_registry(indent: String) -> String:
+	# AISpawner.gd registry appendix. Adds the resolver helper used by the
+	# rewritten `agent = _rtv_resolve_ai_type(zone, vanilla)` assignments.
+	# The override lookup goes through Engine metadata rather than node
+	# instance state because AISpawner is a per-scene Node3D -- there are
+	# multiple instances, and mods write to one shared registry that every
+	# spawner reads on _ready.
+	#
+	# Zone keys are the string form of the Zone enum (e.g. "Area05"). The
+	# resolver uses Zone.keys()[zone_int] to convert the enum value to its
+	# declared name, matching what the registry stores.
+	var I1 := indent
+	var out := "\n\n# --- Metro mod loader: AI type override resolver ---\n"
+	out += "func _rtv_resolve_ai_type(z: int, vanilla: Variant) -> Variant:\n"
+	out += I1 + "var overrides: Dictionary = Engine.get_meta(\"_rtv_ai_overrides\", {})\n"
+	out += I1 + "if overrides.is_empty():\n"
+	out += I1 + I1 + "return vanilla\n"
+	# Zone.keys() returns Array (untyped), so `:=` can't infer. Type
+	# explicitly for strict-mode GDScript parsers.
+	out += I1 + "var key: String = Zone.keys()[z]\n"
+	out += I1 + "if overrides.has(key):\n"
+	out += I1 + I1 + "return overrides[key]\n"
+	out += I1 + "return vanilla\n"
+	return out
 
 # Rewrite bare `super(` / `super (` in a line to `super.<method>(`. Preserves
 # the rest of the line verbatim. Skips `super.<something>(` (already explicit),
