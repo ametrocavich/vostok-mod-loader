@@ -119,13 +119,13 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 	# any overlay pack we mounted AFTER this archive -- e.g. an inline-hooks
 	# overlay whose entries overlap with this mod's archive paths.
 	if _filescope_mounted.has(full_path):
-		_log_info("  File-scope mount active -- skipping re-mount")
+		_log_debug("  File-scope mount active -- skipping re-mount")
 		_log_debug("  Mount path: " + mount_path)
 	elif not _try_mount_pack(mount_path):
 		_log_critical("Failed to mount: " + file_name + " (path: " + mount_path + ")")
 		return
 	else:
-		_log_info("  Mounted OK")
+		_log_debug("  Mounted OK")
 		_log_debug("  Mount path: " + mount_path)
 
 	if ext != "pck":
@@ -242,7 +242,7 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 			"is_early": is_early,
 		})
 		var early_tag := " [EARLY]" if is_early else ""
-		_log_info("  Autoload queued: " + autoload_name + " -> " + res_path + early_tag)
+		_log_debug("  Autoload queued: " + autoload_name + " -> " + res_path + early_tag)
 		_register_claim(res_path, mod_name, file_name, load_index)
 
 # Logging
@@ -401,13 +401,13 @@ func scan_and_register_archive_claims(archive_path: String, mod_name: String,
 	_mod_script_analysis[mod_name] = gd_analysis
 	_archive_file_sets[archive_file] = path_set
 
-	_log_info("  " + str(tracked_count) + " resource path(s)")
+	_log_debug("  " + str(tracked_count) + " resource path(s)")
 
 	if gd_analysis["total_gd_files"] > 0:
 		var override_count: int = (gd_analysis["take_over_literal_paths"] as Array).size() \
 				+ (gd_analysis["extends_paths"] as Array).size()
 		var dynamic_tag := " [uses overrideScript()]" if gd_analysis["uses_dynamic_override"] else ""
-		_log_info("  " + str(gd_analysis["total_gd_files"]) + " .gd file(s), "
+		_log_debug("  " + str(gd_analysis["total_gd_files"]) + " .gd file(s), "
 				+ str(override_count) + " override target(s)" + dynamic_tag)
 
 # GDScript source analysis
@@ -550,7 +550,7 @@ func _instantiate_autoload(mod_name: String, autoload_name: String, res_path: St
 			return
 		instance.name = autoload_name
 		get_tree().root.add_child(instance)
-		_log_info("Autoload instantiated (scene): " + autoload_name + " [" + mod_name + "]")
+		_log_debug("Autoload instantiated (scene): " + autoload_name + " [" + mod_name + "]")
 		return
 
 	if resource is GDScript:
@@ -567,7 +567,7 @@ func _instantiate_autoload(mod_name: String, autoload_name: String, res_path: St
 		if inst is Node:
 			(inst as Node).name = autoload_name
 			get_tree().root.add_child(inst as Node)
-			_log_info("Autoload instantiated (script): " + autoload_name + " [" + mod_name + "]")
+			_log_debug("Autoload instantiated (script): " + autoload_name + " [" + mod_name + "]")
 			return
 		_log_warning("Autoload is not a Node -- not added to tree: " + autoload_name
 				+ " [" + mod_name + "]")

@@ -100,21 +100,23 @@ func _record_hidden_folder(mods_dir: String, dir_name: String) -> void:
 		_hidden_folder_ids[entry["mod_id"]] = true
 
 # Surface scanner findings in the boot log alongside the discovery summary.
-# Logged at INFO -- findings are *disclosures* of "this mod uses these
+# Logged at DEBUG -- findings are *disclosures* of "this mod uses these
 # notable APIs", not warnings of malice. The UI surfaces the same data
 # as a tappable "Uses N notable APIs" indicator on the mod row; the user
 # decides whether the mod's stated purpose matches what it actually does.
+# Dev mode enables this dump for deep investigation; regular users
+# already see the relevant information in the UI.
 func _log_security_findings(entry: Dictionary) -> void:
 	var findings: Array = entry.get("security_findings", [])
 	if findings.is_empty():
 		return
-	_log_info("[ModScan] %s uses %d notable API(s)" \
+	_log_debug("[ModScan] %s uses %d notable API(s)" \
 			% [entry["file_name"], findings.size()])
 	for f: Dictionary in findings:
 		var loc: String = f["file"]
 		if int(f.get("line", 0)) > 0:
 			loc += ":" + str(f["line"])
-		_log_info("  %s @ %s -- %s" \
+		_log_debug("  %s @ %s -- %s" \
 				% [f["rule"], loc, f.get("preview", "")])
 
 func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, ext: String) -> Dictionary:
