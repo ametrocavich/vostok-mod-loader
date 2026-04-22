@@ -53,7 +53,7 @@ v3.0.1 uses an opt-in model: **a modlist that declares nothing produces no wrap,
 | `[registry]` in `mod.txt` | Turn on the registry (see [Registry](Registry)) |
 | `[script_extend]` in `mod.txt` | Chain-by-extends overrides |
 
-The rewrite surface equals the union of those triggers. No declarations -> empty surface -> no hook pack file is written -- `[RTVCodegen] No opt-in declarations ... hook pack generation skipped` logs at boot. That's the v2.1.0-equivalent behavior users expect from a legacy loadout.
+The rewrite surface equals the union of those triggers. When no user mod declares anything, the loader logs `[RTVCodegen] No user opt-in declarations ([hooks] / .hook() / [registry]) -- user mods run against unmodified vanilla (v2.1.0-equivalent). Pack contains core hooks only.` at boot. User mods' vanilla targets stay byte-identical; the pack contains only a core-owned wrap on `Menu.gd :: _ready` that injects the launcher's "Mods" button into the main menu. When no mods are loaded at all, pack generation is skipped entirely (no file written).
 
 ### `[hooks]` escape hatch
 
@@ -251,7 +251,7 @@ Each rewritten vanilla script ships as three zip entries in the hook pack:
 
 This entire recipe lives in `user://modloader_hooks/framework_pack.zip`. The pack mounts with `replace_files=true`, which makes our entries win over the PCK's same-path entries in Godot's VFS layering.
 
-Under the cutover, **the pack file isn't written at all** when the wrap surface is empty (`[RTVCodegen] No opt-in declarations ... hook pack generation skipped`). Static-init preempt also short-circuits when `pass_state` has no `hook_pack_wrapped_paths` key.
+Under the cutover, pack generation is skipped entirely when no mods are loaded. When mods are loaded but none opt into the hook surface, the pack still ships -- but it contains only the core-owned wrap on `Menu.gd :: _ready` for the launcher's main-menu "Mods" button. `hook_pack_wrapped_paths` in pass state narrows to just `res://Scripts/Menu.gd`, so next session's static-init preempt touches that single script and nothing else. User mods' targets stay unmodified.
 
 ## Activation + fallback
 

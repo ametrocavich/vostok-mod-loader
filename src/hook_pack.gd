@@ -111,7 +111,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	_seed_core_hooks()
 
 	if user_wrap_empty:
-		_log_info("[RTVCodegen] No user opt-in declarations ([hooks] / .hook() / [registry]) -- user mods run against unmodified vanilla (v2.1.0-equivalent). Pack contains core hooks only.")
+		_log_info("[RTVCodegen] No user opt-in declarations ([hooks] / .hook() / [registry]) -- user mods' vanilla targets run unmodified (v2.1.0-equivalent). Pack contains core hooks only.")
 
 	var script_paths: Array[String] = _enumerate_game_scripts()
 	if script_paths.is_empty():

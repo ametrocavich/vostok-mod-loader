@@ -155,7 +155,7 @@ See [Hooks](Hooks) for details.
 
 Orchestrates the full rewrite pipeline:
 
-1. **Opt-in gate**: if `_hooked_methods` is empty and no mod declared `[registry]`, early-return. No pack file is written, no static-init preempt next session. Legacy loadouts take this path.
+1. **Opt-in gate**: if no mods are loaded, early-return (no pack file written). If mods are loaded but `_hooked_methods` is empty and no mod declared `[registry]`, log the "no user opt-in declarations" banner and proceed with a minimal pack containing only the core-owned `Menu.gd :: _ready` wrap (launcher main-menu button injection). User mods' vanilla targets stay unmodified either way.
 2. Verify GDSC tokenizer version (STABILITY canary B)
 3. Enumerate game scripts
 4. Pre-read mod sibling scripts (before `ZIPPacker.open` invalidates existing VFS handles)
