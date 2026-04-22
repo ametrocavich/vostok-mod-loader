@@ -869,11 +869,18 @@ func _rtv_rewrite_bare_base(line: String, method_name: String) -> String:
 			while j < head.length() and (head[j] == " " or head[j] == "\t"):
 				j += 1
 			if prev_ok and j < head.length() and head[j] == "(":
-				# Chained-call detection: find matching `)` for base(...),
+				# Chained-call detection: find matching `)` for base(),
 				# peek past it for `.<ident>(`. If present, rewrite the
-				# entire `base(...).<ident>` region to `super.<ident>`.
+				# entire `base().<ident>` region to `super.<ident>`.
+				# Only empty-parens base() gets the chain absorb -- with
+				# args, the arg is meaningful (call parent's enclosing
+				# method with it) and must be preserved. `base(arg).foo(x)`
+				# falls through to the plain `super.<enclosing>(arg)` path,
+				# which yields `super.<enclosing>(arg).foo(x)` -- still
+				# semantically correct (Godot 4's super() returns the
+				# parent method's value so chaining works).
 				var close_idx := _rtv_find_matching_paren(head, j)
-				if close_idx > 0:
+				if close_idx == j + 1 and close_idx > 0:
 					var k := close_idx + 1
 					if k < head.length() and head[k] == ".":
 						var name_start := k + 1

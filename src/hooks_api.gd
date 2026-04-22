@@ -85,13 +85,16 @@ func add_hook(script_path: String, method_name: String, callback: Callable, is_b
 	# Enroll the path into _hooked_methods so the wrap surface picks it up.
 	# Upstream godot-mod-loader accepts both fully-qualified res:// paths and
 	# bare filenames; normalize bare filenames to res://Scripts/<file> to
-	# match the game's script layout.
+	# match the game's script layout. Mask keys are lowercase (hook_pack.gd
+	# checks `fe["name"].to_lower()` against the mask), so lowercase the
+	# method name on write -- godot-mod-loader callers pass vanilla method
+	# names preserving source casing (e.g. "UpdateToolTip").
 	var res_path := script_path
 	if not res_path.begins_with("res://"):
 		res_path = "res://Scripts/" + script_path.get_file()
 	if not _hooked_methods.has(res_path):
 		_hooked_methods[res_path] = {}
-	(_hooked_methods[res_path] as Dictionary)[method_name] = true
+	(_hooked_methods[res_path] as Dictionary)[method_name.to_lower()] = true
 	return hook(hook_name, callback, 100)
 
 ## Remove a hook by ID.
