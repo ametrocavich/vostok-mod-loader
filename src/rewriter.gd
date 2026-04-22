@@ -962,6 +962,15 @@ func _rtv_autofix_legacy_syntax(source: String) -> Dictionary:
 # Skips `self.base(`, `<ident>.base(`, etc. -- only rewrites standalone `base(`
 # (possibly preceded by `=`, `+`, `(`, `[`, `,`, or whitespace). Per-line so
 # strings/comments past a `#` stay unchanged.
+#
+# Chained-call form `base(...).<chained>(<args>)`: Godot 3's `base()` returned
+# the parent instance, so mods wrote `base().Foo(x)` to call parent's Foo.
+# A plain substitution ("super.<enclosing>") would yield
+# "super.<enclosing>().Foo(x)" -- syntactically valid but chained onto the
+# void return of enclosing's super call, which is wrong (parent's Foo never
+# runs with the passed args, and the chained .Foo(x) fires on null). We
+# detect the chain and rewrite to "super.<chained>(<args>)", which is how
+# Godot 4 expresses "call parent's <chained> method" directly.
 func _rtv_rewrite_bare_base(line: String, method_name: String) -> String:
 	var comment_start := line.find("#")
 	var head: String = line if comment_start < 0 else line.substr(0, comment_start)
@@ -990,12 +999,75 @@ func _rtv_rewrite_bare_base(line: String, method_name: String) -> String:
 			while j < head.length() and (head[j] == " " or head[j] == "\t"):
 				j += 1
 			if prev_ok and j < head.length() and head[j] == "(":
+				# Chained-call detection: find matching `)` for base(...),
+				# peek past it for `.<ident>(`. If present, rewrite the
+				# entire `base(...).<ident>` region to `super.<ident>`.
+				var close_idx := _rtv_find_matching_paren(head, j)
+				if close_idx > 0:
+					var k := close_idx + 1
+					if k < head.length() and head[k] == ".":
+						var name_start := k + 1
+						var name_end := name_start
+						while name_end < head.length() \
+								and _rtv_is_ident_char(head[name_end]):
+							name_end += 1
+						if name_end > name_start \
+								and name_end < head.length() \
+								and head[name_end] == "(":
+							var chained_name: String = head.substr(name_start, name_end - name_start)
+							rewritten += "super." + chained_name
+							i = name_end  # advance to chained "("
+							continue
+				# Plain base(args) -> super.<enclosing>(args).
 				rewritten += "super." + method_name
 				i += 4
 				continue
 		rewritten += head[i]
 		i += 1
 	return rewritten + tail
+
+# Scans from an open paren at open_idx and returns the index of the matching
+# close paren, or -1 if not found. Tracks double-quoted strings so parens
+# inside "..." don't affect depth. Used by _rtv_rewrite_bare_base to span
+# `base(...)` before checking for a chained `.<method>(...)` call.
+func _rtv_find_matching_paren(s: String, open_idx: int) -> int:
+	if open_idx >= s.length() or s[open_idx] != "(":
+		return -1
+	var depth := 0
+	var in_string := false
+	var i := open_idx
+	while i < s.length():
+		var c := s[i]
+		if in_string:
+			if c == "\\" and i + 1 < s.length():
+				i += 2
+				continue
+			if c == "\"":
+				in_string = false
+		else:
+			if c == "\"":
+				in_string = true
+			elif c == "(":
+				depth += 1
+			elif c == ")":
+				depth -= 1
+				if depth == 0:
+					return i
+		i += 1
+	return -1
+
+# True for identifier-continuation chars (ASCII [A-Za-z0-9_]). Non-ASCII
+# identifiers aren't legal in GDScript so ASCII coverage is sufficient.
+func _rtv_is_ident_char(c: String) -> bool:
+	if c == "_":
+		return true
+	if c >= "a" and c <= "z":
+		return true
+	if c >= "A" and c <= "Z":
+		return true
+	if c >= "0" and c <= "9":
+		return true
+	return false
 
 # Comment out `<var>.reload()` lines inside mod helper functions that also
 # call `take_over_path`. Rationale: mod override helpers (RTVCoop's _override,
