@@ -59,6 +59,12 @@ func collect_mod_metadata() -> Array[Dictionary]:
 	return entries
 
 func _build_archive_entry(mods_dir: String, file_name: String, ext: String) -> Dictionary:
+	# Breadcrumb: identifies the mod Godot's UTF-8 C++ warning (printed
+	# unconditionally for non-UTF8 bytes in mod.txt / .gd / pck paths) is
+	# about to complain about. Without this the user sees "Unicode parsing
+	# error, some characters were replaced with ..." and can't tell which
+	# mod tripped it.
+	_log_info("[ModScan] inspecting " + file_name)
 	var full_path := mods_dir.path_join(file_name)
 	if ext == "pck":
 		_last_mod_txt_status = "pck"
@@ -71,6 +77,8 @@ func _build_archive_entry(mods_dir: String, file_name: String, ext: String) -> D
 	return entry
 
 func _build_folder_entry(mods_dir: String, dir_name: String) -> Dictionary:
+	# See _build_archive_entry for rationale.
+	_log_info("[ModScan] inspecting " + dir_name + " [folder]")
 	var folder_path := mods_dir.path_join(dir_name)
 	var cfg: ConfigFile = read_mod_config_folder(folder_path)
 	var entry := _entry_from_config(cfg, dir_name, folder_path, "folder")
