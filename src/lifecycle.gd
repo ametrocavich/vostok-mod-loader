@@ -150,9 +150,6 @@ func _finish_with_existing_mounts() -> void:
 		_log_override_timing_warnings()
 		_print_conflict_summary()
 		_write_conflict_report()
-	# take_over_path runs AFTER mod autoloads have registered their hooks.
-	_activate_hooked_scripts()
-	_connect_node_swap()
 	_emit_frameworks_ready()
 	_delete_heartbeat()
 	if not _filescope_mounted.is_empty() or not _archive_file_sets.is_empty() or _pending_autoloads.size() > 0:
@@ -171,8 +168,6 @@ func _finish_single_pass() -> void:
 		_log_override_timing_warnings()
 		_print_conflict_summary()
 		_write_conflict_report()
-	_activate_hooked_scripts()
-	_connect_node_swap()
 	_emit_frameworks_ready()
 	_delete_heartbeat()
 	if not _archive_file_sets.is_empty() or _pending_autoloads.size() > 0:
@@ -250,8 +245,6 @@ func _run_pass_2() -> void:
 		_log_override_timing_warnings()
 		_print_conflict_summary()
 		_write_conflict_report()
-	_activate_hooked_scripts()
-	_connect_node_swap()
 	_emit_frameworks_ready()
 	_delete_heartbeat()
 	# Pass 2 reached cleanup -- clear the dirty marker so next launch knows we

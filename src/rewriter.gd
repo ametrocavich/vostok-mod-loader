@@ -6,7 +6,7 @@
 ## dispatch wrapper is appended at the original name. The wrappers fire
 ## pre/replace/post/callback hooks and call the renamed body.
 ##
-## v2.4.0: mod-subclass rewrite removed (was the old Step C). Mods that
+## v3.0.1: mod-subclass rewrite removed (was the old Step C). Mods that
 ## extend wrapped vanilla now compose via Godot's native extends
 ## resolution -- no _rtv_mod_ prefix, no rewrite of mod source.
 ##
@@ -178,136 +178,6 @@ func _rtv_parse_script(filename: String, source: String) -> Dictionary:
 
 	return script
 
-# DEAD CODE (verified 2026-04-19): zero callers. Grep `_rtv_generate_override(`
-# returns only this definition. Was the codegen for the original extends-wrapper
-# path; the source-rewrite era replaced it with _rtv_dispatch_inline_src below.
-# Kept as scaffolding in case the [rtvmodlib] needs= -> Framework<X>.gd path
-# ever needs to be revived. Remove with Step E.
-#
-# Produce one Framework<Name>.gd source. Three method templates (matching
-# generate_override in the Rust):
-#   _ready   -- has a _rtv_ready_done flag so super() doesn't double-fire
-#   non-void -- returns a value
-#   void    -- engine lifecycle methods, or bodies with no `return <expr>`
-func _rtv_generate_override(script: Dictionary) -> String:
-	var out := ""
-	var prefix := _rtv_script_hook_prefix(script["filename"])
-	out += 'extends "%s"\n' % script["path"]
-
-	var has_ready := false
-	for func_entry in script["functions"]:
-		if func_entry["name"] == "_ready" and not func_entry["is_static"]:
-			has_ready = true
-			break
-	if has_ready:
-		out += "var _rtv_ready_done = false\n"
-	out += "\n"
-
-	for func_entry in script["functions"]:
-		if func_entry["is_static"]:
-			continue
-
-		var method_name: String = func_entry["name"]
-		var hook_base := "%s-%s" % [prefix, method_name.to_lower()]
-		var params: String = func_entry["params"]
-		var param_names_str := ", ".join(func_entry["param_names"])
-
-		var sig: String
-		if params.is_empty():
-			sig = "func %s():" % method_name
-		else:
-			sig = "func %s(%s):" % [method_name, params]
-
-		var super_call: String
-		if param_names_str.is_empty():
-			super_call = "super()"
-		else:
-			super_call = "super(%s)" % param_names_str
-
-		var args_array: String
-		if param_names_str.is_empty():
-			args_array = "[]"
-		else:
-			args_array = "[%s]" % param_names_str
-
-		var is_engine_void: bool = method_name in RTV_ENGINE_VOID_METHODS
-		var is_void: bool = is_engine_void or not bool(func_entry["has_return_value"])
-		var is_ready: bool = method_name == "_ready"
-
-		if is_ready:
-			out += "%s\n" % sig
-			out += "\tvar _lib = Engine.get_meta(\"RTVModLib\") if Engine.has_meta(\"RTVModLib\") else null\n"
-			out += "\tif !_lib:\n"
-			out += "\t\tif not _rtv_ready_done:\n"
-			out += "\t\t\t%s\n" % super_call
-			out += "\t\t\t_rtv_ready_done = true\n"
-			out += "\t\treturn\n"
-			out += "\t_lib._caller = self\n"
-			out += "\t_lib._dispatch(\"%s-pre\", %s)\n" % [hook_base, args_array]
-			out += "\tvar _repl = _lib._get_hooks(\"%s\")\n" % hook_base
-			out += "\tif _repl.size() > 0:\n"
-			out += "\t\tvar _prev_skip = _lib._skip_super\n"
-			out += "\t\t_lib._skip_super = false\n"
-			out += "\t\t_repl[0].callv(%s)\n" % args_array
-			out += "\t\tvar _did_skip = _lib._skip_super\n"
-			out += "\t\t_lib._skip_super = _prev_skip\n"
-			out += "\t\tif !_did_skip and not _rtv_ready_done:\n"
-			out += "\t\t\t%s\n" % super_call
-			out += "\t\t\t_rtv_ready_done = true\n"
-			out += "\telse:\n"
-			out += "\t\tif not _rtv_ready_done:\n"
-			out += "\t\t\t%s\n" % super_call
-			out += "\t\t\t_rtv_ready_done = true\n"
-			out += "\t_lib._dispatch(\"%s-post\", %s)\n" % [hook_base, args_array]
-			out += "\t_lib._dispatch_deferred(\"%s-callback\", %s)\n\n" % [hook_base, args_array]
-		elif not is_void:
-			out += "%s\n" % sig
-			out += "\tvar _lib = Engine.get_meta(\"RTVModLib\") if Engine.has_meta(\"RTVModLib\") else null\n"
-			out += "\tif !_lib:\n"
-			out += "\t\treturn %s\n" % super_call
-			out += "\t_lib._caller = self\n"
-			out += "\t_lib._dispatch(\"%s-pre\", %s)\n" % [hook_base, args_array]
-			out += "\tvar _result\n"
-			out += "\tvar _repl = _lib._get_hooks(\"%s\")\n" % hook_base
-			out += "\tif _repl.size() > 0:\n"
-			out += "\t\tvar _prev_skip = _lib._skip_super\n"
-			out += "\t\t_lib._skip_super = false\n"
-			out += "\t\tvar _replret = _repl[0].callv(%s)\n" % args_array
-			out += "\t\tvar _did_skip = _lib._skip_super\n"
-			out += "\t\t_lib._skip_super = _prev_skip\n"
-			out += "\t\tif _did_skip:\n"
-			out += "\t\t\t_result = _replret\n"
-			out += "\t\telse:\n"
-			out += "\t\t\t_result = %s\n" % super_call
-			out += "\telse:\n"
-			out += "\t\t_result = %s\n" % super_call
-			out += "\t_lib._dispatch(\"%s-post\", %s)\n" % [hook_base, args_array]
-			out += "\t_lib._dispatch_deferred(\"%s-callback\", %s)\n" % [hook_base, args_array]
-			out += "\treturn _result\n\n"
-		else:
-			out += "%s\n" % sig
-			out += "\tvar _lib = Engine.get_meta(\"RTVModLib\") if Engine.has_meta(\"RTVModLib\") else null\n"
-			out += "\tif !_lib:\n"
-			out += "\t\t%s\n" % super_call
-			out += "\t\treturn\n"
-			out += "\t_lib._caller = self\n"
-			out += "\t_lib._dispatch(\"%s-pre\", %s)\n" % [hook_base, args_array]
-			out += "\tvar _repl = _lib._get_hooks(\"%s\")\n" % hook_base
-			out += "\tif _repl.size() > 0:\n"
-			out += "\t\tvar _prev_skip = _lib._skip_super\n"
-			out += "\t\t_lib._skip_super = false\n"
-			out += "\t\t_repl[0].callv(%s)\n" % args_array
-			out += "\t\tvar _did_skip = _lib._skip_super\n"
-			out += "\t\t_lib._skip_super = _prev_skip\n"
-			out += "\t\tif !_did_skip:\n"
-			out += "\t\t\t%s\n" % super_call
-			out += "\telse:\n"
-			out += "\t\t%s\n" % super_call
-			out += "\t_lib._dispatch(\"%s-post\", %s)\n" % [hook_base, args_array]
-			out += "\t_lib._dispatch_deferred(\"%s-callback\", %s)\n\n" % [hook_base, args_array]
-
-	return out
-
 # Inline source-rewrite generator (Option C / Phase 1 Step A).
 #
 # Produces the full rewritten source of a vanilla script where each hookable
@@ -315,18 +185,18 @@ func _rtv_generate_override(script: Dictionary) -> String:
 # appended that dispatches through RTVModLib hooks, then calls the renamed
 # original.
 #
-# Unlike _rtv_generate_override which produces a separate wrapper class that
-# extends vanilla, this rewrites the vanilla script itself. When shipped at
-# res://Scripts/<Name>.gd via a hook pack, it becomes the script Godot compiles
-# for that path -- no extends chain, no class_name registry asymmetry, no bug
-# #83542 regardless of what mods do with take_over_path.
+# Rewrites the vanilla script itself rather than generating a separate
+# wrapper class. When shipped at res://Scripts/<Name>.gd via a hook pack,
+# it becomes the script Godot compiles for that path -- no extends chain,
+# no class_name registry asymmetry, no bug #83542 regardless of what mods
+# do with take_over_path.
 #
 # Caller MUST pass pristine vanilla source (e.g. from .gdc bytecode via
 # _read_vanilla_source / _detokenize_script). Passing already-rewritten source
 # produces duplicate-function parse errors.
 
 func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask: Dictionary = {}) -> String:
-	# method_mask (v2.4.0): Dictionary[method_name, true] restricting which
+	# method_mask (v3.0.1): Dictionary[method_name, true] restricting which
 	# methods get renamed + wrapped. Empty = wrap every non-static method
 	# (used for REGISTRY_TARGETS where whole-script injection is needed).
 	# Non-empty = wrap only declared methods; matches godot-mod-loader's
@@ -962,6 +832,15 @@ func _rtv_autofix_legacy_syntax(source: String) -> Dictionary:
 # Skips `self.base(`, `<ident>.base(`, etc. -- only rewrites standalone `base(`
 # (possibly preceded by `=`, `+`, `(`, `[`, `,`, or whitespace). Per-line so
 # strings/comments past a `#` stay unchanged.
+#
+# Chained-call form `base(...).<chained>(<args>)`: Godot 3's `base()` returned
+# the parent instance, so mods wrote `base().Foo(x)` to call parent's Foo.
+# A plain substitution ("super.<enclosing>") would yield
+# "super.<enclosing>().Foo(x)" -- syntactically valid but chained onto the
+# void return of enclosing's super call, which is wrong (parent's Foo never
+# runs with the passed args, and the chained .Foo(x) fires on null). We
+# detect the chain and rewrite to "super.<chained>(<args>)", which is how
+# Godot 4 expresses "call parent's <chained> method" directly.
 func _rtv_rewrite_bare_base(line: String, method_name: String) -> String:
 	var comment_start := line.find("#")
 	var head: String = line if comment_start < 0 else line.substr(0, comment_start)
@@ -990,12 +869,82 @@ func _rtv_rewrite_bare_base(line: String, method_name: String) -> String:
 			while j < head.length() and (head[j] == " " or head[j] == "\t"):
 				j += 1
 			if prev_ok and j < head.length() and head[j] == "(":
+				# Chained-call detection: find matching `)` for base(),
+				# peek past it for `.<ident>(`. If present, rewrite the
+				# entire `base().<ident>` region to `super.<ident>`.
+				# Only empty-parens base() gets the chain absorb -- with
+				# args, the arg is meaningful (call parent's enclosing
+				# method with it) and must be preserved. `base(arg).foo(x)`
+				# falls through to the plain `super.<enclosing>(arg)` path,
+				# which yields `super.<enclosing>(arg).foo(x)` -- still
+				# semantically correct (Godot 4's super() returns the
+				# parent method's value so chaining works).
+				var close_idx := _rtv_find_matching_paren(head, j)
+				if close_idx == j + 1 and close_idx > 0:
+					var k := close_idx + 1
+					if k < head.length() and head[k] == ".":
+						var name_start := k + 1
+						var name_end := name_start
+						while name_end < head.length() \
+								and _rtv_is_ident_char(head[name_end]):
+							name_end += 1
+						if name_end > name_start \
+								and name_end < head.length() \
+								and head[name_end] == "(":
+							var chained_name: String = head.substr(name_start, name_end - name_start)
+							rewritten += "super." + chained_name
+							i = name_end  # advance to chained "("
+							continue
+				# Plain base(args) -> super.<enclosing>(args).
 				rewritten += "super." + method_name
 				i += 4
 				continue
 		rewritten += head[i]
 		i += 1
 	return rewritten + tail
+
+# Scans from an open paren at open_idx and returns the index of the matching
+# close paren, or -1 if not found. Tracks double-quoted strings so parens
+# inside "..." don't affect depth. Used by _rtv_rewrite_bare_base to span
+# `base(...)` before checking for a chained `.<method>(...)` call.
+func _rtv_find_matching_paren(s: String, open_idx: int) -> int:
+	if open_idx >= s.length() or s[open_idx] != "(":
+		return -1
+	var depth := 0
+	var in_string := false
+	var i := open_idx
+	while i < s.length():
+		var c := s[i]
+		if in_string:
+			if c == "\\" and i + 1 < s.length():
+				i += 2
+				continue
+			if c == "\"":
+				in_string = false
+		else:
+			if c == "\"":
+				in_string = true
+			elif c == "(":
+				depth += 1
+			elif c == ")":
+				depth -= 1
+				if depth == 0:
+					return i
+		i += 1
+	return -1
+
+# True for identifier-continuation chars (ASCII [A-Za-z0-9_]). Non-ASCII
+# identifiers aren't legal in GDScript so ASCII coverage is sufficient.
+func _rtv_is_ident_char(c: String) -> bool:
+	if c == "_":
+		return true
+	if c >= "a" and c <= "z":
+		return true
+	if c >= "A" and c <= "Z":
+		return true
+	if c >= "0" and c <= "9":
+		return true
+	return false
 
 # Comment out `<var>.reload()` lines inside mod helper functions that also
 # call `take_over_path`. Rationale: mod override helpers (RTVCoop's _override,
@@ -1072,11 +1021,11 @@ func _rtv_strip_helper_reload(source: String) -> Dictionary:
 	return {"source": "\n".join(out), "stripped": stripped}
 
 # Produces ONE inline dispatch wrapper that calls _rtv_vanilla_<name>(...).
-#
-# Mirrors _rtv_generate_override's templates but:
-#  - calls _rtv_vanilla_<name>(...) instead of super(...)
-#  - no _rtv_ready_done flag (same class, no inheritance-chain double-fire)
-#  - prepends `await` when the vanilla method is a coroutine
+# The wrapper is appended to the rewritten vanilla source, co-existing with
+# the renamed body in the same class -- no inheritance chain, so no
+# _rtv_ready_done flag is needed. `await` is prepended when the vanilla
+# method is a coroutine so the wrapper doesn't return before the body
+# resolves.
 
 func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "\t") -> String:
 	var method_name: String = fe["name"]

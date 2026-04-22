@@ -7,7 +7,7 @@
 ## via source_code+reload / CACHE_MODE_IGNORE+take_over_path fallback so
 ## game code compiles against the wrapped source.
 ##
-## v2.4.0 cutover: zero declarations -> zero generation. No more inference
+## v3.0.1 cutover: zero declarations -> zero generation. No more inference
 ## from extends/take_over_path; no more mod-source rewriting (old Step C).
 ## A modlist that declares nothing behaves byte-identical to v2.1.0.
 
@@ -88,22 +88,30 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	if _loaded_mod_ids.is_empty():
 		return ""
 
+	# OPT-IN GATE (v3.0.1): user mods run against unmodified vanilla unless
+	# at least one mod declares [hooks] / .hook() / [registry]. Prior
+	# versions' inference triggers (extends_paths, take_over_literal_paths,
+	# pinned-always-wrap, REGISTRY_TARGETS-unconditional) all flowed
+	# through this code path; the opt-in check below is the single guard
+	# protecting legacy mods.
+	#
+	# Capture the user-declared-empty state BEFORE _seed_core_hooks runs,
+	# since the seed adds a core-owned entry (Menu.gd _ready for the
+	# main-menu Mods button) that would otherwise mask the empty check.
+	# Legacy-mode users get a minimal pack containing only the core wrap;
+	# the wrap only affects main-menu UI injection, not anything user mods
+	# would hook against, so it's effectively v2.1.0-equivalent from a
+	# mod-author perspective.
+	var user_wrap_empty: bool = _hooked_methods.is_empty() and not _any_mod_declared_registry
+
 	# Seed core-owned hook declarations (e.g. Menu.gd _ready for the main-menu
 	# Mods button). Done after the no-mods short-circuit above so pure-vanilla
-	# sessions generate no pack, but before the opt-in gate so the core wrap
-	# counts as a declaration whenever at least one mod is loaded.
+	# sessions generate no pack, but before the legacy-mode log below so the
+	# pack includes the core wrap when at least one mod is loaded.
 	_seed_core_hooks()
 
-	# OPT-IN GATE (v2.4.0): if no mod declared [hooks] / .hook() / [registry],
-	# skip hook pack generation entirely. The modlist behaves like v2.1.0 --
-	# no wrap, no rewrite, no pack written, no static-init preemption. This
-	# is the single guard protecting legacy mods: prior versions' inference
-	# triggers (extends_paths, take_over_literal_paths, pinned-always-wrap,
-	# REGISTRY_TARGETS-unconditional) all flowed through this code path, so
-	# returning here short-circuits them all.
-	if _hooked_methods.is_empty() and not _any_mod_declared_registry:
-		_log_info("[RTVCodegen] No opt-in declarations ([hooks] / .hook() / [registry]) -- hook pack generation skipped. Legacy mode: vanilla scripts run unmodified (v2.1.0-equivalent).")
-		return ""
+	if user_wrap_empty:
+		_log_info("[RTVCodegen] No user opt-in declarations ([hooks] / .hook() / [registry]) -- user mods' vanilla targets run unmodified (v2.1.0-equivalent). Pack contains core hooks only.")
 
 	var script_paths: Array[String] = _enumerate_game_scripts()
 	if script_paths.is_empty():
@@ -327,7 +335,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			continue
 
 		var parsed := _rtv_parse_script(filename, source)
-		# Per-method wrap mask (v2.4.0). A path with no mask entry wraps every
+		# Per-method wrap mask (v3.0.1). A path with no mask entry wraps every
 		# hookable method (used for REGISTRY_TARGETS where injection needs to
 		# see the whole script). A path WITH a mask wraps ONLY declared methods.
 		var path_mask: Dictionary = hook_mask.get(script_path, {}) as Dictionary
@@ -343,8 +351,6 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			if apply_mask and not path_mask.has(fe["name"].to_lower()):
 				continue
 			hookable_count += 1
-			if fe["name"] == "_ready":
-				_ready_is_coroutine_by_path[parsed["path"]] = bool(fe["is_coroutine"])
 		if hookable_count == 0:
 			if apply_mask:
 				_log_warning("[RTVCodegen] %s: declared [hooks] methods %s not found in vanilla -- skipping" \
@@ -409,7 +415,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		packed_filenames.append(filename)
 		_log_debug("[RTVCodegen] Rewrote Scripts/%s (%d hooks)" % [filename, hookable_count * 4])
 
-	# Step C (mod-subclass rewrite) removed in v2.4.0. Mods that extend
+	# Step C (mod-subclass rewrite) removed in v3.0.1. Mods that extend
 	# wrapped vanilla now compose via Godot's native extends resolution:
 	# their script sees the wrapped vanilla as its parent, super.method()
 	# calls land on the dispatch wrapper, hooks fire normally. Mods whose

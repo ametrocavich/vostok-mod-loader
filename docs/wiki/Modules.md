@@ -82,12 +82,9 @@ Runtime loading pipeline. Mounts archives, scans .gd files for safety issues, re
 
 Developer-mode diagnostics. Most functions only run when `_developer_mode = true`, except `_print_conflict_summary` + `_write_conflict_report` which always run but filter logs.
 
-Two-layer override verification:
+Override verification:
 
-- **Layer A** (`_verify_script_overrides` at [conflict_report.gd:53](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/conflict_report.gd#L53)): cache-level check. Loads each declared override target post-autoloads, inspects method names for `_rtv_mod_` / `_rtv_vanilla_` rename prefixes to classify the cache state
-- **Autoload instance check** at [conflict_report.gd:120-204](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/conflict_report.gd#L120): auto-swaps stale autoload instances via `node.set_script(load(ap))`. Matches RTVCoop's manual pattern and Godot's own `reload_scripts` at `gdscript.cpp:2419`
-- **Layer B** (`_on_override_probe_node_added`): one-shot-per-path instance probe armed on `get_tree().node_added`
-- **Tree-walk fallback** (`_probe_tree_walk`): scheduled 12s after `frameworks_ready`, full scene-tree walk for cases `node_added` missed
+- **`_verify_script_overrides`** at [conflict_report.gd:35](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/conflict_report.gd#L35): loads each declared override target post-autoloads and logs `resource_path` + source head. Operators read the heads to verify `take_over_path` landed. The v3.0.0 method-prefix classifier (Layer A/B, AutoloadInstanceProbe auto-swap, tree-walk fallback) was removed with Step C since there's no longer a `_rtv_mod_` in-source signal to classify against
 
 ## UI
 
@@ -118,17 +115,9 @@ Per-registry handlers talk to dicts the rewriter injected into vanilla scripts -
 
 ### [framework_wrappers.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/framework_wrappers.gd)
 
-**Mostly dead code.** The legacy `[rtvmodlib] needs= -> Framework<X>.gd subclass -> node_added` path. Source-rewrite replaced it.
+Single-function file containing `_rtv_collect_nodes_by_class` -- a scene-tree walker that finds nodes whose attached script (or any ancestor in its `extends` chain) carries a given `class_name`. Used by hook_pack.gd's post-apply verification.
 
-Live:
-- `_collect_needed_from_mods` -- still parses `[rtvmodlib] needs=` across enabled mods
-- `_rtv_collect_nodes_by_class` -- tree walk used by post-activation IXP-VERIFY probe in hook_pack
-
-Dead (marked with "DEAD-LOOP" / "DEAD CODE" comments, verified 2026-04-19):
-- `_activate_hooked_scripts` -- body loop never enters `_register_override` because `Framework<X>.gd` files are no longer generated
-- `_register_override`, `_connect_node_swap`, `_on_node_added`, `_deferred_swap` -- chain never fires
-
-Scheduled for removal; kept as scaffolding in case the Framework-subclass path ever needs revival.
+The legacy extends-wrapper pipeline (`[rtvmodlib] needs=` -> `Framework<X>.gd` subclass generation -> `node_added` swap / `_activate_hooked_scripts` / `_register_override` / `_connect_node_swap` / `_on_node_added` / `_deferred_swap`) was removed in v3.0.1 -- dead code under the source-rewrite model.
 
 ## Codegen pipeline
 
@@ -150,15 +139,15 @@ PCK introspection. Parses the game's `RTV.pck` file table to enumerate every `re
 
 ### [rewriter.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter.gd)
 
-Source-rewrite codegen. Given detokenized vanilla source + a parse structure:
+Source-rewrite codegen for vanilla scripts in the opt-in wrap surface. Given detokenized vanilla source + a parse structure + a per-method wrap mask:
 
-- Renames each non-static method `Foo` to `_rtv_vanilla_Foo` (or `_rtv_mod_Foo` for mod subclasses)
+- Renames each non-static method in the mask from `Foo` to `_rtv_vanilla_Foo`
 - Appends a dispatch wrapper at the original name that fires pre/replace/post/callback hooks then calls the renamed body
-- Rewrites bare `super()` inside renamed bodies to `super.<orig_name>()` so the parent's dispatch wrapper resolves (Gotcha #2 in Limitations)
-- Autofixes legacy GDScript 3 syntax: bodyless blocks get a `pass`, `tool`/`onready var`/`export var` get the `@` annotation
-- For `Database.gd`: converts top-level `const X = preload(...)` into a `_rtv_vanilla_scenes` dict entry, injects `_get()` override
+- Rewrites bare `super()` inside renamed bodies to `super.<orig_name>()` so the parent's dispatch wrapper resolves (Gotcha in Limitations)
+- Autofixes legacy GDScript 3 syntax: bodyless blocks get a `pass`, `tool`/`onready var`/`export var` get the `@` annotation, `base(args)` -> `super.<enclosing>(args)`, `base().method(x)` -> `super.method(x)`
+- Per-script transforms for registry targets: `Database.gd` gets `const X = preload(...)` rewritten to `_rtv_vanilla_scenes` dict entries + `_get()` injection; `Loader.gd` gets `const shelters` rewritten to `var` with a capture snapshot; `AISpawner.gd` gets `agent = <Name>` assignments routed through a `_rtv_resolve_ai_type` lookup helper
 
-Also owns `_scan_mod_extends_targets` -- scans mod archives for `.gd` files whose first non-trivial line is `extends "res://Scripts/<X>.gd"` where `<X>` is a vanilla script already rewritten. Those mod scripts get the same rename+dispatch treatment (with `_rtv_mod_` prefix) shipped at their own res:// path.
+Mod sources are **not rewritten** in v3.0.1 -- the old `_rtv_mod_` subclass rewrite (Step C) was removed. Mod scripts that extend wrapped vanilla see the dispatch wrapper as their parent method via native Godot resolution; `super.foo(...)` from the mod lands on the wrapper naturally.
 
 See [Hooks](Hooks) for details.
 
@@ -166,17 +155,18 @@ See [Hooks](Hooks) for details.
 
 Orchestrates the full rewrite pipeline:
 
-1. Verify GDSC tokenizer version (STABILITY canary B)
-2. Enumerate game scripts
-3. Pre-read mod sibling scripts (before `ZIPPacker.open` invalidates existing VFS handles)
-4. Rewrite each vanilla script, pack as three entries: `Scripts/<Name>.gd` + `.gd.remap` + empty `.gdc` (the recipe that beats the PCK's bytecode)
-5. Rewrite mod subclasses with `_rtv_mod_` prefix
-6. Pack autofixed mod siblings into the overlay
-7. Add VFS canary file (STABILITY canary C)
-8. Mount `user://modloader_hooks/framework_pack.zip` with `replace_files=true`
-9. Verify the canary reads back
-10. Activate: walk each rewritten script, reload or fall back to `CACHE_MODE_IGNORE + take_over_path`
-11. Persist hook pack path to pass state for next session's static-init mount
+1. **Opt-in gate**: if no mods are loaded, early-return (no pack file written). If mods are loaded but `_hooked_methods` is empty and no mod declared `[registry]`, log the "no user opt-in declarations" banner and proceed with a minimal pack containing only the core-owned `Menu.gd :: _ready` wrap (launcher main-menu button injection). User mods' vanilla targets stay unmodified either way.
+2. Verify GDSC tokenizer version (STABILITY canary B)
+3. Enumerate game scripts
+4. Pre-read mod sibling scripts (before `ZIPPacker.open` invalidates existing VFS handles)
+5. Build the per-path wrap mask from `_hooked_methods` + `[registry]` targets (whole-script) + `[hooks]` declarations (per-method)
+6. Rewrite each vanilla script in the mask, pack as three entries: `Scripts/<Name>.gd` + `.gd.remap` + empty `.gdc` (the recipe that beats the PCK's bytecode)
+7. Pack autofixed mod siblings into the overlay
+8. Add VFS canary file (STABILITY canary C)
+9. Mount `user://modloader_hooks/framework_pack.zip` with `replace_files=true`
+10. Verify the canary reads back
+11. Activate: walk each rewritten script, reload or fall back to `CACHE_MODE_IGNORE + take_over_path`
+12. Persist hook pack path + wrapped paths to pass state for next session's static-init mount
 
 See [Hooks](Hooks) + [Stability-Canaries](Stability-Canaries).
 

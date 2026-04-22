@@ -65,6 +65,45 @@ func hook(hook_name: String, callback: Callable, priority: int = 100) -> int:
 	_next_id += 1
 	return id
 
+## godot-mod-loader compat shim. Mods written against the upstream
+## godot-mod-loader convention call `ModLoader.add_hook(path, method, cb,
+## before)` to register a hook. Translate that into our native
+## `hook("<stem>-<method>-pre/post", cb)`. Enroll the path into
+## _hooked_methods so the wrap surface picks it up on pack generation.
+##
+## Limitation 1 -- timing: pack generation reads _hooked_methods up front.
+## An add_hook() call that arrives AFTER `_generate_hook_pack` has already
+## run won't get its vanilla script wrapped (the hook name registers fine,
+## but there's no wrapper to dispatch it). To be wrapped, add_hook() must
+## run before _generate_hook_pack -- in practice, from a `!`-prefixed early
+## autoload's _init, or the mod must declare the path in [hooks] in mod.txt
+## so the wrap mask is populated statically before any mod code runs.
+##
+## Limitation 2 -- path shape: bare filenames are normalized to
+## `res://Scripts/<file>` to match RTV's game-script layout. If the actual
+## vanilla lives elsewhere (`res://Scripts/Framework/X.gd`,
+## `res://SomeOther/Y.gd`, etc.) the normalized path won't match any enumerated
+## vanilla and the wrap silently no-ops. Pass a fully-qualified `res://` path
+## when your target isn't directly under `res://Scripts/`.
+func add_hook(script_path: String, method_name: String, callback: Callable, is_before: bool = true) -> int:
+	var stem := script_path.get_file().get_basename().to_lower()
+	var suffix := "pre" if is_before else "post"
+	var hook_name := "%s-%s-%s" % [stem, method_name.to_lower(), suffix]
+	# Enroll the path into _hooked_methods so the wrap surface picks it up.
+	# Upstream godot-mod-loader accepts both fully-qualified res:// paths and
+	# bare filenames; normalize bare filenames to res://Scripts/<file> to
+	# match the game's script layout. Mask keys are lowercase (hook_pack.gd
+	# checks `fe["name"].to_lower()` against the mask), so lowercase the
+	# method name on write -- godot-mod-loader callers pass vanilla method
+	# names preserving source casing (e.g. "UpdateToolTip").
+	var res_path := script_path
+	if not res_path.begins_with("res://"):
+		res_path = "res://Scripts/" + script_path.get_file()
+	if not _hooked_methods.has(res_path):
+		_hooked_methods[res_path] = {}
+	(_hooked_methods[res_path] as Dictionary)[method_name.to_lower()] = true
+	return hook(hook_name, callback, 100)
+
 ## Remove a hook by ID.
 func unhook(hook_id: int) -> void:
 	for hook_name in _hooks:

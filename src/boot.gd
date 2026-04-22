@@ -52,7 +52,7 @@ static func _mount_previous_session() -> Dictionary:
 		_write_filescope_log(log_lines)
 		return mounted
 
-	# Pinned probes narrowed (v2.4.0): previously a hardcoded list of 16
+	# Pinned probes narrowed (v3.0.1): previously a hardcoded list of 16
 	# class_name scripts the game pre-compiles at boot. Now read from the
 	# pass_state's hook_pack_wrapped_paths key -- only scripts this modlist
 	# actually wrapped get CACHE_MODE_IGNORE preempt. Populated further
@@ -212,7 +212,7 @@ static func _mount_previous_session() -> Dictionary:
 			if ProjectSettings.load_resource_pack(hook_abs, true):
 				log_lines.append("[FileScope] HOOK PACK mounted at static init: " + hook_pack)
 				# Preempt ONLY the scripts this modlist declared + wrapped
-				# (v2.4.0). Previous behavior was to preempt a hardcoded list
+				# (v3.0.1). Previous behavior was to preempt a hardcoded list
 				# of 16 class_name scripts regardless of whether a mod
 				# touched them. Narrowing to wrapped_paths ensures legacy
 				# modlists (zero declarations) never see static-init

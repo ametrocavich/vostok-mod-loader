@@ -10,9 +10,8 @@ Godot quirks and design constraints the loader works around or can't work around
 
 **Mitigations in the loader**:
 
-- **Source-rewrite flow avoids it entirely** -- rewritten scripts ship at the original `res://Scripts/<Name>.gd` path, so there's no `take_over_path` on a class_name script. `class_name` stays intact because the rewritten script inherits the PCK's registration. This is the dominant path ([rewriter.gd:309-312](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter.gd#L309)).
-- **Legacy `_register_override`** ([framework_wrappers.gd:105](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/framework_wrappers.gd#L105)) guards against this explicitly: if the parent script has a `get_global_name()`, it skips `take_over_path` and falls back to `node_added` swapping. Dead code in practice (see [Modules](Modules)) but the guard is there.
-- **Safety scanner** ([mod_loading.gd:409-414](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_loading.gd#L409)) detects mods calling `take_over_path` on known class_name paths and logs `"DANGER: <file> calls take_over_path on class_name script <path> (<ClassName>) -- this will crash"` -- critical-level.
+- **Source-rewrite flow avoids it entirely** -- rewritten scripts ship at the original `res://Scripts/<Name>.gd` path, so there's no `take_over_path` on a class_name script. `class_name` stays intact because the rewritten script inherits the PCK's registration. This is the dominant path.
+- **Safety scanner** detects mods calling `take_over_path` on known class_name paths and logs `"DANGER: <file> calls take_over_path on class_name script <path> (<ClassName>) -- this will crash"` -- critical-level.
 
 **Watch out**: mods that do `script.take_over_path(vanilla_path)` on a vanilla `class_name` script bypass the rewrite system and will re-trigger #83542 in certain configurations. The loader can't safely intercept every such call.
 
