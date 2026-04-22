@@ -65,7 +65,7 @@ Mods without `mod.txt` still mount as resource packs -- their files override van
 
 ### Opt-in hook declarations
 
-v2.4.0 uses an opt-in model: a modlist that declares nothing loads byte-identical to a vanilla setup (no wrap, no rewrite, no hook pack). Declarations turn on specific parts of the system.
+v3.0.1 uses an opt-in model: a modlist that declares nothing loads byte-identical to a vanilla setup (no wrap, no rewrite, no hook pack). Declarations turn on specific parts of the system.
 
 ```ini
 [hooks]
@@ -87,11 +87,21 @@ Full schema (including `[rtvmodlib] needs=`, the `!` prefix semantics, and packa
 
 ### Migrating from v3.0.0
 
-v3.0.0 inferred the wrap surface from `extends`, `take_over_path`, and a pinned list, then rewrote mod source to auto-fire hooks even when mods replaced a method without calling `super()`. v2.4.0 removes the inference and the mod-source rewrite. If your mod relied on either, you need to declare intent:
+v3.0.0 inferred the wrap surface from `extends`, `take_over_path`, and a pinned list, then rewrote mod source to auto-fire hooks even when mods replaced a method without calling `super()`. v3.0.1 removes the inference and the mod-source rewrite. If your mod relied on either, you need to declare intent:
 
 - If your mod calls `.hook(...)` but never declared a `[hooks]` section: no change needed -- scanner picks up the `.hook()` call.
 - If your mod's override replaced a vanilla method fully and expected hooks to fire via the old rewrite: add `super.method(...)` at the start of the override, OR add a `[hooks]` entry for that method.
 - If your mod used `lib.register()` / `lib.override()` without declaring `[registry]`: add the `[registry]` section.
+
+### Migrating from v2.1.0
+
+If you stayed on v2.1.0 because v3.0.0 broke your loadout, upgrade directly to v3.0.1 -- it's designed to behave like v2.1.0 for undeclared mods. No opt-in declarations means no rewriting; your mods run against unmodified vanilla bytes, just as they did on v2.1.0.
+
+Declare only the features you actually use:
+
+- `.hook(...)` call or `[hooks]` section -> method dispatch wrappers get generated for that vanilla script.
+- `lib.register()` / `lib.override()` -> add `[registry]`.
+- `ModLoader.add_hook(path, method, cb, before)` (godot-mod-loader style) -> the compat shim translates to the native hook API; register from a `!`-prefixed early autoload or declare the path in `[hooks]`.
 
 ## Hooks
 
@@ -142,7 +152,7 @@ More recovery detail (heartbeat, restart counter, crashed-Pass-2 dirty marker): 
 - **Package as `.vmz`** with forward-slash paths. Use 7-Zip, not .NET `ZipFile.CreateFromDirectory()` (writes backslashes, breaks mounting).
 - **Include a `mod.txt`** at the archive root. Without it, autoloads won't run.
 - **Use `super()` in lifecycle methods** (`_ready`, `_process`, etc.) when overriding vanilla scripts. Skipping it breaks hook composition for other mods that hooked that method.
-- **Declare `[hooks]` or call `.hook(...)`** on the vanilla methods you care about. In v2.4.0, only declared methods get dispatch wrappers -- there's no auto-wrap surface anymore.
+- **Declare `[hooks]` or call `.hook(...)`** on the vanilla methods you care about. In v3.0.1, only declared methods get dispatch wrappers -- there's no auto-wrap surface anymore.
 - **Prefer hooks over file replacement** when you only need to modify a few methods. Hooks compose across mods; file replacement doesn't.
 - **Test with other mods installed** and check the conflict report (Developer Mode).
 
