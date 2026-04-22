@@ -59,16 +59,23 @@ func _load_ui_config() -> void:
 	_apply_profile_to_entries(cfg, _active_profile)
 
 	# Materialize the placeholder Default profile when it's the resolved
-	# active and isn't already on disk. Without this, "Default" appears
-	# in the dropdown only as a UI-level placeholder (see the profile
-	# selector build in build_mods_tab) and vanishes the first time the
-	# user creates a named profile -- confusing, and also leaves a silent-
-	# overwrite gap where an imported profile named "Default" would write
-	# without the overwrite confirm (since _list_profiles() wouldn't yet
-	# include the untoggled placeholder). Writing the section here makes
-	# Default a persistent profile like every other launcher (Firefox,
-	# Minecraft, Steam). Users can rename or delete it if they want.
-	if _active_profile == "Default" and not cfg.has_section("profile.Default.enabled"):
+	# active and wasn't on disk at load time. Without this, "Default"
+	# appears in the dropdown only as a UI-level placeholder (see the
+	# profile selector build in build_mods_tab) and vanishes the first
+	# time the user creates a named profile -- confusing, and also leaves
+	# a silent-overwrite gap where an imported profile named "Default"
+	# would write without the overwrite confirm (since _list_profiles()
+	# wouldn't yet include the untoggled placeholder). Writing the section
+	# here makes Default a persistent profile like every other launcher
+	# (Firefox, Minecraft, Steam). Users can rename or delete it if they
+	# want.
+	#
+	# Uses the has_any_profile flag captured BEFORE migration rather than
+	# cfg.has_section, because the legacy [enabled]/[priority] migration
+	# populates profile.Default.* in-memory -- cfg.has_section would
+	# return true from the in-memory state and we'd skip the save,
+	# leaving disk still without the section.
+	if _active_profile == "Default" and not has_any_profile:
 		_save_ui_config()
 
 func _apply_profile_to_entries(cfg: ConfigFile, profile: String) -> void:
