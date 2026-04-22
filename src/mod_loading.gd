@@ -145,7 +145,7 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 
 	_loaded_mod_ids[mod_id] = true
 
-	# [hooks] static declaration (v2.4.0 opt-in model). Format:
+	# [hooks] static declaration (v3.0.1 opt-in model). Format:
 	#   [hooks]
 	#   res://Scripts/Interface.gd = _ready, update_tooltip
 	# Populates _hooked_methods[path][method] so _generate_hook_pack can
@@ -168,7 +168,7 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 				(_hooked_methods[script_path] as Dictionary)[method_name] = true
 				_log_info("  Hook declared: %s :: %s [%s]" % [script_path, method_name, mod_name])
 
-	# [registry] opt-in (v2.4.0). Gates Database.gd wrapping + const-to-dict
+	# [registry] opt-in (v3.0.1). Gates Database.gd wrapping + const-to-dict
 	# transform on explicit mod declaration. Without this, Database.gd stays
 	# unwrapped and lib.register()/override() will not work. The presence
 	# of the section is sufficient -- body content is parsed by the
@@ -179,7 +179,7 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 
 	# [script_extend] / [script_overrides] -- full script replacements that
 	# chain via Godot's extends resolution. Both section names accepted
-	# (script_extend is the preferred v2.4.0 name; script_overrides is the
+	# (script_extend is the preferred v3.0.1 name; script_overrides is the
 	# legacy alias kept for backward compat with mods written pre-cutover).
 	# Each entry: vanilla_path = mod_script_path. Higher-priority mods land
 	# last in the chain (most recent take_over_path wins, extends resolves

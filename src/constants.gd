@@ -10,7 +10,7 @@
 # The major/minor/patch accessors parse this single source of truth so mods can
 # compare against it without hand-maintaining a second set of constants.
 # x-release-please-start-version
-const MODLOADER_VERSION := "2.4.0"
+const MODLOADER_VERSION := "3.0.1"
 # x-release-please-end
 
 const MODLOADER_RES_PATH := "res://modloader.gd"
@@ -163,7 +163,7 @@ var _scripts_with_scene_preloads: Dictionary = {}  # filename -> PackedStringArr
 var _pending_script_overrides: Array[Dictionary] = []  # {vanilla_path, mod_script_path, mod_name, priority}
 var _applied_script_overrides: Dictionary = {}         # vanilla_path -> true
 
-# Opt-in declarations (v2.4.0 cutover). Populated by the [hooks] parser in
+# Opt-in declarations (v3.0.1 cutover). Populated by the [hooks] parser in
 # mod_loading.gd and by .hook() call scanning. Drives the wrap surface in
 # _generate_hook_pack. If both are empty AND _any_mod_declared_registry is
 # false, _generate_hook_pack early-returns and no hook pack is produced --
