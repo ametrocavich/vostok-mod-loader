@@ -337,7 +337,10 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask
 	for fe in parsed["functions"]:
 		if fe["is_static"]:
 			continue
-		if apply_mask and not method_mask.has(fe["name"]):
+		# Mask keys are lowercased (built from .hook() calls; see
+		# rewriter.gd:211 dispatch-name lowering). Match case-insensitively
+		# so "updatetooltip" matches vanilla "UpdateToolTip".
+		if apply_mask and not method_mask.has(fe["name"].to_lower()):
 			continue
 		hookable.append(fe)
 	if hookable.is_empty():
@@ -366,29 +369,28 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask
 		_log_info("[Autofix] %s: %d bodyless, %d @tool, %d @onready, %d @export, %d base()->super -- legacy syntax normalized" \
 				% [parsed.get("filename", "?"), autofix["bodyless"], autofix["tool"], autofix["onready"], autofix["export"], autofix.get("base", 0)])
 
-	# Per-script declaration-level transforms. Both cases make otherwise-
+	# Per-script declaration-level transforms. Each case makes otherwise-
 	# compile-time-immutable declarations runtime-mutable so the registry
 	# can swap them under the hood.
-	if rename_prefix == "_rtv_vanilla_":
-		var fn: String = parsed.get("filename", "")
-		# Database.gd: convert `const X = preload("...")` -> _rtv_vanilla_scenes
-		# dict entries so Database.get(name) flows through _get() and sees mod
-		# overrides instead of resolving via direct const lookup.
-		if fn == "Database.gd":
-			src = _rtv_rewrite_database_constants(src)
-		# Loader.gd: convert `const shelters = [...]` -> var so the registry
-		# can append mod shelter names. Scene-path consts (const Cabin = "..."
-		# etc.) stay consts because LoadScene references them directly inside
-		# its body; we inject a mod-lookup prelude into LoadScene instead.
-		elif fn == "Loader.gd":
-			src = _rtv_rewrite_loader_shelters(src)
-		# AISpawner.gd: the vanilla if-elif that maps Zone -> agent is rewritten
-		# so each `agent = <name>` becomes `agent = _rtv_resolve_ai_type(zone,
-		# <name>)`. The helper (appended as part of registry injection) checks
-		# the override dict and returns that or the vanilla scene. Lets mods
-		# swap the agent spawned in any vanilla zone without touching _ready.
-		elif fn == "AISpawner.gd":
-			src = _rtv_rewrite_aispawner_agent_assignments(src)
+	var fn: String = parsed.get("filename", "")
+	# Database.gd: convert `const X = preload("...")` -> _rtv_vanilla_scenes
+	# dict entries so Database.get(name) flows through _get() and sees mod
+	# overrides instead of resolving via direct const lookup.
+	if fn == "Database.gd":
+		src = _rtv_rewrite_database_constants(src)
+	# Loader.gd: convert `const shelters = [...]` -> var so the registry
+	# can append mod shelter names. Scene-path consts (const Cabin = "..."
+	# etc.) stay consts because LoadScene references them directly inside
+	# its body; we inject a mod-lookup prelude into LoadScene instead.
+	elif fn == "Loader.gd":
+		src = _rtv_rewrite_loader_shelters(src)
+	# AISpawner.gd: the vanilla if-elif that maps Zone -> agent is rewritten
+	# so each `agent = <name>` becomes `agent = _rtv_resolve_ai_type(zone,
+	# <name>)`. The helper (appended as part of registry injection) checks
+	# the override dict and returns that or the vanilla scene. Lets mods
+	# swap the agent spawned in any vanilla zone without touching _ready.
+	elif fn == "AISpawner.gd":
+		src = _rtv_rewrite_aispawner_agent_assignments(src)
 
 	# Pass 1: rename top-level "func <name>(" to "func _rtv_vanilla_<name>("
 	# AND rewrite bare super() calls inside that body to super.<name>().
@@ -437,8 +439,7 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask
 	# LoadScene needs to consult _rtv_mod_scene_paths before the if-elif
 	# chain fires). The function was just renamed to _rtv_vanilla_<Name>,
 	# so we inject right after its signature line.
-	if rename_prefix == "_rtv_vanilla_":
-		lines = _rtv_apply_prelude_injections(parsed.get("filename", ""), lines, rename_prefix)
+	lines = _rtv_apply_prelude_injections(parsed.get("filename", ""), lines, "_rtv_vanilla_")
 
 	# Pass 2: append dispatch wrappers at EOF. Match the source's indent
 	# style -- GDScript rejects tab/space mixing in a single file. IXP uses

@@ -330,7 +330,11 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		for fe in parsed["functions"]:
 			if fe["is_static"]:
 				continue
-			if apply_mask and not path_mask.has(fe["name"]):
+			# Mask keys come from .hook() calls which lowercase the method
+			# name at dispatch time (rewriter.gd:211). Vanilla fn["name"]
+			# preserves source casing (e.g. UpdateToolTip). Compare case-
+			# insensitively so mods writing "updatetooltip" match.
+			if apply_mask and not path_mask.has(fe["name"].to_lower()):
 				continue
 			hookable_count += 1
 			if fe["name"] == "_ready":
