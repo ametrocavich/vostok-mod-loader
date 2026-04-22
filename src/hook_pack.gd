@@ -88,6 +88,12 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	if _loaded_mod_ids.is_empty():
 		return ""
 
+	# Seed core-owned hook declarations (e.g. Menu.gd _ready for the main-menu
+	# Mods button). Done after the no-mods short-circuit above so pure-vanilla
+	# sessions generate no pack, but before the opt-in gate so the core wrap
+	# counts as a declaration whenever at least one mod is loaded.
+	_seed_core_hooks()
+
 	# OPT-IN GATE (v2.4.0): if no mod declared [hooks] / .hook() / [registry],
 	# skip hook pack generation entirely. The modlist behaves like v2.1.0 --
 	# no wrap, no rewrite, no pack written, no static-init preemption. This

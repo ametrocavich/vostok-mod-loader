@@ -31,6 +31,34 @@ func _ready() -> void:
 		await get_tree().create_timer(1.0).timeout
 		_test_post_autoload_verify()
 
+# Shared restart helper. Used by Pass 1's two-pass bootstrap, Reset to Vanilla,
+# and the post-boot main-menu reopen flow. `clean_pass1` strips
+# --modloader-restart so the next run is a clean Pass 1 rather than a Pass 2
+# expecting stale state.
+func _modloader_restart(clean_pass1: bool) -> void:
+	var args: Array = []
+	if clean_pass1:
+		for a in OS.get_cmdline_args():
+			if a != "--modloader-restart":
+				args.append(a)
+	else:
+		args = Array(OS.get_cmdline_args())
+		args.append_array(["--", "--modloader-restart"])
+	OS.set_restart_on_exit(true, args)
+	get_tree().quit()
+
+# Public entry point for the main-menu "Mods" button. Re-shows the launcher UI
+# post-boot; if any mutation sets _dirty_since_boot, quits + restarts into a
+# clean Pass 1. Noop when the UI is already open.
+func reopen_mod_ui() -> void:
+	if _ui_window != null:
+		return
+	_dirty_since_boot = false
+	await show_mod_ui()
+	if _dirty_since_boot:
+		_log_info("[ModLoader] Post-boot mod changes detected -- restarting")
+		_modloader_restart(true)
+
 func _run_pass_1() -> void:
 	_log_info("Metro Mod Loader v" + MODLOADER_VERSION)
 	_check_crash_recovery()
@@ -93,10 +121,7 @@ func _run_pass_1() -> void:
 		if _write_pass_state(archive_paths, new_hash) != OK:
 			await _finish_single_pass()
 			return
-		var restart_args := Array(OS.get_cmdline_args())
-		restart_args.append_array(["--", "--modloader-restart"])
-		OS.set_restart_on_exit(true, restart_args)
-		get_tree().quit()
+		_modloader_restart(false)
 		return
 
 	# No archives enabled. Clean up stale two-pass state if present.
@@ -113,6 +138,7 @@ func _finish_with_existing_mounts() -> void:
 	# Engine.get_meta("RTVModLib") is live by the time they call .hook().
 	# Script overrides were already applied in _run_pass_1() before the hash
 	# check; no need to re-apply from pass state.
+	_boot_complete = true
 	_register_rtv_modlib_meta()
 	_generate_hook_pack()
 	for entry in _pending_autoloads:
@@ -136,6 +162,7 @@ func _finish_with_existing_mounts() -> void:
 			return
 
 func _finish_single_pass() -> void:
+	_boot_complete = true
 	_register_rtv_modlib_meta()
 	_generate_hook_pack()
 	for entry in _pending_autoloads:
@@ -158,6 +185,7 @@ func _finish_single_pass() -> void:
 
 
 func _run_pass_2() -> void:
+	_boot_complete = true
 	_log_info("Pass 2 -- %d archive(s) mounted at file-scope" % _filescope_mounted.size())
 	# Write dirty marker first thing. If Pass 2 crashes before cleanup below,
 	# next launch's static init detects the marker and force-wipes state.

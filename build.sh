@@ -55,6 +55,7 @@ FILES=(
     "$SRC/hook_pack.gd"
     # Orchestration
     "$SRC/lifecycle.gd"
+    "$SRC/main_menu_hook.gd"
     # Temporary debug scaffolding
     "$SRC/debug.gd"
 )

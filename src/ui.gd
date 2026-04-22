@@ -184,6 +184,8 @@ func _save_ui_config() -> void:
 	cfg.set_value("settings", "developer_mode", _developer_mode)
 	cfg.set_value("settings", "active_profile", _active_profile)
 	cfg.save(UI_CONFIG_PATH)
+	if _boot_complete:
+		_dirty_since_boot = true
 
 # Profile management: snapshot the current in-memory state to a new profile
 # and switch to it. Caller is responsible for validating `name` (unique,
@@ -212,6 +214,8 @@ func _delete_active_profile() -> void:
 	cfg.set_value("settings", "active_profile", _active_profile)
 	cfg.save(UI_CONFIG_PATH)
 	_apply_profile_to_entries(cfg, _active_profile)
+	if _boot_complete:
+		_dirty_since_boot = true
 
 # Swap in-memory mod state to an existing profile. Does not write to disk
 # beyond updating the active_profile pointer -- mod enabled/priority values
@@ -223,6 +227,8 @@ func _switch_profile(name: String) -> void:
 	cfg.set_value("settings", "active_profile", _active_profile)
 	cfg.save(UI_CONFIG_PATH)
 	_apply_profile_to_entries(cfg, _active_profile)
+	if _boot_complete:
+		_dirty_since_boot = true
 
 # Rename the active profile. We just save under the new name (which materializes
 # the sections from current in-memory state, matching what the old profile
@@ -299,6 +305,8 @@ func _import_profile_from_parsed(parsed: Dictionary) -> void:
 	cfg.set_value("settings", "active_profile", _active_profile)
 	cfg.save(UI_CONFIG_PATH)
 	_apply_profile_to_entries(cfg, _active_profile)
+	if _boot_complete:
+		_dirty_since_boot = true
 
 # Build the shareable opaque payload for the given profile. Shape:
 #     MTRPRF1.<base64-encoded JSON>.<first 8 hex chars of SHA-256(body)>
@@ -430,12 +438,7 @@ func _reset_to_vanilla_and_restart(win: Window) -> void:
 		win.queue_free()
 	# Strip --modloader-restart so the relaunch is a clean Pass 1, not a Pass 2
 	# that would expect pass state we just deleted.
-	var restart_args: Array = []
-	for a in OS.get_cmdline_args():
-		if a != "--modloader-restart":
-			restart_args.append(a)
-	OS.set_restart_on_exit(true, restart_args)
-	get_tree().quit()
+	_modloader_restart(true)
 
 # Tear down and rebuild the Mods tab in place. Called whenever profile state
 # changes (switch, create, delete) or Developer Mode toggles, so rows and the

@@ -29,6 +29,7 @@ func _register_rtv_modlib_meta() -> void:
 # we fire this.
 func _emit_frameworks_ready() -> void:
 	_is_ready = true
+	_register_core_hooks()
 	frameworks_ready.emit()
 	_log_info("[RTVModLib] frameworks_ready emitted")
 	# All mod autoloads have now finished their _ready() calls, which is
