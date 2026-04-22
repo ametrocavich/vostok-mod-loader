@@ -69,30 +69,17 @@ Consumed by downstream diagnostics and stored in `_mod_script_analysis`.
   -- applies after scene reload
 ```
 
-### 6. OverrideVerify (Layers A and B)
+### 6. OverrideVerify
 
-Runs once after `frameworks_ready` from [hooks_api.gd:40](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd#L40).
+Runs once after `frameworks_ready` from [conflict_report.gd:35 `_verify_script_overrides`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/conflict_report.gd#L35).
 
-**Layer A -- cache-level check** ([conflict_report.gd:55-118](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/conflict_report.gd#L55)). For each mod that uses `overrideScript`, loads the target path post-autoloads and classifies by renamed-method prefix:
+For each mod that uses `overrideScript()` dynamically, loads the declared target path post-autoloads and logs its `resource_path` + source head so operators can eyeball whether the `take_over_path` took effect:
 
-- `_rtv_mod_*` methods present -> `OK: mod's script serves this path`
-- `_rtv_vanilla_*` only, `extends "res://Scripts/"` source -> `OK: mod's subclass serves this path (no method overrides -- inherits vanilla dispatch)`
-- Skip-listed vanilla + mod subclass -> `OK: skip-listed vanilla (<file>) -- mod subclass inherits unrewritten vanilla via Godot virtual dispatch`
-- `_rtv_vanilla_*` only, not a subclass -> `STALE: cache still serves vanilla -- overrideScript take_over_path did not win`
-- Neither prefix -> `UNKNOWN: neither _rtv_mod_ nor _rtv_vanilla_ methods -- rewrite likely did not run`
+```
+[OverrideVerify] MyMod | res://Scripts/Controller.gd | resource_path=res://Scripts/Controller.gd src_head=[extends "res://ModBase.gd" | ...]
+```
 
-**AutoloadInstanceProbe** ([conflict_report.gd:120-204](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/conflict_report.gd#L120)) inspects the 9 known autoloads (`Database, GameData, Settings, Menu, Loader, Inputs, Mode, Profiler, Simulation`). If any is stale (no `_rtv_mod_` methods on its live script), **auto-swaps** via `node.set_script(load(vanilla_path))` and re-classifies. Reports:
-
-- `OK: instance runs mod's body`
-- `FIXED via set_script swap -- <status>`
-- `BROKEN: instance holds ORPHAN script` (empty resource_path, swap attempted but didn't resolve)
-- `BROKEN: instance runs vanilla body`
-
-Matches RTVCoop's manual `set_script` pattern and Godot's own `reload_scripts` at `gdscript.cpp:2419`. See the comment at [conflict_report.gd:161-171](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/conflict_report.gd#L161).
-
-**Layer B -- node_added probe** ([conflict_report.gd:206-217](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/conflict_report.gd#L206)): arms `get_tree().node_added.connect(_on_override_probe_node_added)`. One-shot per vanilla path. Classifies instance scripts as they enter the tree.
-
-**Tree-walk fallback** ([conflict_report.gd:294 `_probe_tree_walk`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/conflict_report.gd#L294)): dev-mode only, scheduled at t+12s after `frameworks_ready`. Full scene-tree walk, covers cases where `node_added` missed a node. Dumps top 30 script paths by count.
+Before v3.0.1, this probe classified cache state by method prefix (`_rtv_mod_*` / `_rtv_vanilla_*`). With mod source no longer rewritten under the cutover, there's no in-source signal for STALE/BROKEN classification -- operators read the source head and decide. Layer B node_added probe, AutoloadInstanceProbe auto-swap, and tree-walk fallback were removed along with the Step C pipeline they classified against.
 
 ### 7. Live-probe hooks
 

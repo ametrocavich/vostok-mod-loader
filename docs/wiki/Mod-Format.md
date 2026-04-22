@@ -31,12 +31,17 @@ EarlyNode="!res://MyMod/Early.gd"
 [updates]
 modworkshop=12345
 
-[script_overrides]
-"res://Scripts/SomeVanilla.gd"="res://MyMod/MyOverride.gd"
+[hooks]
+res://Scripts/Interface.gd = _ready, update_tooltip
 
-[rtvmodlib]
-needs=["Controller", "Camera"]
+[script_extend]
+res://Scripts/Camera.gd = res://MyMod/MyCamera.gd
+
+[registry]
+; empty section is enough -- presence enables the registry API
 ```
+
+Only `[mod]` is required. `[autoload]`, `[updates]`, `[hooks]`, `[script_extend]`, `[registry]` are all optional; use the ones your mod needs.
 
 ### `[mod]` section
 
@@ -79,20 +84,63 @@ Duplicate autoload names are logged and skipped (first wins). Paths not present 
 
 Version compare uses [mod_discovery.gd:195 `compare_versions`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd#L195) -- splits on `.`, strips `v`/`V` prefix, pads shorter side with `"0"`, lexicographic int comparison.
 
-### `[script_overrides]` section
+### `[hooks]` section
 
-```
-"<vanilla_res_path>"="<mod_res_path>"
+Enrolls specific vanilla methods (or whole scripts) in the rewrite surface so your hook callbacks can fire. **Most mods don't need this** -- if your mod calls `.hook("stem-method-variant", cb)` directly in its own source, the scanner picks the call up and enrolls the method automatically. See [Hooks#opt-in-model](Hooks#opt-in-model).
+
+Use `[hooks]` when auto-enrollment can't see your registration:
+
+- Mods using `ModLoader.add_hook(path, method, cb, before)` from a runtime autoload (the shim runs after pack generation).
+- Mods registering hooks via callbacks passed in from a different autoload (`.hook()` call site isn't in the mod's own source).
+- Mods that want a whole script wrapped up front without enumerating methods.
+
+Format:
+
+```ini
+[hooks]
+res://Scripts/Interface.gd = _ready, update_tooltip   # specific methods
+res://Scripts/Controller.gd = *                       # wildcard -- all methods
+res://Scripts/Camera.gd =                             # empty == *
 ```
 
-Full script replacement. The mod script is expected to `extends "<vanilla_res_path>"`. Applied by [mod_loading.gd:199 `_apply_script_overrides`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_loading.gd#L199):
+Method names are case-insensitive (normalized to lowercase on write to match the rewriter's comparison). The wildcard leaves the inner mask empty; the generator reads that as "wrap every non-static method."
+
+Declaring `[hooks]` in one mod is enough to enroll that path for every mod. Other mods that extend or override the same vanilla script compose naturally via Godot's `extends` resolution -- they see the wrapped parent, `super.method(...)` lands on the dispatch wrapper, hooks fire.
+
+### `[script_extend]` section
+
+Full-script replacement that chains via Godot's `extends` resolution.
+
+```ini
+[script_extend]
+res://Scripts/Camera.gd = res://MyMod/MyCamera.gd
+```
+
+The mod script is expected to `extends "res://Scripts/Camera.gd"`. Applied in priority order (lowest first). Each subsequent override's `extends` resolves to the previous chain tip, forming `ModC -> ModB -> ModA -> (rewritten_)vanilla`.
+
+Processing, per [mod_loading.gd `_apply_script_overrides`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_loading.gd):
 
 1. Sort pending overrides by priority ascending.
 2. For each: `load(mod_path)` -> read `source_code` -> fresh `GDScript.new()` -> assign `source_code` -> `reload()` -> `take_over_path(vanilla_path)`.
 
-Processing in priority order means each subsequent override's `extends` resolves to the previous one, forming a natural chain `ModC -> ModB -> ModA -> vanilla`.
+The legacy-syntax autofix runs on each chain script before `reload()` (fixes `base()` -> `super.<method>()`, bodyless `if`, `onready var` -> `@onready var`, etc.), so chain scripts written against Godot 3 conventions compile cleanly.
 
-**Interaction with the hook system**: if a script listed in `[script_overrides]` is also a hook target (most vanilla scripts are), the override displaces the rewrite at that path. Hooks won't fire for nodes using the override. The loader warns: `"[RTVCodegen] <path> is rewritten and also overridden by <mods> -- override displaces the rewrite, hooks won't fire for that path"` ([hook_pack.gd:175-177](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L175)).
+**Interaction with the hook system**: if the vanilla path is also in the hook wrap surface (via `[hooks]` or a mod calling `.hook()` on one of its methods), the rewritten vanilla ships at the original path and the override's `extends` resolves to the wrapped version. `super.method(...)` lands on the dispatch wrapper; hooks fire. See [Hooks#composing-with-script_extend](Hooks#composing-with-script_extend).
+
+`[script_overrides]` is kept as a legacy alias for backward compatibility with mods written pre-v3.0.1. New mods should use `[script_extend]`.
+
+### `[registry]` section
+
+Opt-in gate for the registry API (`lib.register`, `lib.override`, `lib.patch`, `lib.remove`, `lib.revert`). See [Registry](Registry) for the full surface.
+
+```ini
+[registry]
+; empty body -- presence is sufficient
+```
+
+Declaring an empty `[registry]` section tells the loader to wrap `Database.gd`, `Loader.gd`, `AISpawner.gd`, and `FishPool.gd` with the injected fields the registry API needs. Without the declaration these scripts stay vanilla and registry calls no-op (`push_warning` logged).
+
+You don't enumerate what you'll register here -- the section's presence alone enables the subsystem. Use the runtime API to add/override/patch individual entries.
 
 ### `[rtvmodlib]` section
 
@@ -101,11 +149,18 @@ Processing in priority order means each subsequent override's `extends` resolves
 needs=["Controller", "Camera"]
 ```
 
-Declares which vanilla "frameworks" (class_name scripts) the mod wants hooks into. **No-op under source-rewrite** -- the loader already rewrites every hookable vanilla script regardless of `needs=`. Kept for compatibility with tetrahydroc's standalone RTVModLib mod.
+Historical declaration from tetrahydroc's standalone [rtv-mod-lib](https://github.com/tetrahydroc/rtv-mod-lib) mod, which used it to pick which framework subclass scripts to generate. **No-op under v3.0.1** -- the loader's opt-in wrap surface is driven by `[hooks]`, `.hook()` call scanning, and `[registry]`, not by `needs=`. Kept for backward compatibility so mods declaring it don't error out.
 
-The loader logs `"[RTVModLib] [rtvmodlib] needs declarations are no-op under source-rewrite (%d frameworks requested; all hookable scripts already dispatched via hook pack)"` when mods declare this.
+The loader logs `"[RTVModLib] [rtvmodlib] needs declarations are no-op under source-rewrite"` when mods declare this. If you're shipping a new mod, use `[hooks]` or rely on the `.hook()` scanner instead.
 
-See [framework_wrappers.gd:49](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/framework_wrappers.gd#L49) for the dead-code note.
+### `[script_overrides]` section (legacy alias)
+
+Deprecated alias for `[script_extend]`. Both parse identically; `[script_extend]` is the preferred name going forward.
+
+```ini
+[script_overrides]
+"res://Scripts/SomeVanilla.gd"="res://MyMod/MyOverride.gd"
+```
 
 ## mod.txt validity states
 
@@ -119,13 +174,13 @@ Tracked per-entry in `_last_mod_txt_status` (see [fs_archive.gd:147 `read_mod_co
 | `parse_error` | ConfigFile.parse failed | "Invalid mod -- may not work correctly. Try re-downloading." |
 | `pck` | N/A (PCK skips mod.txt read) | -- |
 
-UTF-8 BOM is stripped before parsing ([fs_archive.gd:192](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/fs_archive.gd#L192)) so files saved from Windows editors don't trip ConfigFile.
+UTF-8 BOM is stripped before parsing ([fs_archive.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/fs_archive.gd)) so files saved from Windows editors don't trip ConfigFile. Non-UTF8 bytes elsewhere in `mod.txt` (or any `.gd` inside the archive) produce a Godot C++ warning `"Unicode parsing error, some characters were replaced with U+FFFD"` -- the loader logs `[ModScan] inspecting <file>` immediately before the decode so you can match the warning to the mod.
 
 ## Archive packaging gotchas
 
 ### Windows backslash paths
 
-Zips repacked via `ZipFile.CreateFromDirectory()` on Windows often write entries with backslash separators (`MyMod\Main.gd` instead of `MyMod/Main.gd`). Godot mounts the pack but can't resolve those paths. Detected during scan ([mod_loading.gd:243-254](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_loading.gd#L243)):
+Zips repacked via `ZipFile.CreateFromDirectory()` on Windows often write entries with backslash separators (`MyMod\Main.gd` instead of `MyMod/Main.gd`). Godot mounts the pack but can't resolve those paths. Detected during scan:
 
 ```
 BAD ZIP: <n> entries use Windows backslash paths.
@@ -143,7 +198,7 @@ Mods that ship their own `res://Scripts/Database.gd` are flagged:
 - First mod wins -- `"  DATABASE OVERRIDE: <mod> replaces Database.gd"`
 - Subsequent mods -- `"  DATABASE COPY: <mod> bundles a private Database.gd at <path>"` + `"    Hardcoded preload() paths may break if companion mods aren't present."`
 
-See [mod_loading.gd:296-302](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_loading.gd#L296). Mods should generally use [`lib.register` / `lib.override`](Hooks#database-registry-flow) instead of shipping a full Database replacement.
+Mods should generally use [`lib.register` / `lib.override`](Registry) instead of shipping a full Database replacement.
 
 ## File-conflict resolution
 
@@ -156,4 +211,4 @@ CONFLICT: res://Scripts/SomeFile.gd
     [2] ModB via ModB.vmz <-- wins
 ```
 
-Within equal priority, load order is stable: mod_name ascii-lowercase, then filename. See [mod_discovery.gd:184 `_compare_load_order`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd#L184).
+Within equal priority, load order is stable: mod_name ascii-lowercase, then filename. See [mod_discovery.gd `_compare_load_order`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd).

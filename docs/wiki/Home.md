@@ -8,7 +8,8 @@ End-user install instructions and mod-author quick-start live in the repo [READM
 
 - How the two-pass launch works and why it exists
 - The `src/*.gd` module layout and what each file owns
-- The source-rewrite hook system (rewriter + hook pack + RTVModLib API)
+- The opt-in source-rewrite hook system (rewriter + hook pack + RTVModLib API)
+- The registry API for data-driven content (items, scenes, loot, recipes, ...)
 - The GDSC binary-tokenizer detokenizer
 - Stability canaries, crash recovery, safe mode, and sentinel files
 - Known Godot quirks the loader works around
@@ -17,8 +18,9 @@ End-user install instructions and mod-author quick-start live in the repo [READM
 
 - [Architecture](Architecture) -- launch flow, two-pass restart, static-init mount, override.cfg lifecycle
 - [Modules](Modules) -- per-file tour of the `src/` tree
-- [Hooks](Hooks) -- RTVModLib API, source rewriter, hook pack generation + mount
-- [Mod-Format](Mod-Format) -- mod.txt schema, autoload `!` prefix, `[script_overrides]`, `[rtvmodlib] needs=`
+- [Hooks](Hooks) -- RTVModLib API, opt-in wrap surface, source rewriter, hook pack generation + mount
+- [Registry](Registry) -- `lib.register` / `lib.override` / `lib.patch` for items, scenes, loot, sounds, recipes, events, traders, inputs, shelters, AI, fish, resources
+- [Mod-Format](Mod-Format) -- mod.txt schema, autoload `!` prefix, `[hooks]` / `[script_extend]` / `[registry]` declarations
 - [GDSC-Detokenizer](GDSC-Detokenizer) -- binary token format v100/v101, vanilla source cache
 - [Stability-Canaries](Stability-Canaries) -- A/B/C runtime probes, safe-mode + crash-recovery sentinels
 - [Build](Build) -- `build.sh` concat order, release-please, version bump flow
