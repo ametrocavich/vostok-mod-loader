@@ -86,7 +86,11 @@ func _merge_hook_calls_into_wrap_mask() -> void:
 			var path: String = prefix_to_path[prefix]
 			if not _hooked_methods.has(path):
 				_hooked_methods[path] = {}
-			(_hooked_methods[path] as Dictionary)[method] = true
+			# Mask keys lowercase (hook_pack.gd compares fe["name"].to_lower()).
+			# Hook names are lowercase by convention but mods occasionally
+			# write mixed case like .hook("Interface-UpdateToolTip-pre", ...);
+			# normalize so the wrap surface picks those up too.
+			(_hooked_methods[path] as Dictionary)[method.to_lower()] = true
 
 func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 	var file_name: String = c["file_name"]
@@ -145,27 +149,37 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 
 	_loaded_mod_ids[mod_id] = true
 
-	# [hooks] static declaration (v3.0.1 opt-in model). Format:
-	#   [hooks]
-	#   res://Scripts/Interface.gd = _ready, update_tooltip
-	# Populates _hooked_methods[path][method] so _generate_hook_pack can
-	# build a per-path, per-method wrap mask. One mod declaring [hooks]
-	# is enough to enroll that path for wrapping; other mods that extend
-	# the same vanilla script inherit the wrapped version naturally via
-	# Godot's extends resolution (no rewrite of the other mods' source).
+	# [hooks] static declaration (v3.0.1 opt-in model). Escape hatch for
+	# mods that can't get auto-enrolled via the .hook("prefix-method-...",
+	# cb) scanner -- e.g. godot-mod-loader-compat mods using add_hook()
+	# from a runtime autoload, or mods registering hooks via callbacks
+	# passed in from elsewhere. Most mods using .hook() directly need no
+	# section here. Formats:
+	#   res://Scripts/Interface.gd = _ready, update_tooltip   # named methods
+	#   res://Scripts/Interface.gd = *                        # all methods
+	#   res://Scripts/Interface.gd =                          # empty = all
+	# Populates _hooked_methods[path][method]; an empty inner dict is read
+	# by _generate_hook_pack as apply_mask=false -> wrap every hookable
+	# method. Method names are lowercased on write because hook_pack.gd
+	# compares vanilla fn names via .to_lower() against the mask.
 	if cfg != null and cfg.has_section("hooks"):
 		for key in cfg.get_section_keys("hooks"):
 			var script_path := str(key).strip_edges()
-			var methods_str := str(cfg.get_value("hooks", key))
+			var methods_str := str(cfg.get_value("hooks", key, "")).strip_edges()
 			if script_path.is_empty():
 				continue
 			if not _hooked_methods.has(script_path):
 				_hooked_methods[script_path] = {}
+			# Wildcard: "*" or empty value = wrap every hookable method.
+			# Leave the inner dict empty; hook_pack.gd treats that as wrap-all.
+			if methods_str == "" or methods_str == "*":
+				_log_info("  Hooks declared: %s :: * (all methods) [%s]" % [script_path, mod_name])
+				continue
 			for method_name in methods_str.split(","):
 				method_name = method_name.strip_edges()
 				if method_name.is_empty():
 					continue
-				(_hooked_methods[script_path] as Dictionary)[method_name] = true
+				(_hooked_methods[script_path] as Dictionary)[method_name.to_lower()] = true
 				_log_info("  Hook declared: %s :: %s [%s]" % [script_path, method_name, mod_name])
 
 	# [registry] opt-in (v3.0.1). Gates Database.gd wrapping + const-to-dict
