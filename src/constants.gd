@@ -153,19 +153,11 @@ var _is_ready: bool = false              # public: true once frameworks_ready ha
 # rewritten subclass scripts chain into rewritten vanilla.
 var _wrapper_active: Dictionary = {}
 
-# Runtime script-swap state.
-var _hook_swap_map: Dictionary = {}      # res_path -> framework GDScript
-var _original_scripts: Dictionary = {}   # res_path -> vanilla script ref (UID identity)
-var _vanilla_id_to_path: Dictionary = {} # script.get_instance_id() -> res_path
+# Class + script enumeration state (populated from PCK parse at boot).
 var _class_name_to_path: Dictionary = {} # "Camera" -> "res://Scripts/Camera.gd"
 var _all_game_script_paths: Array[String] = []  # populated by _enumerate_game_scripts from PCK parse; DirAccess can't list PCK contents in 4.6
 var _pck_zero_byte_paths: Dictionary = {}  # res_path -> true for entries the base game PCK ships as 0-byte (e.g. CasettePlayer.gd in RTV 4.6.1). Populated by _parse_pck_file_list; checked by detokenize + hook-gen to skip silently. These files are not hookable and any vanilla or mod preload() of them will fail at engine level -- not a modloader bug.
 var _scripts_with_scene_preloads: Dictionary = {}  # filename -> PackedStringArray of scene paths; scripts listed here are deferred from eager load+reload in _activate_rewritten_scripts. Rationale: their module-scope preload() fires at parse time; if we force-load them before mod autoloads run overrideScript(), scenes bake Script ext_resources to the pre-override vanilla. take_over_path then orphans those refs and instantiate() produces nodes with vanilla body, not mod body. Deferring to lazy-compile lets mod overrides run first -- the preload chain fires via extends resolution during mod's own overrideScript call, AFTER take_over_path took effect for prior targets. VFS mount precedence still serves our rewrite on lazy-load.
-var _node_swap_connected := false
-var _swap_count: int = 0
-var _ready_is_coroutine_by_path: Dictionary = {}  # res_path -> bool. Sync (false) means
-                                                  # _deferred_swap pre-sets _rtv_ready_done
-                                                  # so super() doesn't re-run vanilla _ready.
 
 # Script overrides
 var _pending_script_overrides: Array[Dictionary] = []  # {vanilla_path, mod_script_path, mod_name, priority}

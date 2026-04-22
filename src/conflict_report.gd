@@ -4,7 +4,7 @@
 ## conflict report written to user://. Loaded alongside the normal loading
 ## path but only runs when developer_mode=true.
 ##
-## v2.4.0 cutover note: mod subclass scripts are no longer rewritten (old
+## v3.0.1 cutover note: mod subclass scripts are no longer rewritten (old
 ## Step C removed), so the _rtv_mod_ method-prefix signal is gone. Detection
 ## now classifies by "does the instance's script extend the wrapped vanilla"
 ## rather than "does it carry a _rtv_mod_ prefix." Script path + extends-
@@ -25,7 +25,7 @@ func _log_override_timing_warnings() -> void:
 
 # [OverrideVerify]: Post-frameworks_ready sanity check on dynamic overrides.
 #
-# v2.4.0: classification is path-based, not method-prefix-based. For each
+# v3.0.1: classification is path-based, not method-prefix-based. For each
 # mod that calls take_over_path() dynamically, load() the declared target
 # path and log its resource_path + source head. Operators can eyeball
 # whether the take_over_path took effect. Full STALE/BROKEN diagnosis
@@ -85,13 +85,6 @@ func _print_conflict_summary() -> void:
 				var marker := " <-- wins" if claim == winner else ""
 				_log_info("    [" + str(claim["load_index"] + 1) + "] "
 						+ claim["mod_name"] + " via " + claim["archive"] + marker)
-
-	if not _hook_swap_map.is_empty():
-		_log_info("")
-		_log_info("--- Framework Overrides Active ---")
-		_log_info("  %d framework(s) take_over_path'd" % _hook_swap_map.size())
-		for res_path: String in _hook_swap_map:
-			_log_info("  %s" % res_path)
 
 	if not _hooks.is_empty():
 		_log_info("")
