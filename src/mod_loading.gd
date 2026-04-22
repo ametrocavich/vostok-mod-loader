@@ -86,7 +86,11 @@ func _merge_hook_calls_into_wrap_mask() -> void:
 			var path: String = prefix_to_path[prefix]
 			if not _hooked_methods.has(path):
 				_hooked_methods[path] = {}
-			(_hooked_methods[path] as Dictionary)[method] = true
+			# Mask keys lowercase (hook_pack.gd compares fe["name"].to_lower()).
+			# Hook names are lowercase by convention but mods occasionally
+			# write mixed case like .hook("Interface-UpdateToolTip-pre", ...);
+			# normalize so the wrap surface picks those up too.
+			(_hooked_methods[path] as Dictionary)[method.to_lower()] = true
 
 func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 	var file_name: String = c["file_name"]
@@ -119,13 +123,13 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 	# any overlay pack we mounted AFTER this archive -- e.g. an inline-hooks
 	# overlay whose entries overlap with this mod's archive paths.
 	if _filescope_mounted.has(full_path):
-		_log_info("  File-scope mount active -- skipping re-mount")
+		_log_debug("  File-scope mount active -- skipping re-mount")
 		_log_debug("  Mount path: " + mount_path)
 	elif not _try_mount_pack(mount_path):
 		_log_critical("Failed to mount: " + file_name + " (path: " + mount_path + ")")
 		return
 	else:
-		_log_info("  Mounted OK")
+		_log_debug("  Mounted OK")
 		_log_debug("  Mount path: " + mount_path)
 
 	if ext != "pck":
@@ -145,30 +149,40 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 
 	_loaded_mod_ids[mod_id] = true
 
-	# [hooks] static declaration (v2.4.0 opt-in model). Format:
-	#   [hooks]
-	#   res://Scripts/Interface.gd = _ready, update_tooltip
-	# Populates _hooked_methods[path][method] so _generate_hook_pack can
-	# build a per-path, per-method wrap mask. One mod declaring [hooks]
-	# is enough to enroll that path for wrapping; other mods that extend
-	# the same vanilla script inherit the wrapped version naturally via
-	# Godot's extends resolution (no rewrite of the other mods' source).
+	# [hooks] static declaration (v3.0.1 opt-in model). Escape hatch for
+	# mods that can't get auto-enrolled via the .hook("prefix-method-...",
+	# cb) scanner -- e.g. godot-mod-loader-compat mods using add_hook()
+	# from a runtime autoload, or mods registering hooks via callbacks
+	# passed in from elsewhere. Most mods using .hook() directly need no
+	# section here. Formats:
+	#   res://Scripts/Interface.gd = _ready, update_tooltip   # named methods
+	#   res://Scripts/Interface.gd = *                        # all methods
+	#   res://Scripts/Interface.gd =                          # empty = all
+	# Populates _hooked_methods[path][method]; an empty inner dict is read
+	# by _generate_hook_pack as apply_mask=false -> wrap every hookable
+	# method. Method names are lowercased on write because hook_pack.gd
+	# compares vanilla fn names via .to_lower() against the mask.
 	if cfg != null and cfg.has_section("hooks"):
 		for key in cfg.get_section_keys("hooks"):
 			var script_path := str(key).strip_edges()
-			var methods_str := str(cfg.get_value("hooks", key))
+			var methods_str := str(cfg.get_value("hooks", key, "")).strip_edges()
 			if script_path.is_empty():
 				continue
 			if not _hooked_methods.has(script_path):
 				_hooked_methods[script_path] = {}
+			# Wildcard: "*" or empty value = wrap every hookable method.
+			# Leave the inner dict empty; hook_pack.gd treats that as wrap-all.
+			if methods_str == "" or methods_str == "*":
+				_log_info("  Hooks declared: %s :: * (all methods) [%s]" % [script_path, mod_name])
+				continue
 			for method_name in methods_str.split(","):
 				method_name = method_name.strip_edges()
 				if method_name.is_empty():
 					continue
-				(_hooked_methods[script_path] as Dictionary)[method_name] = true
+				(_hooked_methods[script_path] as Dictionary)[method_name.to_lower()] = true
 				_log_info("  Hook declared: %s :: %s [%s]" % [script_path, method_name, mod_name])
 
-	# [registry] opt-in (v2.4.0). Gates Database.gd wrapping + const-to-dict
+	# [registry] opt-in (v3.0.1). Gates Database.gd wrapping + const-to-dict
 	# transform on explicit mod declaration. Without this, Database.gd stays
 	# unwrapped and lib.register()/override() will not work. The presence
 	# of the section is sufficient -- body content is parsed by the
@@ -179,7 +193,7 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 
 	# [script_extend] / [script_overrides] -- full script replacements that
 	# chain via Godot's extends resolution. Both section names accepted
-	# (script_extend is the preferred v2.4.0 name; script_overrides is the
+	# (script_extend is the preferred v3.0.1 name; script_overrides is the
 	# legacy alias kept for backward compat with mods written pre-cutover).
 	# Each entry: vanilla_path = mod_script_path. Higher-priority mods land
 	# last in the chain (most recent take_over_path wins, extends resolves
@@ -242,7 +256,7 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 			"is_early": is_early,
 		})
 		var early_tag := " [EARLY]" if is_early else ""
-		_log_info("  Autoload queued: " + autoload_name + " -> " + res_path + early_tag)
+		_log_debug("  Autoload queued: " + autoload_name + " -> " + res_path + early_tag)
 		_register_claim(res_path, mod_name, file_name, load_index)
 
 # Logging
@@ -401,13 +415,13 @@ func scan_and_register_archive_claims(archive_path: String, mod_name: String,
 	_mod_script_analysis[mod_name] = gd_analysis
 	_archive_file_sets[archive_file] = path_set
 
-	_log_info("  " + str(tracked_count) + " resource path(s)")
+	_log_debug("  " + str(tracked_count) + " resource path(s)")
 
 	if gd_analysis["total_gd_files"] > 0:
 		var override_count: int = (gd_analysis["take_over_literal_paths"] as Array).size() \
 				+ (gd_analysis["extends_paths"] as Array).size()
 		var dynamic_tag := " [uses overrideScript()]" if gd_analysis["uses_dynamic_override"] else ""
-		_log_info("  " + str(gd_analysis["total_gd_files"]) + " .gd file(s), "
+		_log_debug("  " + str(gd_analysis["total_gd_files"]) + " .gd file(s), "
 				+ str(override_count) + " override target(s)" + dynamic_tag)
 
 # GDScript source analysis
@@ -550,7 +564,7 @@ func _instantiate_autoload(mod_name: String, autoload_name: String, res_path: St
 			return
 		instance.name = autoload_name
 		get_tree().root.add_child(instance)
-		_log_info("Autoload instantiated (scene): " + autoload_name + " [" + mod_name + "]")
+		_log_debug("Autoload instantiated (scene): " + autoload_name + " [" + mod_name + "]")
 		return
 
 	if resource is GDScript:
@@ -567,7 +581,7 @@ func _instantiate_autoload(mod_name: String, autoload_name: String, res_path: St
 		if inst is Node:
 			(inst as Node).name = autoload_name
 			get_tree().root.add_child(inst as Node)
-			_log_info("Autoload instantiated (script): " + autoload_name + " [" + mod_name + "]")
+			_log_debug("Autoload instantiated (script): " + autoload_name + " [" + mod_name + "]")
 			return
 		_log_warning("Autoload is not a Node -- not added to tree: " + autoload_name
 				+ " [" + mod_name + "]")
