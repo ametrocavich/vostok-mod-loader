@@ -104,6 +104,12 @@ var _ui_hint_label: Label = null
 var _has_loaded := false
 var _last_mod_txt_status := "none"
 var _database_replaced_by := ""
+# Post-boot UI re-open state. _boot_complete flips true once Pass 1 / Pass 2 /
+# single-pass finish paths finalize. Once true, any mutation of mod_config.cfg
+# via the launcher UI sets _dirty_since_boot, which the main-menu reopen flow
+# uses to decide whether to restart on UI close.
+var _boot_complete: bool = false
+var _dirty_since_boot: bool = false
 
 var _ui_mod_entries: Array[Dictionary] = []
 # profile_keys for folder mods that exist on disk but were skipped from entries
