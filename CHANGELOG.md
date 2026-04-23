@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.1](https://github.com/ametrocavich/vostok-mod-loader/compare/v3.0.0...v3.0.1) (2026-04-23)
+
+
+### Bug Fixes
+
+* configfile drops empty sections ([91ca590](https://github.com/ametrocavich/vostok-mod-loader/commit/91ca590fea3b5d1de1e69933c9d2ae44362bc986))
+
 ## [3.0.0](https://github.com/ametrocavich/vostok-mod-loader/compare/v3.0.1...v3.0.0) (2026-04-23)
 
 
