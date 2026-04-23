@@ -23,6 +23,10 @@ func _load_ui_config() -> void:
 	_active_profile = "Default"
 	var cfg := ConfigFile.new()
 	if cfg.load(UI_CONFIG_PATH) != OK:
+		# Fresh install, no config file yet. Materialize the placeholder
+		# Default profile so it's a real on-disk profile from the first UI
+		# render (see comment at the tail of this function for rationale).
+		_save_ui_config()
 		return
 
 	# Migrate legacy flat [enabled]/[priority] layout into profile.Default.* on
@@ -53,6 +57,26 @@ func _load_ui_config() -> void:
 		_active_profile = "Default"
 
 	_apply_profile_to_entries(cfg, _active_profile)
+
+	# Materialize the placeholder Default profile when it's the resolved
+	# active and wasn't on disk at load time. Without this, "Default"
+	# appears in the dropdown only as a UI-level placeholder (see the
+	# profile selector build in build_mods_tab) and vanishes the first
+	# time the user creates a named profile -- confusing, and also leaves
+	# a silent-overwrite gap where an imported profile named "Default"
+	# would write without the overwrite confirm (since _list_profiles()
+	# wouldn't yet include the untoggled placeholder). Writing the section
+	# here makes Default a persistent profile like every other launcher
+	# (Firefox, Minecraft, Steam). Users can rename or delete it if they
+	# want.
+	#
+	# Uses the has_any_profile flag captured BEFORE migration rather than
+	# cfg.has_section, because the legacy [enabled]/[priority] migration
+	# populates profile.Default.* in-memory -- cfg.has_section would
+	# return true from the in-memory state and we'd skip the save,
+	# leaving disk still without the section.
+	if _active_profile == "Default" and not has_any_profile:
+		_save_ui_config()
 
 func _apply_profile_to_entries(cfg: ConfigFile, profile: String) -> void:
 	# VANILLA_PROFILE has no stored sections -- treating it as "all mods off"
@@ -184,6 +208,8 @@ func _save_ui_config() -> void:
 	cfg.set_value("settings", "developer_mode", _developer_mode)
 	cfg.set_value("settings", "active_profile", _active_profile)
 	cfg.save(UI_CONFIG_PATH)
+	if _boot_complete:
+		_dirty_since_boot = true
 
 # Profile management: snapshot the current in-memory state to a new profile
 # and switch to it. Caller is responsible for validating `name` (unique,
@@ -212,6 +238,8 @@ func _delete_active_profile() -> void:
 	cfg.set_value("settings", "active_profile", _active_profile)
 	cfg.save(UI_CONFIG_PATH)
 	_apply_profile_to_entries(cfg, _active_profile)
+	if _boot_complete:
+		_dirty_since_boot = true
 
 # Swap in-memory mod state to an existing profile. Does not write to disk
 # beyond updating the active_profile pointer -- mod enabled/priority values
@@ -223,6 +251,8 @@ func _switch_profile(name: String) -> void:
 	cfg.set_value("settings", "active_profile", _active_profile)
 	cfg.save(UI_CONFIG_PATH)
 	_apply_profile_to_entries(cfg, _active_profile)
+	if _boot_complete:
+		_dirty_since_boot = true
 
 # Rename the active profile. We just save under the new name (which materializes
 # the sections from current in-memory state, matching what the old profile
@@ -294,11 +324,44 @@ func _import_profile_from_parsed(parsed: Dictionary) -> void:
 		cfg.set_value(en_sec, str(key), bool(enabled_dict[key]))
 	var priority_dict: Dictionary = parsed.get("priority", {})
 	for key in priority_dict.keys():
-		cfg.set_value(pr_sec, str(key), int(priority_dict[key]))
+		# Clamp defensively -- payload came from the clipboard and a crafted
+		# or corrupted entry could set an out-of-range priority that breaks
+		# load-order invariants (UI spinbox is [-999, 999]; anything outside
+		# that range couldn't have been authored through the UI anyway).
+		var pv := int(priority_dict[key])
+		cfg.set_value(pr_sec, str(key), clampi(pv, PRIORITY_MIN, PRIORITY_MAX))
+	# Explicit manifest: any local mod NOT in the imported payload is written
+	# as disabled. Without this, _apply_profile_to_entries falls through to
+	# its default-true branch for unknown keys (ergonomic for "newly-dropped
+	# mod in existing profile") and imports would silently enable every
+	# local mod the exporter didn't have -- including dev folders, which is
+	# the opposite of what a shared profile means. Handles id-prefix matches
+	# (foo@2.0 local resolving to foo@1.0 in payload) so version bumps
+	# inherit the payload's state rather than getting disabled.
+	var payload_mod_ids: Dictionary = {}
+	for key in enabled_dict.keys():
+		var key_str := str(key)
+		var at := key_str.find("@")
+		if at > 0:
+			payload_mod_ids[key_str.substr(0, at)] = true
+	for entry in _ui_mod_entries:
+		var pk: String = entry["profile_key"]
+		if enabled_dict.has(pk):
+			continue
+		if not pk.begins_with("zip:") and payload_mod_ids.has(entry["mod_id"]):
+			continue
+		cfg.set_value(en_sec, pk, false)
 	_active_profile = name
 	cfg.set_value("settings", "active_profile", _active_profile)
 	cfg.save(UI_CONFIG_PATH)
 	_apply_profile_to_entries(cfg, _active_profile)
+	if _boot_complete:
+		_dirty_since_boot = true
+
+# Metroprofile v1 schema is LOCKED at 3.0.1. Full spec (wrapper format, JSON
+# shape, profile key format, forward-compat rules, round-trip guarantees) is
+# in the wiki: docs/wiki/Profile-Format.md. Changes to the export/import
+# shape require bumping the schema version so old parsers reject cleanly.
 
 # Build the shareable opaque payload for the given profile. Shape:
 #     MTRPRF1.<base64-encoded JSON>.<first 8 hex chars of SHA-256(body)>
@@ -430,12 +493,7 @@ func _reset_to_vanilla_and_restart(win: Window) -> void:
 		win.queue_free()
 	# Strip --modloader-restart so the relaunch is a clean Pass 1, not a Pass 2
 	# that would expect pass state we just deleted.
-	var restart_args: Array = []
-	for a in OS.get_cmdline_args():
-		if a != "--modloader-restart":
-			restart_args.append(a)
-	OS.set_restart_on_exit(true, restart_args)
-	get_tree().quit()
+	_modloader_restart(true)
 
 # Tear down and rebuild the Mods tab in place. Called whenever profile state
 # changes (switch, create, delete) or Developer Mode toggles, so rows and the

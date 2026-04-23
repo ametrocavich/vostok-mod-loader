@@ -20,13 +20,13 @@ Defined at [src/boot.gd:32](https://github.com/ametrocavich/vostok-mod-loader/bl
 
 1. **Disabled sentinel check** -- if `<exe_dir>/modloader_disabled` exists, force vanilla state and return. See [Stability-Canaries](Stability-Canaries) for the escape hatches.
 2. **Crashed Pass 2 recovery** -- if `user://modloader_pass2_dirty` exists, Pass 2 was interrupted before cleanup; full wipe.
-3. **Pre-init cache snapshot** -- probe 16 `class_name` scripts Godot is known to pre-compile ([boot.gd:71-88](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L71)) and classify each as tokenized (PCK-pinned) / source-loaded (our prior-session rewrite) / not-yet-loaded.
+3. **Pre-init cache snapshot** -- probe the scripts pass_state recorded as wrapped last session (from `hook_pack_wrapped_paths`) and classify each as tokenized (PCK-pinned) / source-loaded (our prior-session rewrite) / not-yet-loaded. Before v3.0.1 this was a hardcoded 16-entry list; now it's driven by what mods actually declared.
 4. **Load pass state** from `user://mod_pass_state.cfg`; early return if missing.
 5. **Version mismatch** -- if saved `modloader_version` != current `MODLOADER_VERSION`, wipe state (pass-state format may have changed).
 6. **Exe mtime check** -- if the game exe was updated since last session, wipe hook cache (vanilla scripts may have changed).
 7. **Archive existence scan** -- if any archive from last session is missing, write a clean `override.cfg` and reset.
 8. **Mount loop** -- each archive via `ProjectSettings.load_resource_pack`, with `.vmz -> .zip` fallback.
-9. **Hook pack preempt mount** ([boot.gd:208-287](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L208)) -- mount `user://modloader_hooks/framework_pack.zip` with `replace_files=true`, then force a fresh source-compile of each pinned-probe script via `ResourceLoader.load(..., CACHE_MODE_IGNORE)` + `take_over_path`. Non-pinned scripts are left to Godot's lazy-compile path.
+9. **Hook pack preempt mount** ([boot.gd:208-287](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L208)) -- mount `user://modloader_hooks/framework_pack.zip` with `replace_files=true`, then force a fresh source-compile of each script in `hook_pack_wrapped_paths` via `ResourceLoader.load(..., CACHE_MODE_IGNORE)` + `take_over_path`. Scripts not in that set are left to Godot's lazy-compile path. When no mods are loaded at all the pack file doesn't exist and this step short-circuits; when mods are loaded but none opt into the hook surface, `hook_pack_wrapped_paths` narrows to just `res://Scripts/Menu.gd` (the core-owned wrap for the launcher's main-menu button) -- legacy loadouts boot with that one script preempted and nothing else.
 10. **Test pack mount** (dev-only, gated on `user://test_pack_precedence.zip` presence).
 
 The hook pack preempt is the only way to rewire scripts Godot pre-compiles during `class_cache` population. Once pinned, runtime `source_code + reload()` and `CACHE_MODE_IGNORE + take_over_path` both fail against autoload-backed scripts (see [Limitations](Limitations)).

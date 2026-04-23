@@ -10,7 +10,7 @@
 # The major/minor/patch accessors parse this single source of truth so mods can
 # compare against it without hand-maintaining a second set of constants.
 # x-release-please-start-version
-const MODLOADER_VERSION := "3.0.0"
+const MODLOADER_VERSION := "3.0.1"
 # x-release-please-end
 
 const MODLOADER_RES_PATH := "res://modloader.gd"
@@ -29,7 +29,14 @@ const DISABLED_FILE := "modloader_disabled"
 const MAX_RESTART_COUNT := 2
 
 const HOOK_PACK_DIR := "user://modloader_hooks"
-const HOOK_PACK_ZIP := "user://modloader_hooks/framework_pack.zip"
+# Hook pack filename: "<prefix>_<timestamp_ms>.zip". A fresh filename per
+# _generate_hook_pack call sidesteps ProjectSettings.load_resource_pack's
+# path-dedup (a same-path re-mount is a no-op and the VFS keeps stale file
+# offsets from the original mount -- FileAccess reads return prior-session
+# bytes even though ZIPPacker rewrote the file on disk). Different filename
+# = new mount = fresh offsets. Orphan files from prior sessions are cleaned
+# up at static-init in _mount_previous_session before any mount happens.
+const HOOK_PACK_PREFIX := "framework_pack"
 const HOOK_PACK_MOUNT_BASE := "res://modloader_hooks"
 const VANILLA_CACHE_DIR := "user://modloader_hooks/vanilla"
 const MODWORKSHOP_VERSIONS_URL := "https://api.modworkshop.net/mods/versions"
@@ -97,6 +104,12 @@ var _ui_hint_label: Label = null
 var _has_loaded := false
 var _last_mod_txt_status := "none"
 var _database_replaced_by := ""
+# Post-boot UI re-open state. _boot_complete flips true once Pass 1 / Pass 2 /
+# single-pass finish paths finalize. Once true, any mutation of mod_config.cfg
+# via the launcher UI sets _dirty_since_boot, which the main-menu reopen flow
+# uses to decide whether to restart on UI close.
+var _boot_complete: bool = false
+var _dirty_since_boot: bool = false
 
 var _ui_mod_entries: Array[Dictionary] = []
 # profile_keys for folder mods that exist on disk but were skipped from entries
@@ -117,6 +130,12 @@ var _archive_file_sets: Dictionary = {}
 # lowercase. A bare name (no suffix) is a replace hook (first-wins).
 signal frameworks_ready
 var _hooks: Dictionary = {}              # hook_name -> Array of {callback, priority, id}
+# Dev-mode-only: per-hook_base dispatch counter. Incremented inside each
+# wrapper AFTER the _any_mod_hooked short-circuit when _developer_mode is
+# true. Summary at 30s timer in _activate_rewritten_scripts pinpoints
+# runaway method calls (e.g. connect-already-connected error spam from a
+# _ready firing thousands of times).
+var _dispatch_counts: Dictionary = {}
 # Fast-path short-circuit: flipped true the first time any mod calls hook().
 # Dispatch wrappers skip the full _wrapper_active/_caller/_dispatch path
 # when no mod has hooked anything at all. Sticky -- stays true once set.
@@ -134,23 +153,23 @@ var _is_ready: bool = false              # public: true once frameworks_ready ha
 # rewritten subclass scripts chain into rewritten vanilla.
 var _wrapper_active: Dictionary = {}
 
-# Runtime script-swap state.
-var _hook_swap_map: Dictionary = {}      # res_path -> framework GDScript
-var _original_scripts: Dictionary = {}   # res_path -> vanilla script ref (UID identity)
-var _vanilla_id_to_path: Dictionary = {} # script.get_instance_id() -> res_path
+# Class + script enumeration state (populated from PCK parse at boot).
 var _class_name_to_path: Dictionary = {} # "Camera" -> "res://Scripts/Camera.gd"
 var _all_game_script_paths: Array[String] = []  # populated by _enumerate_game_scripts from PCK parse; DirAccess can't list PCK contents in 4.6
 var _pck_zero_byte_paths: Dictionary = {}  # res_path -> true for entries the base game PCK ships as 0-byte (e.g. CasettePlayer.gd in RTV 4.6.1). Populated by _parse_pck_file_list; checked by detokenize + hook-gen to skip silently. These files are not hookable and any vanilla or mod preload() of them will fail at engine level -- not a modloader bug.
 var _scripts_with_scene_preloads: Dictionary = {}  # filename -> PackedStringArray of scene paths; scripts listed here are deferred from eager load+reload in _activate_rewritten_scripts. Rationale: their module-scope preload() fires at parse time; if we force-load them before mod autoloads run overrideScript(), scenes bake Script ext_resources to the pre-override vanilla. take_over_path then orphans those refs and instantiate() produces nodes with vanilla body, not mod body. Deferring to lazy-compile lets mod overrides run first -- the preload chain fires via extends resolution during mod's own overrideScript call, AFTER take_over_path took effect for prior targets. VFS mount precedence still serves our rewrite on lazy-load.
-var _node_swap_connected := false
-var _swap_count: int = 0
-var _ready_is_coroutine_by_path: Dictionary = {}  # res_path -> bool. Sync (false) means
-                                                  # _deferred_swap pre-sets _rtv_ready_done
-                                                  # so super() doesn't re-run vanilla _ready.
 
 # Script overrides
 var _pending_script_overrides: Array[Dictionary] = []  # {vanilla_path, mod_script_path, mod_name, priority}
 var _applied_script_overrides: Dictionary = {}         # vanilla_path -> true
+
+# Opt-in declarations (v3.0.1 cutover). Populated by the [hooks] parser in
+# mod_loading.gd and by .hook() call scanning. Drives the wrap surface in
+# _generate_hook_pack. If both are empty AND _any_mod_declared_registry is
+# false, _generate_hook_pack early-returns and no hook pack is produced --
+# the modlist behaves byte-identical to pre-hook-system (v2.1.0) behavior.
+var _hooked_methods: Dictionary = {}             # res_path -> {method_name: true}
+var _any_mod_declared_registry: bool = false     # set by [registry] parser
 
 var _re_take_over: RegEx
 var _re_extends: RegEx
@@ -159,6 +178,7 @@ var _re_class_name: RegEx
 var _re_func: RegEx
 var _re_preload: RegEx
 var _re_filename_priority: RegEx
+var _re_hook_call: RegEx
 
 # Rewriter regex (compiled in _rtv_compile_codegen_regex)
 var _rtv_re_extends: RegEx

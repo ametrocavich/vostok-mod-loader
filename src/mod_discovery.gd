@@ -59,6 +59,12 @@ func collect_mod_metadata() -> Array[Dictionary]:
 	return entries
 
 func _build_archive_entry(mods_dir: String, file_name: String, ext: String) -> Dictionary:
+	# Breadcrumb: identifies the mod Godot's UTF-8 C++ warning (printed
+	# unconditionally for non-UTF8 bytes in mod.txt / .gd / pck paths) is
+	# about to complain about. Without this the user sees "Unicode parsing
+	# error, some characters were replaced with ..." and can't tell which
+	# mod tripped it.
+	_log_info("[ModScan] inspecting " + file_name)
 	var full_path := mods_dir.path_join(file_name)
 	if ext == "pck":
 		_last_mod_txt_status = "pck"
@@ -71,6 +77,8 @@ func _build_archive_entry(mods_dir: String, file_name: String, ext: String) -> D
 	return entry
 
 func _build_folder_entry(mods_dir: String, dir_name: String) -> Dictionary:
+	# See _build_archive_entry for rationale.
+	_log_info("[ModScan] inspecting " + dir_name + " [folder]")
 	var folder_path := mods_dir.path_join(dir_name)
 	var cfg: ConfigFile = read_mod_config_folder(folder_path)
 	var entry := _entry_from_config(cfg, dir_name, folder_path, "folder")
@@ -92,21 +100,23 @@ func _record_hidden_folder(mods_dir: String, dir_name: String) -> void:
 		_hidden_folder_ids[entry["mod_id"]] = true
 
 # Surface scanner findings in the boot log alongside the discovery summary.
-# Logged at INFO -- findings are *disclosures* of "this mod uses these
+# Logged at DEBUG -- findings are *disclosures* of "this mod uses these
 # notable APIs", not warnings of malice. The UI surfaces the same data
 # as a tappable "Uses N notable APIs" indicator on the mod row; the user
 # decides whether the mod's stated purpose matches what it actually does.
+# Dev mode enables this dump for deep investigation; regular users
+# already see the relevant information in the UI.
 func _log_security_findings(entry: Dictionary) -> void:
 	var findings: Array = entry.get("security_findings", [])
 	if findings.is_empty():
 		return
-	_log_info("[ModScan] %s uses %d notable API(s)" \
+	_log_debug("[ModScan] %s uses %d notable API(s)" \
 			% [entry["file_name"], findings.size()])
 	for f: Dictionary in findings:
 		var loc: String = f["file"]
 		if int(f.get("line", 0)) > 0:
 			loc += ":" + str(f["line"])
-		_log_info("  %s @ %s -- %s" \
+		_log_debug("  %s @ %s -- %s" \
 				% [f["rule"], loc, f.get("preview", "")])
 
 func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, ext: String) -> Dictionary:

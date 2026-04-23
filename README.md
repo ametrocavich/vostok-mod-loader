@@ -63,7 +63,53 @@ modworkshop=12345
 
 Mods without `mod.txt` still mount as resource packs -- their files override vanilla resources, but no autoloads run.
 
-Full schema (including `[script_overrides]`, `[rtvmodlib] needs=`, the `!` prefix semantics, and packaging gotchas): see the [Mod-Format wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Mod-Format).
+### Opt-in hook declarations
+
+v3.0.1 uses an opt-in model: a modlist that declares nothing loads byte-identical to a vanilla setup (no wrap, no rewrite, no hook pack). Declarations turn on specific parts of the system.
+
+**Most mods don't need any declaration.** If your mod calls `.hook("controller-jump-pre", cb)` directly in its source, the scanner finds it and enrolls `Controller.gd :: jump` automatically. That covers every mod written against the native hook API -- nothing to add in `mod.txt`.
+
+```ini
+[script_extend]
+res://Scripts/Camera.gd = res://MyMod/MyCamera.gd
+
+[registry]
+; declaring this section is enough to enable lib.register() / lib.override()
+```
+
+- **`[script_extend]`** -- a full-script replacement that chains via Godot's `extends` resolution. Multiple mods can extend the same vanilla script; take_over_path runs in priority order, each override's `extends` resolves to the prior chain tip. `[script_overrides]` is kept as a legacy alias.
+- **`[registry]`** -- declaring this section enables `lib.register()` / `lib.override()` on Database.gd. Without it, the registry helpers never get injected and those calls return `false`.
+
+**Escape hatch: `[hooks]`.** The scanner can't find every hook. If your mod registers via `ModLoader.add_hook(path, method, cb, before)` from an autoload's `_ready`, or passes a hook callback through a second autoload so the `.hook()` call site isn't in the mod's own source, list the vanilla script path:
+
+```ini
+[hooks]
+res://Scripts/Interface.gd = _ready, update_tooltip   # specific methods
+res://Scripts/Controller.gd = *                       # or wrap all methods
+```
+
+The `*` (or an empty value) wraps every hookable method in the script. Use it when you don't know up front which methods you'll hook or the list is long enough that enumerating is noise.
+
+Full schema (including `[rtvmodlib] needs=`, the `!` prefix semantics, and packaging gotchas): see the [Mod-Format wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Mod-Format).
+
+### Migrating from v3.0.0
+
+v3.0.0 inferred the wrap surface from `extends`, `take_over_path`, and a pinned list, then rewrote mod source to auto-fire hooks even when mods replaced a method without calling `super()`. v3.0.1 removes the inference and the mod-source rewrite. If your mod relied on either, you need to declare intent:
+
+- If your mod calls `.hook(...)` directly in its source: no change needed -- scanner picks up the `.hook()` call and enrolls the method.
+- If your mod's override replaced a vanilla method fully and expected hooks to fire via the old rewrite: add `super.method(...)` at the start of the override, OR add a `[hooks]` entry for the wrapped methods.
+- If your mod used `lib.register()` / `lib.override()` without declaring `[registry]`: add the `[registry]` section.
+- If your mod registers hooks indirectly (`add_hook` from a runtime autoload, or callbacks passed through another autoload): add `[hooks] <path> = *` so the wrap happens statically.
+
+### Migrating from v2.1.0
+
+If you stayed on v2.1.0 because v3.0.0 broke your loadout, upgrade directly to v3.0.1 -- it's designed to behave like v2.1.0 for undeclared mods. No opt-in declarations means no rewriting; your mods run against unmodified vanilla bytes, just as they did on v2.1.0.
+
+Declare only the features you actually use:
+
+- `.hook(...)` call in your source -> scanner auto-enrolls the method; no declaration needed.
+- `lib.register()` / `lib.override()` -> add `[registry]`.
+- `ModLoader.add_hook(path, method, cb, before)` (godot-mod-loader style) -> the compat shim translates to the native hook API. Register from a `!`-prefixed early autoload, OR declare `[hooks] <path> = *` so the wrap happens at pack generation regardless of when your autoload runs.
 
 ## Hooks
 
@@ -95,7 +141,7 @@ Hook name format: `<scriptname>-<methodname>[-pre|-post|-callback]` lowercase. B
 
 The API is drop-in compatible with [tetrahydroc's RTVModLib mod](https://github.com/tetrahydroc/rtv-mod-lib) (`hook` / `unhook` / `_caller` / `skip_super` / `frameworks_ready`, same signatures). Mod code written against RTVModLib runs unchanged here.
 
-Full API reference, dispatch semantics, three-entry pack recipe, mod subclass rewriting, and worked examples: [Hooks wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Hooks).
+Full API reference, dispatch semantics, and three-entry pack recipe: [Hooks wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Hooks).
 
 ## Troubleshooting
 
@@ -113,8 +159,9 @@ More recovery detail (heartbeat, restart counter, crashed-Pass-2 dirty marker): 
 
 - **Package as `.vmz`** with forward-slash paths. Use 7-Zip, not .NET `ZipFile.CreateFromDirectory()` (writes backslashes, breaks mounting).
 - **Include a `mod.txt`** at the archive root. Without it, autoloads won't run.
-- **Use `super()` in lifecycle methods** (`_ready`, `_process`, etc.) when overriding vanilla scripts. Skipping it breaks other mods that override the same class.
-- **Prefer hooks over file replacement** when you only need to modify a few methods. Hooks compose across mods; file replacement doesn't. Every vanilla script is hooked automatically -- just register callbacks.
+- **Use `super()` in lifecycle methods** (`_ready`, `_process`, etc.) when overriding vanilla scripts. Skipping it breaks hook composition for other mods that hooked that method.
+- **Declare `[hooks]` or call `.hook(...)`** on the vanilla methods you care about. In v3.0.1, only declared methods get dispatch wrappers -- there's no auto-wrap surface anymore.
+- **Prefer hooks over file replacement** when you only need to modify a few methods. Hooks compose across mods; file replacement doesn't.
 - **Test with other mods installed** and check the conflict report (Developer Mode).
 
 ## Contributing
@@ -128,6 +175,8 @@ Delete `override.cfg` and `modloader.gd` from the game folder. The `mods/` folde
 - Settings file: `%APPDATA%\Road to Vostok\mod_config.cfg`
 - Conflict log (Developer Mode only): `%APPDATA%\Road to Vostok\modloader_conflicts.txt`
 - Hook pack cache: `%APPDATA%\Road to Vostok\modloader_hooks\` (regenerated on each launch)
+
+Full breakdown of every config file, profile key format, sentinel files, and what's safe to delete: [Config-Files wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Config-Files).
 
 ## License
 
