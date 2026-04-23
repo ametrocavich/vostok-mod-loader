@@ -130,6 +130,14 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	# of their own source). When ANOTHER mod declares a hook on the same
 	# path, Godot's extends resolution still threads their mod through the
 	# wrapped vanilla naturally -- no mod-source rewrite required.
+	# Build a set of enumerated vanilla paths for declared-path validation.
+	# A mod declaring a path that doesn't correspond to any vanilla script
+	# (typo, bare-filename normalization mismatch in add_hook, path from a
+	# game version that renamed the file) would otherwise silently no-op
+	# at rewrite time. Warn once at enrollment so mod authors can fix.
+	var vanilla_path_set: Dictionary = {}
+	for sp: String in script_paths:
+		vanilla_path_set[sp] = true
 	var needed_paths: Dictionary = {}
 	# Per-path per-method mask. Keyed by res_path -> Dictionary[method_name, true].
 	# Populated from _hooked_methods (static [hooks] section + scanned .hook()).
@@ -143,6 +151,11 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		if not path.begins_with("res://Scripts/"):
 			_log_warning("[RTVCodegen] [hooks] declared for non-vanilla path '%s' -- only res://Scripts/*.gd is hookable; entry ignored" % path)
 			continue
+		if not vanilla_path_set.has(path):
+			_log_warning("[RTVCodegen] [hooks] declared path '%s' doesn't match any vanilla script -- check for typos or stale paths; entry will no-op" % path)
+			# Still enroll it so the path_mask iteration below logs per-method
+			# "declared method not found" diagnostics against the empty set --
+			# no wrapper will be generated but the logging chain stays consistent.
 		needed_paths[path] = true
 		hook_mask[path] = (_hooked_methods[path] as Dictionary).duplicate()
 	# Gate Database.gd on explicit [registry] opt-in. REGISTRY_TARGETS are

@@ -324,13 +324,44 @@ func _import_profile_from_parsed(parsed: Dictionary) -> void:
 		cfg.set_value(en_sec, str(key), bool(enabled_dict[key]))
 	var priority_dict: Dictionary = parsed.get("priority", {})
 	for key in priority_dict.keys():
-		cfg.set_value(pr_sec, str(key), int(priority_dict[key]))
+		# Clamp defensively -- payload came from the clipboard and a crafted
+		# or corrupted entry could set an out-of-range priority that breaks
+		# load-order invariants (UI spinbox is [-999, 999]; anything outside
+		# that range couldn't have been authored through the UI anyway).
+		var pv := int(priority_dict[key])
+		cfg.set_value(pr_sec, str(key), clampi(pv, PRIORITY_MIN, PRIORITY_MAX))
+	# Explicit manifest: any local mod NOT in the imported payload is written
+	# as disabled. Without this, _apply_profile_to_entries falls through to
+	# its default-true branch for unknown keys (ergonomic for "newly-dropped
+	# mod in existing profile") and imports would silently enable every
+	# local mod the exporter didn't have -- including dev folders, which is
+	# the opposite of what a shared profile means. Handles id-prefix matches
+	# (foo@2.0 local resolving to foo@1.0 in payload) so version bumps
+	# inherit the payload's state rather than getting disabled.
+	var payload_mod_ids: Dictionary = {}
+	for key in enabled_dict.keys():
+		var key_str := str(key)
+		var at := key_str.find("@")
+		if at > 0:
+			payload_mod_ids[key_str.substr(0, at)] = true
+	for entry in _ui_mod_entries:
+		var pk: String = entry["profile_key"]
+		if enabled_dict.has(pk):
+			continue
+		if not pk.begins_with("zip:") and payload_mod_ids.has(entry["mod_id"]):
+			continue
+		cfg.set_value(en_sec, pk, false)
 	_active_profile = name
 	cfg.set_value("settings", "active_profile", _active_profile)
 	cfg.save(UI_CONFIG_PATH)
 	_apply_profile_to_entries(cfg, _active_profile)
 	if _boot_complete:
 		_dirty_since_boot = true
+
+# Metroprofile v1 schema is LOCKED at 3.0.1. Full spec (wrapper format, JSON
+# shape, profile key format, forward-compat rules, round-trip guarantees) is
+# in the wiki: docs/wiki/Profile-Format.md. Changes to the export/import
+# shape require bumping the schema version so old parsers reject cleanly.
 
 # Build the shareable opaque payload for the given profile. Shape:
 #     MTRPRF1.<base64-encoded JSON>.<first 8 hex chars of SHA-256(body)>

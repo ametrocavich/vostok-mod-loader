@@ -170,15 +170,30 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 				continue
 			if not _hooked_methods.has(script_path):
 				_hooked_methods[script_path] = {}
-			# Wildcard: "*" or empty value = wrap every hookable method.
-			# Leave the inner dict empty; hook_pack.gd treats that as wrap-all.
-			if methods_str == "" or methods_str == "*":
-				_log_info("  Hooks declared: %s :: * (all methods) [%s]" % [script_path, mod_name])
-				continue
-			for method_name in methods_str.split(","):
-				method_name = method_name.strip_edges()
-				if method_name.is_empty():
+			# Parse method list. "*" anywhere (including mixed with specific
+			# methods) promotes to whole-script wildcard -- the mixed form
+			# used to silently ignore the wildcard and wrap only the listed
+			# methods, a silent miss for mod authors who wanted "these for
+			# sure, plus anything else I might hook dynamically."
+			var specific_methods: Array[String] = []
+			var has_wildcard := methods_str == ""
+			for raw_method in methods_str.split(","):
+				var method_name: String = raw_method.strip_edges()
+				if method_name == "":
 					continue
+				if method_name == "*":
+					has_wildcard = true
+					continue
+				specific_methods.append(method_name)
+			if has_wildcard:
+				if not specific_methods.is_empty():
+					_log_warning("  [hooks] %s mixes '*' with specific methods (%s); '*' wins, all methods wrapped [%s]" \
+							% [script_path, ", ".join(specific_methods), mod_name])
+				else:
+					_log_info("  Hooks declared: %s :: * (all methods) [%s]" % [script_path, mod_name])
+				# Leave the inner dict empty; hook_pack.gd treats that as wrap-all.
+				continue
+			for method_name in specific_methods:
 				(_hooked_methods[script_path] as Dictionary)[method_name.to_lower()] = true
 				_log_info("  Hook declared: %s :: %s [%s]" % [script_path, method_name, mod_name])
 
