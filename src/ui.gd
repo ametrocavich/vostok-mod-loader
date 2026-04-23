@@ -325,6 +325,27 @@ func _import_profile_from_parsed(parsed: Dictionary) -> void:
 	var priority_dict: Dictionary = parsed.get("priority", {})
 	for key in priority_dict.keys():
 		cfg.set_value(pr_sec, str(key), int(priority_dict[key]))
+	# Explicit manifest: any local mod NOT in the imported payload is written
+	# as disabled. Without this, _apply_profile_to_entries falls through to
+	# its default-true branch for unknown keys (ergonomic for "newly-dropped
+	# mod in existing profile") and imports would silently enable every
+	# local mod the exporter didn't have -- including dev folders, which is
+	# the opposite of what a shared profile means. Handles id-prefix matches
+	# (foo@2.0 local resolving to foo@1.0 in payload) so version bumps
+	# inherit the payload's state rather than getting disabled.
+	var payload_mod_ids: Dictionary = {}
+	for key in enabled_dict.keys():
+		var key_str := str(key)
+		var at := key_str.find("@")
+		if at > 0:
+			payload_mod_ids[key_str.substr(0, at)] = true
+	for entry in _ui_mod_entries:
+		var pk: String = entry["profile_key"]
+		if enabled_dict.has(pk):
+			continue
+		if not pk.begins_with("zip:") and payload_mod_ids.has(entry["mod_id"]):
+			continue
+		cfg.set_value(en_sec, pk, false)
 	_active_profile = name
 	cfg.set_value("settings", "active_profile", _active_profile)
 	cfg.save(UI_CONFIG_PATH)
