@@ -71,6 +71,12 @@ static func _mount_previous_session() -> Dictionary:
 	var saved_ver: String = cfg.get_value("state", "modloader_version", "")
 	if saved_ver != MODLOADER_VERSION:
 		log_lines.append("[FileScope] Version mismatch: saved=%s current=%s -- wiping" % [saved_ver, MODLOADER_VERSION])
+		# Wipe hook cache along with pass state. Rewriter output semantics
+		# may have changed across versions (e.g. 3.0.0 -> 3.0.1 changed the
+		# opt-in gate + per-method wrap mask shape); any stale framework_pack
+		# still on disk must not get mounted. Pass 1 regenerates a fresh
+		# pack from the current modlist. Mirrors the exe_mtime wipe below.
+		_static_wipe_hook_cache()
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(PASS_STATE_PATH))
 		_static_reset_override_cfg(log_lines)
 		_write_filescope_log(log_lines)
