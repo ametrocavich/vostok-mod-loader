@@ -7,6 +7,8 @@
 - [Hooks](Hooks)
 - [Registry](Registry)
 - [Mod-Format](Mod-Format)
+- [Profile-Format](Profile-Format)
+- [Config-Files](Config-Files)
 - [GDSC-Detokenizer](GDSC-Detokenizer)
 - [Stability-Canaries](Stability-Canaries)
 - [Build](Build)

@@ -21,6 +21,8 @@ End-user install instructions and mod-author quick-start live in the repo [READM
 - [Hooks](Hooks) -- RTVModLib API, opt-in wrap surface, source rewriter, hook pack generation + mount
 - [Registry](Registry) -- `lib.register` / `lib.override` / `lib.patch` for items, scenes, loot, sounds, recipes, events, traders, inputs, shelters, AI, fish, resources
 - [Mod-Format](Mod-Format) -- mod.txt schema, autoload `!` prefix, `[hooks]` / `[script_extend]` / `[registry]` declarations
+- [Profile-Format](Profile-Format) -- the shareable `MTRPRF1....` payload spec (wrapper, JSON, forward-compat rules)
+- [Config-Files](Config-Files) -- where profile state lives on disk, how to edit/back up/reset, sentinel files, generated caches
 - [GDSC-Detokenizer](GDSC-Detokenizer) -- binary token format v100/v101, vanilla source cache
 - [Stability-Canaries](Stability-Canaries) -- A/B/C runtime probes, safe-mode + crash-recovery sentinels
 - [Build](Build) -- `build.sh` concat order, release-please, version bump flow

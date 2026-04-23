@@ -911,19 +911,28 @@ func _rtv_find_matching_paren(s: String, open_idx: int) -> int:
 	if open_idx >= s.length() or s[open_idx] != "(":
 		return -1
 	var depth := 0
-	var in_string := false
+	var in_dq := false   # inside "..."
+	var in_sq := false   # inside '...'
 	var i := open_idx
 	while i < s.length():
 		var c := s[i]
-		if in_string:
+		if in_dq:
 			if c == "\\" and i + 1 < s.length():
 				i += 2
 				continue
 			if c == "\"":
-				in_string = false
+				in_dq = false
+		elif in_sq:
+			if c == "\\" and i + 1 < s.length():
+				i += 2
+				continue
+			if c == "'":
+				in_sq = false
 		else:
 			if c == "\"":
-				in_string = true
+				in_dq = true
+			elif c == "'":
+				in_sq = true
 			elif c == "(":
 				depth += 1
 			elif c == ")":
