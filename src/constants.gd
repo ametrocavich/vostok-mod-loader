@@ -10,7 +10,7 @@
 # The major/minor/patch accessors parse this single source of truth so mods can
 # compare against it without hand-maintaining a second set of constants.
 # x-release-please-start-version
-const MODLOADER_VERSION := "3.0.1"
+const MODLOADER_VERSION := "3.0.0"
 # x-release-please-end
 
 const MODLOADER_RES_PATH := "res://modloader.gd"
