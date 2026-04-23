@@ -19,6 +19,16 @@ func _register_scene(id: String, data: Variant) -> bool:
 	var db := _database_node()
 	if db == null:
 		return false
+	# The rewriter injects _rtv_mod_scenes + _rtv_override_scenes + _get() into
+	# Database.gd only when at least one mod declares [registry]. Without that,
+	# writing db._rtv_mod_scenes[id] = data silently creates an ad-hoc property
+	# (Godot's Object.set accepts it) but Database.get(id) never routes through
+	# the injected _get() -- callers get null and the registration is invisible.
+	# Fail loud so mod authors see the real cause instead of "item registered
+	# but won't spawn."
+	if not ("_rtv_mod_scenes" in db):
+		push_warning("[Registry] register('scenes', '%s'): Database.gd is missing injected scene fields (rewriter didn't fire). Does your mod.txt include a [registry] section?" % id)
+		return false
 	# Collision check: vanilla const, prior mod registration, or mod override.
 	if _scene_exists_in_vanilla(db, id):
 		push_warning("[Registry] register('scenes', '%s'): id collides with vanilla constant; use override instead" % id)

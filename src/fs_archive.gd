@@ -194,6 +194,17 @@ func _parse_mod_txt(text: String) -> ConfigFile:
 	var cfg := ConfigFile.new()
 	if cfg.parse(text) != OK:
 		return null
+	# Godot's ConfigFile drops empty sections, so a bare `[registry]` header
+	# with no body gets silently dropped and cfg.has_section("registry") returns
+	# false. [registry] is a presence-signal section (its body is parsed by
+	# per-kind registry handlers at call sites, not mod-load time), so an empty
+	# header is the common legitimate form. Scan the raw text for the header
+	# and stash a sentinel key so has_section picks it up downstream.
+	for line in text.split("\n"):
+		var stripped := line.strip_edges()
+		if stripped == "[registry]" and not cfg.has_section("registry"):
+			cfg.set_value("registry", "_modloader_header_present", true)
+			break
 	return cfg
 
 # Folder -> temp zip (developer mode). Zips a mod's source folder to a temp
