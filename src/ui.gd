@@ -358,67 +358,10 @@ func _import_profile_from_parsed(parsed: Dictionary) -> void:
 	if _boot_complete:
 		_dirty_since_boot = true
 
-# ============================================================================
-# METROPROFILE v1 -- SCHEMA LOCKED at 3.0.1 release.
-# ============================================================================
-# Do NOT add required fields, rename keys, or change value types in v1 without
-# bumping the schema version. Importers written against v1 are allowed to
-# exist in the wild (Discord pastes, forum attachments, wiki links) and must
-# keep parsing correctly for the life of the 3.x line.
-#
-# Wrapper format (the clipboard-visible string):
-#     "MTRPRF1.<base64(utf8(JSON))>.<first 8 hex chars of SHA-256(base64 body)>"
-#   - "MTRPRF1" magic: identifies this as a metroprofile v1 payload.
-#   - base64 body: UTF-8 JSON encoded via Marshalls.utf8_to_base64.
-#     Base64 alphabet [A-Za-z0-9+/=] contains no dots, so "." is a safe split
-#     delimiter.
-#   - 8-hex checksum: first 8 hex chars of SHA-256 over the base64 body bytes.
-#     Detects clipboard/paste corruption, not tampering (32 bits, not a
-#     security boundary).
-#
-# JSON schema (inside the base64 body):
-#     {
-#       "metroprofile":      1,                  // REQUIRED, int, always 1.
-#       "name":              "<profile name>",   // REQUIRED, String. Sanitized
-#                                                //   via _sanitize_profile_name
-#                                                //   on both export + import
-#                                                //   (ASCII letters/digits/
-#                                                //   space/hyphen/underscore).
-#       "enabled":           { key: bool, ... }, // REQUIRED, Dictionary.
-#                                                //   profile_key -> enabled.
-#       "priority":          { key: int, ... },  // OPTIONAL, Dictionary.
-#                                                //   profile_key -> priority
-#                                                //   int in [-999, 999].
-#                                                //   Absent => all default 0.
-#       "modloader_version": "<semver>",         // OPTIONAL, String, advisory.
-#       "exported_at":       "<iso datetime>"    // OPTIONAL, String, advisory.
-#     }
-#
-# Profile key format (LOCKED):
-#   "<mod_id>@<version>"  -- mods whose mod.txt declares [mod] id=... The
-#                            version segment may be empty ("foo@"). Identity
-#                            is stable across .vmz renames.
-#   "zip:<file_name>"     -- mods without a declared mod_id; identity is the
-#                            archive filename. Renaming the .vmz orphans the
-#                            profile entry.
-#   (See _entry_from_config in mod_discovery.gd for construction.)
-#
-# Forward compatibility rules:
-#   - v1 parsers MUST ignore unknown top-level JSON keys.
-#   - v1 parsers MUST tolerate missing optional keys (priority, modloader_version,
-#     exported_at). Required keys missing -> reject with error.
-#   - Any change that adds a REQUIRED key, renames an existing key, or alters
-#     the value type of an existing key requires bumping metroprofile to 2.
-#     Old parsers will correctly reject v2 ("Unsupported metroprofile schema
-#     version") rather than silently mis-applying.
-#   - Changes additive to optional fields (new optional top-level key) can
-#     stay on metroprofile=1. Old parsers ignore the new key.
-#
-# Round-trip guarantee: for a profile with N declared mods, export then import
-# into the same installation yields identical enabled+priority state. Missing
-# fields default: no priority entry => priority unchanged on existing local
-# mods (not reset to 0).
-# ============================================================================
+# Metroprofile v1 schema is LOCKED at 3.0.1. Full spec (wrapper format, JSON
+# shape, profile key format, forward-compat rules, round-trip guarantees) is
+# in the wiki: docs/wiki/Profile-Format.md. Changes to the export/import
+# shape require bumping the schema version so old parsers reject cleanly.
 
 # Build the shareable opaque payload for the given profile. Shape:
 #     MTRPRF1.<base64-encoded JSON>.<first 8 hex chars of SHA-256(body)>
