@@ -57,6 +57,14 @@ func _modloader_restart(clean_pass1: bool) -> void:
 	get_tree().quit()
 
 func _preserve_engine_driver_args(args: Array) -> void:
+	# Only the "set once at boot, immutable after" args are safe to re-inject
+	# from live state: if the user didn't pass a flag, querying returns Godot's
+	# default (no-op); if they did, we preserve their choice. Window mode,
+	# vsync, resolution, screen, position are deliberately excluded -- those
+	# are initial-state hints the user can change in-game, and re-injecting
+	# would fight the user's current setting. --gpu-index is consumed the same
+	# way but has no GDScript accessor (Engine.singleton->gpu_idx is unbound),
+	# so multi-GPU users on fresh-install first launch are still affected.
 	if not args.has("--rendering-driver"):
 		var driver := RenderingServer.get_current_rendering_driver_name()
 		if not driver.is_empty():
@@ -67,6 +75,20 @@ func _preserve_engine_driver_args(args: Array) -> void:
 		if not method.is_empty():
 			args.append("--rendering-method")
 			args.append(method)
+	if not args.has("--display-driver"):
+		# DisplayServer.get_name() returns the capitalized platform name
+		# ("Windows"), but the CLI matches against the lowercase
+		# register_create_function names ("windows", "headless", "wayland",
+		# "x11", "macos"). Lowercase so the comparison at main.cpp:1243 hits.
+		var dname := DisplayServer.get_name().to_lower()
+		if not dname.is_empty():
+			args.append("--display-driver")
+			args.append(dname)
+	if not args.has("--audio-driver"):
+		var adriver := AudioServer.get_driver_name()
+		if not adriver.is_empty():
+			args.append("--audio-driver")
+			args.append(adriver)
 
 # Public entry point for the main-menu "Mods" button. Re-shows the launcher UI
 # post-boot; if any mutation sets _dirty_since_boot, quits + restarts into a
