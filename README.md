@@ -176,6 +176,8 @@ Delete `override.cfg` and `modloader.gd` from the game folder. The `mods/` folde
 - Conflict log (Developer Mode only): `%APPDATA%\Road to Vostok\modloader_conflicts.txt`
 - Hook pack cache: `%APPDATA%\Road to Vostok\modloader_hooks\` (regenerated on each launch)
 
+Full breakdown of every config file, profile key format, sentinel files, and what's safe to delete: [Config-Files wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Config-Files).
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
