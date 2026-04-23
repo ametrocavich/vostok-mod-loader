@@ -24,28 +24,38 @@ This is the user-facing config. The pre-launch UI reads and writes it. Plain INI
 
 ```ini
 [settings]
+
+developer_mode=true
 active_profile="Default"
-developer_mode=false
 
 [profile.Default.enabled]
-rtvcoop@1.2.3=true
-immersivexp@0.4.1=true
-customhud@2.0.0=false
-zip:SomeMod.vmz=true
+
+doinkoink-mcm@2.6.3=true
+rtv-coop@5.0.0=true
+item-spawner-ce@1.2.1=true
+immersive-xp@3.0.2=false
+xp-skills-system@2.5.6=true
 
 [profile.Default.priority]
-rtvcoop@1.2.3=100
-immersivexp@0.4.1=50
-customhud@2.0.0=0
+
+doinkoink-mcm@2.6.3=-100
+rtv-coop@5.0.0=10
+item-spawner-ce@1.2.1=1
+immersive-xp@3.0.2=0
+xp-skills-system@2.5.6=0
 
 [profile.MyHardcoreBuild.enabled]
-rtvcoop@1.2.3=true
-harsherweather@1.0.0=true
+
+rtv-coop@5.0.0=true
+harsher-weather@1.0.0=true
 
 [profile.MyHardcoreBuild.priority]
-rtvcoop@1.2.3=100
-harsherweather@1.0.0=200
+
+rtv-coop@5.0.0=10
+harsher-weather@1.0.0=200
 ```
+
+Godot's `ConfigFile` writes a blank line after every section header, quotes String values (like `active_profile="Default"`), and emits bools/ints unquoted. Don't hand-edit the quotes -- the parser is strict about them.
 
 ### Sections
 
@@ -59,8 +69,8 @@ harsherweather@1.0.0=200
 
 The left-hand identifier for each mod. Two shapes:
 
-- `<mod_id>@<version>` -- mods whose `mod.txt` declares `[mod] id=...`. Stable across `.vmz` renames.
-- `zip:<file_name>` -- mods without a declared `mod_id`. Identity is the archive filename; renaming the `.vmz` orphans the profile entry.
+- `<mod_id>@<version>` -- mods whose `mod.txt` declares `[mod] id=...`. This is the normal case; every well-formed mod has one. Stable across `.vmz` renames. The version segment may be empty (`scantest_clean@=false`) if `mod.txt` has an `id` but no `version`.
+- `zip:<file_name>` -- fallback for mods without a declared `mod_id`. Identity is the archive filename; renaming the `.vmz` orphans the profile entry. Rare -- almost every mod in circulation has a proper `mod.txt`.
 
 See [Mod-Format](Mod-Format) for mod.txt schema. See [Profile-Format](Profile-Format) for the shareable export payload.
 
@@ -101,15 +111,33 @@ Tracks what modloader mounted last session so it can resume cleanly at static-in
 
 You generally shouldn't touch this file. It's regenerated each session. But if you want to understand it:
 
+```ini
+[state]
+
+restart_count=0
+mods_hash="d90eae97b1868a4e9051f17ced71b7a6"
+archive_paths=PackedStringArray("C:/Program Files (x86)/Steam/steamapps/common/Road to Vostok/mods/RTVCoopVMZ.vmz")
+modloader_version="3.0.1"
+exe_mtime=1776042534
+timestamp=1776897837.26
+script_overrides=[]
+hook_pack_path="user://modloader_hooks/framework_pack_5758.zip"
+hook_pack_wrapped_paths=PackedStringArray("res://Scripts/Menu.gd")
+hook_pack_exe_mtime=1776042534
+```
+
 | Key | Meaning |
 |---|---|
-| `archive_paths` | The `.vmz`/`.zip`/`.pck` paths that were mounted last session, in load order. |
+| `archive_paths` | The `.vmz`/`.zip`/`.pck` paths that were mounted last session, in load order. Stored as `PackedStringArray(...)`. |
 | `modloader_version` | The modloader version that wrote this state. Mismatch with current = state gets wiped. |
-| `exe_mtime` | Game `.exe` modification time at write. Change = hook cache gets wiped (vanilla scripts may have moved). |
-| `hook_pack_path` | `user://modloader_hooks/framework_pack_<timestamp>.zip` path to mount at static-init. |
-| `hook_pack_wrapped_paths` | List of `res://Scripts/<Name>.gd` paths in the pack; drives which scripts get `CACHE_MODE_IGNORE` preempt. |
+| `exe_mtime` | Game `.exe` modification time at write. Change = state gets wiped (vanilla scripts may have moved across a game update). |
+| `timestamp` | Unix epoch seconds when Pass 1 wrote the file. Informational; not used for invalidation. |
 | `restart_count` | Pass-2-restart counter. Max 2; resets after a clean boot. Prevents infinite restart loops. |
 | `mods_hash` | Content hash of the enabled modlist. Unchanged hash + matching state = skip hook pack regeneration. |
+| `script_overrides` | Array of dynamic `overrideScript()` targets declared by mods; used by the dev-mode conflict report. Empty `[]` on most installs. |
+| `hook_pack_path` | `user://modloader_hooks/framework_pack_<millis>.zip` path to mount at static-init next boot. Fresh filename per generation sidesteps Godot's `load_resource_pack` path-dedup. |
+| `hook_pack_wrapped_paths` | List of `res://Scripts/<Name>.gd` paths in the pack; drives which scripts get `CACHE_MODE_IGNORE` preempt at static-init. Often just `["res://Scripts/Menu.gd"]` for legacy loadouts (core hook only). |
+| `hook_pack_exe_mtime` | Exe mtime recorded at hook-pack-write. Separate from `exe_mtime` above so pack-only regenerations can happen without wiping the broader state. |
 
 **Safe to delete.** Next launch rebuilds it. You'll pay a cold-boot cost (regenerate hook pack).
 
@@ -159,7 +187,7 @@ Everything under `user://modloader_hooks/` is regenerated on demand:
 
 | Path | Contents |
 |---|---|
-| `user://modloader_hooks/framework_pack_<timestamp>.zip` | The generated hook pack. Mounted at static-init. Regenerated by Pass 1 when mod state changes. |
+| `user://modloader_hooks/framework_pack_<millis>.zip` | The generated hook pack. Mounted at static-init. Each Pass-1 generation picks a fresh timestamp suffix (sidesteps Godot's `load_resource_pack` path-dedup caching stale mount offsets). Old generations are cleaned up pre-mount. |
 | `user://modloader_hooks/vanilla/` | Cached detokenized vanilla source, keyed by exe mtime. Speeds up subsequent hook-pack generation. |
 | `user://vmz_mount_cache/` | `.vmz -> .zip` copies so Godot's `load_resource_pack` can mount them. |
 | `user://modloader_early/` | Extracted copies of `!`-prefixed early-autoload scripts that live inside archives. |
