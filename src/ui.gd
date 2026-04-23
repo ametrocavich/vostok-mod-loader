@@ -510,6 +510,9 @@ func _rebuild_mods_tab(tabs: TabContainer) -> void:
 	tabs.add_child(new_tab)
 	tabs.move_child(new_tab, idx)
 	tabs.current_tab = idx
+	# Profile switches / dev-mode toggles change enable state without
+	# hitting the per-row checkbox handler.
+	refresh_launch_button_label()
 
 # Parent a dialog on the launcher window (fallback: tree root) so it layers
 # over our always_on_top Window, and copy our dark theme onto it since theme
@@ -1023,6 +1026,7 @@ func show_mod_ui() -> void:
 	launch_btn.add_theme_color_override("font_color", Color(0.88, 0.88, 0.88))
 	launch_btn.add_theme_color_override("font_hover_color", Color(1.0, 1.0, 1.0))
 	bottom.add_child(launch_btn)
+	_ui_launch_btn = launch_btn
 
 	# Closing the window with X should behave the same as clicking Launch.
 	win.close_requested.connect(func(): launch_btn.pressed.emit())
@@ -1034,6 +1038,8 @@ func show_mod_ui() -> void:
 	var updates_tab := build_updates_tab()
 	updates_tab.name = "Updates"
 	tabs.add_child(updates_tab)
+
+	refresh_launch_button_label()
 
 	# Launch loop. If any enabled mod has the scanner's RED risk_level,
 	# show a confirmation dialog before proceeding. Cancel returns the
@@ -1050,7 +1056,24 @@ func show_mod_ui() -> void:
 		# else: loop and wait for Launch again
 	_ui_window = null
 	_ui_hint_label = null
+	_ui_launch_btn = null
 	win.queue_free()
+
+# Pessimistic label: any enabled mod -> "(Restart)". Over-warn beats a
+# surprise close/reopen; the rare hash-match no-restart case just launches
+# faster than promised.
+func refresh_launch_button_label() -> void:
+	if not is_instance_valid(_ui_launch_btn):
+		return
+	var any_enabled := false
+	for entry in _ui_mod_entries:
+		if entry.get("enabled", false):
+			any_enabled = true
+			break
+	if any_enabled:
+		_ui_launch_btn.text = "  Launch with Mods (Restart)  "
+	else:
+		_ui_launch_btn.text = "  Launch Unmodded  "
 
 # Runtime-generated 16x16 pencil icon. Monochrome outline in button-text
 # gray so it matches the rest of the UI -- a colored pencil looks like an
@@ -1632,6 +1655,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			e["enabled"] = on
 			nlbl.modulate = Color(0.58, 0.82, 0.38) if on else Color(0.5, 0.5, 0.5)
 			refresh_order.call()
+			refresh_launch_button_label()
 			_save_ui_config()
 		)
 		spin.value_changed.connect(func(val: float):
