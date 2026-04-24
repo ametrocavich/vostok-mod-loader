@@ -92,7 +92,7 @@ const _SECURITY_RULES: Array = [
 		"description": "Disables Godot's atomic-write save protection. No legitimate use in a mod.",
 		"binary": true,
 	},
-	# --- Runtime code build (combo with process spawn -> red) -------------
+	# --- Runtime code / payload load (combo with process spawn -> red) ----
 	{
 		"id": "expression_eval",
 		"pattern": "\\bExpression\\.new\\s*\\(",
@@ -115,6 +115,26 @@ const _SECURITY_RULES: Array = [
 		"id": "marshalls_objects_decode",
 		"pattern": "\\bMarshalls\\.base64_to_variant\\s*\\([^)]*\\btrue\\b",
 		"description": "Uses Marshalls.base64_to_variant with allow_objects=true. Reconstructs Object instances from a base64 string.",
+		"binary": true,
+	},
+	# --- Filesystem mutation (useful context; some combos escalate to red) -
+	{
+		"id": "os_move_to_trash",
+		"pattern": "\\bOS\\.move_to_trash\\s*\\(",
+		"description": "Moves a file or directory to the OS trash/recycle bin.",
+		"binary": true,
+	},
+	# --- Network / downloader surface -------------------------------------
+	{
+		"id": "http_request",
+		"pattern": "\\bHTTPRequest\\.request\\s*\\(",
+		"description": "Performs an outbound HTTP request via HTTPRequest.request.",
+		"binary": true,
+	},
+	{
+		"id": "http_client_request",
+		"pattern": "\\bHTTPClient\\.(?:connect_to_host|request|request_raw)\\s*\\(",
+		"description": "Uses HTTPClient directly for outbound network traffic.",
 		"binary": true,
 	},
 	# --- Obfuscation signatures (combo with each other or spawn -> red) ---
@@ -166,7 +186,13 @@ const _OBFUSCATION_RULES: Array = [
 ]
 const _RUNTIME_CODE_RULES: Array = [
 	"script_from_string", "marshalls_objects_decode",
-	"deserialize_objects", "expression_eval",
+	"deserialize_objects", "expression_eval", "load_resource_pack",
+]
+const _FILESYSTEM_MUTATION_RULES: Array = [
+	"file_write_open", "dir_remove", "dir_rename", "os_move_to_trash",
+]
+const _NETWORK_RULES: Array = [
+	"http_request", "http_client_request",
 ]
 
 # Minimal GDSC token maps copied locally so the scanner can detokenize
@@ -231,6 +257,7 @@ const _SECURITY_GDSC_SPACE_AFTER := {
 #   - the encoded-payload pair byte_decode_loop + large_int_array
 #   - obfuscation + process spawn (decoded execute)
 #   - runtime-code-build + process spawn (constructed execute)
+#   - network + filesystem mutation + external pack load (downloader/stager)
 # Otherwise: clean. Findings are still stored on the entry for logging
 # but the user sees nothing.
 func compute_risk_level(findings: Array) -> int:
@@ -247,9 +274,13 @@ func compute_risk_level(findings: Array) -> int:
 	var has_obf := _any_present(present, _OBFUSCATION_RULES)
 	var has_spawn := _any_present(present, _PROCESS_SPAWN_RULES)
 	var has_runtime := _any_present(present, _RUNTIME_CODE_RULES)
+	var has_fs_mutation := _any_present(present, _FILESYSTEM_MUTATION_RULES)
+	var has_network := _any_present(present, _NETWORK_RULES)
 	if has_obf and has_spawn:
 		return RISK_RED
 	if has_runtime and has_spawn:
+		return RISK_RED
+	if has_network and has_fs_mutation and present.has("load_resource_pack"):
 		return RISK_RED
 	return RISK_CLEAN
 
