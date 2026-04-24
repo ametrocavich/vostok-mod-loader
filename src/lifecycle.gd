@@ -43,9 +43,34 @@ func _modloader_restart(clean_pass1: bool) -> void:
 				args.append(a)
 	else:
 		args = Array(OS.get_cmdline_args())
+	# Godot's arg parser consumes --rendering-driver / --rendering-method
+	# (main.cpp:1272,1280) and does NOT push them back to main_args, so
+	# OS.get_cmdline_args() returns the stripped list. Without re-injecting,
+	# the relaunch loses the Steam launch option and Godot falls back to the
+	# default driver (D3D12 on Windows). Visible on fresh-install first
+	# launch; subsequent launches short-circuit on the mod-state hash and
+	# never restart.
+	_preserve_engine_driver_args(args)
+	if not clean_pass1:
 		args.append_array(["--", "--modloader-restart"])
 	OS.set_restart_on_exit(true, args)
 	get_tree().quit()
+
+func _preserve_engine_driver_args(args: Array) -> void:
+	# Scoped to the two flags RTV's Steam launch-option presets actually set
+	# ([DirectX] / [Vulkan] / [Compatibility] pick --rendering-driver and/or
+	# --rendering-method). If the user didn't pass a flag, querying returns
+	# Godot's default (no-op); if they did, we preserve their choice.
+	if not args.has("--rendering-driver"):
+		var driver := RenderingServer.get_current_rendering_driver_name()
+		if not driver.is_empty():
+			args.append("--rendering-driver")
+			args.append(driver)
+	if not args.has("--rendering-method"):
+		var method := RenderingServer.get_current_rendering_method()
+		if not method.is_empty():
+			args.append("--rendering-method")
+			args.append(method)
 
 # Public entry point for the main-menu "Mods" button. Re-shows the launcher UI
 # post-boot; if any mutation sets _dirty_since_boot, quits + restarts into a

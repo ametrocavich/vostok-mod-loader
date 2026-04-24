@@ -101,6 +101,9 @@ var _ui_window: Window = null
 # Bottom-bar label used as a makeshift status hint because Godot's native
 # tooltips get layered behind our always_on_top launcher and aren't visible.
 var _ui_hint_label: Label = null
+# Launch button kept on self so refresh_launch_button_label can reach it
+# from the mod-enable toggle handler.
+var _ui_launch_btn: Button = null
 var _has_loaded := false
 var _last_mod_txt_status := "none"
 var _database_replaced_by := ""

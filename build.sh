@@ -47,6 +47,7 @@ FILES=(
     "$SRC/registry/ai.gd"
     "$SRC/registry/fish.gd"
     "$SRC/registry/resources.gd"
+    "$SRC/registry/scene_nodes.gd"
     "$SRC/framework_wrappers.gd"
     # Codegen pipeline
     "$SRC/gdsc_detokenizer.gd"

@@ -43,6 +43,7 @@ const Registry := {
 	AI_TYPES = "ai_types",
 	FISH_SPECIES = "fish_species",
 	RESOURCES = "resources",
+	SCENE_NODES = "scene_nodes",
 	# Future sections populate the rest:
 	# TRADER_POOLS = "trader_pools",
 	# TRADER_TASKS = "trader_tasks",
@@ -93,6 +94,9 @@ func register(registry: String, id: String, data: Variant) -> bool:
 		"resources":
 			push_warning("[Registry] register: 'resources' doesn't support register (the target .tres already exists in vanilla; use patch to mutate its fields)")
 			return false
+		"scene_nodes":
+			push_warning("[Registry] register: 'scene_nodes' doesn't support register (nodes are positional inside a scene; use override('scenes', ...) to replace the whole scene or patch('scene_nodes', ...) to mutate node properties)")
+			return false
 		_:
 			push_warning("[Registry] register: unknown registry '%s'" % registry)
 			return false
@@ -128,6 +132,9 @@ func override(registry: String, id: String, data: Variant) -> bool:
 			return false
 		"resources":
 			push_warning("[Registry] override: 'resources' doesn't support override (vanilla .tres already exists; use patch to mutate fields)")
+			return false
+		"scene_nodes":
+			push_warning("[Registry] override: 'scene_nodes' doesn't support override (whole-scene swap goes through override('scenes', ...); scene_nodes is patch-only)")
 			return false
 		_:
 			push_warning("[Registry] override: unknown registry '%s'" % registry)
@@ -196,6 +203,11 @@ func patch(registry: String, id: Variant, fields: Dictionary) -> bool:
 				push_warning("[Registry] patch('resources', ...): id must be a res:// path String")
 				return false
 			return _patch_resource(id, fields)
+		"scene_nodes":
+			if not (id is String):
+				push_warning("[Registry] patch('scene_nodes', ...): id must be a String in the form '<scene_path>#<node_path>'")
+				return false
+			return _patch_scene_node(id, fields)
 		_:
 			push_warning("[Registry] patch: unknown registry '%s'" % registry)
 			return false
@@ -221,6 +233,9 @@ func remove(registry: String, id: String) -> bool:
 		"fish_species": return _remove_fish_species(id)
 		"resources":
 			push_warning("[Registry] remove: 'resources' doesn't support remove (use revert to undo patches)")
+			return false
+		"scene_nodes":
+			push_warning("[Registry] remove: 'scene_nodes' doesn't support remove (use revert to undo a property patch)")
 			return false
 		_:
 			push_warning("[Registry] remove: unknown registry '%s'" % registry)
@@ -298,6 +313,11 @@ func revert(registry: String, id: Variant, fields: Array = []) -> bool:
 				push_warning("[Registry] revert('resources', ...): id must be a res:// path String")
 				return false
 			return _revert_resource(id, fields)
+		"scene_nodes":
+			if not (id is String):
+				push_warning("[Registry] revert('scene_nodes', ...): id must be a String in the form '<scene_path>#<node_path>'")
+				return false
+			return _revert_scene_node(id, fields)
 		_:
 			push_warning("[Registry] revert: unknown registry '%s'" % registry)
 			return false
