@@ -449,8 +449,6 @@ func _collect_enabled_archive_paths() -> PackedStringArray:
 		candidates.append(entry.duplicate())
 	candidates.sort_custom(_compare_load_order)
 	for c in candidates:
-		if c["ext"] == "zip":
-			continue
 		if c["ext"] == "folder":
 			# Folder mods are zipped to a temp cache during load_all_mods().
 			# Store the temp zip path -- the folder itself can't be mounted.

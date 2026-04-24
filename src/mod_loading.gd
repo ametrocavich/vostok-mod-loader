@@ -102,10 +102,6 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 
 	_log_info("--- [" + str(load_index + 1) + "] " + mod_name + " (" + file_name + ")")
 
-	if ext == "zip":
-		_log_warning("Skipping .zip file: " + file_name + " -- rename to .vmz to use")
-		return
-
 	if ext != "pck" and _loaded_mod_ids.has(mod_id):
 		_log_warning("Duplicate mod id '" + mod_id + "' -- skipped: " + file_name)
 		return

@@ -107,8 +107,6 @@ func _apply_profile_to_entries(cfg: ConfigFile, profile: String) -> void:
 			entry["enabled"] = bool(cfg.get_value(en_sec, resolved_key))
 		else:
 			entry["enabled"] = true
-		if entry["ext"] == "zip":
-			entry["enabled"] = false
 		if resolved_key != "" and cfg.has_section_key(pr_sec, resolved_key):
 			entry["priority"] = int(str(cfg.get_value(pr_sec, resolved_key)))
 
@@ -1611,7 +1609,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 
 		# Vanilla has no stored profile; disable editing so auto-save can't
 		# create a ghost `profile.__vanilla__.*` section.
-		if entry["ext"] == "zip" or on_vanilla:
+		if on_vanilla:
 			check.disabled = true
 
 		var spin := SpinBox.new()
@@ -1619,7 +1617,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		spin.max_value = PRIORITY_MAX
 		spin.value = entry["priority"]
 		spin.custom_minimum_size.x = 100
-		if entry["ext"] == "zip" or on_vanilla:
+		if on_vanilla:
 			spin.editable = false
 		row.add_child(spin)
 
