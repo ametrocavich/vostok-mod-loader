@@ -37,12 +37,18 @@ jobs:
           ./build.sh
 
       # Attach the freshly built modloader.gd + the repo's override.cfg to
-      # the release. The installers download from
-      # /releases/latest/download/<file>.
+      # the release, plus the installer scripts so users can grab them from
+      # /releases/latest/download/<file> the same way the installers
+      # themselves fetch modloader.gd / override.cfg.
       - name: Upload release assets
         if: ${{ steps.release.outputs.release_created }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.release.outputs.tag_name }}
         run: |
-          gh release upload "$TAG" modloader.gd override.cfg --clobber
+          gh release upload "$TAG" \
+            modloader.gd \
+            override.cfg \
+            windows-installer.bat \
+            linux-installer.sh \
+            --clobber

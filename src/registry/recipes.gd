@@ -98,8 +98,35 @@ func _register_recipe(id: String, data: Variant) -> bool:
 	arr.append(recipe)
 	reg[id] = {"recipe": recipe, "category": category}
 	_registry_registered["recipes"] = reg
+	# Vanilla ships the Equipment and Misc category tabs disabled + faded
+	# (Interface.tscn:2591, 2668) because those recipe arrays are empty.
+	# Any mod adding a recipe to either category needs the tab clickable,
+	# so auto-patch the buttons via the scene_nodes registry. Idempotent:
+	# repeat calls from additional mods just re-set the same props.
+	_unlock_crafting_category_button_if_needed(category)
 	_log_debug("[Registry] registered recipe '%s' (category=%s, name=%s)" % [id, category, recipe.get("name")])
 	return true
+
+# Category -> node path inside Interface.tscn. Only equipment + misc ship
+# locked in vanilla; the other categories are always clickable.
+const _LOCKED_CATEGORY_BUTTONS := {
+	"equipment": "Tools/Crafting/Types/Margin/Buttons/Equipment",
+	"misc": "Tools/Crafting/Types/Margin/Buttons/Misc",
+}
+const _INTERFACE_SCENE_PATH := "res://UI/Interface.tscn"
+
+func _unlock_crafting_category_button_if_needed(category: String) -> void:
+	if not _LOCKED_CATEGORY_BUTTONS.has(category):
+		return
+	var node_path: String = _LOCKED_CATEGORY_BUTTONS[category]
+	var id: String = "%s#%s" % [_INTERFACE_SCENE_PATH, node_path]
+	# Reset the button's modulate to full alpha but leave the icon child
+	# alone at its vanilla 0.5 alpha icons ship faded on every category
+	# button, and matching sibling behavior is the right default.
+	_patch_scene_node(id, {
+		"disabled": false,
+		"modulate": Color(1.0, 1.0, 1.0, 1.0),
+	})
 
 func _override_recipe(id: String, data: Variant) -> bool:
 	var ov: Dictionary = _registry_overridden.get("recipes", {})
