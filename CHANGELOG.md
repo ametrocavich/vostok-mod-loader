@@ -1,5 +1,24 @@
 # Changelog
 
+## [3.1.0](https://github.com/ametrocavich/vostok-mod-loader/compare/v3.0.1...v3.1.0) (2026-04-24)
+
+
+### Features
+
+* Add Scene Nodes registry ([#44](https://github.com/ametrocavich/vostok-mod-loader/issues/44)) ([3973815](https://github.com/ametrocavich/vostok-mod-loader/commit/39738155983041d75fd8499226ce36a4ea6c67c2))
+* allow .zip mods to load ([#45](https://github.com/ametrocavich/vostok-mod-loader/issues/45)) ([a64865f](https://github.com/ametrocavich/vostok-mod-loader/commit/a64865f3ff34060c83df112093b1169847ad71b0))
+* dynamic launch button label ([#42](https://github.com/ametrocavich/vostok-mod-loader/issues/42)) ([290fc5f](https://github.com/ametrocavich/vostok-mod-loader/commit/290fc5f92c6dc3db1a3ccf16e0dd1aa004739d83))
+
+
+### Bug Fixes
+
+* preserve rendering-driver across modloader restart ([#41](https://github.com/ametrocavich/vostok-mod-loader/issues/41)) ([6bb3baa](https://github.com/ametrocavich/vostok-mod-loader/commit/6bb3baaf6caf365dffefdb846a884b7ec5ddac71))
+
+
+### Performance Improvements
+
+* memoize scene_nodes patch validation ([#46](https://github.com/ametrocavich/vostok-mod-loader/issues/46)) ([bcf551d](https://github.com/ametrocavich/vostok-mod-loader/commit/bcf551d69109cf00c3d2700ef4076573ff245459))
+
 ## [3.0.1](https://github.com/ametrocavich/vostok-mod-loader/compare/v3.0.0...v3.0.1) (2026-04-23)
 
 
