@@ -167,16 +167,11 @@ func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, e
 		"priority": priority, "enabled": true,
 		"cfg": cfg, "mod_txt_status": _last_mod_txt_status,
 	}
-	if ext == "zip":
-		entry["enabled"] = false
 	return entry
 
 func _build_entry_warnings(entry: Dictionary) -> Array[String]:
 	var warnings: Array[String] = []
 	var ext: String = entry["ext"]
-	if ext == "zip":
-		warnings.append("Rename this file from .zip to .vmz to use it")
-		return warnings
 	if ext == "pck" or ext == "folder":
 		return warnings
 	var status: String = entry.get("mod_txt_status", "none")
