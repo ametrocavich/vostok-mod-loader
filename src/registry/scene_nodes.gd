@@ -46,6 +46,15 @@ var _scene_node_stash: Dictionary = {}
 # frameworks_ready emissions (shouldn't happen, but belt-and-suspenders).
 var _scene_nodes_listener_connected: bool = false
 
+# Memoizes successful probe validations keyed by
+# "<scene_path>#<node_path>|<sorted,field,names>". Keeps repeat patch()
+# calls with the same id + field set (e.g. recipes.gd auto-unlocking the
+# Equipment tab once per registered recipe) from instantiating +
+# free-ing Interface.tscn N times. Runtime safety is unchanged --
+# _apply_patches_for_scene_root still re-checks _node_has_property on
+# every live instance, so the cache is strictly additive.
+var _validated_patches: Dictionary = {}
+
 # Entry point invoked from hooks_api._register_core_hooks after frameworks_ready.
 # Idempotent.
 func _scene_nodes_connect_listener() -> void:
@@ -111,6 +120,13 @@ func _split_scene_node_id(id: String) -> Array:
 # Returns true if the (scene, node, props) triple is well-formed, false if
 # any piece doesn't resolve (with a warn on each failure).
 func _validate_scene_node_patch(scene_path: String, node_path: String, fields: Dictionary) -> bool:
+	var field_keys: Array = []
+	for k in fields.keys():
+		field_keys.append(String(k))
+	field_keys.sort()
+	var cache_key: String = "%s#%s|%s" % [scene_path, node_path, ",".join(field_keys)]
+	if _validated_patches.has(cache_key):
+		return true
 	var pscene := load(scene_path)
 	if pscene == null or not (pscene is PackedScene):
 		push_warning("[Registry] patch('scene_nodes'): scene '%s' failed to load (not a PackedScene)" % scene_path)
@@ -132,6 +148,7 @@ func _validate_scene_node_patch(scene_path: String, node_path: String, fields: D
 			probe.queue_free()
 			return false
 	probe.queue_free()
+	_validated_patches[cache_key] = true
 	return true
 
 # Does `node` have a declared property named `prop`? Mirrors
