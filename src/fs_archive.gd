@@ -146,6 +146,11 @@ static func _static_resolve_remaps(archive_path: String) -> int:
 
 func read_mod_config(path: String) -> ConfigFile:
 	_last_mod_txt_status = "none"
+	# Reset diagnostic alongside status: paths below (empty mod.txt, missing
+	# mod.txt, ZIPReader open failure) set parse_error without going through
+	# _parse_mod_txt, so without this reset the prior mod's error message
+	# would leak into the next mod's launcher warning.
+	_last_mod_txt_error = ""
 	var zr := ZIPReader.new()
 	if zr.open(path) != OK:
 		return null
@@ -173,6 +178,7 @@ func read_mod_config(path: String) -> ConfigFile:
 
 func read_mod_config_folder(folder_path: String) -> ConfigFile:
 	_last_mod_txt_status = "none"
+	_last_mod_txt_error = ""  # see read_mod_config for rationale
 	var mod_txt_path := folder_path.path_join("mod.txt")
 	if not FileAccess.file_exists(mod_txt_path):
 		return null
