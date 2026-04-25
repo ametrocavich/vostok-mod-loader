@@ -146,6 +146,11 @@ static func _static_resolve_remaps(archive_path: String) -> int:
 
 func read_mod_config(path: String) -> ConfigFile:
 	_last_mod_txt_status = "none"
+	# Reset diagnostic alongside status: paths below (empty mod.txt, missing
+	# mod.txt, ZIPReader open failure) set parse_error without going through
+	# _parse_mod_txt, so without this reset the prior mod's error message
+	# would leak into the next mod's launcher warning.
+	_last_mod_txt_error = ""
 	var zr := ZIPReader.new()
 	if zr.open(path) != OK:
 		return null
@@ -173,6 +178,7 @@ func read_mod_config(path: String) -> ConfigFile:
 
 func read_mod_config_folder(folder_path: String) -> ConfigFile:
 	_last_mod_txt_status = "none"
+	_last_mod_txt_error = ""  # see read_mod_config for rationale
 	var mod_txt_path := folder_path.path_join("mod.txt")
 	if not FileAccess.file_exists(mod_txt_path):
 		return null
@@ -189,10 +195,29 @@ func read_mod_config_folder(folder_path: String) -> ConfigFile:
 	return cfg
 
 func _parse_mod_txt(text: String) -> ConfigFile:
+	_last_mod_txt_error = ""
 	if text.begins_with("\uFEFF"):
 		text = text.substr(1)
+	# Tolerate the wiki-documented [hooks] form. The Hooks/Mod-Format wiki
+	# pages show entries like:
+	#     res://Scripts/Interface.gd = _ready, update_tooltip
+	#     res://Scripts/Controller.gd = *
+	# but Godot's ConfigFile uses the Variant parser for values, which
+	# rejects unquoted identifier lists, bare `*`, and top-level commas.
+	# Authors following the docs verbatim hit a parse_error and the generic
+	# "Invalid mod -- try re-downloading" prompt. Quote-wrapping the values
+	# before cfg.parse() lets the wiki form land as a string and downstream
+	# code (mod_loading.gd's [hooks] reader) handles the comma-split itself.
+	# Already-quoted entries pass through unchanged.
+	var preprocessed := _quote_unquoted_hooks_values(text)
 	var cfg := ConfigFile.new()
-	if cfg.parse(text) != OK:
+	if cfg.parse(preprocessed) != OK:
+		# The Variant-parser failure code from cfg.parse() doesn't carry the
+		# offending line number. Walk the source per-line to locate it; the
+		# diagnostic flows through _last_mod_txt_error -> mod_txt_error on
+		# the entry -> launcher warning + boot log so authors see the broken
+		# section/line instead of a generic "re-download" hint.
+		_last_mod_txt_error = _diagnose_parse_failure(preprocessed)
 		return null
 	# Godot's ConfigFile drops empty sections, so a bare `[registry]` header
 	# with no body gets silently dropped and cfg.has_section("registry") returns
@@ -206,6 +231,95 @@ func _parse_mod_txt(text: String) -> ConfigFile:
 			cfg.set_value("registry", "_modloader_header_present", true)
 			break
 	return cfg
+
+# Quote the values of unquoted entries inside [hooks] sections. Wiki examples
+# document `path = method1, method2` / `path = *` / `path =` -- all rejected
+# by ConfigFile's Variant parser. Wrap unquoted right-hand-sides in double
+# quotes so they parse as plain strings; mod_loading.gd's [hooks] handler
+# already comma-splits and lowercases the result.
+#
+# Already-quoted values (the AI Overhaul pattern) pass through verbatim so
+# we don't change behavior for mods that got the syntax right. Inline
+# `# comment` / `; comment` on these lines is stripped before wrapping --
+# Variant parser eats it natively for raw values, but once we quote the
+# right-hand side a trailing comment becomes part of the string.
+func _quote_unquoted_hooks_values(text: String) -> String:
+	var lines := text.split("\n")
+	var out := PackedStringArray()
+	var in_hooks := false
+	for line in lines:
+		var stripped := line.strip_edges()
+		# Section header: track whether we just entered/left [hooks].
+		if stripped.begins_with("[") and stripped.ends_with("]"):
+			in_hooks = stripped.to_lower() == "[hooks]"
+			out.append(line)
+			continue
+		if not in_hooks:
+			out.append(line)
+			continue
+		if stripped.is_empty() or stripped.begins_with("#") or stripped.begins_with(";"):
+			out.append(line)
+			continue
+		var eq_pos := line.find("=")
+		if eq_pos < 0:
+			out.append(line)
+			continue
+		var key_part := line.substr(0, eq_pos)
+		var val_part := line.substr(eq_pos + 1)
+		if val_part.strip_edges(true, false).begins_with("\""):
+			# Already quoted -- ConfigFile + Variant parser handle it.
+			out.append(line)
+			continue
+		var comment := ""
+		var comment_pos := -1
+		for j in val_part.length():
+			var ch := val_part[j]
+			if ch == "#" or ch == ";":
+				comment_pos = j
+				break
+		if comment_pos >= 0:
+			comment = val_part.substr(comment_pos)
+			val_part = val_part.substr(0, comment_pos)
+		var val_trim := val_part.strip_edges()
+		var escaped := val_trim.replace("\\", "\\\\").replace("\"", "\\\"")
+		var rebuilt := "%s= \"%s\"" % [key_part, escaped]
+		if not comment.is_empty():
+			rebuilt += "  " + comment
+		out.append(rebuilt)
+	return "\n".join(out)
+
+# Locate the first line that ConfigFile.parse() would reject. Used only on
+# the failure path -- the per-line probe is O(N) parses but only fires when
+# the mod is already broken, and the result lets the launcher tell authors
+# *which* line/section to look at instead of "Invalid mod, re-download".
+func _diagnose_parse_failure(text: String) -> String:
+	var current_section := ""
+	var line_num := 0
+	for line in text.split("\n"):
+		line_num += 1
+		var stripped := line.strip_edges()
+		if stripped.is_empty() or stripped.begins_with("#") or stripped.begins_with(";"):
+			continue
+		if stripped.begins_with("[") and stripped.ends_with("]"):
+			current_section = stripped.substr(1, stripped.length() - 2)
+			continue
+		var probe := ConfigFile.new()
+		var header := ""
+		if current_section != "":
+			header = "[%s]\n" % current_section
+		if probe.parse(header + line + "\n") != OK:
+			var section_label := ("[%s]" % current_section) if current_section != "" else "(no section)"
+			return "line %d %s: %s" % [line_num, section_label, _truncate_for_log(stripped)]
+	# Fall-through: per-line probes all passed but the full parse failed.
+	# Could happen with a section-header / multi-line value interaction we
+	# don't model. Return a generic locator so the user at least knows we
+	# detected the failure but couldn't pin the line.
+	return "could not pin line (full parse failed but per-line probes passed)"
+
+func _truncate_for_log(s: String) -> String:
+	if s.length() <= 80:
+		return s
+	return s.substr(0, 77) + "..."
 
 # Folder -> temp zip (developer mode). Zips a mod's source folder to a temp
 # .zip in the cache dir so it can be mounted like any other archive.

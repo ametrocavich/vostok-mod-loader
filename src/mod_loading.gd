@@ -145,7 +145,11 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 			if status.begins_with("nested:"):
 				_log_warning("  Invalid mod -- packaged incorrectly (nested mod.txt at " + status.substr(7) + ")")
 			elif status == "parse_error":
-				_log_warning("  Invalid mod -- mod.txt failed to parse")
+				var detail: String = c.get("mod_txt_error", "")
+				if detail.is_empty():
+					_log_warning("  Invalid mod -- mod.txt failed to parse")
+				else:
+					_log_warning("  Invalid mod -- mod.txt parse error at " + detail)
 			else:
 				_log_warning("  No mod.txt -- autoloads skipped")
 		return
