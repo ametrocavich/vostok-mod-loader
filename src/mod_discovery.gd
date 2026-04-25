@@ -166,6 +166,7 @@ func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, e
 		"profile_key": profile_key,
 		"priority": priority, "enabled": true,
 		"cfg": cfg, "mod_txt_status": _last_mod_txt_status,
+		"mod_txt_error": _last_mod_txt_error,
 	}
 	return entry
 
@@ -178,7 +179,14 @@ func _build_entry_warnings(entry: Dictionary) -> Array[String]:
 	if status == "none":
 		warnings.append("Invalid mod -- may not work correctly. Try re-downloading.")
 	elif status == "parse_error":
-		warnings.append("Invalid mod -- may not work correctly. Try re-downloading.")
+		# Surface the line/section the parser tripped on so authors can
+		# self-correct instead of staring at a generic "re-download" hint
+		# when the real problem is a typo in their own mod.txt.
+		var detail: String = entry.get("mod_txt_error", "")
+		if detail.is_empty():
+			warnings.append("Invalid mod -- mod.txt failed to parse. Try re-downloading.")
+		else:
+			warnings.append("mod.txt parse error at " + detail)
 	elif status.begins_with("nested:"):
 		warnings.append("Invalid mod -- packaged incorrectly. Try re-downloading.")
 	return warnings

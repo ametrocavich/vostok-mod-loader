@@ -106,6 +106,11 @@ var _ui_hint_label: Label = null
 var _ui_launch_btn: Button = null
 var _has_loaded := false
 var _last_mod_txt_status := "none"
+# Detailed parse-failure diagnostic written by _parse_mod_txt when ConfigFile
+# rejects mod.txt. Plumbed into UI warnings + boot-log messages so authors
+# see *which* line/section broke instead of a generic "Invalid mod" prompt.
+# Empty when status != "parse_error".
+var _last_mod_txt_error := ""
 var _database_replaced_by := ""
 # Post-boot UI re-open state. _boot_complete flips true once Pass 1 / Pass 2 /
 # single-pass finish paths finalize. Once true, any mutation of mod_config.cfg
