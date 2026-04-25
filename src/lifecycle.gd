@@ -90,6 +90,13 @@ func _run_pass_1() -> void:
 	_check_safe_mode()
 	_compile_regex()
 	_build_class_name_lookup()
+	# Populate _all_game_script_paths NOW so the .hook() prefix resolver in
+	# _merge_hook_calls_into_wrap_mask (run from load_all_mods below) can
+	# fall back to filename-stem matches for vanilla scripts without
+	# class_name (Flashlight, NVG, Interface, ...). Previously this only
+	# ran inside _generate_hook_pack, so source-scanned hooks on
+	# class_name-less scripts were silently dropped.
+	_enumerate_game_scripts()
 	_load_developer_mode_setting()
 	_ui_mod_entries = collect_mod_metadata()
 	_clean_stale_cache()
@@ -226,6 +233,9 @@ func _run_pass_2() -> void:
 	_clear_restart_counter()
 	_compile_regex()
 	_build_class_name_lookup()
+	# See _run_pass_1: enumerate before load_all_mods so filename-stem
+	# fallback in _merge_hook_calls_into_wrap_mask is populated.
+	_enumerate_game_scripts()
 	_load_developer_mode_setting()
 	_ui_mod_entries = collect_mod_metadata()
 	_load_ui_config()

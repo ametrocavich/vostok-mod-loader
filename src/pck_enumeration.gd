@@ -93,6 +93,12 @@ func _get_hardcoded_class_map() -> Dictionary:
 	}
 
 func _enumerate_game_scripts() -> Array[String]:
+	# Memoized: PCK parsing is non-trivial and we call this from two sites
+	# now (early in pass 1/2 so the .hook() merge can resolve class_name-less
+	# stems, plus from _generate_hook_pack as before). Cache keeps the second
+	# call free without forcing the caller to track lookup state.
+	if not _all_game_script_paths.is_empty():
+		return _all_game_script_paths
 	var exe_dir := OS.get_executable_path().get_base_dir()
 	var candidates := ["RTV.pck", OS.get_executable_path().get_file().get_basename() + ".pck"]
 	for cand in candidates:
