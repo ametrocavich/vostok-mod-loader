@@ -17,7 +17,7 @@ Godot quirks and design constraints the loader works around or can't work around
 
 ## Scripts deliberately not rewritten
 
-Runtime-sensitive scripts in `RTV_SKIP_LIST` at [constants.gd:50-58](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L50). Dispatch wrappers break their runtime semantics:
+Runtime-sensitive scripts in `RTV_SKIP_LIST` at [constants.gd:57-65](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L57). Dispatch wrappers break their runtime semantics:
 
 | Script | Reason |
 |---|---|
@@ -31,9 +31,9 @@ Runtime-sensitive scripts in `RTV_SKIP_LIST` at [constants.gd:50-58](https://git
 
 Hooks on methods in these scripts won't fire. Mods should hook alternative call sites.
 
-Resource-serialized scripts at [constants.gd:62-67](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L62) (save data -- `CharacterSave`, `ContainerSave`, `FurnitureSave`, `ItemSave`, `Preferences`, `ShelterSave`, `SlotData`, `SwitchSave`, `TraderSave`, `Validator`, `WorldSave`) aren't rewritten -- `ResourceSaver` embeds the script path into user save files, and wrapping the script would make saves mod-dependent.
+Resource-serialized scripts at [constants.gd:69-74](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L69) (save data -- `CharacterSave`, `ContainerSave`, `FurnitureSave`, `ItemSave`, `Preferences`, `ShelterSave`, `SlotData`, `SwitchSave`, `TraderSave`, `Validator`, `WorldSave`) aren't rewritten -- `ResourceSaver` embeds the script path into user save files, and wrapping the script would make saves mod-dependent.
 
-Data-resource scripts at [constants.gd:71-80](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L71) (25 entries: `AIWeaponData`, `AttachmentData`, `ItemData`, `LootTable`, `Recipes`, etc.) aren't rewritten -- they're loaded from `res://` only, have no call sites to intercept. Mods should hook the consumers instead.
+Data-resource scripts at [constants.gd:78-87](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L78) (25 entries: `AIWeaponData`, `AttachmentData`, `ItemData`, `LootTable`, `Recipes`, etc.) aren't rewritten -- they're loaded from `res://` only, have no call sites to intercept. Mods should hook the consumers instead.
 
 ## Scene-preload deferred compile
 
@@ -41,11 +41,11 @@ Data-resource scripts at [constants.gd:71-80](https://github.com/ametrocavich/vo
 
 **Detection**: [pck_enumeration.gd:137 `_collect_module_scope_scene_preloads`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/pck_enumeration.gd#L137) scans for column-0 `preload("res://X.tscn|.scn")`. Scripts with such preloads are added to `_scripts_with_scene_preloads`.
 
-**Workaround**: the activator ([hook_pack.gd:438](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L438)) skips eager compile for these scripts -- VFS mount precedence (`.gd` + `.gd.remap` + empty `.gdc`) still serves the rewrite when game code lazy-loads them AFTER mod overrides run.
+**Workaround**: the activator ([hook_pack.gd:558](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L558)) skips eager compile for these scripts -- VFS mount precedence (`.gd` + `.gd.remap` + empty `.gdc`) still serves the rewrite when game code lazy-loads them AFTER mod overrides run.
 
 **Exception**: registry targets (currently `Database.gd`) MUST force-activate so the injected `_rtv_mod_scenes` / `_rtv_override_scenes` / `_get()` are live on the autoload instance when mods call `lib.register`. Registry targets don't have the ext_resource staleness problem because mods don't `take_over_path` them -- they use the registry API instead.
 
-See [hook_pack.gd:194-209](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L194).
+See [hook_pack.gd:373-389](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L373).
 
 ## Direct const access bypasses `_get()`
 
@@ -72,7 +72,7 @@ Inline comment at [registry.gd:104-105](https://github.com/ametrocavich/vostok-m
 
 GDScript rejects files mixing `\r\n` and `\n` line endings with a misleading `"Expected indented block after 'X' block"` error (the real issue is the inconsistent endings, not indentation).
 
-ImmersiveXP ships CRLF-encoded source; the loader's appended wrappers use LF only. Before rewriting, [rewriter.gd:342-343](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter.gd#L342) strips all CR:
+ImmersiveXP ships CRLF-encoded source; the loader's appended wrappers use LF only. Before rewriting, [rewriter.gd:229](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter.gd#L229) strips all CR:
 
 ```gdscript
 var src = source.replace("\r\n", "\n").replace("\r", "\n")
@@ -82,13 +82,13 @@ var src = source.replace("\r\n", "\n").replace("\r", "\n")
 
 GDScript also rejects mixed tabs and spaces in one file. IXP uses 4-space indent, vanilla RTV uses tabs. The dispatch wrapper has to match the file's existing style.
 
-[rewriter.gd:561 `_detect_indent_style`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter.gd#L561) scans the first indented non-empty non-comment line and returns `"\t"` or `" ".repeat(n)`. Dispatch wrappers are generated with that indent.
+[rewriter.gd:671 `_detect_indent_style`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter.gd#L671) scans the first indented non-empty non-comment line and returns `"\t"` or `" ".repeat(n)`. Dispatch wrappers are generated with that indent.
 
 ## Bodyless blocks
 
 Godot 4's parser rejects `if X:` with no indented body (a no-op the author got away with in Godot 3). Common in real-world RTV mods (e.g. AI Overhaul's `AwarenessSystem.gd`).
 
-Autofix: [rewriter.gd:652-676](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter.gd#L652) scans for block headers (`if`/`elif`/`else`/`for`/`while`/`match`/`func`/`class`/`static func`). If the next non-blank non-comment line isn't indented deeper, injects a `pass` at `header_indent + indent_unit`:
+Autofix: [rewriter.gd:735 `_rtv_autofix_legacy_syntax`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter.gd#L735) scans for block headers (`if`/`elif`/`else`/`for`/`while`/`match`/`func`/`class`/`static func`). If the next non-blank non-comment line isn't indented deeper, injects a `pass` at `header_indent + indent_unit`:
 
 ```gdscript
 if some_condition:
@@ -101,13 +101,13 @@ Also migrates `tool` -> `@tool`, `onready var` -> `@onready var`, `export var` -
 
 When the rewriter renames `func CheckVersion():` to `func _rtv_vanilla_CheckVersion():` and the body contains bare `super()`, Godot's strict reload looks for `_rtv_vanilla_CheckVersion` on the parent -- which vanilla doesn't have. Result: reload failure.
 
-[rewriter.gd:517 `_rewrite_bare_super`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter.gd#L517) rewrites bare `super(` to `super.<orig_name>(` inside renamed bodies. `super.OtherMethod()` passes through untouched (already explicit).
+[rewriter.gd:627 `_rewrite_bare_super`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter.gd#L627) rewrites bare `super(` to `super.<orig_name>(` inside renamed bodies. `super.OtherMethod()` passes through untouched (already explicit).
 
 ## Windows backslash zip paths
 
 `ZipFile.CreateFromDirectory()` on Windows writes entries with backslash separators. Godot mounts the pack but can't resolve the paths.
 
-Detection at [mod_loading.gd:243-254](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_loading.gd#L243):
+Detection at [mod_loading.gd:358-368](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_loading.gd#L358):
 
 ```
 BAD ZIP: <n> entries use Windows backslash paths.
@@ -128,18 +128,18 @@ Base game ships some `.gd` entries as zero bytes (e.g. `CasettePlayer.gd` in RTV
 
 For scripts originally compiled from `.gdc` bytecode (Camera, WeaponRig -- pre-compiled during engine startup because they're referenced by the initial scene graph), mutating `script.source_code` and calling `reload()` doesn't re-parse from the new source -- `reload()` re-reads bytecode instead.
 
-Fallback at [hook_pack.gd:538-566](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L538): after `reload()`, verify the compiled method list has `_rtv_vanilla_*` entries. If not, `ResourceLoader.load(path, "", CACHE_MODE_IGNORE)` + `take_over_path(path)` -- `CACHE_MODE_IGNORE` goes through `_path_remap -> our .gd` with a fresh source compile.
+Fallback at [hook_pack.gd:640-685](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L640): after `reload()`, verify the compiled method list has `_rtv_vanilla_*` entries. If not, `ResourceLoader.load(path, "", CACHE_MODE_IGNORE)` + `take_over_path(path)` -- `CACHE_MODE_IGNORE` goes through `_path_remap -> our .gd` with a fresh source compile.
 
 ## `load_resource_pack` dedupes by path
 
 `ProjectSettings.load_resource_pack(same_path, true)` called twice in one session is a no-op the second time -- Godot dedupes by path. Used by the loader:
 
-- [boot.gd:554-568](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L554): `modloader.gd` mtime is in the state hash, so rebuilding the loader forces a restart. Without this, the new hook pack would be written but the old mount would serve its stale file offsets.
-- [lifecycle.gd:190-203](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd#L190): dev-mode test-pack re-apply copies the pack to a unique filename each time, because re-mounting the same path does nothing.
+- [boot.gd:563-577](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L563): `modloader.gd` mtime is in the state hash, so rebuilding the loader forces a restart. Without this, the new hook pack would be written but the old mount would serve its stale file offsets.
+- [lifecycle.gd:241-252](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd#L241): dev-mode test-pack re-apply copies the pack to a unique filename each time, because re-mounting the same path does nothing.
 
 ## Class_name collision
 
-Mods that re-declare an existing game `class_name` at a different path trigger a fatal Godot error (`"Class X hides a global script class"`). Scanner at [mod_loading.gd:401-408](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_loading.gd#L401) detects this and critical-logs:
+Mods that re-declare an existing game `class_name` at a different path trigger a fatal Godot error (`"Class X hides a global script class"`). Scanner at [mod_loading.gd:546](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_loading.gd#L546) detects this and critical-logs:
 
 ```
 CONFLICT: <mod_file> re-declares class_name <ClassName> (game has it at <path>)
@@ -157,7 +157,7 @@ Loader consistently uses `ResourceLoader.exists` for resource existence checks a
 
 `[autoload_prepend]` with multiple entries: **LAST listed loads FIRST** (reverse insertion). Non-obvious; trips people reading the config for the first time.
 
-The loader always puts `ModLoader="*res://modloader.gd"` last in `[autoload_prepend]` so it loads first. Mod early-autoloads listed above it load after. See [boot.gd:470-479](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L470) for the rationale.
+The loader always puts `ModLoader="*res://modloader.gd"` last in `[autoload_prepend]` so it loads first. Mod early-autoloads listed above it load after. See [boot.gd:475-484](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L475) for the rationale.
 
 ## Heartbeat timing window
 

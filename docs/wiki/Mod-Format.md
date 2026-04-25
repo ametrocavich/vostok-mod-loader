@@ -1,17 +1,17 @@
 # Mod Format
 
-A mod is a zip archive (`.vmz` or `.pck`, plus unpacked folders in developer mode). The archive contents mirror the game's `res://` tree -- a file at `MyMod/foo.gd` inside the zip ends up at `res://MyMod/foo.gd` after mounting.
+A mod is an archive (`.vmz`, `.zip`, or `.pck`, plus unpacked folders in developer mode). The archive contents mirror the game's `res://` tree -- a file at `MyMod/foo.gd` inside the archive ends up at `res://MyMod/foo.gd` after mounting.
 
 ## Archive types
 
 | Extension | Mount mechanism | mod.txt | Autoloads | Update checking |
 |---|---|---|---|---|
 | `.vmz` | Copied to `user://vmz_mount_cache/<name>.zip` then `ProjectSettings.load_resource_pack` | Yes | Yes | Yes |
+| `.zip` | `ProjectSettings.load_resource_pack` directly | Yes | Yes | Yes |
 | `.pck` | `ProjectSettings.load_resource_pack` directly | No | No | No |
 | folder | Zipped to `user://vmz_mount_cache/<name>_dev.zip` then mounted. **Developer mode only** | Yes | Yes | Yes |
-| `.zip` | **Rejected.** UI forces the checkbox off and warns "Rename this file from .zip to .vmz to use it" | | | |
 
-`.vmz` is the community convention -- Godot's ZIPReader won't open files with `.vmz` extension directly, so the loader copies them to `<name>.zip` in the cache dir first (see [fs_archive.gd:9 `_static_vmz_to_zip`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/fs_archive.gd#L9)). Re-extraction triggers when the source `.vmz` mtime is newer than the cache.
+`.vmz` is the historical community convention -- Godot's ZIPReader won't open files with `.vmz` extension directly, so the loader copies them to `<name>.zip` in the cache dir first (see [fs_archive.gd:9 `_static_vmz_to_zip`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/fs_archive.gd#L9)). Re-extraction triggers when the source `.vmz` mtime is newer than the cache. `.zip` archives skip the cache step and mount directly.
 
 ## mod.txt
 
@@ -72,7 +72,7 @@ EarlyNode="!res://MyMod/Early.gd"
 
 Early autoloads go into `override.cfg`'s `[autoload_prepend]` section, which means Godot loads them BEFORE the game's own autoloads. Late autoloads are instantiated by the loader after mounts land. The loader always puts itself (`ModLoader="*res://modloader.gd"`) last in `[autoload_prepend]`, and reverse-insertion order means it loads first.
 
-Early-autoload `.gd` scripts that only exist inside a mounted archive are extracted to `user://modloader_early/<path>` so Godot can find them before the restart completes its static-init mount. Scenes (`.tscn`) resolve via the file-scope mount directly. See [boot.gd:410 `_ensure_early_autoload_on_disk`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L410).
+Early-autoload `.gd` scripts that only exist inside a mounted archive are extracted to `user://modloader_early/<path>` so Godot can find them before the restart completes its static-init mount. Scenes (`.tscn`) resolve via the file-scope mount directly. See [boot.gd:417 `_ensure_early_autoload_on_disk`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L417).
 
 Duplicate autoload names are logged and skipped (first wins). Paths not present in the archive's file set are logged as `"  Autoload path not found in archive"` with similar-path suggestions to help debug case/typo mistakes.
 
@@ -82,7 +82,7 @@ Duplicate autoload names are logged and skipped (first wins). Paths not present 
 |---|---|---|
 | `modworkshop` | int | ModWorkshop mod id. Enables the Updates tab for this mod |
 
-Version compare uses [mod_discovery.gd:195 `compare_versions`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd#L195) -- splits on `.`, strips `v`/`V` prefix, pads shorter side with `"0"`, lexicographic int comparison.
+Version compare uses [mod_discovery.gd:200 `compare_versions`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd#L200) -- splits on `.`, strips `v`/`V` prefix, pads shorter side with `"0"`, lexicographic int comparison.
 
 ### `[hooks]` section
 
@@ -149,7 +149,7 @@ You don't enumerate what you'll register here -- the section's presence alone en
 needs=["Controller", "Camera"]
 ```
 
-Historical declaration from tetrahydroc's standalone [rtv-mod-lib](https://github.com/tetrahydroc/rtv-mod-lib) mod, which used it to pick which framework subclass scripts to generate. **No-op under v3.0.1** -- the loader's opt-in wrap surface is driven by `[hooks]`, `.hook()` call scanning, and `[registry]`, not by `needs=`. Kept for backward compatibility so mods declaring it don't error out.
+Historical declaration from tetrahydroc's standalone [rtv-mod-lib](https://github.com/tetrahydroc/rtv-mod-lib) mod, which used it to pick which framework subclass scripts to generate. **No-op under v3.1.1** -- the loader's opt-in wrap surface is driven by `[hooks]`, `.hook()` call scanning, and `[registry]`, not by `needs=`. Kept for backward compatibility so mods declaring it don't error out.
 
 The loader logs `"[RTVModLib] [rtvmodlib] needs declarations are no-op under source-rewrite"` when mods declare this. If you're shipping a new mod, use `[hooks]` or rely on the `.hook()` scanner instead.
 

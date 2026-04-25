@@ -1,18 +1,27 @@
 # Registry
 
-The registry system lets mods add, replace, patch, and remove content on the vanilla game data stores, items, scenes, loot tables, sounds, recipes, events, trader pools, inputs, shelters, AI types, fish species, and arbitrary `.tres` resources, without shipping a full `Database.gd` override or source-rewriting vanilla scripts.
+The registry system lets mods add, replace, patch, and remove content on the vanilla game data stores, items, scenes, loot tables, sounds, recipes, events, trader pools, inputs, shelters, AI types, fish species, arbitrary `.tres` resources, and node properties inside vanilla scenes, without shipping a full `Database.gd` override or source-rewriting vanilla scripts.
 
 Registry mutations survive across scene loads (state lives on autoloads and preloaded resources) and unwind cleanly: every `register`/`override`/`patch` is reversible via `remove`/`revert`.
 
 ## Opting in
 
-The registry is gated behind an opt-in declaration in `mod.txt`. Without it, the loader skips all registry-related rewriting and your `lib.register(...)` calls will fail silently.
+Mods that use the registry API declare an opt-in section in `mod.txt`:
 
 ```ini
 [registry]
 ```
 
 An empty `[registry]` section is enough, the loader only checks for its presence. Adding the section forces the rewriter to wrap `Database.gd`, `Loader.gd`, `AISpawner.gd`, and `FishPool.gd` with the injected fields the registry API needs. See [hook_pack.gd:20 `REGISTRY_TARGETS`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L20).
+
+Without the declaration, the rewriter doesn't inject the machinery several vanilla-backed slots rely on. Behavior splits by slot:
+
+- **Explicit failure with hint.** SCENES and SCENE_PATHS check for the injected fields on the autoload (`_rtv_mod_scenes` on Database, `_rtv_mod_scene_paths` on Loader) and emit a `push_warning` naming the missing `[registry]` section. Mod authors see the real cause immediately.
+- **Silent no-op.** AI_TYPES and FISH_SPECIES write to `Engine.set_meta(...)` that the rewriter-injected resolver/prelude on AISpawner / FishPool would normally read. Without rewriting, `register` returns true with no warning but vanilla never reads the meta entries, so the override is invisible in-game.
+- **Degraded revert.** SHELTERS and RANDOM_SCENES append to `Loader.shelters` / `Loader.randomScenes`. The rewriter converts vanilla's `const shelters = [...]` to `var` with a capture snapshot so `revert` can restore the original list; without the declaration, revert semantics are undefined (the append itself may still function within a single session).
+- **Works regardless.** ITEMS, LOOT, RECIPES, EVENTS, SOUNDS, INPUTS, TRADER_POOLS, TRADER_TASKS, RESOURCES, and SCENE_NODES track state in the registry's own internal dicts (or, for `scene_nodes`, a `SceneTree.node_added` listener). They don't need any vanilla rewriting.
+
+Add `[registry]` whenever you use the API. It's free if you only touch the last bucket, and necessary for anything else.
 
 ## Public API
 
@@ -63,6 +72,7 @@ Use `lib.Registry.<NAME>` rather than raw strings so typos surface at parse time
 | `AI_TYPES` | `"ai_types"` | Zone → agent scene overrides on `AISpawner` | register, override, remove, revert |
 | `FISH_SPECIES` | `"fish_species"` | `FishPool` extra species | register, remove |
 | `RESOURCES` | `"resources"` | Arbitrary `.tres` by absolute path | patch, revert |
+| `SCENE_NODES` | `"scene_nodes"` | Node properties on vanilla scenes (per-instance, via `node_added`) | patch, revert |
 
 Unsupported verbs return `false` with a guidance warning (e.g. "patch on loot rejected, use override for content swaps").
 
@@ -599,6 +609,49 @@ lib.revert(lib.Registry.RESOURCES, path)
 **No register / override / remove**. This registry is for touching Resources that don't have a dedicated handler. For items specifically, prefer `ITEMS` which enforces `ItemData`-shape validation. Falling back to `RESOURCES` bypasses those checks.
 
 **Conflicts.** Same patch-stacking semantics as items: same-field writes last-wins, revert returns to vanilla regardless of how many mods patched.
+
+---
+
+## SCENE_NODES
+
+Mutates node properties inside vanilla scenes without shipping a full-scene override. Patches land **per-instance at `node_added` time**, before the scene root's `_ready` runs, so `@onready` values that depend on the patched properties observe the patched state. Verbs: `patch`, `revert` only. See [src/registry/scene_nodes.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/registry/scene_nodes.gd).
+
+IDs use a compound format: `"<res://scene_path>#<node_path>"`. The scene path is the `.tscn` res path; the node path is relative to that scene's root. The ID splits on the first `#` (scene paths don't legally contain `#`, and node names can't either).
+
+```gdscript
+var lib = Engine.get_meta("RTVModLib")
+
+# patch: flip properties on a named node inside Interface.tscn
+lib.patch(lib.Registry.SCENE_NODES,
+    "res://UI/Interface.tscn#Tools/Crafting/Types/Margin/Buttons/Equipment",
+    {"disabled": false, "modulate": Color(1, 1, 1, 1)})
+
+# revert per-field
+lib.revert(lib.Registry.SCENE_NODES,
+    "res://UI/Interface.tscn#Tools/Crafting/Types/Margin/Buttons/Equipment",
+    ["disabled"])
+
+# revert everything patched at this id
+lib.revert(lib.Registry.SCENE_NODES,
+    "res://UI/Interface.tscn#Tools/Crafting/Types/Margin/Buttons/Equipment")
+```
+
+**Validation.** At `patch` time the registry loads the PackedScene, instantiates a probe, resolves the node path, and checks each property exists on the target. Failures emit a `push_warning` and return `false`. The probe is freed immediately. Successful validations are memoized by `"<scene>#<node>|<sorted,fields>"` so repeat patches with the same id + field set don't re-instantiate the scene.
+
+**Timing.** The listener is connected automatically at `frameworks_ready`; patches called earlier are fine (the listener connects lazily on the first `patch` call). Live instances already in the tree at `patch` time are walked and updated in-place.
+
+**Stash.** The revert stash populates at *apply* time, not at `patch` time -- the registry doesn't hold a live instance until one enters the tree. Per-field revert on a field that no live instance ever observed emits a warning since there's nothing to restore on any instance.
+
+**The PackedScene resource is never mutated.** Patches apply per-instance at `node_added`. Code that calls `packed_scene.get_bundled_scene()` directly still sees vanilla values.
+
+**What SCENE_NODES can't do:**
+- Add or remove nodes (structural changes) -- use `override(lib.Registry.SCENES, ...)` to swap the whole scene.
+- Patch sub-resources embedded inside the scene. Inline `sub_resource` entries in the `.tscn` have no res:// path to target. Externally-referenced `.tres` sub-resources (via `ext_resource`) can be patched through `RESOURCES` by their path.
+- Patch values on scenes that never enter the tree (code that calls `packed_scene.get_bundled_scene()` directly still sees vanilla values).
+
+**Conflicts.**
+- Two mods patching the **same field** on the same `(scene, node)`: both calls succeed in registration order; the second value is what the live instance observes. The stash holds the vanilla pre-patch value, so any `revert` returns to vanilla, not to mod A's value.
+- Two mods patching **different fields** on the same `(scene, node)`: both coexist with independent per-field stashes.
 
 ## Troubleshooting
 

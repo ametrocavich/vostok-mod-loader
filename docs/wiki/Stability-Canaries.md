@@ -4,7 +4,7 @@ Boot-time probes that alarm loudly when something the loader depends on silently
 
 ## Canary A: COMPILE-PROOF
 
-**Location**: [hook_pack.gd:658-684](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L658)
+**Location**: [hook_pack.gd:789-830](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L789)
 
 **Probes**: after `_activate_rewritten_scripts` completes, inspects `get_script_method_list()` for each rewritten vanilla. The presence of any `_rtv_vanilla_*` method name confirms the rewrite compiled into the cached GDScript.
 
@@ -16,7 +16,7 @@ Boot-time probes that alarm loudly when something the loader depends on silently
   Mods will NOT work this session. Click 'Reset to Vanilla' in the UI
   or create modloader_disabled in the game folder.
   ```
-- **Any critical script failed** -> critical. The critical set ([hook_pack.gd:662-664](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L662)): `Controller.gd, Camera.gd, WeaponRig.gd, Door.gd, Trader.gd, Hitbox.gd, LootContainer.gd, Pickup.gd`
+- **Any critical script failed** -> critical. The critical set ([hook_pack.gd:793-795](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L793)): `Controller.gd, Camera.gd, WeaponRig.gd, Door.gd, Trader.gd, Hitbox.gd, LootContainer.gd, Pickup.gd`
   ```
   [STABILITY] Hook rewrites missing on critical scripts: <list>.
   Hooks on these scripts will NOT fire this session
@@ -31,7 +31,7 @@ Boot-time probes that alarm loudly when something the loader depends on silently
 
 ## Canary B: GDSC tokenizer version
 
-**Location**: [hook_pack.gd:50-60](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L50) + [gdsc_detokenizer.gd:437 `_probe_gdsc_version`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/gdsc_detokenizer.gd#L437)
+**Location**: [hook_pack.gd:76-90](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L76) + [gdsc_detokenizer.gd:437 `_probe_gdsc_version`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/gdsc_detokenizer.gd#L437)
 
 **Probes**: reads the first 4 bytes of a known-readable vanilla `.gd`/`.gdc` (Camera, Controller, Audio, AI), confirms `"GDSC"` magic, and returns the version byte.
 
@@ -50,7 +50,7 @@ Boot-time probes that alarm loudly when something the loader depends on silently
 
 ## Canary C: VFS mount precedence
 
-**Location**: write at [hook_pack.gd:366-374](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L366), readback at [hook_pack.gd:404-412](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L404)
+**Location**: write at [hook_pack.gd:481-485](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L481), readback at [hook_pack.gd:514-520](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L514)
 
 **Probes**: adds a tiny known-content file `__modloader_canary__.txt` to the hook pack zip, with content `"MODLOADER-VFS-CANARY-" + MODLOADER_VERSION`. After mounting the pack, reads the file back via `FileAccess.get_file_as_string("res://__modloader_canary__.txt")`.
 
@@ -83,7 +83,7 @@ Boot-time probes that alarm loudly when something the loader depends on silently
 
 **Effect**: on next boot, wipes pass state + resets `override.cfg` to clean baseline + deletes heartbeat + removes the sentinel file. Then normal Pass 1 proceeds, so the UI appears.
 
-**Check**: [boot.gd:596 `_check_safe_mode`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L596), runs from within Pass 1.
+**Check**: [boot.gd:605 `_check_safe_mode`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L605), runs from within Pass 1.
 
 **When to use**: mods are broken but the loader itself works. User removes misbehaving mods via the UI on next launch.
 
@@ -93,7 +93,7 @@ Boot-time probes that alarm loudly when something the loader depends on silently
 
 **Effect**: unchecks every mod in memory, saves config, calls `_static_force_vanilla_state` (same cleanup as the disabled sentinel), strips `--modloader-restart` from cmdline args, and restarts the game clean.
 
-**Source**: [ui.gd:418 `_reset_to_vanilla_and_restart`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L418).
+**Source**: [ui.gd:479 `_reset_to_vanilla_and_restart`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L479).
 
 **When to use**: mods loaded but the game crashes or behaves badly. User clicks the button, gets a guaranteed vanilla next launch.
 
@@ -104,28 +104,28 @@ Boot-time probes that alarm loudly when something the loader depends on silently
 **File**: `user://modloader_heartbeat.txt`
 
 **Lifecycle**:
-- Written just before the Pass-1-to-Pass-2 restart ([boot.gd:571 `_write_heartbeat`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L571))
-- Deleted at the end of Pass 2 cleanup ([boot.gd:577 `_delete_heartbeat`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L577))
+- Written just before the Pass-1-to-Pass-2 restart ([boot.gd:580 `_write_heartbeat`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L580))
+- Deleted at the end of Pass 2 cleanup ([boot.gd:586 `_delete_heartbeat`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L586))
 
-**Detection**: next launch's Pass 1 checks for the file at [boot.gd:581 `_check_crash_recovery`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L581). Presence means the previous launch didn't complete.
+**Detection**: next launch's Pass 1 checks for the file at [boot.gd:590 `_check_crash_recovery`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L590). Presence means the previous launch didn't complete.
 
 ### Restart counter
 
 **Key**: `[state] restart_count` in `user://mod_pass_state.cfg`
 
-**Increment**: `_write_pass_state` ([boot.gd:519](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L519)) bumps on each write.
+**Increment**: `_write_pass_state` ([boot.gd:524](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L524)) bumps on each write.
 
 **Force-reset**: when `restart_count >= MAX_RESTART_COUNT` (2), `_check_crash_recovery` logs `"Restart loop (N crashes) -- resetting to clean state"`, restores clean `override.cfg`, deletes pass state, deletes heartbeat.
 
-**Reset to zero**: Pass 2 cleanup calls `_clear_restart_counter` ([boot.gd:649](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L649)) on successful completion.
+**Reset to zero**: Pass 2 cleanup calls `_clear_restart_counter` ([boot.gd:658](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L658)) on successful completion.
 
 ### Pass 2 dirty marker
 
 **File**: `user://modloader_pass2_dirty`
 
 **Lifecycle**:
-- Written first thing in `_run_pass_2` ([lifecycle.gd:164-167](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd#L164)) with current timestamp
-- Deleted after Pass 2 reaches its cleanup block ([lifecycle.gd:232-233](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd#L232))
+- Written first thing in `_run_pass_2` ([lifecycle.gd:210-215](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd#L210)) with current timestamp
+- Deleted after Pass 2 reaches its cleanup block ([lifecycle.gd:279](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd#L279))
 
 **Detection**: static init at `_mount_previous_session` checks for the file at [boot.gd:50-53](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L50). Presence means Pass 2 was interrupted (force-quit, crash, power loss) -- hook pack may be half-written, pass state + override.cfg reference untrustworthy state. Full wipe via `_static_force_vanilla_state("pass 2 crashed mid-run", ...)`.
 

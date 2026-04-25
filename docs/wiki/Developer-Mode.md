@@ -83,7 +83,7 @@ Before v3.0.1, this probe classified cache state by method prefix (`_rtv_mod_*` 
 
 ### 7. Live-probe hooks
 
-[hook_pack.gd:599-623](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L599) registers real hooks via the public `hook()` API on 8 well-known methods:
+[hook_pack.gd:747-754](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L747) registers real hooks via the public `hook()` API on 8 well-known methods:
 
 | Hook | Fires |
 |---|---|
@@ -96,7 +96,7 @@ Before v3.0.1, this probe classified cache state by method prefix (`_rtv_mod_*` 
 | `character-_physics_process-pre` | Every tick in world |
 | `camera-_physics_process-pre` | Every tick in world |
 
-Counters live in `Engine.meta("_rtv_probe_counts")`. 30-second timer ([hook_pack.gd:755-820](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L755)) logs per-hook counts + first-arg samples.
+Counters live in `Engine.meta("_rtv_probe_counts")`. 30-second timer ([hook_pack.gd:737-770](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L737)) logs per-hook counts + first-arg samples.
 
 Verdict logs:
 
@@ -107,7 +107,7 @@ If DISPATCH-LIVE fires but HOOK-API-DEAD, the dispatch wrapper runs but callback
 
 ### 8. AUTOLOAD-CHECK
 
-[hook_pack.gd:692-719](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L692) (dev-only). For each of the 9 known autoloads, logs:
+[hook_pack.gd:830-855](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L830) (dev-only). For each of the 9 known autoloads, logs:
 
 ```
 [RTVCodegen] AUTOLOAD-CHECK <name>: script=<path> script_has_rename=<bool> instance_has_rename=<bool>
@@ -117,7 +117,7 @@ If `script_has_rename=true` but `instance_has_rename=false`, the autoload node i
 
 ### 9. IXP-VERIFY
 
-[hook_pack.gd:785-820](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L785) (inside the 30s timer, dev-only). For Controller / Camera / WeaponRig, finds the first instance via `_rtv_collect_nodes_by_class`, walks its extends chain up to depth 6, and logs:
+[hook_pack.gd:940-965](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L940) (inside the 30s timer, dev-only). For Controller / Camera / WeaponRig, finds the first instance via `_rtv_collect_nodes_by_class`, walks its extends chain up to depth 6, and logs:
 
 ```
 [IXP-VERIFY] <class> instance script: path=<path> src_len=<n> ixp_content=<bool> rewrite_content=<bool>
@@ -129,7 +129,7 @@ Detects ImmersiveXP markers (`"ImmersiveXP"`, `"IXP "`, `"overrideScript"`) to c
 
 ### 10. Registry smoke probe
 
-**Always runs** (not gated on dev mode) at [hook_pack.gd:721-745](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L721). Verifies `Database._rtv_vanilla_scenes` is populated and `db.get(first_key)` returns a PackedScene. Warns on failure.
+**Always runs** (not gated on dev mode) at [hook_pack.gd:862-870](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L862). Verifies `Database._rtv_vanilla_scenes` is populated and `db.get(first_key)` returns a PackedScene. Warns on failure.
 
 ### 11. Dispatch-live counters
 
