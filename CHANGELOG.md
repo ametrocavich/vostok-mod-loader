@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.1.1](https://github.com/ametrocavich/vostok-mod-loader/compare/v3.1.0...v3.1.1) (2026-04-25)
+
+
+### Bug Fixes
+
+* enumerate vanilla scripts before .hook() prefix merge ([#49](https://github.com/ametrocavich/vostok-mod-loader/issues/49)) ([6623a20](https://github.com/ametrocavich/vostok-mod-loader/commit/6623a20a71bf4fc1f3c2ce789a60ceb11af10114))
+* tolerantly parse [hooks] mod.txt + diagnose parse errors ([#50](https://github.com/ametrocavich/vostok-mod-loader/issues/50)) ([3fce1b3](https://github.com/ametrocavich/vostok-mod-loader/commit/3fce1b3960041bda9051b8ca0fcf208cd54dbdd8))
+
 ## [3.1.0](https://github.com/ametrocavich/vostok-mod-loader/compare/v3.0.1...v3.1.0) (2026-04-24)
 
 
