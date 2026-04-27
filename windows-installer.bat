@@ -72,9 +72,9 @@ if !DL_OK! equ 1 (
     ) else (
         echo ERROR: Failed to download modloader.gd
         echo You can manually download it from:
-        echo   %MODLOADER_URL%
+        echo   !MODLOADER_URL!
         echo And place it at:
-        echo   %MODLOADER_DEST%
+        echo   !MODLOADER_DEST!
         goto :error
     )
 )
