@@ -64,6 +64,11 @@ if !DL_RC! equ 0 if exist "%MODLOADER_TMP%" (
 )
 if !DL_OK! equ 1 (
     move /y "%MODLOADER_TMP%" "%MODLOADER_DEST%" >nul
+    if not exist "%MODLOADER_DEST%" (
+        echo ERROR: Could not move modloader.gd into game folder.
+        echo   Likely cause: game is running, missing write permission, or AV quarantine.
+        goto :error
+    )
     echo Downloaded modloader.gd to game folder
 ) else (
     if exist "%MODLOADER_TMP%" del "%MODLOADER_TMP%" >nul 2>&1
@@ -109,6 +114,11 @@ if exist "%OVERRIDE_PATH%" (
     echo Updated override.cfg
 ) else (
     move /y "%OVERRIDE_TMP%" "%OVERRIDE_PATH%" >nul
+    if not exist "%OVERRIDE_PATH%" (
+        echo ERROR: Could not move override.cfg into game folder.
+        echo   Likely cause: missing write permission, or AV quarantine.
+        goto :error
+    )
     echo Installed override.cfg
 )
 if exist "%OVERRIDE_TMP%" del "%OVERRIDE_TMP%" >nul 2>&1
