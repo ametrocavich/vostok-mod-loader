@@ -332,9 +332,15 @@ func zip_folder_to_temp(folder_path: String) -> String:
 	if zp.open(tmp_zip_path) != OK:
 		_log_critical("Failed to create temp zip: " + tmp_zip_path)
 		return ""
-	# Zip contents without a top-level wrapper -- the folder's internal structure
-	# already mirrors the res:// paths the mod expects.
-	_zip_folder_recursive(zp, folder_path, "")
+	# Wrap zip entries under the folder name so res:// paths match what a
+	# conventionally-packed .zip mod produces. A folder at <mods>/MyMod/
+	# containing data/main.gd mounts as res://MyMod/data/main.gd, the same
+	# layout you'd get if MyMod/ were inside a .zip. Without this wrapper,
+	# folder mode dropped contents at res:// directly, so a mod.txt path of
+	# res://MyMod/data/main.gd worked from .zip but resolved nowhere from
+	# the folder. (Pre-v3.1.2 folder mods that relied on the unwrapped
+	# layout need their mod.txt paths re-prefixed with the folder name.)
+	_zip_folder_recursive(zp, folder_path, folder_name)
 	zp.close()
 	return tmp_zip_path
 
