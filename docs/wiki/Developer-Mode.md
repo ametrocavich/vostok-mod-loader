@@ -4,7 +4,7 @@ Dev mode is a per-user setting that unlocks folder-mod loading, verbose logging,
 
 ## How to enable
 
-UI toolbar checkbox in the Mods tab: **Developer Mode** ([ui.gd:1302-1329](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L1302)). Toggle persists to `[settings] developer_mode` in `user://mod_config.cfg`.
+UI toolbar checkbox in the Mods tab: **Developer Mode** ([ui.gd:1381-1408](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L1381)). Toggle persists to `[settings] developer_mode` in `user://mod_config.cfg`.
 
 Loading the saved value runs at Pass-1 boot via [ui.gd:14 `_load_developer_mode_setting`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L14). Log line `"Developer mode: ON"` if enabled.
 
@@ -14,7 +14,7 @@ Loading the saved value runs at Pass-1 boot via [ui.gd:14 `_load_developer_mode_
 
 Subdirectories of `<exe>/mods/` are recognized as mod archives and zipped to `user://vmz_mount_cache/<name>_dev.zip` on the fly. Without dev mode, subdirectories are ignored ([mod_discovery.gd:29](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd#L29)).
 
-Folder entries show `[dev folder]` label in red in the UI ([ui.gd:1506-1511](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L1506)).
+Folder entries show `[dev folder]` label in red in the UI ([ui.gd:1585-1590](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L1585)).
 
 Use case: in-development mods you haven't packaged yet.
 
@@ -33,7 +33,7 @@ Debug-level entries include:
 
 ### 3. Conflict report
 
-`_print_conflict_summary` + `_write_conflict_report` ([conflict_report.gd:383,430](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/conflict_report.gd#L383)) always run, but are particularly useful in dev mode paired with the verbose logs.
+`_print_conflict_summary` + `_write_conflict_report` ([conflict_report.gd:60,100](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/conflict_report.gd#L60)) always run, but are particularly useful in dev mode paired with the verbose logs.
 
 Writes `user://modloader_conflicts.txt` with every log line from the session.
 
@@ -46,7 +46,7 @@ Console summary includes:
 
 ### 4. Source scanner
 
-[mod_loading.gd:319 `_scan_gd_source`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_loading.gd#L319) runs per-mod when the mod has `.gd` files. Captures:
+[mod_loading.gd:451 `_scan_gd_source`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_loading.gd#L451) runs per-mod when the mod has `.gd` files. Captures:
 
 - `take_over_literal_paths` -- `take_over_path("res://...")` literal calls
 - `extends_paths` -- `extends "res://..."` paths
@@ -62,7 +62,7 @@ Consumed by downstream diagnostics and stored in `_mod_script_analysis`.
 
 ### 5. Override timing warnings
 
-[conflict_report.gd:8 `_log_override_timing_warnings`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/conflict_report.gd#L8) (dev-only) logs which mods use `overrideScript()` -- those overrides only apply after scene reload:
+[conflict_report.gd:14 `_log_override_timing_warnings`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/conflict_report.gd#L14) (dev-only) logs which mods use `overrideScript()` -- those overrides only apply after scene reload:
 
 ```
 <ModName> uses overrideScript() on: Controller.gd, Camera.gd
@@ -83,7 +83,7 @@ Before v3.0.1, this probe classified cache state by method prefix (`_rtv_mod_*` 
 
 ### 7. Live-probe hooks
 
-[hook_pack.gd:599-623](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L599) registers real hooks via the public `hook()` API on 8 well-known methods:
+[hook_pack.gd:747-754](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L747) registers real hooks via the public `hook()` API on 8 well-known methods:
 
 | Hook | Fires |
 |---|---|
@@ -96,7 +96,7 @@ Before v3.0.1, this probe classified cache state by method prefix (`_rtv_mod_*` 
 | `character-_physics_process-pre` | Every tick in world |
 | `camera-_physics_process-pre` | Every tick in world |
 
-Counters live in `Engine.meta("_rtv_probe_counts")`. 30-second timer ([hook_pack.gd:755-820](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L755)) logs per-hook counts + first-arg samples.
+Counters live in `Engine.meta("_rtv_probe_counts")`. 30-second timer ([hook_pack.gd:737-770](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L737)) logs per-hook counts + first-arg samples.
 
 Verdict logs:
 
@@ -107,7 +107,7 @@ If DISPATCH-LIVE fires but HOOK-API-DEAD, the dispatch wrapper runs but callback
 
 ### 8. AUTOLOAD-CHECK
 
-[hook_pack.gd:692-719](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L692) (dev-only). For each of the 9 known autoloads, logs:
+[hook_pack.gd:830-855](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L830) (dev-only). For each of the 9 known autoloads, logs:
 
 ```
 [RTVCodegen] AUTOLOAD-CHECK <name>: script=<path> script_has_rename=<bool> instance_has_rename=<bool>
@@ -117,7 +117,7 @@ If `script_has_rename=true` but `instance_has_rename=false`, the autoload node i
 
 ### 9. IXP-VERIFY
 
-[hook_pack.gd:785-820](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L785) (inside the 30s timer, dev-only). For Controller / Camera / WeaponRig, finds the first instance via `_rtv_collect_nodes_by_class`, walks its extends chain up to depth 6, and logs:
+[hook_pack.gd:940-965](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L940) (inside the 30s timer, dev-only). For Controller / Camera / WeaponRig, finds the first instance via `_rtv_collect_nodes_by_class`, walks its extends chain up to depth 6, and logs:
 
 ```
 [IXP-VERIFY] <class> instance script: path=<path> src_len=<n> ixp_content=<bool> rewrite_content=<bool>
@@ -129,7 +129,7 @@ Detects ImmersiveXP markers (`"ImmersiveXP"`, `"IXP "`, `"overrideScript"`) to c
 
 ### 10. Registry smoke probe
 
-**Always runs** (not gated on dev mode) at [hook_pack.gd:721-745](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L721). Verifies `Database._rtv_vanilla_scenes` is populated and `db.get(first_key)` returns a PackedScene. Warns on failure.
+**Always runs** (not gated on dev mode) at [hook_pack.gd:862-870](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L862). Verifies `Database._rtv_vanilla_scenes` is populated and `db.get(first_key)` returns a PackedScene. Warns on failure.
 
 ### 11. Dispatch-live counters
 

@@ -117,7 +117,7 @@ You generally shouldn't touch this file. It's regenerated each session. But if y
 restart_count=0
 mods_hash="d90eae97b1868a4e9051f17ced71b7a6"
 archive_paths=PackedStringArray("C:/Program Files (x86)/Steam/steamapps/common/Road to Vostok/mods/RTVCoopVMZ.vmz")
-modloader_version="3.0.1"
+modloader_version="3.1.1"
 exe_mtime=1776042534
 timestamp=1776897837.26
 script_overrides=[]

@@ -26,7 +26,7 @@ Inside the base64 body:
 {
   "metroprofile":      1,
   "name":              "My Build",
-  "modloader_version": "3.0.1",
+  "modloader_version": "3.1.1",
   "exported_at":       "2026-04-22T23:14:11",
   "enabled": {
     "rtvcoop@1.2.3":       true,

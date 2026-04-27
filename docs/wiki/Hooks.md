@@ -43,7 +43,7 @@ That's the whole mod. No `[hooks]` section. No framework imports. The scanner do
 
 ## Opt-in model
 
-v3.0.1 uses an opt-in model: **a modlist that declares nothing produces no wrap, no rewrite, and no hook pack** -- mods run against byte-identical vanilla scripts. Declarations turn individual subsystems on:
+v3.1.1 uses an opt-in model: **a modlist that declares nothing produces no wrap, no rewrite, and no hook pack** -- mods run against byte-identical vanilla scripts. Declarations turn individual subsystems on:
 
 | Trigger | Effect |
 |---|---|
@@ -76,7 +76,7 @@ Method names in the list are case-insensitive (normalized to lowercase on write)
 
 ### `ModLoader.add_hook()` compat
 
-Mods written against [`godot-mod-loader`](https://github.com/GodotModding/godot-mod-loader) call `ModLoader.add_hook(script_path, method_name, callback, is_before)`. The loader provides a compat shim at [hooks_api.gd:80](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd#L80) that:
+Mods written against [`godot-mod-loader`](https://github.com/GodotModding/godot-mod-loader) call `ModLoader.add_hook(script_path, method_name, callback, is_before)`. The loader provides a compat shim at [hooks_api.gd:89](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd#L89) that:
 
 1. Builds the native hook name: `<stem>-<method>-<pre|post>` (all lowercase).
 2. Enrolls `script_path` into `_hooked_methods` so the wrap surface picks it up.
@@ -146,7 +146,7 @@ Suffixes:
 
 ## Dispatch semantics
 
-The dispatch wrapper template lives at [rewriter.gd:1023 `_rtv_dispatch_inline_src`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter.gd#L1023). For every hookable vanilla method, the rewriter emits roughly this structure:
+The dispatch wrapper template lives at [rewriter.gd:1039 `_rtv_dispatch_inline_src`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter.gd#L1039). For every hookable vanilla method, the rewriter emits roughly this structure:
 
 ```
 func <name>(args):
@@ -198,7 +198,7 @@ Void methods, coroutines (`await`), and engine lifecycle methods (`_ready` et al
 
 ## Hook registration, step-by-step
 
-Source: [hooks_api.gd:42-65](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd#L42).
+Source: [hooks_api.gd:44-67](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd#L44).
 
 1. Detect replace vs. aspect: `is_replace = not (name ends_with "-pre/-post/-callback")`.
 2. If replace and `_hooks[name]` is non-empty: debug-log the rejection, return `-1`.
@@ -208,7 +208,7 @@ Source: [hooks_api.gd:42-65](https://github.com/ametrocavich/vostok-mod-loader/b
 
 ## Dispatch internals
 
-Source: [hooks_api.gd:131](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd#L131).
+Source: [hooks_api.gd:142](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd#L142).
 
 ```gdscript
 func _dispatch(hook_name: String, args: Array) -> void:
