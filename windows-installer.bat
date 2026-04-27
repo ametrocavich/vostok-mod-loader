@@ -64,6 +64,11 @@ if !DL_RC! equ 0 if exist "%MODLOADER_TMP%" (
 )
 if !DL_OK! equ 1 (
     move /y "%MODLOADER_TMP%" "%MODLOADER_DEST%" >nul
+    if not exist "%MODLOADER_DEST%" (
+        echo ERROR: Could not move modloader.gd into game folder.
+        echo   Likely cause: game is running, missing write permission, or AV quarantine.
+        goto :error
+    )
     echo Downloaded modloader.gd to game folder
 ) else (
     if exist "%MODLOADER_TMP%" del "%MODLOADER_TMP%" >nul 2>&1
@@ -72,9 +77,9 @@ if !DL_OK! equ 1 (
     ) else (
         echo ERROR: Failed to download modloader.gd
         echo You can manually download it from:
-        echo   %MODLOADER_URL%
+        echo   !MODLOADER_URL!
         echo And place it at:
-        echo   %MODLOADER_DEST%
+        echo   !MODLOADER_DEST!
         goto :error
     )
 )
@@ -109,6 +114,11 @@ if exist "%OVERRIDE_PATH%" (
     echo Updated override.cfg
 ) else (
     move /y "%OVERRIDE_TMP%" "%OVERRIDE_PATH%" >nul
+    if not exist "%OVERRIDE_PATH%" (
+        echo ERROR: Could not move override.cfg into game folder.
+        echo   Likely cause: missing write permission, or AV quarantine.
+        goto :error
+    )
     echo Installed override.cfg
 )
 if exist "%OVERRIDE_TMP%" del "%OVERRIDE_TMP%" >nul 2>&1
@@ -119,6 +129,24 @@ if not exist "%MODS_PATH%" (
     echo Created mods directory
 ) else (
     echo Mods directory already exists
+)
+
+:: --- Clean up legacy v2 files ---
+:: Metro v2 used %APPDATA%\Road to Vostok\modloader.gd as the install
+:: location. v3 moved to the game folder. After a successful v3 install,
+:: the v2 files in appdata are orphans that do nothing functional but
+:: confuse users (and can mislead a v2-aware diagnostic into reporting
+:: an old install where the live one is now in the game folder).
+:: Run this only after the new files are confirmed in place above, so
+:: a failed v3 install never deletes a working v2 fallback.
+set "LEGACY_DIR=%APPDATA%\Road to Vostok"
+if exist "!LEGACY_DIR!\modloader.gd" (
+    del /f "!LEGACY_DIR!\modloader.gd" >nul 2>&1
+    echo Removed legacy v2 modloader.gd from !LEGACY_DIR!
+)
+if exist "!LEGACY_DIR!\override.cfg" (
+    del /f "!LEGACY_DIR!\override.cfg" >nul 2>&1
+    echo Removed legacy v2 override.cfg from !LEGACY_DIR!
 )
 
 :: --- Done ---
