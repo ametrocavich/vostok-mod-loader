@@ -131,6 +131,24 @@ if not exist "%MODS_PATH%" (
     echo Mods directory already exists
 )
 
+:: --- Clean up legacy v2 files ---
+:: Metro v2 used %APPDATA%\Road to Vostok\modloader.gd as the install
+:: location. v3 moved to the game folder. After a successful v3 install,
+:: the v2 files in appdata are orphans that do nothing functional but
+:: confuse users (and can mislead a v2-aware diagnostic into reporting
+:: an old install where the live one is now in the game folder).
+:: Run this only after the new files are confirmed in place above, so
+:: a failed v3 install never deletes a working v2 fallback.
+set "LEGACY_DIR=%APPDATA%\Road to Vostok"
+if exist "!LEGACY_DIR!\modloader.gd" (
+    del /f "!LEGACY_DIR!\modloader.gd" >nul 2>&1
+    echo Removed legacy v2 modloader.gd from !LEGACY_DIR!
+)
+if exist "!LEGACY_DIR!\override.cfg" (
+    del /f "!LEGACY_DIR!\override.cfg" >nul 2>&1
+    echo Removed legacy v2 override.cfg from !LEGACY_DIR!
+)
+
 :: --- Done ---
 echo.
 echo === Installation Complete ===
