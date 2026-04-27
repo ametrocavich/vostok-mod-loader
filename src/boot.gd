@@ -103,28 +103,29 @@ static func _mount_previous_session() -> Dictionary:
 
 	# Were any archives deleted since last session?
 	var any_missing := false
-	var any_stale := false
 	for path in paths:
 		var abs_path := path if not path.begins_with("res://") and not path.begins_with("user://") \
 				else ProjectSettings.globalize_path(path)
 		if FileAccess.file_exists(abs_path):
 			log_lines.append("[FileScope]   EXISTS: " + abs_path)
 			continue
-		# VMZ source gone -- check if the zip cache survived.
-		if abs_path.get_extension().to_lower() == "vmz":
-			var cache_dir := ProjectSettings.globalize_path(TMP_DIR)
-			var cached := cache_dir.path_join(abs_path.get_file().get_basename() + ".zip")
-			if FileAccess.file_exists(cached):
-				log_lines.append("[FileScope]   STALE (vmz gone, cache ok): " + abs_path)
-				any_stale = true
-				continue
+		# Source gone -- treat as MISSING even if a same-basename cache zip
+		# survived. Mounting a stale cache here (for a deleted .vmz, or one
+		# replaced by a .zip of the same basename) lets Godot resolve the prior
+		# session's autoloads through old content before Pass 1 can mount the
+		# replacement. The any_missing branch below clears override.cfg +
+		# pass_state so this launch logs autoload-load failures and Pass 1
+		# rediscovers fresh state.
 		log_lines.append("[FileScope]   MISSING: " + abs_path)
 		any_missing = true
 
 	if any_missing:
 		log_lines.append("[FileScope] Archive(s) missing -- resetting to clean state")
-		# Archive gone, no cache. Wipe override.cfg autoload sections so the next
+		# Archive source gone. Wipe override.cfg autoload sections so the next
 		# boot is clean, but preserve any non-autoload settings ([display], etc.).
+		# Also fires when the source .vmz/.zip/.pck is gone but a same-basename
+		# cache survived -- we no longer honor that cache (see comment above the
+		# MISSING log) so the user's swap takes effect immediately.
 		var exe_dir := OS.get_executable_path().get_base_dir()
 		var cfg_path := exe_dir.path_join("override.cfg")
 		var preserved := _read_preserved_cfg_sections(cfg_path)
@@ -137,11 +138,6 @@ static func _mount_previous_session() -> Dictionary:
 			DirAccess.remove_absolute(state_path)
 		_write_filescope_log(log_lines)
 		return mounted
-
-	if any_stale:
-		# Source gone but cache works -- invalidate hash so Pass 1 rewrites state.
-		cfg.set_value("state", "mods_hash", "")
-		cfg.save(PASS_STATE_PATH)
 
 	for path in paths:
 		if ProjectSettings.load_resource_pack(path):
