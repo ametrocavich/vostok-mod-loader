@@ -160,6 +160,11 @@ var _is_ready: bool = false              # public: true once frameworks_ready ha
 # active and skips dispatch (just runs its body). Prevents double-fire when
 # rewritten subclass scripts chain into rewritten vanilla.
 var _wrapper_active: Dictionary = {}
+# Deprecation-warning suppression for legacy 2-arg post-hook callbacks.
+# Keyed by "<hook_name>::<callback object_id>" so we warn once per (hook,
+# callback) pair across the whole session. Without dedupe, a per-frame
+# wrapped method would spam the log thousands of times.
+var _post_legacy_warned: Dictionary = {}
 
 # Class + script enumeration state (populated from PCK parse at boot).
 var _class_name_to_path: Dictionary = {} # "Camera" -> "res://Scripts/Camera.gd"
