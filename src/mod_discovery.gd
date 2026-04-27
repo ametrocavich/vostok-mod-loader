@@ -123,6 +123,7 @@ func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, e
 	var mod_name := file_name
 	var mod_id   := file_name
 	var version  := ""
+	var author   := ""
 	var priority := 0
 	var has_mod_id := false
 
@@ -146,6 +147,7 @@ func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, e
 			mod_id = str(cfg.get_value("mod", "id"))
 			has_mod_id = true
 		version = str(cfg.get_value("mod", "version", ""))
+		author = str(cfg.get_value("mod", "author", ""))
 		if cfg.has_section_key("mod", "priority"):
 			priority = int(str(cfg.get_value("mod", "priority")))
 		elif has_filename_priority:
@@ -163,6 +165,7 @@ func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, e
 	var entry := {
 		"file_name": file_name, "full_path": full_path, "ext": ext,
 		"mod_name": mod_name, "mod_id": mod_id, "version": version,
+		"author": author,
 		"profile_key": profile_key,
 		"priority": priority, "enabled": true,
 		"cfg": cfg, "mod_txt_status": _last_mod_txt_status,
