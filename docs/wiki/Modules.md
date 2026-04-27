@@ -73,8 +73,8 @@ Scans `<exe>/mods/`, parses mod.txt metadata, handles ModWorkshop version checks
 Runtime loading pipeline. Mounts archives, scans .gd files for safety issues, registers file-claims, instantiates autoloads, applies `[script_overrides]`.
 
 - `load_all_mods` at [mod_loading.gd:7](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_loading.gd#L7) -- entry point
-- `_process_mod_candidate` at [mod_loading.gd:95](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_loading.gd#L95) -- per-mod pipeline
-- `_apply_script_overrides` at [mod_loading.gd:298](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_loading.gd#L298) -- sorts by priority asc, `load` + `source_code` + fresh `GDScript.new()` + `reload` + `take_over_path`
+- `_process_mod_candidate` at [mod_loading.gd:102](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_loading.gd#L102) -- per-mod pipeline
+- `_apply_script_overrides` at [mod_loading.gd:309](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_loading.gd#L309) -- sorts by priority asc, `load` + `source_code` + fresh `GDScript.new()` + `reload` + `take_over_path`
 - `scan_and_register_archive_claims` -- detects Windows-backslash zip paths, Database.gd collisions, builds per-file analysis
 - `_instantiate_autoload` -- dispatches PackedScene vs GDScript vs other
 

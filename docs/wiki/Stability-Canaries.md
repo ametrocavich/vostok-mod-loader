@@ -124,8 +124,8 @@ Boot-time probes that alarm loudly when something the loader depends on silently
 **File**: `user://modloader_pass2_dirty`
 
 **Lifecycle**:
-- Written first thing in `_run_pass_2` ([lifecycle.gd:210-215](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd#L210)) with current timestamp
-- Deleted after Pass 2 reaches its cleanup block ([lifecycle.gd:279](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd#L279))
+- Written first thing in `_run_pass_2` ([lifecycle.gd:217-222](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd#L217)) with current timestamp
+- Deleted after Pass 2 reaches its cleanup block ([lifecycle.gd:288-289](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd#L288))
 
 **Detection**: static init at `_mount_previous_session` checks for the file at [boot.gd:50-53](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L50). Presence means Pass 2 was interrupted (force-quit, crash, power loss) -- hook pack may be half-written, pass state + override.cfg reference untrustworthy state. Full wipe via `_static_force_vanilla_state("pass 2 crashed mid-run", ...)`.
 

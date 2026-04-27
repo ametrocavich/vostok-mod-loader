@@ -39,7 +39,7 @@ Data-resource scripts at [constants.gd:78-87](https://github.com/ametrocavich/vo
 
 **Problem**: vanilla scripts with module-scope `preload("res://...tscn")` fire their preload chain at parse time. If that happens before mod autoloads run `overrideScript`, the scene bakes Script ext_resources to the pre-override vanilla script. When mods later `take_over_path`, the baked refs go empty-path -- subsequent `instantiate()` produces orphan-scripted nodes.
 
-**Detection**: [pck_enumeration.gd:137 `_collect_module_scope_scene_preloads`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/pck_enumeration.gd#L137) scans for column-0 `preload("res://X.tscn|.scn")`. Scripts with such preloads are added to `_scripts_with_scene_preloads`.
+**Detection**: [pck_enumeration.gd:143 `_collect_module_scope_scene_preloads`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/pck_enumeration.gd#L143) scans for column-0 `preload("res://X.tscn|.scn")`. Scripts with such preloads are added to `_scripts_with_scene_preloads`.
 
 **Workaround**: the activator ([hook_pack.gd:558](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L558)) skips eager compile for these scripts -- VFS mount precedence (`.gd` + `.gd.remap` + empty `.gdc`) still serves the rewrite when game code lazy-loads them AFTER mod overrides run.
 
@@ -122,7 +122,7 @@ If a mod ships its own `res://.godot/global_script_class_cache.cfg` (e.g. MCM do
 
 ## Zero-byte PCK entries
 
-Base game ships some `.gd` entries as zero bytes (e.g. `CasettePlayer.gd` in RTV 4.6.1). Detokenize returns empty silently for these paths -- recorded in `_pck_zero_byte_paths` during PCK enumeration ([pck_enumeration.gd:214-223](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/pck_enumeration.gd#L214)). Not a loader failure; these files can't be hooked regardless.
+Base game ships some `.gd` entries as zero bytes (e.g. `CasettePlayer.gd` in RTV 4.6.1). Detokenize returns empty silently for these paths -- recorded in `_pck_zero_byte_paths` during PCK enumeration ([pck_enumeration.gd:220-229](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/pck_enumeration.gd#L220)). Not a loader failure; these files can't be hooked regardless.
 
 ## `reload()` doesn't re-parse bytecode
 
@@ -135,7 +135,7 @@ Fallback at [hook_pack.gd:640-685](https://github.com/ametrocavich/vostok-mod-lo
 `ProjectSettings.load_resource_pack(same_path, true)` called twice in one session is a no-op the second time -- Godot dedupes by path. Used by the loader:
 
 - [boot.gd:563-577](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L563): `modloader.gd` mtime is in the state hash, so rebuilding the loader forces a restart. Without this, the new hook pack would be written but the old mount would serve its stale file offsets.
-- [lifecycle.gd:241-252](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd#L241): dev-mode test-pack re-apply copies the pack to a unique filename each time, because re-mounting the same path does nothing.
+- [lifecycle.gd:246-272](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd#L246): dev-mode test-pack re-apply copies the pack to a unique filename each time, because re-mounting the same path does nothing.
 
 ## Class_name collision
 
@@ -167,7 +167,7 @@ There's a narrow window where Pass 1 has written the heartbeat but the OS hasn't
 
 When a previous session's hook pack is mounted via `ProjectSettings.load_resource_pack`, Godot holds a `FileAccessZIP` handle to the file. `ZIPPacker.open` on the same path opens it for writing; on Windows, this invalidates the read handle once writes flush. VFS reads routing through the mount then fail at `file_access_zip.cpp:137` with "Cannot open file".
 
-Workaround ([hook_pack.gd:30-38](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L30)): the regen path doesn't delete the old pack file first (deletion would invalidate the handle immediately) -- `ZIPPacker.open` replaces atomically on save. Also: mod sibling reads happen BEFORE `ZIPPacker.open` is called on the new pack.
+Workaround ([hook_pack.gd:56-64](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L56)): the regen path doesn't delete the old pack file first (deletion would invalidate the handle immediately) -- `ZIPPacker.open` replaces atomically on save. Also: mod sibling reads happen BEFORE `ZIPPacker.open` is called on the new pack.
 
 ## What's NOT supported
 

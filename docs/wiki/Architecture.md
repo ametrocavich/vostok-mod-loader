@@ -71,7 +71,7 @@ else:
 
 ## Pass 2 (post-restart)
 
-Triggered by `--modloader-restart` in `OS.get_cmdline_user_args()`. Defined at [src/lifecycle.gd:207](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd#L207).
+Triggered by `--modloader-restart` in `OS.get_cmdline_user_args()`. Defined at [src/lifecycle.gd:214](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd#L214).
 
 Archives are already mounted at file-scope (static init handled it). Early autoloads are already in the tree (Godot loaded them from `[autoload_prepend]`). This pass:
 
