@@ -1,30 +1,35 @@
-## ----- registry/weapons.gd -----
+## ----- registry/aggregators.gd -----
 ##
-## Three pure-aggregator helpers that fan out to existing primitive
-## registries (ITEMS, SCENES, LOOT) and patch the vanilla `compatible`
-## ItemData arrays where appropriate. No new state -- mods can drop down
-## to primitives any time. The helpers exist to compress the 6-10 calls
-## a typical weapon/attachment/magazine mod ends up making into one.
+## Pure-aggregator helpers that fan out to primitive registries (ITEMS,
+## SCENES, LOOT, TRADER_POOLS) and patch related vanilla state. No new
+## state -- mods can drop down to primitives any time. The helpers exist
+## to compress the typical 5-10 calls a content mod ends up making into
+## a single declarative dict.
 ##
-## Three helpers, three Registry consts:
-##   - register_weapon(id, dict)     -> Registry.WEAPONS
-##   - register_magazine(id, dict)   -> Registry.MAGAZINES
-##   - register_attachment(id, dict) -> Registry.ATTACHMENTS
+## Helpers:
+##   - register_item(id, dict)       -- generic item with optional scene/icon/loot/trader_pools
+##   - register_weapon(id, dict)     -- weapon + rig + inline magazines + fits_attachments
+##   - register_magazine(id, dict)   -- standalone mag with fits_weapons
+##   - register_attachment(id, dict) -- standalone attachment with fits_weapons
 ##
-## Magazine and attachment are nearly identical at the implementation
-## level (both register an item + scene + optional loot, then patch
-## `compatible` on target weapons). The vanilla `compatible` field
-## doesn't distinguish mag from attachment -- the split in the API is
-## for mod-author readability, not engine semantics.
+## Three of these (weapon/magazine/attachment) also have Registry consts
+## (WEAPONS / MAGAZINES / ATTACHMENTS) for symmetry with primitive
+## registries. register_item is method-only -- the bare-Resource form of
+## register('items', ...) already exists, so the bundle helper has a
+## different name to avoid arg-shape polymorphism.
 ##
-## Cross-relationship resolution: `magazines`, `fits_attachments`, and
+## Magazine and attachment share an implementation (_register_compat_item)
+## because the vanilla `compatible` field on weapon ItemData accepts both
+## interchangeably. The API split is for mod-author readability.
+##
+## Cross-relationship resolution: `magazines`, `fits_attachments`,
 ## `fits_weapons` accept id strings. Lookup goes through _lookup_item,
 ## which sees both mod-registered and vanilla items. Inline magazine
 ## bundles (Dictionary instead of String) get registered first, then
 ## their ItemData ref is appended to the parent weapon's compatible.
 ##
-## All three helpers return a Dictionary with granular per-step success
-## bools so mod authors can debug partial failures without parsing logs.
+## All helpers return a Dictionary with granular per-step success bools
+## so mod authors can debug partial failures without parsing logs.
 
 # -------- weapons --------
 
@@ -242,6 +247,86 @@ func _register_compat_item(id: String, data: Variant, label: String) -> Dictiona
 				result["loot_count"] = int(result["loot_count"]) + 1
 	result["ok"] = result["items"] and result["scene"] and result["fits_weapons_failed"].is_empty()
 	_log_debug("[Registry] register_%s('%s') result: %s" % [label.trim_suffix("s"), id, result])
+	return result
+
+# -------- generic items --------
+
+# Single-item bundle for content that doesn't fit the weapon/mag/attachment
+# split (consumables, keys, tools, ammo, etc). Schema:
+#   item_path     -- required, res:// to the .tres ItemData
+#   scene_path    -- optional, res:// to the world .tscn (skip for items
+#                    that only ever exist as inventory entries / refs)
+#   icon_path     -- optional, image path; loaded + assigned to item.icon
+#   loot_tables   -- optional, list of table names to add the item to
+#                    (one register('loot', ...) per name)
+#   trader_pools  -- optional, list of trader names ("Generalist",
+#                    "Doctor", "Gunsmith", "Grandma") to flip the
+#                    matching ItemData boolean flag for trader supply
+#
+# Returns:
+#   {ok, items, scene, loot_count, trader_pool_count,
+#    trader_pools: [String], trader_pools_failed: [String]}
+# `scene` is true when no scene_path was provided (vacuously satisfied).
+# `result.ok` requires items+scene success and no trader_pool failures.
+func _register_item_bundle(id: String, data: Variant) -> Dictionary:
+	var result: Dictionary = {
+		"ok": false,
+		"items": false,
+		"scene": true,  # default true so missing scene_path doesn't fail ok
+		"loot_count": 0,
+		"trader_pool_count": 0,
+		"trader_pools": [],
+		"trader_pools_failed": [],
+	}
+	if not (data is Dictionary):
+		push_warning("[Registry] register_item('%s', ...) expects Dictionary" % id)
+		return result
+	var d: Dictionary = data
+	if not d.has("item_path"):
+		push_warning("[Registry] register_item('%s'): missing required key 'item_path'" % id)
+		return result
+	# Step 1: load + register the ItemData.
+	var item_data: Resource = load(d["item_path"])
+	if item_data == null:
+		push_warning("[Registry] register_item('%s'): failed to load item from '%s'" % [id, d["item_path"]])
+		return result
+	if d.has("icon_path"):
+		_apply_icon(item_data, d["icon_path"], id)
+	result["items"] = _register_item(id, item_data)
+	if not result["items"]:
+		return result
+	# Step 2: world scene (optional). Only override the default-true `scene`
+	# when a path was provided -- no path means "intentionally skipped."
+	if d.has("scene_path"):
+		var scene: Resource = load(d["scene_path"])
+		if scene != null:
+			result["scene"] = _register_scene(id, scene)
+		else:
+			result["scene"] = false
+			push_warning("[Registry] register_item('%s'): failed to load scene from '%s'" % [id, d["scene_path"]])
+	# Step 3: loot tables (optional).
+	if d.has("loot_tables") and d["loot_tables"] is Array:
+		for table_name in d["loot_tables"]:
+			if not (table_name is String):
+				continue
+			var loot_id: String = "%s_in_%s" % [id, table_name]
+			if _register_loot(loot_id, {"item": item_data, "table": String(table_name)}):
+				result["loot_count"] = int(result["loot_count"]) + 1
+	# Step 4: trader pools (optional). Each name fans to one
+	# register('trader_pools', ...) call. Failures (unknown trader name,
+	# missing flag field on ItemData) get tracked per-pool.
+	if d.has("trader_pools") and d["trader_pools"] is Array:
+		for pool_name in d["trader_pools"]:
+			if not (pool_name is String):
+				continue
+			var pool_id: String = "%s_in_pool_%s" % [id, pool_name]
+			if _register_trader_pool(pool_id, {"item": item_data, "trader": String(pool_name)}):
+				result["trader_pools"].append(String(pool_name))
+				result["trader_pool_count"] = int(result["trader_pool_count"]) + 1
+			else:
+				result["trader_pools_failed"].append(String(pool_name))
+	result["ok"] = result["items"] and result["scene"] and result["trader_pools_failed"].is_empty()
+	_log_debug("[Registry] register_item('%s') result: %s" % [id, result])
 	return result
 
 # -------- shared helpers --------
