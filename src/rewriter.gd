@@ -1122,7 +1122,13 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		out += "%selse:\n" % I1
 		out += "%s_result = %s%s\n" % [I2, aw, vanilla_call]
 		out += "%s_lib._caller = self\n" % I1
-		out += "%s_lib._dispatch(\"%s-post\", %s)\n" % [I1, hook_base, args_array]
+		# Post hooks for non-void methods get the chained-mutator dispatch:
+		# each callback receives args + [_result], returning non-null to
+		# replace _result for downstream callbacks. The 2-arg legacy form
+		# (callback declared without trailing _result) still works -- the
+		# dispatcher detects arity and calls the appropriate shape, with a
+		# one-shot deprecation warning. See hooks_api._dispatch_post.
+		out += "%s_result = _lib._dispatch_post(\"%s-post\", %s, _result)\n" % [I1, hook_base, args_array]
 		out += "%s_lib._dispatch_deferred(\"%s-callback\", %s)\n" % [I1, hook_base, args_array]
 		out += "%s_lib._wrapper_active.erase(\"%s\")\n" % [I1, hook_base]
 		out += "%s_lib._caller = _rtv_prev_caller\n" % I1
