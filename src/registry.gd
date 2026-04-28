@@ -73,16 +73,25 @@ var _registry_overridden: Dictionary = {}
 var _registry_patched: Dictionary = {}
 
 # ---- Aggregator helpers (weapons / magazines / attachments) ----
-# These wrap several primitive registries (ITEMS + SCENES + LOOT, plus
-# patches to vanilla weapons' `compatible`) into a single call. Return a
-# Dictionary with per-step success bools so mods can inspect partial
-# failures. The standard `register('weapons'/'magazines'/'attachments')`
-# routes through these but collapses the dict to a single bool. Call the
-# public methods below directly when you want the granular result.
+# These wrap several primitive registries (ITEMS + SCENES + LOOT +
+# TRADER_POOLS, plus patches to vanilla weapons' `compatible`) into a
+# single call. Return a Dictionary with per-step success bools so mods
+# can inspect partial failures. The weapon/magazine/attachment standard
+# verbs collapse the dict to a single bool; call the public methods
+# below directly when you want the granular result. register_item is
+# method-only (no Registry const) since the bare-Resource form of
+# register('items', ...) already exists.
+
+## Register a generic item bundle (ItemData + optional scene/icon/loot/
+## trader_pools). Use this for content that doesn't fit the
+## weapon/mag/attachment helpers (consumables, keys, tools, ammo).
+## See registry/aggregators.gd for the full schema.
+func register_item(id: String, data: Variant) -> Dictionary:
+	return _register_item_bundle(id, data)
 
 ## Register a weapon bundle (item + scene + rig, optional magazines /
-## fits_attachments / loot_tables). See registry/weapons.gd for the full
-## schema. Returns a Dictionary; check result.ok for the overall success.
+## fits_attachments / loot_tables). See registry/aggregators.gd for the
+## full schema. Returns a Dictionary; check result.ok for overall success.
 func register_weapon(id: String, data: Variant) -> Dictionary:
 	return _register_weapon(id, data)
 
