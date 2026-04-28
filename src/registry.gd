@@ -45,6 +45,9 @@ const Registry := {
 	FISH_SPECIES = "fish_species",
 	RESOURCES = "resources",
 	SCENE_NODES = "scene_nodes",
+	WEAPONS = "weapons",
+	MAGAZINES = "magazines",
+	ATTACHMENTS = "attachments",
 	# Future sections populate the rest:
 	# TRADER_POOLS = "trader_pools",
 	# TRADER_TASKS = "trader_tasks",
@@ -68,6 +71,31 @@ const Registry := {
 var _registry_registered: Dictionary = {}
 var _registry_overridden: Dictionary = {}
 var _registry_patched: Dictionary = {}
+
+# ---- Aggregator helpers (weapons / magazines / attachments) ----
+# These wrap several primitive registries (ITEMS + SCENES + LOOT, plus
+# patches to vanilla weapons' `compatible`) into a single call. Return a
+# Dictionary with per-step success bools so mods can inspect partial
+# failures. The standard `register('weapons'/'magazines'/'attachments')`
+# routes through these but collapses the dict to a single bool. Call the
+# public methods below directly when you want the granular result.
+
+## Register a weapon bundle (item + scene + rig, optional magazines /
+## fits_attachments / loot_tables). See registry/weapons.gd for the full
+## schema. Returns a Dictionary; check result.ok for the overall success.
+func register_weapon(id: String, data: Variant) -> Dictionary:
+	return _register_weapon(id, data)
+
+## Register a magazine bundle (item + scene, optional fits_weapons /
+## loot_tables). Patches each fits_weapons target's compatible array.
+func register_magazine(id: String, data: Variant) -> Dictionary:
+	return _register_magazine(id, data)
+
+## Register an attachment bundle. Same shape as register_magazine; the
+## split is for mod-author readability (vanilla's `compatible` field
+## doesn't distinguish mag from attachment).
+func register_attachment(id: String, data: Variant) -> Dictionary:
+	return _register_attachment(id, data)
 
 # ---- Public verbs ----
 
@@ -99,6 +127,16 @@ func register(registry: String, id: String, data: Variant) -> bool:
 		"scene_nodes":
 			push_warning("[Registry] register: 'scene_nodes' doesn't support register (nodes are positional inside a scene; use override('scenes', ...) to replace the whole scene or patch('scene_nodes', ...) to mutate node properties)")
 			return false
+		"weapons":
+			# Aggregator helper returns a granular Dictionary. register()
+			# collapses to the bool "did everything succeed" view; mods that
+			# want per-step success should call lib.register_weapon(id, data)
+			# directly to get the full dict.
+			return bool(_register_weapon(id, data).get("ok", false))
+		"magazines":
+			return bool(_register_magazine(id, data).get("ok", false))
+		"attachments":
+			return bool(_register_attachment(id, data).get("ok", false))
 		_:
 			push_warning("[Registry] register: unknown registry '%s'" % registry)
 			return false
@@ -140,6 +178,9 @@ func override(registry: String, id: String, data: Variant) -> bool:
 			return false
 		"scene_nodes":
 			push_warning("[Registry] override: 'scene_nodes' doesn't support override (whole-scene swap goes through override('scenes', ...); scene_nodes is patch-only)")
+			return false
+		"weapons", "magazines", "attachments":
+			push_warning("[Registry] override: '%s' is a pure aggregator -- override the underlying primitives instead (override('items', ...) for the ItemData, override('scenes', ...) for the world/rig scene)" % registry)
 			return false
 		_:
 			push_warning("[Registry] override: unknown registry '%s'" % registry)
@@ -216,6 +257,9 @@ func patch(registry: String, id: Variant, fields: Dictionary) -> bool:
 				push_warning("[Registry] patch('scene_nodes', ...): id must be a String in the form '<scene_path>#<node_path>'")
 				return false
 			return _patch_scene_node(id, fields)
+		"weapons", "magazines", "attachments":
+			push_warning("[Registry] patch: '%s' is a pure aggregator -- patch the underlying primitive instead (patch('items', ...) for ItemData fields like compatible/damage/etc)" % registry)
+			return false
 		_:
 			push_warning("[Registry] patch: unknown registry '%s'" % registry)
 			return false
@@ -245,6 +289,9 @@ func remove(registry: String, id: String) -> bool:
 			return false
 		"scene_nodes":
 			push_warning("[Registry] remove: 'scene_nodes' doesn't support remove (use revert to undo a property patch)")
+			return false
+		"weapons", "magazines", "attachments":
+			push_warning("[Registry] remove: '%s' is a pure aggregator -- remove the underlying primitives instead (remove('items', ...), remove('scenes', ...), remove('loot', ...))" % registry)
 			return false
 		_:
 			push_warning("[Registry] remove: unknown registry '%s'" % registry)
@@ -332,6 +379,9 @@ func revert(registry: String, id: Variant, fields: Array = []) -> bool:
 				push_warning("[Registry] revert('scene_nodes', ...): id must be a String in the form '<scene_path>#<node_path>'")
 				return false
 			return _revert_scene_node(id, fields)
+		"weapons", "magazines", "attachments":
+			push_warning("[Registry] revert: '%s' is a pure aggregator -- revert the underlying primitives instead" % registry)
+			return false
 		_:
 			push_warning("[Registry] revert: unknown registry '%s'" % registry)
 			return false
