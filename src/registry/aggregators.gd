@@ -329,6 +329,146 @@ func _register_item_bundle(id: String, data: Variant) -> Dictionary:
 	_log_debug("[Registry] register_item('%s') result: %s" % [id, result])
 	return result
 
+# -------- furniture --------
+
+# Furniture is structurally an ItemData with type="Furniture" plus a placed
+# world scene. Its lifecycle differs from generic items in three ways:
+#   - never spawns from loot pools (intentionally not in LT_*)
+#   - obtained via trader supply (or task rewards, out of scope here)
+#   - on purchase, vanilla routes it to the catalog grid (Interface.gd
+#     branches on itemData.type == "Furniture")
+#
+# So `register_furniture` is `register_item` with: scene_path required,
+# loot_tables forbidden, trader_pools required (default Generalist if
+# absent), optional inline recipe targeting Recipes.furniture.
+#
+# Schema:
+#   item_path     -- required, .tres ItemData (should have type="Furniture")
+#   scene_path    -- required, placed world .tscn
+#   icon_path     -- optional
+#   trader_pools  -- optional, default ["Generalist"] (warn). One register
+#                    call per pool name flips the matching flag on the
+#                    ItemData.
+#   recipe        -- optional dict {input: Array[ItemData], time: float,
+#                    audio?: AudioEvent}. Output is implicit (the item).
+#                    category is locked to "furniture" -- ignored if set.
+#
+# Returns: {ok, items, scene, trader_pool_count, trader_pools: [String],
+#           trader_pools_failed: [String], recipe: bool}
+func _register_furniture_bundle(id: String, data: Variant) -> Dictionary:
+	var result: Dictionary = {
+		"ok": false,
+		"items": false,
+		"scene": false,
+		"trader_pool_count": 0,
+		"trader_pools": [],
+		"trader_pools_failed": [],
+		"recipe": false,
+	}
+	if not (data is Dictionary):
+		push_warning("[Registry] register_furniture('%s', ...) expects Dictionary" % id)
+		return result
+	var d: Dictionary = data
+	for required in ["item_path", "scene_path"]:
+		if not d.has(required):
+			push_warning("[Registry] register_furniture('%s'): missing required key '%s'" % [id, required])
+			return result
+	if d.has("loot_tables"):
+		push_warning("[Registry] register_furniture('%s'): loot_tables is not supported (furniture isn't loot-pool spawnable in vanilla; use trader_pools instead). Ignored." % id)
+	# Step 1: load + register the ItemData. Validate type="Furniture";
+	# warn but don't fail if missing -- vanilla still routes by the type
+	# field at runtime, but a wrong type means the item won't go to the
+	# catalog when bought.
+	var item_data: Resource = load(d["item_path"])
+	if item_data == null:
+		push_warning("[Registry] register_furniture('%s'): failed to load item from '%s'" % [id, d["item_path"]])
+		return result
+	if "type" in item_data and String(item_data.get("type")) != "Furniture":
+		push_warning("[Registry] register_furniture('%s'): ItemData.type is '%s', expected 'Furniture'. Item won't be routed to the catalog grid on purchase. Fix the .tres or the player will get inventory items instead." % [id, item_data.get("type")])
+	if d.has("icon_path"):
+		_apply_icon(item_data, d["icon_path"], id)
+	result["items"] = _register_item(id, item_data)
+	if not result["items"]:
+		return result
+	# Step 2: world scene. Required for furniture (placed object).
+	var scene: Resource = load(d["scene_path"])
+	if scene == null:
+		push_warning("[Registry] register_furniture('%s'): failed to load scene from '%s'" % [id, d["scene_path"]])
+	else:
+		result["scene"] = _register_scene(id, scene)
+	# Step 3: trader pools. Default to ["Generalist"] with a warn so
+	# unobtainable furniture surfaces loudly at register time.
+	var pools: Array = []
+	if d.has("trader_pools") and d["trader_pools"] is Array and not (d["trader_pools"] as Array).is_empty():
+		pools = d["trader_pools"]
+	else:
+		pools = ["Generalist"]
+		push_warning("[Registry] register_furniture('%s'): no trader_pools specified -- defaulting to ['Generalist']. Furniture is only obtainable via traders, so omitting this would make the item unreachable." % id)
+	for pool_name in pools:
+		if not (pool_name is String):
+			continue
+		var pool_id: String = "%s_in_pool_%s" % [id, pool_name]
+		if _register_trader_pool(pool_id, {"item": item_data, "trader": String(pool_name)}):
+			result["trader_pools"].append(String(pool_name))
+			result["trader_pool_count"] = int(result["trader_pool_count"]) + 1
+		else:
+			result["trader_pools_failed"].append(String(pool_name))
+	# Step 4: optional crafting recipe. Build a fresh RecipeData with
+	# output = [our item], register under recipes/furniture category. Mods
+	# that just want trader-only furniture skip this.
+	if d.has("recipe") and d["recipe"] is Dictionary:
+		var rd: Dictionary = d["recipe"]
+		if not (rd.has("input") and rd["input"] is Array) or (rd["input"] as Array).is_empty():
+			push_warning("[Registry] register_furniture('%s'): recipe.input must be a non-empty array of ItemData" % id)
+		else:
+			var recipe := _build_furniture_recipe(id, item_data, rd)
+			if recipe != null:
+				var recipe_id: String = "%s_recipe" % id
+				result["recipe"] = _register_recipe(recipe_id, {"recipe": recipe, "category": "furniture"})
+	result["ok"] = result["items"] and result["scene"] and result["trader_pools_failed"].is_empty()
+	_log_debug("[Registry] register_furniture('%s') result: %s" % [id, result])
+	return result
+
+# Construct a fresh RecipeData from the modder's recipe dict. Output is
+# implicit (the item we're registering). Returns null if construction
+# fails (unlikely; RecipeData.new is reliable, but the typed-array
+# coercion can fail if input contains non-ItemData).
+func _build_furniture_recipe(id: String, output_item: Resource, rd: Dictionary) -> Resource:
+	var script: GDScript = load("res://Scripts/RecipeData.gd") as GDScript
+	if script == null:
+		push_warning("[Registry] register_furniture('%s'): failed to load RecipeData.gd; recipe skipped" % id)
+		return null
+	var recipe: Resource = script.new()
+	recipe.set("name", String(rd.get("name", id)))
+	recipe.set("time", float(rd.get("time", 1.0)))
+	if rd.has("audio"):
+		recipe.set("audio", rd["audio"])
+	# Build typed Array[ItemData] for input. RecipeData.input is typed,
+	# and assigning an untyped Array silently fails the typed-array check
+	# in _register_recipe.
+	var typed_input: Array[ItemData] = []
+	for it in rd["input"]:
+		if it is ItemData:
+			typed_input.append(it)
+		else:
+			push_warning("[Registry] register_furniture('%s'): recipe.input contains non-ItemData entry; skipped" % id)
+	if typed_input.is_empty():
+		return null
+	recipe.set("input", typed_input)
+	# Output is the item we're registering, single-element typed array.
+	var typed_output: Array[ItemData] = []
+	if output_item is ItemData:
+		typed_output.append(output_item)
+	else:
+		push_warning("[Registry] register_furniture('%s'): output ItemData isn't typed as ItemData; recipe skipped" % id)
+		return null
+	recipe.set("output", typed_output)
+	# Optional proximity flags.
+	for flag in ["heat", "workbench", "testbench", "shelter"]:
+		if rd.has(flag):
+			recipe.set(flag, bool(rd[flag]))
+	return recipe
+
 # -------- shared helpers --------
 
 # Load an icon image, convert to ImageTexture, assign to item_data.icon if

@@ -89,6 +89,13 @@ var _registry_patched: Dictionary = {}
 func register_item(id: String, data: Variant) -> Dictionary:
 	return _register_item_bundle(id, data)
 
+## Register a furniture bundle (ItemData with type='Furniture' + placed
+## scene + trader_pools, optional crafting recipe). Furniture is
+## intentionally not loot-pool spawnable; trader_pools defaults to
+## ['Generalist'] with a warn if missing. See registry/aggregators.gd.
+func register_furniture(id: String, data: Variant) -> Dictionary:
+	return _register_furniture_bundle(id, data)
+
 ## Register a weapon bundle (item + scene + rig, optional magazines /
 ## fits_attachments / loot_tables). See registry/aggregators.gd for the
 ## full schema. Returns a Dictionary; check result.ok for overall success.
