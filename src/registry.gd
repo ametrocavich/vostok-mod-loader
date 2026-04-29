@@ -474,3 +474,155 @@ func get_entry(registry: String, id: String) -> Variant:
 		_:
 			push_warning("[Registry] get_entry: unknown registry '%s'" % registry)
 			return null
+
+# ---- Bulk read API ----
+# Companion to get_entry for "what's in this registry?" queries. All four
+# methods accept include_vanilla (default true) so modders can choose
+# between "everything visible to gameplay" and "only what mods added."
+#
+# Per-registry vanilla-source dispatch lives in _enumerate_vanilla; mod
+# entries are read from _registry_registered. On id collision the mod
+# entry wins (matches get_entry precedence: override > register > vanilla).
+
+## True if the id resolves to anything in this registry. Skips the entry
+## construction get_entry would do; cheap membership check.
+func has(registry: String, id: String, include_vanilla: bool = true) -> bool:
+	var reg: Dictionary = _registry_registered.get(registry, {})
+	if reg.has(id):
+		return true
+	if not include_vanilla:
+		return false
+	var vanilla: Dictionary = _enumerate_vanilla(registry)
+	return vanilla.has(id)
+
+## Just the ids in this registry, as a typed String array. Cheaper than
+## list().keys() because we don't materialize the merged values dict when
+## the caller doesn't need it.
+func keys(registry: String, include_vanilla: bool = true) -> Array[String]:
+	var out: Array[String] = []
+	var seen: Dictionary = {}
+	if include_vanilla:
+		var vanilla: Dictionary = _enumerate_vanilla(registry)
+		for k in vanilla.keys():
+			out.append(String(k))
+			seen[k] = true
+	var reg: Dictionary = _registry_registered.get(registry, {})
+	for k in reg.keys():
+		if not seen.has(k):
+			out.append(String(k))
+	return out
+
+## Full id -> entry mapping for this registry. Mod entries override
+## vanilla on id collision (matches get_entry precedence).
+func list(registry: String, include_vanilla: bool = true) -> Dictionary:
+	var out: Dictionary = {}
+	if include_vanilla:
+		out = _enumerate_vanilla(registry).duplicate()
+	var reg: Dictionary = _registry_registered.get(registry, {})
+	for k in reg.keys():
+		out[k] = reg[k]
+	return out
+
+## Filtered iteration. Predicate signature: func(entry) -> bool. Returns
+## an Array of Dictionary {id, entry} pairs for every match. The id is
+## included in the result so callers don't need to lookup separately.
+func find(registry: String, predicate: Callable, include_vanilla: bool = true) -> Array:
+	var out: Array = []
+	var entries: Dictionary = list(registry, include_vanilla)
+	for id in entries.keys():
+		var entry = entries[id]
+		if entry == null:
+			continue
+		if bool(predicate.call(entry)):
+			out.append({"id": String(id), "entry": entry})
+	return out
+
+# Per-registry vanilla source enumerator. Returns id -> entry for every
+# vanilla content item the registry tracks. Pure-mod registries (loot,
+# trader_pools, scene_paths-mod-only, etc.) return {} -- their entries
+# are inherently mod-side only.
+func _enumerate_vanilla(registry: String) -> Dictionary:
+	match registry:
+		"items":
+			# Vanilla items live in LT_Master.items, indexed by their .file
+			# string. The items registry's _build_vanilla_item_cache does
+			# this same walk; reuse via _lookup_item for consistency.
+			var out: Dictionary = {}
+			var master = load("res://Loot/LT_Master.tres")
+			if master == null or not ("items" in master):
+				return out
+			for it in master.items:
+				if it == null:
+					continue
+				var f = it.get("file")
+				if f != null and String(f) != "":
+					out[String(f)] = it
+			return out
+		"scenes":
+			# Vanilla scenes are const declarations on Database.gd. Walk
+			# the script's constant map.
+			var out: Dictionary = {}
+			var db := _database_node()
+			if db == null or db.get_script() == null:
+				return out
+			var consts: Dictionary = db.get_script().get_script_constant_map()
+			for k in consts.keys():
+				var v = consts[k]
+				if v is PackedScene:
+					out[String(k)] = v
+			return out
+		"scene_paths":
+			# Vanilla scene-path consts on Loader.gd. Same const-map walk
+			# but values are Strings (res:// paths) rather than PackedScenes.
+			var out: Dictionary = {}
+			var ldr = get_tree().root.get_node_or_null("Loader")
+			if ldr == null or ldr.get_script() == null:
+				return out
+			var consts: Dictionary = ldr.get_script().get_script_constant_map()
+			for k in consts.keys():
+				var v = consts[k]
+				if v is String and String(v).begins_with("res://"):
+					out[String(k)] = v
+			return out
+		"shelters":
+			# Vanilla shelters are the entries in Loader.shelters that pre-
+			# date any mod additions. _rtv_vanilla_shelters captures this
+			# at @onready time. Each shelter "entry" is just its name; we
+			# return name -> name for shape consistency.
+			var out: Dictionary = {}
+			var ldr = get_tree().root.get_node_or_null("Loader")
+			if ldr == null or not ("_rtv_vanilla_shelters" in ldr):
+				return out
+			for name in ldr._rtv_vanilla_shelters:
+				out[String(name)] = String(name)
+			return out
+		"recipes":
+			# Vanilla recipes live in Recipes.tres across seven category
+			# arrays. RecipeData has no inherent id -- we synthesize one
+			# from "<category>:<recipe.name>" so two recipes with the same
+			# display name in different categories don't collide.
+			var out: Dictionary = {}
+			var recipes = load("res://Crafting/Recipes.tres")
+			if recipes == null:
+				return out
+			var cats: Array = ["consumables", "medical", "equipment", "weapons", "electronics", "misc", "furniture"]
+			for cat in cats:
+				var arr = recipes.get(cat)
+				if not (arr is Array):
+					continue
+				for r in arr:
+					if r == null:
+						continue
+					var rname = r.get("name") if r.has_method("get") else null
+					var key: String = "%s:%s" % [cat, String(rname) if rname != null else "<unnamed>"]
+					out[key] = r
+			return out
+		# Pure-mod registries: vanilla side is empty. The mod-entries dict
+		# in _registry_registered is the complete picture for these.
+		"loot", "trader_pools", "trader_tasks", "events", "sounds", \
+		"inputs", "random_scenes", "ai_types", "fish_species", "resources", \
+		"scene_nodes", "weapons", "magazines", "attachments":
+			return {}
+		_:
+			push_warning("[Registry] _enumerate_vanilla: unknown registry '%s'" % registry)
+			return {}
