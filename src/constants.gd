@@ -172,6 +172,13 @@ var _dispatch_counts: Dictionary = {}
 # when no mod has hooked anything at all. Sticky -- stays true once set.
 # Same approach as godot-mod-loader's `_ModLoaderHooks.any_mod_hooked`.
 var _any_mod_hooked: bool = false
+# Per-hook-base reference count. Keyed by hook_base ("<script>-<method>"
+# lowercase, no -pre/-post/-callback suffix). Incremented when hook() registers
+# any variant under that base, decremented (and erased at 0) by unhook(). The
+# generated wrapper short-circuits when _hooked_bases.has(base) is false, so a
+# wrapped method that nobody actually hooks costs one Dictionary.has() per call
+# instead of the full _wrapper_active/_caller/_dispatch pipeline.
+var _hooked_bases: Dictionary = {}
 var _next_id: int = 1
 var _skip_super: bool = false
 var _seq: int = 0

@@ -32,6 +32,25 @@ func _load_resource_at(path: String, verb: String) -> Resource:
 		return null
 	return res
 
+func _append_resource(id: String, field: String, values: Array, allow_duplicates: bool) -> bool:
+	var res := _load_resource_at(id, "append")
+	if res == null:
+		return false
+	return _array_op_on_resource("resources", id, res, field, "append", values, allow_duplicates)
+
+func _prepend_resource(id: String, field: String, values: Array, allow_duplicates: bool) -> bool:
+	var res := _load_resource_at(id, "prepend")
+	if res == null:
+		return false
+	return _array_op_on_resource("resources", id, res, field, "prepend", values, allow_duplicates)
+
+func _remove_from_resource(id: String, field: String, values: Array) -> bool:
+	var res := _load_resource_at(id, "remove_from")
+	if res == null:
+		return false
+	return _array_op_on_resource("resources", id, res, field, "remove_from", values, false)
+
+
 func _patch_resource(id: String, fields: Dictionary) -> bool:
 	if fields.is_empty():
 		push_warning("[Registry] patch('resources', '%s'): empty fields is a no-op" % id)
