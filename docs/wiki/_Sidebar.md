@@ -6,6 +6,7 @@
 - [Modules](Modules)
 - [Hooks](Hooks)
 - [Registry](Registry)
+- [Setup](Setup)
 - [Mod-Format](Mod-Format)
 - [Profile-Format](Profile-Format)
 - [Config-Files](Config-Files)

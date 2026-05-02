@@ -102,13 +102,23 @@ lib.unhook(id)
 
 if lib.has_replace("weaponrig-shoot"):
     print("another mod already replaced shoot")
+
+# Batched form for mods with many hooks at once.
+lib.hook_many({
+    "controller-_physics_process-pre":  _on_phys_pre,
+    "interface-getmagazine":            _replace_get_mag,
+    "interface-close-post":             _on_close_post,
+})
 ```
+
+For mods that register hooks alongside registry mutations as a single installation step, `hook_many` is also available as a `["hooks", {...}]` entry inside `lib.setup(plan)`. See [Setup](Setup) for the declarative form.
 
 ### Methods
 
 | Method | Purpose |
 |---|---|
 | `hook(name, callback, priority=100) -> int` | Register a callback, return its id. Replace hooks are single-owner (returns -1 if already taken) |
+| `hook_many({name: callback, ...}, priority=100) -> Dictionary` | Batched register; returns `{ok, results}` where `results[name]` is the hook id or -1 |
 | `unhook(id) -> void` | Remove a hook by id (linear scan across all hook names) |
 | `add_hook(path, method, cb, before=true) -> int` | godot-mod-loader compat wrapper around `hook()` + wrap-mask enrollment |
 | `has_hooks(name) -> bool` | Any callbacks registered at this name? |

@@ -148,6 +148,31 @@ func _resolve_event_patch_target(id: Variant) -> Array:
 	push_warning("[Registry] patch('events', ...): id must be a String handle or an EventData Resource")
 	return [null, null]
 
+func _append_event(id: Variant, field: String, values: Array, allow_duplicates: bool) -> bool:
+	var resolved := _resolve_event_patch_target(id)
+	var target: Resource = resolved[0]
+	var key = resolved[1]
+	if target == null:
+		return false
+	return _array_op_on_resource("events", key, target, field, "append", values, allow_duplicates)
+
+func _prepend_event(id: Variant, field: String, values: Array, allow_duplicates: bool) -> bool:
+	var resolved := _resolve_event_patch_target(id)
+	var target: Resource = resolved[0]
+	var key = resolved[1]
+	if target == null:
+		return false
+	return _array_op_on_resource("events", key, target, field, "prepend", values, allow_duplicates)
+
+func _remove_from_event(id: Variant, field: String, values: Array) -> bool:
+	var resolved := _resolve_event_patch_target(id)
+	var target: Resource = resolved[0]
+	var key = resolved[1]
+	if target == null:
+		return false
+	return _array_op_on_resource("events", key, target, field, "remove_from", values, false)
+
+
 func _patch_event(id: Variant, fields: Dictionary) -> bool:
 	if fields.is_empty():
 		push_warning("[Registry] patch('events', ...): empty fields dict is a no-op")

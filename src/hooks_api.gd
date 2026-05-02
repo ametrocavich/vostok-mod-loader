@@ -41,6 +41,19 @@ func _emit_frameworks_ready() -> void:
 	# ext_resource staleness that take_over_path can't fix).
 	_verify_script_overrides()
 
+## Extract the hook_base ("<script>-<method>") from a full hook name by
+## stripping any -pre/-post/-callback suffix. A bare name (replace hook) is
+## already its own base. Used to maintain _hooked_bases.
+static func _hook_base_of(hook_name: String) -> String:
+	if hook_name.ends_with("-pre"):
+		return hook_name.substr(0, hook_name.length() - 4)
+	if hook_name.ends_with("-post"):
+		return hook_name.substr(0, hook_name.length() - 5)
+	if hook_name.ends_with("-callback"):
+		return hook_name.substr(0, hook_name.length() - 9)
+	return hook_name
+
+
 func hook(hook_name: String, callback: Callable, priority: int = 100) -> int:
 	var is_replace := not (hook_name.ends_with("-pre") \
 			or hook_name.ends_with("-post") \
@@ -62,6 +75,10 @@ func hook(hook_name: String, callback: Callable, priority: int = 100) -> int:
 	(_hooks[hook_name] as Array).sort_custom(func(a, b): return a["priority"] < b["priority"])
 	# Flip the global short-circuit so dispatch wrappers stop skipping.
 	_any_mod_hooked = true
+	# Refcount the hook_base so wrappers for never-hooked methods can
+	# fast-path past dispatch. Pre/post/callback all share the same base.
+	var base := _hook_base_of(hook_name)
+	_hooked_bases[base] = int(_hooked_bases.get(base, 0)) + 1
 	var id := _next_id
 	_next_id += 1
 	return id
@@ -105,6 +122,21 @@ func add_hook(script_path: String, method_name: String, callback: Callable, is_b
 	(_hooked_methods[res_path] as Dictionary)[method_name.to_lower()] = true
 	return hook(hook_name, callback, 100)
 
+## Batched form of hook(). `entries` is `{hook_name: callback, ...}`. Returns
+## `{ok: bool, results: {hook_name: hook_id_or_-1, ...}}`. Failures (e.g. a
+## replace name already owned by another mod) surface as -1 in the results
+## dict; ok is false if any registration returned -1.
+func hook_many(entries: Dictionary, priority: int = 100) -> Dictionary:
+	var results: Dictionary = {}
+	var all_ok := true
+	for hook_name in entries.keys():
+		var id: int = hook(String(hook_name), entries[hook_name], priority)
+		results[hook_name] = id
+		if id == -1:
+			all_ok = false
+	return {"ok": all_ok, "results": results}
+
+
 ## Remove a hook by ID.
 func unhook(hook_id: int) -> void:
 	for hook_name in _hooks:
@@ -112,6 +144,12 @@ func unhook(hook_id: int) -> void:
 		for i in range(arr.size() - 1, -1, -1):
 			if arr[i]["id"] == hook_id:
 				arr.remove_at(i)
+				var base := _hook_base_of(hook_name)
+				var c: int = int(_hooked_bases.get(base, 0)) - 1
+				if c <= 0:
+					_hooked_bases.erase(base)
+				else:
+					_hooked_bases[base] = c
 				return
 
 ## Any hooks registered at this name?

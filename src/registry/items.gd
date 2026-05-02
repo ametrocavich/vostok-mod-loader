@@ -93,6 +93,28 @@ func _patch_item(id: String, fields: Dictionary) -> bool:
 	_log_debug("[Registry] patched item '%s' fields %s" % [id, fields.keys()])
 	return true
 
+func _append_item(id: String, field: String, values: Array, allow_duplicates: bool) -> bool:
+	var target := _lookup_item(id)
+	if target == null:
+		push_warning("[Registry] append('items', '%s'): no item with that id" % id)
+		return false
+	return _array_op_on_resource("items", id, target, field, "append", values, allow_duplicates)
+
+func _prepend_item(id: String, field: String, values: Array, allow_duplicates: bool) -> bool:
+	var target := _lookup_item(id)
+	if target == null:
+		push_warning("[Registry] prepend('items', '%s'): no item with that id" % id)
+		return false
+	return _array_op_on_resource("items", id, target, field, "prepend", values, allow_duplicates)
+
+func _remove_from_item(id: String, field: String, values: Array) -> bool:
+	var target := _lookup_item(id)
+	if target == null:
+		push_warning("[Registry] remove_from('items', '%s'): no item with that id" % id)
+		return false
+	return _array_op_on_resource("items", id, target, field, "remove_from", values, false)
+
+
 func _remove_item(id: String) -> bool:
 	var reg: Dictionary = _registry_registered.get("items", {})
 	if not reg.has(id):

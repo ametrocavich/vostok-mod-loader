@@ -45,8 +45,20 @@ lib.revert(lib.Registry.SCENES, "Potato")
 | `register(registry, id, data) -> bool` | Add a new entry. Fails on id collision with vanilla or prior mod registrations |
 | `override(registry, id, data) -> bool` | Replace an existing entry wholesale. Fails if the id doesn't resolve |
 | `patch(registry, id, fields) -> bool` | Mutate individual fields on an entry. Original values are stashed for revert |
+| `append(registry, id, field, values, allow_duplicates=false) -> bool` | Add to an Array field. De-dups by default. Stash shared with `patch` |
+| `prepend(registry, id, field, values, allow_duplicates=false) -> bool` | Same as `append` but inserts at the front |
+| `remove_from(registry, id, field, values) -> bool` | Drop matching values from an Array field. Removes all occurrences, idempotent |
 | `remove(registry, id) -> bool` | Undo a `register`. Fails on override-backed ids (use `revert`) |
 | `revert(registry, id, fields=[]) -> bool` | Undo an `override` or `patch`. Per-field revert when `fields` is non-empty |
+| `register_many(registry, {id: data, ...}) -> Dictionary` | Batched register; returns `{ok, results}` |
+| `override_many(registry, {id: data, ...}) -> Dictionary` | Batched override |
+| `patch_many(registry, {id: fields, ...}) -> Dictionary` | Batched patch |
+| `append_many(registry, field, {id: values, ...}, allow_duplicates=false) -> Dictionary` | Batched append on the same field across many ids |
+| `prepend_many(registry, field, {id: values, ...}, allow_duplicates=false) -> Dictionary` | Batched prepend |
+| `remove_from_many(registry, field, {id: values, ...}) -> Dictionary` | Batched remove_from |
+| `revert_many(registry, {id: fields_array, ...}) -> Dictionary` | Batched revert; per-id `fields_array` (empty = full revert of that id) |
+| `remove_many(registry, [id, ...]) -> Dictionary` | Batched remove |
+| `setup(plan) -> Dictionary` | Declarative entry point: list of `[verb, ...args]` entries dispatched in order. See the **`setup` plan** section below |
 | `get_entry(registry, id) -> Variant` | Read the current entry (after any registry mutations). Returns `null` if missing |
 | `has(registry, id, include_vanilla=true) -> bool` | Membership check. Cheaper than `get_entry(...) != null` |
 | `keys(registry, include_vanilla=true) -> Array[String]` | All ids in the registry |
@@ -83,20 +95,20 @@ Use `lib.Registry.<NAME>` rather than raw strings so typos surface at parse time
 | Constant | String | Underlying store | Verbs supported |
 |---|---|---|---|
 | `SCENES` | `"scenes"` | `Database.gd` scene consts | register, override, remove, revert |
-| `ITEMS` | `"items"` | `ItemData` `.tres` keyed by `file` | register, override, patch, remove, revert |
+| `ITEMS` | `"items"` | `ItemData` `.tres` keyed by `file` | register, override, patch, append/prepend/remove_from, remove, revert |
 | `LOOT` | `"loot"` | `LootTable.items` arrays | register, override, remove, revert |
-| `SOUNDS` | `"sounds"` | `AudioLibrary.tres` `@export` fields | register, override, patch, remove, revert |
-| `RECIPES` | `"recipes"` | `Recipes.tres` category arrays | register, override, patch, remove, revert |
-| `EVENTS` | `"events"` | `Events.tres` events array | register, override, patch, remove, revert |
+| `SOUNDS` | `"sounds"` | `AudioLibrary.tres` `@export` fields | register, override, patch, append/prepend/remove_from, remove, revert |
+| `RECIPES` | `"recipes"` | `Recipes.tres` category arrays | register, override, patch, append/prepend/remove_from, remove, revert |
+| `EVENTS` | `"events"` | `Events.tres` events array | register, override, patch, append/prepend/remove_from, remove, revert |
 | `TRADER_POOLS` | `"trader_pools"` | Per-item trader boolean flags | register, remove, revert |
-| `TRADER_TASKS` | `"trader_tasks"` | `TraderData.tasks` arrays | register, override, patch, remove, revert |
+| `TRADER_TASKS` | `"trader_tasks"` | `TraderData.tasks` arrays | register, override, patch, append/prepend/remove_from, remove, revert |
 | `INPUTS` | `"inputs"` | `InputMap` actions | register, override, patch, remove, revert |
 | `SCENE_PATHS` | `"scene_paths"` | Named scene lookup on `Loader.gd` | register, override, patch, remove, revert |
 | `SHELTERS` | `"shelters"` | `Loader.shelters` append-only list | register, remove |
 | `RANDOM_SCENES` | `"random_scenes"` | `Loader.randomScenes` append-only list | register, remove |
 | `AI_TYPES` | `"ai_types"` | Zone → agent scene overrides on `AISpawner` | register, override, remove, revert |
 | `FISH_SPECIES` | `"fish_species"` | `FishPool` extra species | register, remove |
-| `RESOURCES` | `"resources"` | Arbitrary `.tres` by absolute path | patch, revert |
+| `RESOURCES` | `"resources"` | Arbitrary `.tres` by absolute path | patch, append/prepend/remove_from, revert |
 | `SCENE_NODES` | `"scene_nodes"` | Property mutations on nodes inside any scene | patch, revert |
 | `WEAPONS` | `"weapons"` | Aggregator-only; routes to `register_weapon` | register (collapses to bool) |
 | `MAGAZINES` | `"magazines"` | Aggregator-only; routes to `register_magazine` | register (collapses to bool) |
@@ -151,6 +163,33 @@ lib.revert(lib.Registry.ITEMS, "Potato")              # restore everything else
 
 Registries that don't support patch (loot, scenes, trader_pools, fish_species) return `false` with guidance.
 
+### append / prepend / remove_from
+
+Array-only mutations on a single field. Use these instead of `patch` when you want to **add to** or **subtract from** an existing array (e.g. a weapon's `compatible` list) without overwriting other entries other mods may have contributed.
+
+```gdscript
+# Add new magazines as compatible options on the AKM, without clobbering vanilla's list:
+lib.append(lib.Registry.ITEMS, "res://Items/Magazines/AKM.tres", "compatible", [magA, magB])
+
+# Single value also works (no need to wrap in an array):
+lib.append(lib.Registry.ITEMS, "res://Items/Magazines/AKM.tres", "compatible", magC)
+
+# Insert at the front instead of the end:
+lib.prepend(lib.Registry.SOUNDS, "footsteps_dirt", "audio", newClip)
+
+# Remove an entry; silent skip if it isn't there.
+lib.remove_from(lib.Registry.ITEMS, "res://Items/Magazines/AKM.tres", "compatible", oldMag)
+```
+
+**Semantics:**
+- **Array fields only.** Calling on a non-Array field returns `false` with a "field is not an Array" warning. For scalar fields, use `patch` instead.
+- **De-dup on append/prepend by default.** If a value is already in the array, it isn't appended again. Pass `allow_duplicates=true` to permit repeats.
+- **`remove_from` removes all matching occurrences,** not just the first. Idempotent — re-running with the same value is a no-op after the first call.
+- **Stash is shared with `patch`.** A `patch` on `compatible` followed by `append` to `compatible` keeps the *original* (pre-patch, pre-append) value on first-write-wins. `revert(reg, id, ["compatible"])` restores the true original.
+- **Typed-array safety.** Values that don't match the array's declared type (e.g. trying to append a non-`ItemData` Resource into `Array[ItemData]`) are rejected before any mutation, with a "rejected by typed-array constraint" warning.
+
+**Supported registries:** `items`, `sounds`, `recipes`, `events`, `trader_tasks`, `resources`. Other registries either don't have Array fields (`inputs`, `scene_paths`) or have non-Resource entries (`scenes`, `loot`, `shelters`, etc.); calls return `false` with guidance.
+
 ### remove
 
 Reverses a prior `register`. Fails on override-backed or vanilla ids, those need `revert`.
@@ -161,6 +200,68 @@ Reverses an `override` or `patch`. Fails if there's nothing to undo (nothing ove
 
 - Bare `revert(registry, id)` with no `fields` argument unwinds everything for that id (patches first, then the override).
 - `revert(registry, id, ["field1", "field2"])` unwinds only those specific patched fields; other patches and the override stay.
+
+### Batched forms (`*_many`)
+
+Every mutation verb has a sibling that takes a Dictionary of ids (or, for `remove_many`, an Array). One call, many entries, single-registry. Useful for table-driven mods that already store their data as a dict.
+
+```gdscript
+# Patch many items in one call.
+lib.patch_many(lib.Registry.ITEMS, {
+    "res://Items/Weapons/AKM/AKM.tres":  {"damage": 45},
+    "res://Items/Weapons/AK74/AK74.tres": {"damage": 40},
+})
+
+# Append the same field across many ids.
+lib.append_many(lib.Registry.ITEMS, "compatible", {
+    "res://Items/Weapons/AKM/AKM.tres":  [magA, magB],
+    "res://Items/Weapons/AK74/AK74.tres": [magC],
+})
+
+# Per-id field lists for revert. Empty array = full revert of that id.
+lib.revert_many(lib.Registry.ITEMS, {
+    "res://Items/Weapons/AKM/AKM.tres":  ["damage", "compatible"],
+    "res://Items/Weapons/AK74/AK74.tres": [],
+})
+
+# Remove a list of mod-registered entries.
+lib.remove_many(lib.Registry.ITEMS, ["my_mod_potion", "my_mod_grenade"])
+```
+
+**Return shape.** Each `_many` returns `{ok: bool, results: {id: bool, ...}}`. `ok` is true only when every entry succeeded. Failures are isolated — one bad id doesn't stop the others, and the per-id success bools tell you which ones landed.
+
+```gdscript
+var result := lib.patch_many(lib.Registry.ITEMS, {...})
+if not result.ok:
+    for id in result.results:
+        if not result.results[id]:
+            push_warning("[mymod] failed to patch %s" % id)
+```
+
+**One field per call** for the array verbs. `append_many` / `prepend_many` / `remove_from_many` all take a single `field` arg that applies to every entry in the dict. If you need different fields per id, make multiple calls — or use `setup` (below) which runs an ordered sequence of verbs in one call.
+
+### setup -- declarative plan
+
+`setup(plan)` runs an ordered list of `[verb, ...args]` entries that map to the registry verbs above plus `hooks` (batched hook registration) and `when` (conditional sub-plans). One declarative literal replaces the typical pile of administrative `_ready` lines.
+
+```gdscript
+const PLAN = [
+    ["register", lib.Registry.ITEMS, {"my_mod_potion": myPotionData}],
+    ["patch",    lib.Registry.ITEMS, {"res://Items/Weapons/AKM/AKM.tres": {"damage": 45}}],
+    ["append",   lib.Registry.ITEMS, "compatible", {"res://Items/Weapons/AKM/AKM.tres": [magA, magB]}],
+    ["hooks",    {"interface-getmagazine": _replace_get_mag}],
+    ["when",     _is_hardcore, [
+        ["patch", lib.Registry.ITEMS, {"res://Items/Misc/Sticks/Sticks.tres": {"value": 200}}],
+    ]],
+]
+
+func _ready() -> void:
+    var lib = Engine.get_meta("RTVModLib")
+    await lib.frameworks_ready
+    lib.setup(PLAN)
+```
+
+See **[Setup](Setup)** for the full verb table, predicate forms, return shape, and a comprehensive example covering every supported entry.
 
 ### get_entry
 

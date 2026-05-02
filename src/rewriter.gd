@@ -1285,6 +1285,13 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		# ~10 dict ops + meta/prop/fn calls. Matches godot-mod-loader.
 		out += "%sif not _lib._any_mod_hooked:\n" % I1
 		out += "%sreturn %s%s\n" % [I2, aw, vanilla_call]
+		# Per-hook-base short-circuit: even when SOME mod has hooked SOMETHING
+		# (which makes _any_mod_hooked sticky-true forever), most wrapped
+		# methods still have no hooks of their own. One Dictionary.has() lets
+		# them fast-path past the full _wrapper_active/_caller/_dispatch
+		# pipeline.
+		out += "%sif not _lib._hooked_bases.has(\"%s\"):\n" % [I1, hook_base]
+		out += "%sreturn %s%s\n" % [I2, aw, vanilla_call]
 		# Dev-mode-only per-method dispatch counter. Gated by a property
 		# read so non-dev users pay ~1 branch per call; dev users see a
 		# top-15 summary at 30s that pinpoints runaway method calls (e.g.
@@ -1340,6 +1347,10 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		out += "%svar _lib = Engine.get_meta(\"RTVModLib\")\n" % I1
 		# Global short-circuit: see non-void branch above.
 		out += "%sif not _lib._any_mod_hooked:\n" % I1
+		out += "%s%s%s\n" % [I2, aw, vanilla_call]
+		out += "%sreturn\n" % I2
+		# Per-hook-base short-circuit: see non-void branch above.
+		out += "%sif not _lib._hooked_bases.has(\"%s\"):\n" % [I1, hook_base]
 		out += "%s%s%s\n" % [I2, aw, vanilla_call]
 		out += "%sreturn\n" % I2
 		# Dev-mode-only per-method dispatch counter (see non-void branch).

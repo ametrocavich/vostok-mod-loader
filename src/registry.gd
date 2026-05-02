@@ -280,6 +280,122 @@ func patch(registry: String, id: Variant, fields: Dictionary) -> bool:
 			push_warning("[Registry] patch: unknown registry '%s'" % registry)
 			return false
 
+## Append values to an Array field on a registry entry. Array-only.
+## De-duplicates by default (matches typical mod intent for compatibility lists);
+## pass allow_duplicates=true to permit repeats. `values` accepts a single value
+## or an Array. First-write-wins stash is shared with patch(), so revert()
+## restores the true pre-any-mutation array even after multiple ops.
+func append(registry: String, id: Variant, field: String, values: Variant, allow_duplicates: bool = false) -> bool:
+	return _array_op_dispatch(registry, id, field, "append", values, allow_duplicates)
+
+
+## Prepend values to an Array field. Same de-dup semantics as append; the
+## resulting prefix order matches the input order (prepend([a, b]) on [c]
+## yields [a, b, c]).
+func prepend(registry: String, id: Variant, field: String, values: Variant, allow_duplicates: bool = false) -> bool:
+	return _array_op_dispatch(registry, id, field, "prepend", values, allow_duplicates)
+
+
+## Remove values from an Array field. Removes ALL matching occurrences.
+## Silent skip if a value isn't present (idempotent).
+func remove_from(registry: String, id: Variant, field: String, values: Variant) -> bool:
+	return _array_op_dispatch(registry, id, field, "remove_from", values, false)
+
+
+# Shared dispatcher for append/prepend/remove_from. Mirrors patch()'s
+# registry-by-registry routing exactly: registries that support patch on
+# Resource fields get a per-registry helper here; registries with non-Resource
+# entries (scenes, loot, shelters, etc.) get a warn-and-return-false branch.
+func _array_op_dispatch(registry: String, id: Variant, field: String, op: String, values: Variant, allow_duplicates: bool) -> bool:
+	if id is String and id == "":
+		push_warning("[Registry] %s(%s, ...) called with empty id" % [op, registry])
+		return false
+	if field == "":
+		push_warning("[Registry] %s(%s, ...) called with empty field" % [op, registry])
+		return false
+	var arr: Array = _coerce_to_array(values)
+	if arr.is_empty():
+		push_warning("[Registry] %s('%s', ...): empty values is a no-op" % [op, registry])
+		return false
+	match registry:
+		"items":
+			if not (id is String):
+				push_warning("[Registry] %s('items', ...): id must be a String" % op)
+				return false
+			match op:
+				"append":      return _append_item(id, field, arr, allow_duplicates)
+				"prepend":     return _prepend_item(id, field, arr, allow_duplicates)
+				"remove_from": return _remove_from_item(id, field, arr)
+		"sounds":
+			if not (id is String):
+				push_warning("[Registry] %s('sounds', ...): id must be a String" % op)
+				return false
+			match op:
+				"append":      return _append_sound(id, field, arr, allow_duplicates)
+				"prepend":     return _prepend_sound(id, field, arr, allow_duplicates)
+				"remove_from": return _remove_from_sound(id, field, arr)
+		"recipes":
+			match op:
+				"append":      return _append_recipe(id, field, arr, allow_duplicates)
+				"prepend":     return _prepend_recipe(id, field, arr, allow_duplicates)
+				"remove_from": return _remove_from_recipe(id, field, arr)
+		"events":
+			match op:
+				"append":      return _append_event(id, field, arr, allow_duplicates)
+				"prepend":     return _prepend_event(id, field, arr, allow_duplicates)
+				"remove_from": return _remove_from_event(id, field, arr)
+		"trader_tasks":
+			match op:
+				"append":      return _append_trader_task(id, field, arr, allow_duplicates)
+				"prepend":     return _prepend_trader_task(id, field, arr, allow_duplicates)
+				"remove_from": return _remove_from_trader_task(id, field, arr)
+		"inputs":
+			push_warning("[Registry] %s: 'inputs' has no Array-typed fields (display_label/default_event/deadzone are scalars; use patch instead)" % op)
+			return false
+		"scene_paths":
+			push_warning("[Registry] %s: 'scene_paths' has no Array-typed fields (entries are path/Resource scalars; use patch instead)" % op)
+			return false
+		"resources":
+			if not (id is String):
+				push_warning("[Registry] %s('resources', ...): id must be a res:// path String" % op)
+				return false
+			match op:
+				"append":      return _append_resource(id, field, arr, allow_duplicates)
+				"prepend":     return _prepend_resource(id, field, arr, allow_duplicates)
+				"remove_from": return _remove_from_resource(id, field, arr)
+		"scene_nodes":
+			push_warning("[Registry] %s: 'scene_nodes' patches store literal property values applied on scene-load; Array-merge isn't supported (read the property in a hook and patch the merged value instead)" % op)
+			return false
+		"scenes":
+			push_warning("[Registry] %s: 'scenes' doesn't support array ops (scenes are monolithic PackedScenes)" % op)
+			return false
+		"loot":
+			push_warning("[Registry] %s: 'loot' doesn't support array ops (loot entries are ItemData references; use the items registry instead)" % op)
+			return false
+		"trader_pools":
+			push_warning("[Registry] %s: 'trader_pools' doesn't support array ops (entries are boolean flags)" % op)
+			return false
+		"shelters":
+			push_warning("[Registry] %s: 'shelters' doesn't support array ops (entries are bare strings)" % op)
+			return false
+		"random_scenes":
+			push_warning("[Registry] %s: 'random_scenes' doesn't support array ops (entries are bare paths)" % op)
+			return false
+		"ai_types":
+			push_warning("[Registry] %s: 'ai_types' doesn't support array ops (entries are {scene, zone} refs)" % op)
+			return false
+		"fish_species":
+			push_warning("[Registry] %s: 'fish_species' doesn't support array ops (entries are {scene, pool_id} refs)" % op)
+			return false
+		"weapons", "magazines", "attachments":
+			push_warning("[Registry] %s: '%s' is a pure aggregator -- use the underlying primitive (e.g. %s('items', ...))" % [op, registry, op])
+			return false
+		_:
+			push_warning("[Registry] %s: unknown registry '%s'" % [op, registry])
+			return false
+	return false
+
+
 ## Undo a register(). Fails if the id wasn't registered by a mod (can't
 ## remove vanilla entries via this API; use override with a disabled
 ## equivalent, or rely on the game's own toggle mechanisms).
@@ -401,6 +517,111 @@ func revert(registry: String, id: Variant, fields: Array = []) -> bool:
 		_:
 			push_warning("[Registry] revert: unknown registry '%s'" % registry)
 			return false
+
+## Batched form of register(). `entries` is `{id: data, ...}`. Fans out to
+## register() per entry; failures are isolated (one bad id doesn't stop the
+## others). Returns `{ok: bool, results: {id: bool, ...}}`. `ok` is true only
+## when every entry succeeded.
+func register_many(registry: String, entries: Dictionary) -> Dictionary:
+	var results: Dictionary = {}
+	var all_ok := true
+	for id in entries.keys():
+		var ok: bool = register(registry, id, entries[id])
+		results[id] = ok
+		if not ok:
+			all_ok = false
+	return {"ok": all_ok, "results": results}
+
+
+## Batched form of override(). Same shape as register_many.
+func override_many(registry: String, entries: Dictionary) -> Dictionary:
+	var results: Dictionary = {}
+	var all_ok := true
+	for id in entries.keys():
+		var ok: bool = override(registry, id, entries[id])
+		results[id] = ok
+		if not ok:
+			all_ok = false
+	return {"ok": all_ok, "results": results}
+
+
+## Batched form of patch(). `entries` is `{id: fields_dict, ...}`.
+func patch_many(registry: String, entries: Dictionary) -> Dictionary:
+	var results: Dictionary = {}
+	var all_ok := true
+	for id in entries.keys():
+		var ok: bool = patch(registry, id, entries[id])
+		results[id] = ok
+		if not ok:
+			all_ok = false
+	return {"ok": all_ok, "results": results}
+
+
+## Batched form of append(). `entries` is `{id: values, ...}` where values is
+## a single value or Array. Same field across all entries (most common case);
+## use individual append() calls if you need different fields per id.
+func append_many(registry: String, field: String, entries: Dictionary, allow_duplicates: bool = false) -> Dictionary:
+	var results: Dictionary = {}
+	var all_ok := true
+	for id in entries.keys():
+		var ok: bool = append(registry, id, field, entries[id], allow_duplicates)
+		results[id] = ok
+		if not ok:
+			all_ok = false
+	return {"ok": all_ok, "results": results}
+
+
+## Batched form of prepend(). Same shape as append_many.
+func prepend_many(registry: String, field: String, entries: Dictionary, allow_duplicates: bool = false) -> Dictionary:
+	var results: Dictionary = {}
+	var all_ok := true
+	for id in entries.keys():
+		var ok: bool = prepend(registry, id, field, entries[id], allow_duplicates)
+		results[id] = ok
+		if not ok:
+			all_ok = false
+	return {"ok": all_ok, "results": results}
+
+
+## Batched form of remove_from(). Same shape as append_many.
+func remove_from_many(registry: String, field: String, entries: Dictionary) -> Dictionary:
+	var results: Dictionary = {}
+	var all_ok := true
+	for id in entries.keys():
+		var ok: bool = remove_from(registry, id, field, entries[id])
+		results[id] = ok
+		if not ok:
+			all_ok = false
+	return {"ok": all_ok, "results": results}
+
+
+## Batched form of revert(). `entries` is `{id: fields_array, ...}` where
+## fields_array can be empty (full revert of that id) or a list of field names.
+func revert_many(registry: String, entries: Dictionary) -> Dictionary:
+	var results: Dictionary = {}
+	var all_ok := true
+	for id in entries.keys():
+		var fields_arg: Array = entries[id] if entries[id] is Array else []
+		var ok: bool = revert(registry, id, fields_arg)
+		results[id] = ok
+		if not ok:
+			all_ok = false
+	return {"ok": all_ok, "results": results}
+
+
+## Batched form of remove(). `ids` is an Array of String ids. Per-id results
+## keyed by id.
+func remove_many(registry: String, ids: Array) -> Dictionary:
+	var results: Dictionary = {}
+	var all_ok := true
+	for id in ids:
+		var sid := String(id)
+		var ok: bool = remove(registry, sid)
+		results[sid] = ok
+		if not ok:
+			all_ok = false
+	return {"ok": all_ok, "results": results}
+
 
 ## Read API: resolve an id to its current value (vanilla, mod-registered, or
 ## mod-overridden, in the same priority the game itself sees). Useful for

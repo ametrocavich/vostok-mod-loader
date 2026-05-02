@@ -49,6 +49,8 @@ FILES=(
     "$SRC/registry/resources.gd"
     "$SRC/registry/scene_nodes.gd"
     "$SRC/registry/aggregators.gd"
+    # Declarative setup() entry point (depends on registry _many verbs + hook_many)
+    "$SRC/setup.gd"
     "$SRC/framework_wrappers.gd"
     # Codegen pipeline
     "$SRC/gdsc_detokenizer.gd"
