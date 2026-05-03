@@ -785,7 +785,7 @@ lib.register_weapon({
 })
 ```
 
-**Return shape** is uniform: `{ok: bool, results: {id: granular_dict}}`. Each value in `results` is the per-id granular dict (the same shape the old singular form returned). `ok` at the top is true only when every entry succeeded.
+**Return shape** is uniform: `{ok: bool, results: {id: granular_dict}}`. Each value in `results` is the per-id granular dict. `ok` at the top is true only when every entry succeeded.
 
 ```gdscript
 var result := lib.register_weapon({"my_ak": {...}, "my_m4": {...}})
