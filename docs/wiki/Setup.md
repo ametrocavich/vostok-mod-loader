@@ -36,6 +36,11 @@ func _ready() -> void:
 | `["revert", reg, {id: fields_array, ...}]` | `revert_many` (empty array = full revert of that id) |
 | `["remove", reg, [id, id, ...]]` | `remove_many` |
 | `["hooks", {hook_name: callback, ...}]` | `hook_many` |
+| `["register_item", {id: data, ...}]` | `register_item` (aggregator) |
+| `["register_weapon", {id: data, ...}]` | `register_weapon` (aggregator) |
+| `["register_magazine", {id: data, ...}]` | `register_magazine` (aggregator) |
+| `["register_attachment", {id: data, ...}]` | `register_attachment` (aggregator) |
+| `["register_furniture", {id: data, ...}]` | `register_furniture` (aggregator) |
 | `["when", predicate, sub_plan]` | Recurse into `sub_plan` if `predicate` is truthy |
 
 ## Predicates for `when`

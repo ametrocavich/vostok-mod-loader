@@ -85,33 +85,64 @@ var _registry_patched: Dictionary = {}
 ## Register a generic item bundle (ItemData + optional scene/icon/loot/
 ## trader_pools). Use this for content that doesn't fit the
 ## weapon/mag/attachment helpers (consumables, keys, tools, ammo).
-## See registry/aggregators.gd for the full schema.
-func register_item(id: String, data: Variant) -> Dictionary:
-	return _register_item_bundle(id, data)
+##
+## ALWAYS takes a Dictionary of {id: data}, even for a single registration:
+##   lib.register_item({"my_potion": {item: ..., scene: ..., loot_tables: [...]}})
+##
+## Returns {ok: bool, results: {id: granular_dict}} where each granular_dict
+## is the per-entry result with sub-bools for items/scene/loot_count/etc.
+## See registry/aggregators.gd for the full per-entry schema.
+func register_item(entries: Dictionary) -> Dictionary:
+	return _register_aggregator_batch("item", entries)
 
-## Register a furniture bundle (ItemData with type='Furniture' + placed
-## scene + trader_pools, optional crafting recipe). Furniture is
+## Register one or more furniture bundles (ItemData with type='Furniture' +
+## placed scene + trader_pools, optional crafting recipe). Furniture is
 ## intentionally not loot-pool spawnable; trader_pools defaults to
-## ['Generalist'] with a warn if missing. See registry/aggregators.gd.
-func register_furniture(id: String, data: Variant) -> Dictionary:
-	return _register_furniture_bundle(id, data)
+## ['Generalist'] with a warn if missing.
+func register_furniture(entries: Dictionary) -> Dictionary:
+	return _register_aggregator_batch("furniture", entries)
 
-## Register a weapon bundle (item + scene + rig, optional magazines /
-## fits_attachments / loot_tables). See registry/aggregators.gd for the
-## full schema. Returns a Dictionary; check result.ok for overall success.
-func register_weapon(id: String, data: Variant) -> Dictionary:
-	return _register_weapon(id, data)
+## Register one or more weapon bundles (item + scene + rig, optional
+## magazines / fits_attachments / loot_tables). Iterate result.results to
+## inspect per-id sub-result.
+func register_weapon(entries: Dictionary) -> Dictionary:
+	return _register_aggregator_batch("weapon", entries)
 
-## Register a magazine bundle (item + scene, optional fits_weapons /
-## loot_tables). Patches each fits_weapons target's compatible array.
-func register_magazine(id: String, data: Variant) -> Dictionary:
-	return _register_magazine(id, data)
+## Register one or more magazine bundles (item + scene, optional
+## fits_weapons / loot_tables). Patches each fits_weapons target's
+## compatible array.
+func register_magazine(entries: Dictionary) -> Dictionary:
+	return _register_aggregator_batch("magazine", entries)
 
-## Register an attachment bundle. Same shape as register_magazine; the
-## split is for mod-author readability (vanilla's `compatible` field
+## Register one or more attachment bundles. Same shape as register_magazine;
+## the split is for mod-author readability (vanilla's `compatible` field
 ## doesn't distinguish mag from attachment).
-func register_attachment(id: String, data: Variant) -> Dictionary:
-	return _register_attachment(id, data)
+func register_attachment(entries: Dictionary) -> Dictionary:
+	return _register_aggregator_batch("attachment", entries)
+
+
+# Internal: shared loop for all aggregator helpers. Dispatches each entry to
+# the per-aggregator worker (_register_item_bundle / _register_weapon / etc.)
+# and wraps the per-id granular results in {ok, results: {id: granular}}.
+# Failures isolate -- one bad entry doesn't stop the next.
+func _register_aggregator_batch(kind: String, entries: Dictionary) -> Dictionary:
+	var results: Dictionary = {}
+	var all_ok := true
+	for id in entries.keys():
+		var sid := String(id)
+		var per: Dictionary
+		match kind:
+			"item":       per = _register_item_bundle(sid, entries[id])
+			"furniture":  per = _register_furniture_bundle(sid, entries[id])
+			"weapon":     per = _register_weapon(sid, entries[id])
+			"magazine":   per = _register_magazine(sid, entries[id])
+			"attachment": per = _register_attachment(sid, entries[id])
+			_:
+				per = {"ok": false, "error": "internal: unknown aggregator kind '%s'" % kind}
+		results[sid] = per
+		if not bool(per.get("ok", false)):
+			all_ok = false
+	return {"ok": all_ok, "results": results}
 
 # ---- Public verbs ----
 
