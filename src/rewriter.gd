@@ -347,6 +347,10 @@ func _rtv_registry_injection(filename: String, indent: String) -> String:
 			var inj := _rtv_inject_aispawner_registry(indent)
 			_log_info("[RTVCodegen] Injected registry into %s (%d chars)" % [filename, inj.length()])
 			return inj
+		"AI.gd":
+			var inj := _rtv_inject_ai_registry(indent)
+			_log_info("[RTVCodegen] Injected registry into %s (%d chars)" % [filename, inj.length()])
+			return inj
 		_:
 			return ""
 
@@ -461,6 +465,8 @@ func _rtv_apply_prelude_injections(filename: String, lines: PackedStringArray, r
 			return _rtv_inject_prelude(lines, rename_prefix + "LoadScene", _rtv_loader_loadscene_prelude())
 		"FishPool.gd":
 			return _rtv_inject_prelude(lines, rename_prefix + "_ready", _rtv_fishpool_ready_prelude())
+		"AI.gd":
+			return _rtv_inject_prelude(lines, rename_prefix + "SelectWeapon", _rtv_ai_selectweapon_prelude())
 		"Compiler.gd":
 			# Spawn's prelude assigns to vanilla's `spawnTarget` local, which
 			# is declared on the first body line. Insert after the run of
@@ -792,6 +798,87 @@ func _rtv_compiler_spawn_prelude() -> PackedStringArray:
 	p.append("\t\t\t\tspawnTarget = String(_rtv_e.get(\"entrance_spawn\", \"\"))")
 	p.append("\t# Fall through to vanilla if-elif (which handles vanilla maps).")
 	return p
+
+# AI.SelectWeapon prelude: calls the loadout-application helper before
+# vanilla picks a weapon. Helper iterates the ai_loadouts engine-meta
+# entries, rolls per entry, instantiates matching weapon scenes and
+# adds them to self.weapons. Vanilla SelectWeapon then runs as written
+# and picks one at random from the augmented pool.
+func _rtv_ai_selectweapon_prelude() -> PackedStringArray:
+	var p := PackedStringArray()
+	p.append("\t# --- Metro mod loader: ai_loadouts registry prelude ---")
+	p.append("\t_rtv_apply_ai_loadouts()")
+	return p
+
+func _rtv_inject_ai_registry(indent: String) -> String:
+	# AI.gd registry appendix. Helper functions read the ai_loadouts
+	# Engine-meta list and inject weapon scene instances into self.weapons
+	# before vanilla SelectWeapon picks. Category derivation uses self.boss
+	# + self.AISpawner.zone (vanilla AISpawner is the per-AI back-reference
+	# set during CreatePools).
+	var I1 := indent
+	var out := "\n\n# --- Metro mod loader: AI loadouts registry ---\n"
+	out += "func _rtv_apply_ai_loadouts() -> void:\n"
+	out += I1 + "var entries: Array = Engine.get_meta(\"_rtv_ai_loadouts\", [])\n"
+	out += I1 + "if entries.is_empty():\n"
+	out += I1 + I1 + "return\n"
+	# weapons may be null on AI scenes that don't declare it (mod-defined
+	# AI scenes might omit the @export). Bail rather than crash.
+	out += I1 + "if weapons == null:\n"
+	out += I1 + I1 + "return\n"
+	out += I1 + "var category: String = _rtv_ai_category()\n"
+	out += I1 + "if category == \"\":\n"
+	out += I1 + I1 + "return\n"
+	out += I1 + "for e in entries:\n"
+	# Defensive checks -- entries originate from the registry validator
+	# but Engine.meta is process-global so other code could in theory
+	# write nonsense in. Skip silently rather than crash.
+	out += I1 + I1 + "if not (e is Dictionary):\n"
+	out += I1 + I1 + I1 + "continue\n"
+	out += I1 + I1 + "var ai_types: Array = e.get(\"ai_types\", [])\n"
+	out += I1 + I1 + "if not (category in ai_types):\n"
+	out += I1 + I1 + I1 + "continue\n"
+	out += I1 + I1 + "if randf() > float(e.get(\"chance\", 1.0)):\n"
+	out += I1 + I1 + I1 + "continue\n"
+	out += I1 + I1 + "if bool(e.get(\"replace\", false)):\n"
+	out += I1 + I1 + I1 + "for child in weapons.get_children():\n"
+	out += I1 + I1 + I1 + I1 + "child.queue_free()\n"
+	out += I1 + I1 + "var scene: PackedScene = e.get(\"weapon_scene\")\n"
+	out += I1 + I1 + "if scene == null:\n"
+	out += I1 + I1 + I1 + "continue\n"
+	out += I1 + I1 + "var inst: Node = scene.instantiate()\n"
+	out += I1 + I1 + "weapons.add_child(inst)\n"
+	# Vanilla SelectWeapon expects every child of weapons to be hidden
+	# initially; show() runs only on the picked one. Match that contract
+	# so vanilla logic stays correct.
+	out += I1 + I1 + "if inst.has_method(\"hide\"):\n"
+	out += I1 + I1 + I1 + "inst.hide()\n"
+	out += "\n"
+	out += "func _rtv_ai_category() -> String:\n"
+	# self.boss is set by AISpawner.CreatePools() (true for the punisher
+	# in BPool, false for the regular agents in APool). AISpawner is the
+	# back-reference also set there. Without AISpawner we can't tell which
+	# zone-driven category this AI belongs to, so we bail.
+	out += I1 + "if boss:\n"
+	out += I1 + I1 + "return \"Punisher\"\n"
+	out += I1 + "if AISpawner == null:\n"
+	out += I1 + I1 + "return \"\"\n"
+	# Zone is an int (enum). AISpawner.Zone.keys() yields the string form
+	# at the same index, matching the convention used by ai_types.
+	out += I1 + "var z: int = AISpawner.zone\n"
+	out += I1 + "var zone_keys: Array = AISpawner.Zone.keys()\n"
+	out += I1 + "if z < 0 or z >= zone_keys.size():\n"
+	out += I1 + I1 + "return \"\"\n"
+	out += I1 + "match zone_keys[z]:\n"
+	out += I1 + I1 + "\"Area05\":\n"
+	out += I1 + I1 + I1 + "return \"Bandit\"\n"
+	out += I1 + I1 + "\"BorderZone\":\n"
+	out += I1 + I1 + I1 + "return \"Guard\"\n"
+	out += I1 + I1 + "\"Vostok\":\n"
+	out += I1 + I1 + I1 + "return \"Military\"\n"
+	out += I1 + I1 + "_:\n"
+	out += I1 + I1 + I1 + "return \"\"\n"
+	return out
 
 func _rtv_inject_aispawner_registry(indent: String) -> String:
 	# AISpawner.gd registry appendix. Adds the resolver helper used by the

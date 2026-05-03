@@ -54,6 +54,11 @@ func _register_weapon(id: String, data: Variant) -> Dictionary:
 		"fits_attachments": [],
 		"fits_attachments_failed": [],
 		"loot_count": 0,
+		# `ai_loadout` is left as null when the data dict didn't request
+		# AI loadout registration; set to true/false depending on the
+		# registration outcome when it did. Caller can distinguish "not
+		# requested" from "requested but failed" without parsing logs.
+		"ai_loadout": null,
 	}
 	if not (data is Dictionary):
 		push_warning("[Registry] register('weapons', '%s', ...) expects Dictionary" % id)
@@ -128,8 +133,27 @@ func _register_weapon(id: String, data: Variant) -> Dictionary:
 			var loot_id: String = "%s_in_%s" % [id, table_name]
 			if _register_loot(loot_id, {"item": weapon_item, "table": String(table_name)}):
 				result["loot_count"] = int(result["loot_count"]) + 1
+	# Step 8: AI loadout. Optional. Auto-uses the weapon's scene_path and id;
+	# the caller's ai_loadout dict adds ai_types / chance / replace.
+	# Failure is reported in result.ai_loadout but does not fail the whole
+	# weapon register -- the weapon still spawns as loot, it just won't be
+	# carried by AI.
+	if d.has("ai_loadout"):
+		var al: Variant = d["ai_loadout"]
+		if not (al is Dictionary):
+			push_warning("[Registry] register('weapons', '%s'): ai_loadout must be a Dictionary, got %s" % [id, typeof(al)])
+			result["ai_loadout"] = false
+		else:
+			# Compose the ai_loadouts entry: pin weapon_scene to this weapon's
+			# already-loaded scene resource so we don't re-load or risk a
+			# scene-id resolution miss.
+			var loadout_data: Dictionary = (al as Dictionary).duplicate()
+			loadout_data["weapon_scene"] = world_scene
+			result["ai_loadout"] = _register_ai_loadout(id, loadout_data)
 	# Final ok: items+scene+rig succeeded, no fits failures (magazines
-	# tracked separately -- caller can drill in).
+	# tracked separately -- caller can drill in). ai_loadout doesn't gate
+	# ok since "weapon registered, loadout failed" is a partial-success
+	# the mod author can choose to act on.
 	result["ok"] = result["items"] and result["scene"] and result["rig"] \
 			and result["fits_attachments_failed"].is_empty()
 	_log_debug("[Registry] register_weapon('%s') result: %s" % [id, result])

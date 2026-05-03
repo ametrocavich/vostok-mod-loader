@@ -107,6 +107,7 @@ Use `lib.Registry.<NAME>` rather than raw strings so typos surface at parse time
 | `SHELTERS` | `"shelters"` | `Loader.shelters` append-only list | register, remove |
 | `RANDOM_SCENES` | `"random_scenes"` | `Loader.randomScenes` append-only list | register, remove |
 | `AI_TYPES` | `"ai_types"` | Zone → agent scene overrides on `AISpawner` | register, override, remove, revert |
+| `AI_LOADOUTS` | `"ai_loadouts"` | Per-AI-category weapon injections (`AI.SelectWeapon` prelude) | register, override, remove, revert |
 | `FISH_SPECIES` | `"fish_species"` | `FishPool` extra species | register, remove |
 | `RESOURCES` | `"resources"` | Arbitrary `.tres` by absolute path | patch, append/prepend/remove_from, revert |
 | `SCENE_NODES` | `"scene_nodes"` | Property mutations on nodes inside any scene | patch, revert |

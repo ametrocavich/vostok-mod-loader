@@ -111,6 +111,8 @@ func _setup_run_entry(entry: Variant) -> Dictionary:
 			return _setup_dispatch_aggregator(verb, arr, _bind_register_attachment())
 		"register_furniture":
 			return _setup_dispatch_aggregator(verb, arr, _bind_register_furniture())
+		"register_ai_loadout":
+			return _setup_dispatch_aggregator(verb, arr, _bind_register_ai_loadout())
 		"when":
 			return _setup_dispatch_when(arr)
 		_:
@@ -205,3 +207,4 @@ func _bind_register_weapon() -> Callable:     return Callable(self, "register_we
 func _bind_register_magazine() -> Callable:   return Callable(self, "register_magazine")
 func _bind_register_attachment() -> Callable: return Callable(self, "register_attachment")
 func _bind_register_furniture() -> Callable:  return Callable(self, "register_furniture")
+func _bind_register_ai_loadout() -> Callable: return Callable(self, "register_ai_loadout")

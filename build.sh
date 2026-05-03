@@ -45,6 +45,7 @@ FILES=(
     "$SRC/registry/inputs.gd"
     "$SRC/registry/loader.gd"
     "$SRC/registry/ai.gd"
+    "$SRC/registry/ai_loadouts.gd"
     "$SRC/registry/fish.gd"
     "$SRC/registry/resources.gd"
     "$SRC/registry/scene_nodes.gd"
