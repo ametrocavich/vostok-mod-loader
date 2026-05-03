@@ -48,6 +48,7 @@ const Registry := {
 	WEAPONS = "weapons",
 	MAGAZINES = "magazines",
 	ATTACHMENTS = "attachments",
+	AI_LOADOUTS = "ai_loadouts",
 	# Future sections populate the rest:
 	# TRADER_POOLS = "trader_pools",
 	# TRADER_TASKS = "trader_tasks",
@@ -120,6 +121,23 @@ func register_magazine(entries: Dictionary) -> Dictionary:
 func register_attachment(entries: Dictionary) -> Dictionary:
 	return _register_aggregator_batch("attachment", entries)
 
+## Register one or more AI loadout entries (declares which AI categories
+## carry which weapon scenes, with per-entry probability + optional
+## replace-vanilla flag). Use this when:
+##   - You want to add an existing weapon (vanilla or modded) to AI's
+##     spawn pool without going through register_weapon.
+##   - You want different categories' rolls to use distinct ids so they
+##     can be reverted or removed independently.
+##
+## For weapons you're already registering, the simpler path is the
+## ai_loadout field on register_weapon -- it auto-uses the weapon's
+## scene and id, and a single failure mode is reported in result.ai_loadout.
+##
+## Per-entry data: {weapon_scene, ai_types[], chance?, replace?}.
+## See AI_LOADOUTS_PLAN.md or registry/ai_loadouts.gd for shape detail.
+func register_ai_loadout(entries: Dictionary) -> Dictionary:
+	return _register_aggregator_batch("ai_loadout", entries)
+
 
 # Internal: shared loop for all aggregator helpers. Dispatches each entry to
 # the per-aggregator worker (_register_item_bundle / _register_weapon / etc.)
@@ -137,6 +155,13 @@ func _register_aggregator_batch(kind: String, entries: Dictionary) -> Dictionary
 			"weapon":     per = _register_weapon(sid, entries[id])
 			"magazine":   per = _register_magazine(sid, entries[id])
 			"attachment": per = _register_attachment(sid, entries[id])
+			"ai_loadout":
+				# Thin wrapper: ai_loadouts is a primitive registry, not
+				# a multi-step bundle. Wrap the bool result in the same
+				# {ok, ...} shape as the other aggregators for batch-loop
+				# consistency.
+				var ok: bool = _register_ai_loadout(sid, entries[id])
+				per = {"ok": ok}
 			_:
 				per = {"ok": false, "error": "internal: unknown aggregator kind '%s'" % kind}
 		results[sid] = per
@@ -167,6 +192,7 @@ func register(registry: String, id: String, data: Variant) -> bool:
 		"maps": return _register_map(id, data)
 		"random_scenes": return _register_random_scene(id, data)
 		"ai_types": return _register_ai_type(id, data)
+		"ai_loadouts": return _register_ai_loadout(id, data)
 		"fish_species": return _register_fish_species(id, data)
 		"resources":
 			push_warning("[Registry] register: 'resources' doesn't support register (the target .tres already exists in vanilla; use patch to mutate its fields)")
@@ -217,6 +243,7 @@ func override(registry: String, id: String, data: Variant) -> bool:
 			push_warning("[Registry] override: 'random_scenes' doesn't support override (append-only list; use register/remove)")
 			return false
 		"ai_types": return _override_ai_type(id, data)
+		"ai_loadouts": return _override_ai_loadout(id, data)
 		"fish_species":
 			push_warning("[Registry] override: 'fish_species' doesn't support override (append-only list; use register/remove)")
 			return false
@@ -290,6 +317,9 @@ func patch(registry: String, id: Variant, fields: Dictionary) -> bool:
 			return false
 		"ai_types":
 			push_warning("[Registry] patch: 'ai_types' doesn't support patch (entries are {scene, zone} refs; use override to swap the scene)")
+			return false
+		"ai_loadouts":
+			push_warning("[Registry] patch: 'ai_loadouts' doesn't support patch (entries are flat dicts; use override to replace)")
 			return false
 		"fish_species":
 			push_warning("[Registry] patch: 'fish_species' doesn't support patch (entries are {scene, pool_id} refs)")
@@ -415,6 +445,9 @@ func _array_op_dispatch(registry: String, id: Variant, field: String, op: String
 		"ai_types":
 			push_warning("[Registry] %s: 'ai_types' doesn't support array ops (entries are {scene, zone} refs)" % op)
 			return false
+		"ai_loadouts":
+			push_warning("[Registry] %s: 'ai_loadouts' doesn't support array ops (entries are flat dicts; use override to replace)" % op)
+			return false
 		"fish_species":
 			push_warning("[Registry] %s: 'fish_species' doesn't support array ops (entries are {scene, pool_id} refs)" % op)
 			return false
@@ -446,6 +479,7 @@ func remove(registry: String, id: String) -> bool:
 		"maps": return _remove_map(id)
 		"random_scenes": return _remove_random_scene(id)
 		"ai_types": return _remove_ai_type(id)
+		"ai_loadouts": return _remove_ai_loadout(id)
 		"fish_species": return _remove_fish_species(id)
 		"resources":
 			push_warning("[Registry] remove: 'resources' doesn't support remove (use revert to undo patches)")
@@ -527,6 +561,11 @@ func revert(registry: String, id: Variant, fields: Array = []) -> bool:
 				push_warning("[Registry] revert('ai_types', ...): id must be a String")
 				return false
 			return _revert_ai_type(id)
+		"ai_loadouts":
+			if not (id is String):
+				push_warning("[Registry] revert('ai_loadouts', ...): id must be a String")
+				return false
+			return _revert_ai_loadout(id)
 		"fish_species":
 			if not (id is String):
 				push_warning("[Registry] revert('fish_species', ...): id must be a String")
@@ -713,6 +752,9 @@ func get_entry(registry: String, id: String) -> Variant:
 		"ai_types":
 			var reg: Dictionary = _registry_registered.get("ai_types", {})
 			return reg.get(id)
+		"ai_loadouts":
+			var reg: Dictionary = _registry_registered.get("ai_loadouts", {})
+			return reg.get(id)
 		"fish_species":
 			var reg: Dictionary = _registry_registered.get("fish_species", {})
 			return reg.get(id)
@@ -873,7 +915,7 @@ func _enumerate_vanilla(registry: String) -> Dictionary:
 		# in _registry_registered is the complete picture for these.
 		"loot", "trader_pools", "trader_tasks", "events", "sounds", \
 		"inputs", "random_scenes", "ai_types", "fish_species", "resources", \
-		"scene_nodes", "weapons", "magazines", "attachments":
+		"scene_nodes", "weapons", "magazines", "attachments", "ai_loadouts":
 			return {}
 		_:
 			push_warning("[Registry] _enumerate_vanilla: unknown registry '%s'" % registry)
