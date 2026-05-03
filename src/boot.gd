@@ -559,6 +559,12 @@ func _compute_state_hash(archive_paths: PackedStringArray, prepend_autoloads: Ar
 				parts.append("v:%s=%s" % [entry["mod_id"], ver])
 	for entry in _pending_script_overrides:
 		parts.append("so:%s=%s" % [entry["vanilla_path"], entry["mod_script_path"]])
+	# Fold each enabled [gdextension] declaration into the hash. Without
+	# this, flipping a native mod on/off without touching the archive
+	# wouldn't change the hash -- and Pass 1 would short-circuit instead
+	# of restarting, leaving the next session looking at a stale cache.
+	for ge_part in _native_state_hash_parts():
+		parts.append(ge_part)
 	parts.append("ml:" + MODLOADER_VERSION)
 	# Include modloader.gd's mtime so any rebuild of the loader itself
 	# triggers a restart, even when the mod set is unchanged. Rationale:

@@ -25,6 +25,7 @@ FILES=(
     "$SRC/security_scan.gd"
     "$SRC/mod_discovery.gd"
     "$SRC/mod_loading.gd"
+    "$SRC/native_extensions.gd"
     "$SRC/conflict_report.gd"
     # UI
     "$SRC/ui.gd"

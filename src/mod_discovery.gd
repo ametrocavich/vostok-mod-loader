@@ -168,6 +168,10 @@ func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, e
 		"cfg": cfg, "mod_txt_status": _last_mod_txt_status,
 		"mod_txt_error": _last_mod_txt_error,
 	}
+	# Parse [gdextension] (optional). Attaches gdextension / *_errors /
+	# has_native onto entry. UI uses has_native for the badge + launch
+	# gate; the loader uses gdextension once archives are mounted.
+	_annotate_native_extensions(entry, cfg)
 	return entry
 
 func _build_entry_warnings(entry: Dictionary) -> Array[String]:
@@ -189,6 +193,12 @@ func _build_entry_warnings(entry: Dictionary) -> Array[String]:
 			warnings.append("mod.txt parse error at " + detail)
 	elif status.begins_with("nested:"):
 		warnings.append("Invalid mod -- packaged incorrectly. Try re-downloading.")
+	# Spill [gdextension] validation errors onto the mod row so authors
+	# can see the bad line without scrolling through the boot log. The
+	# native-code launch warning is a separate orange badge driven off
+	# entry["has_native"].
+	for ge_err: String in entry.get("gdextension_errors", []):
+		warnings.append(ge_err)
 	return warnings
 
 # Config persistence

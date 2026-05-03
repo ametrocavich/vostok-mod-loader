@@ -142,6 +142,19 @@ Declaring an empty `[registry]` section tells the loader to wrap `Database.gd`, 
 
 You don't enumerate what you'll register here -- the section's presence alone enables the subsystem. Use the runtime API to add/override/patch individual entries.
 
+### `[gdextension]` section (native / GDExtension mods)
+
+Optional native-code support. Load one or more `.gdextension` files shipped inside the mod archive.
+
+```ini
+[gdextension]
+BetterBallistics="res://BetterBallistics/bin/better_ballistics.gdextension"
+```
+
+Native code runs with full process privileges and can't be sandboxed. The launcher pops a confirmation gate before launching with any native mod enabled, and shows a `native code` badge on the mod row. Hook surfaces for native callbacks have to be declared in `[hooks]` -- the source-rewrite scanner can't read compiled binaries.
+
+Schema, packaging layout, the GDScript bridge pattern, cache behavior, and limitations all live on the [Native-Mods](Native-Mods) page. For converting an existing GDScript mod to C++, see [VMZ-to-CPP](VMZ-to-CPP).
+
 ### `[rtvmodlib]` section
 
 ```ini

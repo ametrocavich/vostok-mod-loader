@@ -7,6 +7,8 @@
 - [Hooks](Hooks)
 - [Registry](Registry)
 - [Mod-Format](Mod-Format)
+- [Native-Mods](Native-Mods)
+- [VMZ-to-CPP](VMZ-to-CPP)
 - [Profile-Format](Profile-Format)
 - [Config-Files](Config-Files)
 - [GDSC-Detokenizer](GDSC-Detokenizer)

@@ -18,6 +18,10 @@ func load_all_mods(pass_label: String = "") -> void:
 	_applied_script_overrides.clear()
 	_hooked_methods.clear()
 	_any_mod_declared_registry = false
+	# Reset the native-load dedup map -- in-memory only, no on-disk side.
+	# Stops a re-entry into _load_native_extensions_for_enabled_mods from
+	# replaying load_extension on a path that's already live.
+	_loaded_native_extensions.clear()
 
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(TMP_DIR))
 

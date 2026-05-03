@@ -173,6 +173,11 @@ func _finish_with_existing_mounts() -> void:
 	_boot_complete = true
 	_register_rtv_modlib_meta()
 	_generate_hook_pack()
+	# Native libs land between hook-pack generation and autoload
+	# instantiation: archives are already mounted (so .dll bytes are
+	# reachable through VFS) and the bridge's _ready hasn't run yet, so
+	# `Native.new()` resolves cleanly when it does.
+	_load_native_extensions_for_enabled_mods()
 	for entry in _pending_autoloads:
 		if get_tree().root.has_node(entry["name"]):
 			_log_info("  Autoload '%s' already in tree -- skipped" % entry["name"])
@@ -194,6 +199,7 @@ func _finish_single_pass() -> void:
 	_boot_complete = true
 	_register_rtv_modlib_meta()
 	_generate_hook_pack()
+	_load_native_extensions_for_enabled_mods()
 	for entry in _pending_autoloads:
 		_instantiate_autoload(entry["mod_name"], entry["name"], entry["path"])
 	if _developer_mode:
@@ -243,6 +249,7 @@ func _run_pass_2() -> void:
 	load_all_mods("Pass 2")
 	_register_rtv_modlib_meta()
 	_generate_hook_pack()
+	_load_native_extensions_for_enabled_mods()
 	# After load_all_mods re-mounts mod archives (wiping our IXP/Controller
 	# override), remount the already-generated test pack to re-apply.
 	# NOTE: Godot dedupes load_resource_pack by path, so mounting the same

@@ -624,6 +624,118 @@ func _show_security_findings_dialog(entry: Dictionary) -> void:
 	d.close_requested.connect(d.queue_free)
 	d.popup_centered()
 
+# Opened by clicking the orange "native code" badge on a mod row. Lists
+# what the mod declares plus the warning text so the user can read the
+# damage they're about to authorize before hitting Launch.
+func _show_native_extensions_dialog(entry: Dictionary) -> void:
+	var d := AcceptDialog.new()
+	var mod_name := str(entry.get("mod_name", "?"))
+	d.title = "Native code in " + mod_name
+	d.ok_button_text = "Close"
+	d.min_size = Vector2(560, 320)
+
+	var body := VBoxContainer.new()
+	body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	body.add_theme_constant_override("separation", 10)
+	d.add_child(body)
+
+	var intro := Label.new()
+	intro.text = "Native code warning: this mod loads a GDExtension/native library. " \
+			+ "Native mods can execute arbitrary machine code and cannot be sandboxed " \
+			+ "by this loader. Only enable this mod if you trust the author."
+	intro.modulate = Color(1.0, 0.7, 0.45)
+	intro.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	intro.add_theme_font_size_override("font_size", 11)
+	body.add_child(intro)
+
+	body.add_child(HSeparator.new())
+
+	var ge: Dictionary = entry.get("gdextension", {})
+	if ge.is_empty():
+		var none := Label.new()
+		none.text = "(no valid [gdextension] entries -- see warnings on the mod row)"
+		none.modulate = Color(0.7, 0.7, 0.7)
+		none.add_theme_font_size_override("font_size", 11)
+		body.add_child(none)
+	else:
+		for ext_name: String in ge:
+			var row := VBoxContainer.new()
+			row.add_theme_constant_override("separation", 2)
+			body.add_child(row)
+			var n_lbl := Label.new()
+			n_lbl.text = ext_name
+			n_lbl.add_theme_font_size_override("font_size", 13)
+			row.add_child(n_lbl)
+			var p_lbl := Label.new()
+			p_lbl.text = str(ge[ext_name])
+			p_lbl.modulate = Color(0.78, 0.85, 0.6)
+			p_lbl.add_theme_font_size_override("font_size", 11)
+			row.add_child(p_lbl)
+
+	var errors: Array = entry.get("gdextension_errors", [])
+	if not errors.is_empty():
+		body.add_child(HSeparator.new())
+		var hdr := Label.new()
+		hdr.text = "Validation errors:"
+		hdr.modulate = Color(0.95, 0.5, 0.5)
+		body.add_child(hdr)
+		for err_text: String in errors:
+			var e_lbl := Label.new()
+			e_lbl.text = "  " + err_text
+			e_lbl.modulate = Color(0.95, 0.5, 0.5)
+			e_lbl.add_theme_font_size_override("font_size", 11)
+			e_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			body.add_child(e_lbl)
+
+	_attach_ui_dialog(d)
+	d.confirmed.connect(d.queue_free)
+	d.close_requested.connect(d.queue_free)
+	d.popup_centered()
+
+# Launch gate when any enabled mod declares [gdextension]. Returns true to
+# proceed, false to bounce back to the launcher. Always pops -- "remember
+# this choice" was deliberately not added; native code never gets a quiet
+# pass.
+func _confirm_native_launch(native_mods: Array) -> bool:
+	var d := ConfirmationDialog.new()
+	d.title = "Native code -- mods loading machine code"
+	d.ok_button_text = "Launch with native mods"
+	d.cancel_button_text = "Go back"
+	d.dialog_autowrap = true
+	d.min_size = Vector2(580, 160)
+
+	var lines := PackedStringArray()
+	lines.append("The following mod(s) load a GDExtension/native library. " \
+			+ "Native mods can execute arbitrary machine code and cannot be sandboxed " \
+			+ "by this loader. Only continue if you trust their authors.")
+	lines.append("")
+	for entry: Dictionary in native_mods:
+		var ge: Dictionary = entry.get("gdextension", {})
+		var names: Array = ge.keys()
+		var suffix := ""
+		if not names.is_empty():
+			suffix = " -- " + ", ".join(names)
+		lines.append("    " + str(entry.get("mod_name", "?")) + suffix)
+	d.dialog_text = "\n".join(lines)
+
+	_attach_ui_dialog(d)
+	d.exclusive = true
+	d.always_on_top = true
+	d.get_ok_button().modulate = Color(1.0, 0.7, 0.45)
+
+	var state := [false, false]
+	d.confirmed.connect(func():
+		state[0] = true
+		state[1] = true)
+	d.canceled.connect(func(): state[0] = true)
+	d.close_requested.connect(func(): state[0] = true)
+	d.popup_centered()
+	d.grab_focus()
+	while not state[0]:
+		await get_tree().process_frame
+	d.queue_free()
+	return state[1]
+
 # Mod entries that are currently enabled AND scored RED by the scanner.
 # Used to gate Launch when the user has any of these toggled on.
 func _enabled_red_mods() -> Array:
@@ -1039,12 +1151,18 @@ func show_mod_ui() -> void:
 
 	refresh_launch_button_label()
 
-	# Launch loop. If any enabled mod has the scanner's RED risk_level,
-	# show a confirmation dialog before proceeding. Cancel returns the
-	# user to the launcher so they can disable the flagged mod or
-	# reconsider; confirm proceeds. No gate when no red mods are enabled.
+	# Launch loop. Two confirmation gates can fire independently:
+	#  - native code      -- any enabled [gdextension] declaration
+	#  - RED scanner risk -- patterns nearly diagnostic of malware
+	# Native runs first so the user sees the louder warning up front.
+	# Cancel from either bounces back to the launcher.
 	while true:
 		await launch_btn.pressed
+		var native_mods := _enabled_native_mods()
+		if not native_mods.is_empty():
+			var proceed_native: bool = await _confirm_native_launch(native_mods)
+			if not proceed_native:
+				continue
 		var red_mods := _enabled_red_mods()
 		if red_mods.is_empty():
 			break
@@ -1629,6 +1747,23 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			name_col.add_child(sec_btn)
 			var captured_entry := entry
 			sec_btn.pressed.connect(func(): _show_security_findings_dialog(captured_entry))
+
+		# Native-code badge. Independent from the scanner badge -- a mod
+		# can be perfectly clean GDScript and still load a DLL, and the
+		# user should see that fact either way. The badge plus the launch
+		# gate (_confirm_native_launch) is the entire UX between the user
+		# and arbitrary machine code.
+		if entry.get("has_native", false):
+			var nat_btn := Button.new()
+			nat_btn.text = "native code"
+			nat_btn.flat = true
+			nat_btn.modulate = Color(1.0, 0.55, 0.35)
+			nat_btn.add_theme_font_size_override("font_size", 11)
+			nat_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+			nat_btn.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+			name_col.add_child(nat_btn)
+			var native_entry := entry
+			nat_btn.pressed.connect(func(): _show_native_extensions_dialog(native_entry))
 
 		# Vanilla has no stored profile; disable editing so auto-save can't
 		# create a ghost `profile.__vanilla__.*` section.

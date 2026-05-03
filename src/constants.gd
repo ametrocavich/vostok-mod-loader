@@ -28,6 +28,8 @@ const SAFE_MODE_FILE := "modloader_safe_mode"
 const DISABLED_FILE := "modloader_disabled"
 const MAX_RESTART_COUNT := 2
 
+const NATIVE_CACHE_DIR := "user://modloader_native"
+
 const HOOK_PACK_DIR := "user://modloader_hooks"
 # Hook pack filename: "<prefix>_<timestamp_ms>.zip". A fresh filename per
 # _generate_hook_pack call sidesteps ProjectSettings.load_resource_pack's
@@ -178,6 +180,13 @@ var _applied_script_overrides: Dictionary = {}         # vanilla_path -> true
 # the modlist behaves byte-identical to pre-hook-system (v2.1.0) behavior.
 var _hooked_methods: Dictionary = {}             # res_path -> {method_name: true}
 var _any_mod_declared_registry: bool = false     # set by [registry] parser
+
+# Cache paths we've already handed to GDExtensionManager.load_extension
+# this session. The single-pass finish and Pass-2 can both land in the
+# native loader for the same entry across a hot re-mount; without this,
+# the second call trips LOAD_STATUS_ALREADY_LOADED noise.
+# key: absolute user:// path. value: owning mod_name (for logs).
+var _loaded_native_extensions: Dictionary = {}
 
 var _re_take_over: RegEx
 var _re_extends: RegEx
