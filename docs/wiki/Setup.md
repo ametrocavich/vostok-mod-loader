@@ -132,6 +132,58 @@ func _ready() -> void:
             "my_mod_potion_recipe": {"recipe": my_recipe, "category": "consumables"},
         }],
 
+        # --- register_weapon: aggregator that fans out to items+scene+rig
+        # Aggregator verbs always take {id: data, ...}. The data dict per
+        # entry follows the aggregator's own schema (see Registry doc's
+        # "Aggregator helpers" section).
+        ["register_weapon", {
+            "MyRifle": {
+                "item_path":  "res://my_mod/MyRifle.tres",
+                "scene_path": "res://my_mod/MyRifle.tscn",
+                "rig_path":   "res://my_mod/MyRifle_Rig.tscn",
+                "magazines":  ["AK_12_Magazine"],   # ref existing mag
+            },
+        }],
+
+        # --- register_magazine: standalone mag registration ---------------
+        # `fits_weapons` patches each target's `compatible` array.
+        ["register_magazine", {
+            "MyExtendedMag": {
+                "item_path":    "res://my_mod/MyExtendedMag.tres",
+                "scene_path":   "res://my_mod/MyExtendedMag.tscn",
+                "fits_weapons": ["AK_12", "AKM"],
+                "loot_tables":  ["LT_Master"],
+            },
+        }],
+
+        # --- register_item: generic ItemData bundle -----------------------
+        # For consumables, keys, tools, ammo. Multiple ids in one call.
+        ["register_item", {
+            "MyMedkit": {
+                "item_path":    "res://my_mod/MyMedkit.tres",
+                "scene_path":   "res://my_mod/MyMedkit.tscn",
+                "trader_pools": ["Doctor"],
+            },
+            "MyKey": {
+                "item_path":  "res://my_mod/MyKey.tres",
+                "scene_path": "res://my_mod/MyKey.tscn",
+            },
+        }],
+
+        # --- register_furniture: ItemData(type=Furniture) + scene + recipe
+        ["register_furniture", {
+            "MyBed": {
+                "item_path":    "res://my_mod/MyBed_F.tres",
+                "scene_path":   "res://my_mod/MyBed_F.tscn",
+                "trader_pools": ["Generalist"],
+                "recipe": {
+                    "name":  "My Bed",
+                    "input": [],   # ItemData refs
+                    "time":  10.0,
+                },
+            },
+        }],
+
         # --- override: replace a vanilla entry wholesale ------------------
         ["override", _lib.Registry.SCENES, {
             "Potato": preload("res://my_mod/scenes/golden_potato.tscn"),
@@ -251,6 +303,10 @@ What the example demonstrates, top to bottom:
 | Section | Feature |
 |---|---|
 | `register` × 2 | Multiple registries, register-before-reference order |
+| `register_weapon` | Aggregator: weapon + scene + rig + magazine cross-ref |
+| `register_magazine` | Aggregator: magazine + scene + `fits_weapons` cross-compat |
+| `register_item` | Aggregator: generic item bundle, multi-entry in one call |
+| `register_furniture` | Aggregator: furniture item + scene + crafting recipe |
 | `override` | Whole-entry replace on scenes |
 | `patch` × 2 | Multi-id, multi-registry, items + resources together |
 | `append` | Multi-id with mixed single-value and Array values, default dedup |
