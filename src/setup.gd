@@ -101,6 +101,16 @@ func _setup_run_entry(entry: Variant) -> Dictionary:
 				return {"verb": verb, "ok": false, "error": "expected hooks dict as 2nd arg"}
 			var hr: Dictionary = hook_many(arr[1])
 			return {"verb": verb, "ok": hr.ok, "results": hr.results}
+		"register_item":
+			return _setup_dispatch_aggregator(verb, arr, _bind_register_item())
+		"register_weapon":
+			return _setup_dispatch_aggregator(verb, arr, _bind_register_weapon())
+		"register_magazine":
+			return _setup_dispatch_aggregator(verb, arr, _bind_register_magazine())
+		"register_attachment":
+			return _setup_dispatch_aggregator(verb, arr, _bind_register_attachment())
+		"register_furniture":
+			return _setup_dispatch_aggregator(verb, arr, _bind_register_furniture())
 		"when":
 			return _setup_dispatch_when(arr)
 		_:
@@ -176,3 +186,22 @@ func _bind_register_many() -> Callable: return Callable(self, "register_many")
 func _bind_override_many() -> Callable: return Callable(self, "override_many")
 func _bind_patch_many() -> Callable:    return Callable(self, "patch_many")
 func _bind_revert_many() -> Callable:   return Callable(self, "revert_many")
+
+
+# Aggregator-shape: [verb, {id: data, ...}]. No `reg` arg -- each aggregator
+# is registry-implicit. Maps to the public aggregator helpers, which already
+# accept and return a Dictionary.
+func _setup_dispatch_aggregator(verb: String, arr: Array, agg_fn: Callable) -> Dictionary:
+	if arr.size() != 2:
+		return {"verb": verb, "ok": false, "error": "expected [\"%s\", {id: data, ...}]" % verb}
+	if not (arr[1] is Dictionary):
+		return {"verb": verb, "ok": false, "error": "expected payload dict as 2nd arg"}
+	var res: Dictionary = agg_fn.call(arr[1])
+	return {"verb": verb, "ok": res.get("ok", false), "results": res.get("results", {})}
+
+
+func _bind_register_item() -> Callable:       return Callable(self, "register_item")
+func _bind_register_weapon() -> Callable:     return Callable(self, "register_weapon")
+func _bind_register_magazine() -> Callable:   return Callable(self, "register_magazine")
+func _bind_register_attachment() -> Callable: return Callable(self, "register_attachment")
+func _bind_register_furniture() -> Callable:  return Callable(self, "register_furniture")

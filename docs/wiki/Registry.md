@@ -69,20 +69,20 @@ Every mutating verb returns a bool indicating success; failures log a `push_warn
 
 ### Aggregator helpers
 
-Five high-level helpers that fan out to multiple primitive registries in one declarative call. They live alongside the standard verbs, take a single `Dictionary` payload, and return a granular result dict (per-step success bools) rather than a single bool.
+Five high-level helpers that fan out to multiple primitive registries in one declarative call. They live alongside the standard verbs, take a `Dictionary` of `{id: data, ...}` (one entry or many), and return a wrapped granular result `{ok, results: {id: per_id_dict}}`.
 
 | Method | Purpose |
 |---|---|
-| `register_item(id, dict) -> Dictionary` | Generic item bundle: ItemData + optional scene/icon/loot_tables/trader_pools |
-| `register_weapon(id, dict) -> Dictionary` | Weapon + rig + inline magazines + fits_attachments + loot_tables |
-| `register_magazine(id, dict) -> Dictionary` | Magazine + scene + fits_weapons (additive append to weapons' compatible) |
-| `register_attachment(id, dict) -> Dictionary` | Attachment + scene + fits_weapons (same shape as magazine; split for readability) |
-| `register_furniture(id, dict) -> Dictionary` | Furniture item + scene + trader_pools (default Generalist) + optional crafting recipe |
+| `register_item({id: dict, ...}) -> Dictionary` | Generic item bundle: ItemData + optional scene/icon/loot_tables/trader_pools |
+| `register_weapon({id: dict, ...}) -> Dictionary` | Weapon + rig + inline magazines + fits_attachments + loot_tables |
+| `register_magazine({id: dict, ...}) -> Dictionary` | Magazine + scene + fits_weapons (additive append to weapons' compatible) |
+| `register_attachment({id: dict, ...}) -> Dictionary` | Attachment + scene + fits_weapons (same shape as magazine; split for readability) |
+| `register_furniture({id: dict, ...}) -> Dictionary` | Furniture item + scene + trader_pools (default Generalist) + optional crafting recipe |
 
 Aggregators are pure fan-out -- they call existing primitives under the hood. There's no separate storage; mods can drop down to primitives any time. Use the aggregators when you're shipping a complete content unit (one weapon, one furniture piece) and want all the registrations + cross-compat patches in one call. Use primitives when you need fine-grained control or you're modifying existing content rather than adding.
 
-The result dict shape is per-helper but always includes:
-- `ok: bool` -- did everything succeed
+The wrapped result is always `{ok: bool, results: {id: per_id_dict}}`. Top-level `ok` is true when every entry's per-id `ok` is true. Per-id dict shape varies by helper but always includes:
+- `ok: bool` -- did this entry's full fan-out succeed
 - One bool per fanned-out registry call (e.g. `items`, `scene`, `rig`, `loot_count: int`)
 - For helpers with cross-compat fields: `<rel>: [String]` (resolved ids) and `<rel>_failed: [String]` (ids that didn't resolve)
 
@@ -770,51 +770,81 @@ The loader subscribes to `SceneTree.node_added`. When a scene whose path matches
 
 ## Aggregator helpers (registries to use them with)
 
-The five `register_<thing>(id, dict)` methods are pure fan-out wrappers that call multiple primitive registry verbs. Use them when you're shipping a complete content unit and want one declarative call.
+The five `register_<thing>(entries)` methods are pure fan-out wrappers that call multiple primitive registry verbs. Use them when you're shipping a complete content unit and want one declarative call. They're also reachable from [Setup](Setup) as `["register_weapon", {...}]` etc.
+
+**Always take a Dictionary**. Even a single registration goes in as a one-key dict. There is no `(id, data)` overload.
+
+```gdscript
+# Single registration
+lib.register_weapon({"my_ak": {item_path: ..., scene_path: ..., rig_path: ...}})
+
+# Multiple registrations -- same shape, more keys
+lib.register_weapon({
+    "my_ak":  {item_path: ..., scene_path: ..., rig_path: ...},
+    "my_m4":  {item_path: ..., scene_path: ..., rig_path: ...},
+})
+```
+
+**Return shape** is uniform: `{ok: bool, results: {id: granular_dict}}`. Each value in `results` is the per-id granular dict (the same shape the old singular form returned). `ok` at the top is true only when every entry succeeded.
+
+```gdscript
+var result := lib.register_weapon({"my_ak": {...}, "my_m4": {...}})
+if not result.ok:
+    for id in result.results:
+        var per: Dictionary = result.results[id]
+        if not per.ok:
+            push_warning("[mymod] %s failed: items=%s scene=%s rig=%s" \
+                    % [id, per.items, per.scene, per.rig])
+```
 
 ### register_item
 
 Generic item bundle. Use for content that doesn't fit weapon/mag/attachment/furniture (consumables, keys, tools, ammo).
 
 ```gdscript
-var lib = Engine.get_meta("RTVModLib")
-var result: Dictionary = lib.register_item("MyMedkit", {
-    "item_path":    "res://mymod/items/MyMedkit.tres",     # required
-    "scene_path":   "res://mymod/items/MyMedkit.tscn",     # optional
-    "icon_path":    "res://mymod/icons/MyMedkit.png",      # optional, sets ItemData.icon
-    "loot_tables":  ["LT_Master"],                         # optional
-    "trader_pools": ["Doctor"],                            # optional
+var result: Dictionary = lib.register_item({
+    "MyMedkit": {
+        "item_path":    "res://mymod/items/MyMedkit.tres",     # required
+        "scene_path":   "res://mymod/items/MyMedkit.tscn",     # optional
+        "icon_path":    "res://mymod/icons/MyMedkit.png",      # optional, sets ItemData.icon
+        "loot_tables":  ["LT_Master"],                         # optional
+        "trader_pools": ["Doctor"],                            # optional
+    },
 })
-# result = {ok, items, scene, loot_count, trader_pool_count,
-#           trader_pools: [String], trader_pools_failed: [String]}
+# result.results.MyMedkit = {ok, items, scene, loot_count, trader_pool_count,
+#                            trader_pools: [String], trader_pools_failed: [String]}
 ```
 
-**`scene` defaults to `true`** when no `scene_path` is provided (vacuously satisfied — there was nothing to do). `result.ok` requires `items` + `scene` + no failed trader_pools.
+Per-id `scene` defaults to `true` when no `scene_path` is provided (vacuously satisfied). The per-id `ok` requires `items` + `scene` + no failed trader_pools.
 
 ### register_weapon
 
 Weapon + first-person rig + optional inline magazines + optional fits_attachments + optional loot tables.
 
 ```gdscript
-var result: Dictionary = lib.register_weapon("MyRifle", {
-    "item_path":  "res://mymod/MyRifle.tres",                # required
-    "scene_path": "res://mymod/MyRifle.tscn",                # required (world model)
-    "rig_path":   "res://mymod/MyRifle_Rig.tscn",            # required (first-person rig)
-    "icon_path":  "res://mymod/Icon_MyRifle.png",            # optional
-    "magazines": [                                            # optional, mixed array
-        {                                                     # inline = new mag registration
-            "id": "MyRifle_StdMag",
-            "item_path":  "res://mymod/MyRifle_Mag.tres",
-            "scene_path": "res://mymod/MyRifle_Mag.tscn",
-            "loot_tables": ["LT_Master"],                     # mag's own loot
-        },
-        "AK_12_Magazine",                                     # id-string = ref to existing mag
-    ],
-    "fits_attachments": ["ACOG", "Kobra"],                    # optional, weapon accepts these
-    "loot_tables": ["LT_Master"],                             # optional, weapon's own loot
+var result: Dictionary = lib.register_weapon({
+    "MyRifle": {
+        "item_path":  "res://mymod/MyRifle.tres",                # required
+        "scene_path": "res://mymod/MyRifle.tscn",                # required (world model)
+        "rig_path":   "res://mymod/MyRifle_Rig.tscn",            # required (first-person rig)
+        "icon_path":  "res://mymod/Icon_MyRifle.png",            # optional
+        "magazines": [                                            # optional, mixed array
+            {                                                     # inline = new mag registration
+                "id": "MyRifle_StdMag",
+                "item_path":  "res://mymod/MyRifle_Mag.tres",
+                "scene_path": "res://mymod/MyRifle_Mag.tscn",
+                "loot_tables": ["LT_Master"],                     # mag's own loot
+            },
+            "AK_12_Magazine",                                     # id-string = ref to existing mag
+        ],
+        "fits_attachments": ["ACOG", "Kobra"],                    # optional
+        "loot_tables": ["LT_Master"],                             # optional, weapon's own loot
+    },
 })
-# result = {ok, items, scene, rig, magazines: [{id, ok, items, scene, loot_count}, ...],
-#           fits_attachments: [String], fits_attachments_failed: [String], loot_count: int}
+# result.results.MyRifle = {ok, items, scene, rig,
+#                           magazines: [{id, ok, items, scene, loot_count}, ...],
+#                           fits_attachments: [String], fits_attachments_failed: [String],
+#                           loot_count: int}
 ```
 
 The `magazines` field auto-populates the weapon's `compatible` array with each magazine's ItemData ref. `fits_attachments` resolves vanilla / mod-registered attachment ids and appends them to `compatible` too.
@@ -824,27 +854,32 @@ The `magazines` field auto-populates the weapon's `compatible` array with each m
 Standalone magazine. Registers item + scene + optional loot. `fits_weapons` patches each target weapon's `compatible` to include this magazine.
 
 ```gdscript
-var result: Dictionary = lib.register_magazine("MyExtendedMag", {
-    "item_path":  "res://mymod/MyExtendedMag.tres",       # required
-    "scene_path": "res://mymod/MyExtendedMag.tscn",       # required
-    "icon_path":  "res://mymod/Icon_MyMag.png",           # optional
-    "fits_weapons": ["AK_12", "AKM"],                     # optional
-    "loot_tables": ["LT_Master"],                         # optional
+var result: Dictionary = lib.register_magazine({
+    "MyExtendedMag": {
+        "item_path":  "res://mymod/MyExtendedMag.tres",       # required
+        "scene_path": "res://mymod/MyExtendedMag.tscn",       # required
+        "icon_path":  "res://mymod/Icon_MyMag.png",           # optional
+        "fits_weapons": ["AK_12", "AKM"],                     # optional
+        "loot_tables": ["LT_Master"],                         # optional
+    },
 })
-# result = {ok, items, scene, fits_weapons: [String],
-#           fits_weapons_failed: [String], loot_count: int}
+# result.results.MyExtendedMag = {ok, items, scene,
+#                                 fits_weapons: [String], fits_weapons_failed: [String],
+#                                 loot_count: int}
 ```
 
 ### register_attachment
 
-Same shape as `register_magazine`. Vanilla's `compatible` field accepts mags and attachments interchangeably; the API split is for mod-author readability.
+Same per-entry shape as `register_magazine`. Vanilla's `compatible` field accepts mags and attachments interchangeably; the API split is for mod-author readability.
 
 ```gdscript
-var result: Dictionary = lib.register_attachment("MyOptic", {
-    "item_path":  "res://mymod/MyOptic.tres",
-    "scene_path": "res://mymod/MyOptic.tscn",
-    "fits_weapons": ["AK_12", "AKM", "M4A1"],
-    "loot_tables": ["LT_Master"],
+var result: Dictionary = lib.register_attachment({
+    "MyOptic": {
+        "item_path":  "res://mymod/MyOptic.tres",
+        "scene_path": "res://mymod/MyOptic.tscn",
+        "fits_weapons": ["AK_12", "AKM", "M4A1"],
+        "loot_tables": ["LT_Master"],
+    },
 })
 ```
 
@@ -853,20 +888,22 @@ var result: Dictionary = lib.register_attachment("MyOptic", {
 Furniture is structurally an ItemData with `type = "Furniture"` plus a placed world scene. Distinct from `register_item` because furniture has a different obtainment path: it's never loot-pool spawnable, it's bought from traders or crafted, and on purchase vanilla routes it to the catalog grid (not the inventory grid).
 
 ```gdscript
-var result: Dictionary = lib.register_furniture("MyBed", {
-    "item_path":    "res://mymod/MyBed_F.tres",                # required, expects type="Furniture"
-    "scene_path":   "res://mymod/MyBed_F.tscn",                # required (placed world scene)
-    "icon_path":    "res://mymod/Icon_MyBed.png",              # optional
-    "trader_pools": ["Generalist"],                            # optional, defaults to ["Generalist"] with warn
-    "recipe": {                                                # optional crafting recipe
-        "name":  "My Bed",                                     # display name
-        "input": [<ItemData refs>],                            # required if recipe present
-        "time":  10.0,
-        "audio": <AudioEvent ref>,                             # optional
+var result: Dictionary = lib.register_furniture({
+    "MyBed": {
+        "item_path":    "res://mymod/MyBed_F.tres",                # required, expects type="Furniture"
+        "scene_path":   "res://mymod/MyBed_F.tscn",                # required (placed world scene)
+        "icon_path":    "res://mymod/Icon_MyBed.png",              # optional
+        "trader_pools": ["Generalist"],                            # optional, defaults to ["Generalist"] with warn
+        "recipe": {                                                # optional crafting recipe
+            "name":  "My Bed",                                     # display name
+            "input": [<ItemData refs>],                            # required if recipe present
+            "time":  10.0,
+            "audio": <AudioEvent ref>,                             # optional
+        },
     },
 })
-# result = {ok, items, scene, trader_pool_count,
-#           trader_pools: [String], trader_pools_failed: [String], recipe: bool}
+# result.results.MyBed = {ok, items, scene, trader_pool_count,
+#                         trader_pools: [String], trader_pools_failed: [String], recipe: bool}
 ```
 
 **`loot_tables` is rejected with a warning** -- furniture isn't loot-pool spawnable in vanilla. If the modder includes it, the field is logged as ignored.
