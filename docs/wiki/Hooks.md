@@ -126,6 +126,9 @@ For mods that register hooks alongside registry mutations as a single installati
 | `get_replace_owner(name) -> int` | Returns id of the current replace owner, or -1 |
 | `skip_super() -> void` | Inside a replace callback: prevent the vanilla body from running on return |
 | `seq() -> int` | Monotonic dispatch counter, useful for tests |
+| `has_mod(id, min_version="") -> bool` | True if a mod with the given id is loaded; optional `min_version` does a numeric semver compare (`>=`) |
+| `mod_info(id) -> Dictionary` | `{mod_id, mod_name, version, file_name, priority}` for a loaded mod, `{}` if absent. Returns a duplicate -- callers can mutate freely |
+| `loaded_mods() -> Array[String]` | All loaded mod ids. Order is not guaranteed |
 | `static version() -> String` | `MODLOADER_VERSION` |
 | `static major_version() -> int` | Parse major from `MODLOADER_VERSION` |
 | `static minor_version() -> int` | Same, minor |
