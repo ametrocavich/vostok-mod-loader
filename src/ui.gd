@@ -82,6 +82,7 @@ func _apply_profile_to_entries(cfg: ConfigFile, profile: String) -> void:
 	# VANILLA_PROFILE has no stored sections -- treating it as "all mods off"
 	# lets Reset to Vanilla avoid touching the user's other profiles.
 	var is_vanilla := profile == VANILLA_PROFILE
+	_load_per_profile_settings(cfg, profile)
 	var en_sec := "profile." + profile + ".enabled"
 	var pr_sec := "profile." + profile + ".priority"
 	for entry in _ui_mod_entries:
@@ -109,6 +110,42 @@ func _apply_profile_to_entries(cfg: ConfigFile, profile: String) -> void:
 			entry["enabled"] = true
 		if resolved_key != "" and cfg.has_section_key(pr_sec, resolved_key):
 			entry["priority"] = int(str(cfg.get_value(pr_sec, resolved_key)))
+
+# Per-profile UI settings live in profile.<name>.settings, separate from the
+# .enabled / .priority sections so _save_ui_config's erase-and-rewrite pass
+# leaves them alone. Vanilla has no stored profile, so its settings fall back
+# to defaults rather than materializing a ghost section.
+func _load_per_profile_settings(cfg: ConfigFile, profile: String) -> void:
+	if profile == VANILLA_PROFILE:
+		_mods_hide_disabled = false
+		return
+	var sec := "profile." + profile + ".settings"
+	_mods_hide_disabled = bool(cfg.get_value(sec, "hide_disabled", false))
+
+func _save_per_profile_setting(key: String, value: Variant) -> void:
+	# Vanilla is a sentinel -- never materialize a profile.__vanilla__.* section.
+	if _active_profile == VANILLA_PROFILE:
+		return
+	var cfg := ConfigFile.new()
+	cfg.load(UI_CONFIG_PATH)
+	var sec := "profile." + _active_profile + ".settings"
+	cfg.set_value(sec, key, value)
+	cfg.save(UI_CONFIG_PATH)
+	if _boot_complete:
+		_dirty_since_boot = true
+
+# True when the entry passes the active mods-tab filters (W2/W3). Used by
+# row rendering, the All/None toggle handlers, and the empty-state message
+# so the three stay in sync. Name match is case-insensitive substring.
+func _mods_entry_visible(entry: Dictionary) -> bool:
+	if _mods_hide_disabled and not bool(entry.get("enabled", false)):
+		return false
+	if _mods_filter_text != "":
+		var needle := _mods_filter_text.to_lower()
+		var hay := str(entry.get("mod_name", "")).to_lower()
+		if not hay.contains(needle):
+			return false
+	return true
 
 # Find a stored profile key matching an entry's mod_id but with a different
 # version, so a version bump doesn't orphan the profile entry. Returns "" if
@@ -224,7 +261,7 @@ func _delete_active_profile() -> void:
 	if cfg.load(UI_CONFIG_PATH) != OK:
 		return
 	var target := _active_profile
-	for suffix: String in [".enabled", ".priority"]:
+	for suffix: String in [".enabled", ".priority", ".settings"]:
 		var sec := "profile." + target + suffix
 		if cfg.has_section(sec):
 			cfg.erase_section(sec)
@@ -265,7 +302,15 @@ func _rename_profile(new_name: String) -> void:
 	var cfg := ConfigFile.new()
 	if cfg.load(UI_CONFIG_PATH) != OK:
 		return
-	for suffix: String in [".enabled", ".priority"]:
+	# Carry over per-profile UI settings (e.g. hide_disabled). The .enabled /
+	# .priority sections were already materialized under new_name by the save
+	# above; .settings has no in-memory backing, so we copy it explicitly.
+	var old_settings := "profile." + old + ".settings"
+	var new_settings := "profile." + new_name + ".settings"
+	if cfg.has_section(old_settings):
+		for key: String in cfg.get_section_keys(old_settings):
+			cfg.set_value(new_settings, key, cfg.get_value(old_settings, key))
+	for suffix: String in [".enabled", ".priority", ".settings"]:
 		var sec := "profile." + old + suffix
 		if cfg.has_section(sec):
 			cfg.erase_section(sec)
@@ -451,6 +496,26 @@ func _remove_missing_entry_from_profile(stored_key: String) -> void:
 		var sec := "profile." + _active_profile + suffix
 		if cfg.has_section(sec) and cfg.has_section_key(sec, stored_key):
 			cfg.erase_section_key(sec, stored_key)
+	cfg.save(UI_CONFIG_PATH)
+
+# Bulk variant of _remove_missing_entry_from_profile: strips every orphaned
+# key in one config write. Called by the "Remove all" button on the
+# missing-from-this-profile header so users with a long migration trail of
+# uninstalled mods don't have to click Remove dozens of times.
+func _remove_all_missing_entries_from_profile() -> void:
+	var missing := _missing_mods_in_active_profile()
+	if missing.is_empty():
+		return
+	var cfg := ConfigFile.new()
+	if cfg.load(UI_CONFIG_PATH) != OK:
+		return
+	for suffix: String in [".enabled", ".priority"]:
+		var sec := "profile." + _active_profile + suffix
+		if not cfg.has_section(sec):
+			continue
+		for key: String in missing:
+			if cfg.has_section_key(sec, key):
+				cfg.erase_section_key(sec, key)
 	cfg.save(UI_CONFIG_PATH)
 
 # Keep only letters, digits, space, underscore, hyphen. Strip edges. Reject
@@ -705,8 +770,12 @@ func _show_vanilla_confirm(tabs: TabContainer) -> void:
 			_rebuild_mods_tab(tabs))
 	d.popup_centered()
 
-# New Profile dialog: prompt for a name, validate, snapshot current state
-# into the new profile, switch to it. Cancel leaves everything unchanged.
+# New Profile dialog: prompt for a name + initial state, validate, write the
+# chosen state into the new profile, switch to it. Cancel leaves everything
+# unchanged. Initial state radio defaults to Empty -- "fresh profile = nothing
+# on" matches the mental model wyldbylli flagged on MWS (creating a profile
+# previously cloned the current selection silently, which surprised users
+# expecting a blank slate).
 func _show_new_profile_dialog(tabs: TabContainer) -> void:
 	var d := ConfirmationDialog.new()
 	d.title = "New Profile"
@@ -726,6 +795,30 @@ func _show_new_profile_dialog(tabs: TabContainer) -> void:
 	name_edit.custom_minimum_size.x = 280
 	form.add_child(name_edit)
 
+	var state_lbl := Label.new()
+	state_lbl.text = "Initial state:"
+	form.add_child(state_lbl)
+
+	# CheckBox + ButtonGroup is the Godot 4 idiom for radio buttons. Set
+	# button_group BEFORE button_pressed so the group registers the default.
+	var state_group := ButtonGroup.new()
+
+	var state_empty := CheckBox.new()
+	state_empty.text = "Empty (no mods enabled)"
+	state_empty.button_group = state_group
+	state_empty.button_pressed = true
+	form.add_child(state_empty)
+
+	var state_all := CheckBox.new()
+	state_all.text = "All enabled"
+	state_all.button_group = state_group
+	form.add_child(state_all)
+
+	var state_copy := CheckBox.new()
+	state_copy.text = "Copy current selection"
+	state_copy.button_group = state_group
+	form.add_child(state_copy)
+
 	var err_lbl := Label.new()
 	err_lbl.modulate = Color(1.0, 0.5, 0.5)
 	err_lbl.add_theme_font_size_override("font_size", 11)
@@ -744,6 +837,18 @@ func _show_new_profile_dialog(tabs: TabContainer) -> void:
 			err_lbl.text = "Profile \"" + name + "\" already exists."
 		else:
 			d.queue_free()
+			# Mutate in-memory entries to match the chosen initial state, then
+			# _create_profile snapshots them into profile.<name>.* sections.
+			# Priorities are intentionally left untouched -- they're a load-
+			# order preference that survives an enable-state reset.
+			if state_all.button_pressed:
+				for entry in _ui_mod_entries:
+					entry["enabled"] = true
+			elif state_empty.button_pressed:
+				for entry in _ui_mod_entries:
+					entry["enabled"] = false
+			# state_copy: leave _ui_mod_entries as-is so the new profile
+			# inherits whatever was visible when the user clicked +.
 			_create_profile(name)
 			_rebuild_mods_tab(tabs)
 
@@ -1414,12 +1519,83 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	outer.add_child(split)
 
-	# -- Left: mod list --------------------------------------------------------
+	# -- Left: filter bar + mod list ------------------------------------------
+
+	# Sticky filter bar above the scroll so it stays in view while the user
+	# scrolls a long mod list.
+	var left_col := VBoxContainer.new()
+	left_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left_col.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.add_child(left_col)
+
+	# Filter bar (W2/W3): name search + All / None toggles + Hide disabled.
+	# The All/None handlers respect the active filter so a search-narrowed
+	# list only toggles the visible subset. Hide disabled is per-profile;
+	# Vanilla disables the toggles since rows are forced off there anyway.
+	var filter_bar := HBoxContainer.new()
+	filter_bar.add_theme_constant_override("separation", 6)
+	left_col.add_child(filter_bar)
+
+	var filter_edit := LineEdit.new()
+	filter_edit.placeholder_text = "Filter mods..."
+	filter_edit.text = _mods_filter_text
+	filter_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	filter_bar.add_child(filter_edit)
+
+	var all_btn := Button.new()
+	all_btn.text = "All"
+	all_btn.tooltip_text = "Enable every visible mod"
+	all_btn.disabled = on_vanilla
+	filter_bar.add_child(all_btn)
+	_wire_hint(all_btn, "Enable every visible mod (respects the search filter).")
+
+	var none_btn := Button.new()
+	none_btn.text = "None"
+	none_btn.tooltip_text = "Disable every visible mod"
+	none_btn.disabled = on_vanilla
+	filter_bar.add_child(none_btn)
+	_wire_hint(none_btn, "Disable every visible mod (respects the search filter).")
+
+	var hide_check := CheckBox.new()
+	hide_check.text = "Hide disabled"
+	hide_check.tooltip_text = "Hide rows for mods that are disabled in this profile"
+	hide_check.button_pressed = _mods_hide_disabled
+	hide_check.add_theme_font_size_override("font_size", 11)
+	hide_check.disabled = on_vanilla
+	filter_bar.add_child(hide_check)
+	_wire_hint(hide_check, "Hide rows for mods that are disabled in this profile.")
+
+	filter_edit.text_changed.connect(func(t: String):
+		_mods_filter_text = t
+		# Each text_changed rebuilds the tab; restore focus afterward so the
+		# user can keep typing. Flag is consumed on the next build below.
+		_mods_filter_focus_pending = true
+		_rebuild_mods_tab(tabs)
+	)
+	all_btn.pressed.connect(func():
+		for entry in _ui_mod_entries:
+			if _mods_entry_visible(entry):
+				entry["enabled"] = true
+		_save_ui_config()
+		_rebuild_mods_tab(tabs)
+	)
+	none_btn.pressed.connect(func():
+		for entry in _ui_mod_entries:
+			if _mods_entry_visible(entry):
+				entry["enabled"] = false
+		_save_ui_config()
+		_rebuild_mods_tab(tabs)
+	)
+	hide_check.toggled.connect(func(on: bool):
+		_mods_hide_disabled = on
+		_save_per_profile_setting("hide_disabled", on)
+		_rebuild_mods_tab(tabs)
+	)
 
 	var left_scroll := ScrollContainer.new()
 	left_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	left_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	split.add_child(left_scroll)
+	left_col.add_child(left_scroll)
 
 	# Right padding keeps the load-order SpinBox arrows from sitting flush
 	# against the vertical scrollbar -- users were hitting the spin arrows
@@ -1493,11 +1669,26 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	# offer to download via modworkshop if an id is stored.
 	var missing_files := _missing_mods_in_active_profile()
 	if not missing_files.is_empty():
+		# Header row: label on the left, "Remove all" on the right (W4) so a
+		# user with a long migration trail can clear every orphan in one click
+		# instead of hammering per-row Remove buttons.
+		var missing_hdr_row := HBoxContainer.new()
+		list.add_child(missing_hdr_row)
 		var missing_hdr := Label.new()
 		missing_hdr.text = "Missing from this profile"
 		missing_hdr.modulate = Color(1.0, 0.55, 0.55)
 		missing_hdr.add_theme_font_size_override("font_size", 11)
-		list.add_child(missing_hdr)
+		missing_hdr.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		missing_hdr_row.add_child(missing_hdr)
+		var remove_all_btn := Button.new()
+		remove_all_btn.text = "Remove all"
+		remove_all_btn.tooltip_text = "Strip every missing-mod entry from the active profile"
+		missing_hdr_row.add_child(remove_all_btn)
+		_wire_hint(remove_all_btn, "Strip every missing-mod entry from the active profile.")
+		remove_all_btn.pressed.connect(func():
+			_remove_all_missing_entries_from_profile()
+			_rebuild_mods_tab(tabs)
+		)
 		list.add_child(HSeparator.new())
 		for fn: String in missing_files:
 			var miss_row := HBoxContainer.new()
@@ -1563,7 +1754,13 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		empty.add_theme_font_size_override("font_size", 12)
 		list.add_child(empty)
 
+	# Track whether any row passed the filter so we can show a hint when a
+	# search or hide-disabled toggle narrows the list to zero rows.
+	var rendered_any := false
 	for entry in _ui_mod_entries:
+		if not _mods_entry_visible(entry):
+			continue
+		rendered_any = true
 		var row := HBoxContainer.new()
 		list.add_child(row)
 
@@ -1661,6 +1858,24 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			refresh_order.call()
 			_save_ui_config()
 		)
+
+	# Filter narrowed every row out -- distinguish from "no mods installed"
+	# (handled above by the _ui_mod_entries.is_empty() branch) so the user
+	# knows the filter, not a missing folder, is the cause.
+	if not _ui_mod_entries.is_empty() and not rendered_any:
+		var no_match := Label.new()
+		no_match.text = "No mods match the current filter."
+		no_match.modulate = Color(0.5, 0.5, 0.5)
+		no_match.add_theme_font_size_override("font_size", 12)
+		list.add_child(no_match)
+
+	# Restore focus to the search input after a filter-driven rebuild.
+	# Deferred so the new tab is in the tree before grab_focus runs.
+	# Cleared on consume so unrelated rebuilds (profile switch, dev toggle)
+	# don't steal focus from whatever the user is interacting with.
+	if _mods_filter_focus_pending:
+		_mods_filter_focus_pending = false
+		filter_edit.call_deferred("grab_focus")
 
 	refresh_order.call()
 	return outer
