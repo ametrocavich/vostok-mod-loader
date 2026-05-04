@@ -66,7 +66,12 @@ MODLOADER_TMP="$MODLOADER_DEST.new"
 rm -f "$MODLOADER_TMP"
 echo "Downloading mod loader..."
 if download "$MODLOADER_URL" "$MODLOADER_TMP" && [[ -s "$MODLOADER_TMP" ]]; then
-    mv -f "$MODLOADER_TMP" "$MODLOADER_DEST"
+    if ! mv -f "$MODLOADER_TMP" "$MODLOADER_DEST" || [[ ! -f "$MODLOADER_DEST" ]]; then
+        echo "ERROR: Could not move modloader.gd to $MODLOADER_DEST"
+        echo "  Likely cause: missing write permission, destination on a read-only filesystem,"
+        echo "  or the file is locked by a running game process."
+        exit 1
+    fi
     echo "Downloaded modloader.gd to game folder"
 else
     rm -f "$MODLOADER_TMP"
@@ -213,7 +218,12 @@ if [[ -f "$OVERRIDE_PATH" ]]; then
     echo "Merging override.cfg (preserving user sections, updating template keys)"
     cp -f "$OVERRIDE_PATH" "$OVERRIDE_PATH.bak"
     if merge_override "$OVERRIDE_PATH" "$OVERRIDE_TMP" "$OVERRIDE_PATH.merged" && [[ -s "$OVERRIDE_PATH.merged" ]]; then
-        mv -f "$OVERRIDE_PATH.merged" "$OVERRIDE_PATH"
+        if ! mv -f "$OVERRIDE_PATH.merged" "$OVERRIDE_PATH"; then
+            echo "ERROR: Could not move merged override.cfg into place"
+            echo "  Your original is preserved at $OVERRIDE_PATH.bak"
+            rm -f "$OVERRIDE_PATH.merged"
+            exit 1
+        fi
         echo "Updated override.cfg"
     else
         echo "ERROR: merge failed. Your original is preserved at $OVERRIDE_PATH.bak"
@@ -222,7 +232,11 @@ if [[ -f "$OVERRIDE_PATH" ]]; then
         exit 1
     fi
 else
-    mv -f "$OVERRIDE_TMP" "$OVERRIDE_PATH"
+    if ! mv -f "$OVERRIDE_TMP" "$OVERRIDE_PATH" || [[ ! -f "$OVERRIDE_PATH" ]]; then
+        echo "ERROR: Could not install override.cfg at $OVERRIDE_PATH"
+        echo "  Likely cause: missing write permission, or destination on a read-only filesystem."
+        exit 1
+    fi
     echo "Installed override.cfg"
 fi
 rm -f "$OVERRIDE_TMP"
