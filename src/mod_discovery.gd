@@ -49,6 +49,7 @@ func collect_mod_metadata() -> Array[Dictionary]:
 		_log_debug("Skipped " + str(skipped_files.size()) + " non-mod file(s) in mods dir:")
 		for sf in skipped_files:
 			_log_debug("  " + sf + "  (not .vmz/.pck)")
+	entries = _dedupe_by_mod_id(entries)
 	if entries.size() == 0:
 		_log_warning("No mods found in: " + _mods_dir)
 	else:
@@ -219,6 +220,70 @@ func compare_versions(a: String, b: String) -> int:
 		if va < vb: return -1
 		if va > vb: return 1
 	return 0
+
+# Collapse same-id duplicates produced when an author publishes the same mod
+# under two filenames (e.g. CoolMod_v1.zip + CoolMod_v1.1.zip). Without this
+# the UI shows both rows and the load-time skip at _process_mod_candidate
+# silently drops one -- the user is left to figure out which to delete.
+#
+# Entries with no declared mod_id (profile_key "zip:<file>") and .pck files
+# are passed through untouched: their identity is the filename, which the
+# scan loop already deduped.
+func _dedupe_by_mod_id(entries: Array[Dictionary]) -> Array[Dictionary]:
+	var groups: Dictionary = {}
+	for e in entries:
+		var pk: String = str(e.get("profile_key", ""))
+		if e["ext"] == "pck" or pk.begins_with("zip:"):
+			continue
+		var mid: String = str(e["mod_id"])
+		if not groups.has(mid):
+			groups[mid] = []
+		(groups[mid] as Array).append(e)
+
+	var winners_by_id: Dictionary = {}
+	for mid in groups.keys():
+		var members: Array = groups[mid]
+		if members.size() == 1:
+			winners_by_id[mid] = members[0]
+			continue
+		members.sort_custom(_compare_dedup_priority)
+		var winner: Dictionary = members[0]
+		var hidden: Array[Dictionary] = []
+		var w_v: String = ("v" + str(winner["version"])) if str(winner["version"]) != "" else "(unversioned)"
+		for j in range(1, members.size()):
+			var loser: Dictionary = members[j]
+			hidden.append({"file_name": loser["file_name"], "version": loser["version"]})
+			var l_v: String = ("v" + str(loser["version"])) if str(loser["version"]) != "" else "(unversioned)"
+			_log_warning("Duplicate mod_id '" + mid + "' detected: keeping "
+					+ str(winner["file_name"]) + " (" + w_v + "), hiding "
+					+ str(loser["file_name"]) + " (" + l_v + ")")
+		winner["duplicates_hidden"] = hidden
+		winners_by_id[mid] = winner
+
+	var seen_ids: Dictionary = {}
+	var out: Array[Dictionary] = []
+	for e in entries:
+		var pk: String = str(e.get("profile_key", ""))
+		if e["ext"] == "pck" or pk.begins_with("zip:"):
+			out.append(e)
+			continue
+		var mid: String = str(e["mod_id"])
+		if seen_ids.has(mid):
+			continue
+		seen_ids[mid] = true
+		out.append(winners_by_id[mid])
+	return out
+
+# Higher version wins; tiebreak newer mtime, then alphabetically lower filename.
+func _compare_dedup_priority(a: Dictionary, b: Dictionary) -> bool:
+	var vc := compare_versions(str(a.get("version", "")), str(b.get("version", "")))
+	if vc != 0:
+		return vc > 0
+	var am: int = FileAccess.get_modified_time(str(a["full_path"]))
+	var bm: int = FileAccess.get_modified_time(str(b["full_path"]))
+	if am != bm:
+		return am > bm
+	return (a["file_name"] as String).to_lower() < (b["file_name"] as String).to_lower()
 
 func fetch_latest_modworkshop_versions(ids: Array[int]) -> Dictionary:
 	var latest_versions := {}

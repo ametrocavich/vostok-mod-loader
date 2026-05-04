@@ -106,7 +106,13 @@ func _apply_profile_to_entries(cfg: ConfigFile, profile: String) -> void:
 		elif resolved_key != "" and cfg.has_section_key(en_sec, resolved_key):
 			entry["enabled"] = bool(cfg.get_value(en_sec, resolved_key))
 		else:
-			entry["enabled"] = true
+			# Auto-enable on Default only. On any other profile (named, renamed,
+			# imported), a freshly-discovered mod is treated as user opt-in --
+			# adding a mod meant for one profile shouldn't silently turn it on
+			# in every other profile. Imports already write explicit disables
+			# for unlisted local mods at import time; this catches the symmetric
+			# case where a user drops a new mod AFTER importing/creating.
+			entry["enabled"] = profile == "Default"
 		if resolved_key != "" and cfg.has_section_key(pr_sec, resolved_key):
 			entry["priority"] = int(str(cfg.get_value(pr_sec, resolved_key)))
 
@@ -1594,6 +1600,17 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			warn.modulate = Color(1.0, 0.6, 0.2)
 			warn.add_theme_font_size_override("font_size", 11)
 			name_col.add_child(warn)
+
+		# Older same-id archives the dedup pass hid. Surface the filename
+		# so the user knows which one to delete from the mods/ folder.
+		for dup: Dictionary in entry.get("duplicates_hidden", []):
+			var dup_v_raw: String = str(dup.get("version", ""))
+			var dup_v: String = ("v" + dup_v_raw) if dup_v_raw != "" else "(unversioned)"
+			var hide_lbl := Label.new()
+			hide_lbl.text = "older version hidden: " + str(dup["file_name"]) + " (" + dup_v + ")"
+			hide_lbl.modulate = Color(1.0, 0.6, 0.2)
+			hide_lbl.add_theme_font_size_override("font_size", 11)
+			name_col.add_child(hide_lbl)
 
 		# Profile was saved with a different version of this mod. Surface the
 		# change so the user knows their enabled/priority state was carried
