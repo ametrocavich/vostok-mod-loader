@@ -213,6 +213,22 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 		_any_mod_declared_registry = true
 		_log_info("  Registry declared [%s]" % mod_name)
 
+	# B_Loader compat: mods written against BitByteBytes/B_Loader call
+	# Loader.add_shelter / Loader.add_map without ever declaring [registry]
+	# in their mod.txt. The shim methods on Loader.gd only get injected when
+	# the rewriter runs over Loader.gd, which itself depends on at least one
+	# mod opting into [registry]. Treat the call-site presence as an
+	# implicit registry declaration so the shim activates without a mod.txt
+	# edit. Mods can migrate to the explicit form (and to lib.register())
+	# at their own pace.
+	var analysis: Dictionary = _mod_script_analysis.get(mod_name, {})
+	if analysis.get("calls_bloader_api", false):
+		if not _any_mod_declared_registry:
+			_any_mod_declared_registry = true
+			_log_info("  B_Loader-style call detected (Loader.add_shelter/add_map) [%s] -- treating as registry-declaring; compat shim activates" % mod_name)
+		else:
+			_log_info("  B_Loader-style call detected [%s] -- compat shim active" % mod_name)
+
 	# [script_extend] / [script_overrides] -- full script replacements that
 	# chain via Godot's extends resolution. Both section names accepted
 	# (script_extend is the preferred v3.0.1 name; script_overrides is the
@@ -397,6 +413,13 @@ func scan_and_register_archive_claims(archive_path: String, mod_name: String,
 		# hooks AND zero [hooks]/[registry] mod.txt sections leaves the
 		# wrap surface empty and skips hook pack generation entirely.
 		"hook_calls":              [],  # Array of {prefix, method}
+		# True if the mod's source contains a B_Loader-style call
+		# (Loader.add_shelter / Loader.add_map). The B_Loader compat shim
+		# lives in our injected Loader.gd appendix, but the rewriter only
+		# fires when at least one mod declares [registry]. Detecting these
+		# call patterns lets us auto-treat such mods as registry-declaring
+		# so they Just Work without requiring a mod.txt edit.
+		"calls_bloader_api":       false,
 	}
 
 	for f in files:
@@ -485,6 +508,14 @@ func _scan_gd_source(text: String, analysis: Dictionary) -> void:
 	# by HUD._physics_process from gameData.tooltip -- this override has no effect there.
 	if not analysis["calls_update_tooltip"]:
 		analysis["calls_update_tooltip"] = "UpdateTooltip" in text
+
+	# B_Loader-pattern detection. Substring match is fine -- Loader.add_shelter
+	# isn't a vanilla method, and false positives in non-call contexts (a
+	# string literal, a comment) just over-treat the mod as registry-declaring,
+	# which costs nothing.
+	if not analysis["calls_bloader_api"]:
+		if "Loader.add_shelter(" in text or "Loader.add_map(" in text:
+			analysis["calls_bloader_api"] = true
 
 	# Detect base() calls -- Godot 3 pattern or removed parent method.
 	if not analysis["calls_base"]:

@@ -461,6 +461,11 @@ func _rtv_apply_prelude_injections(filename: String, lines: PackedStringArray, r
 			return _rtv_inject_prelude(lines, rename_prefix + "LoadScene", _rtv_loader_loadscene_prelude())
 		"FishPool.gd":
 			return _rtv_inject_prelude(lines, rename_prefix + "_ready", _rtv_fishpool_ready_prelude())
+		"Compiler.gd":
+			# Spawn's prelude assigns to vanilla's `spawnTarget` local, which
+			# is declared on the first body line. Insert after the run of
+			# leading var decls so spawnTarget is in scope.
+			return _rtv_inject_prelude(lines, rename_prefix + "Spawn", _rtv_compiler_spawn_prelude(), true)
 		_:
 			return lines
 
@@ -469,21 +474,47 @@ func _rtv_apply_prelude_injections(filename: String, lines: PackedStringArray, r
 # renamed by the rewriter's pass 1, so callers pass the renamed name.
 # If the function has multiple blank lines at the top of its body, the
 # prelude slots in before them.
-func _rtv_inject_prelude(lines: PackedStringArray, func_name: String, prelude_lines: PackedStringArray) -> PackedStringArray:
+#
+# `after_var_decls`: when true, insertion happens AFTER the run of leading
+# `var ...` and blank lines at the top of the body, rather than directly
+# under the signature. Use this when the prelude needs to reference a
+# local declared by vanilla (e.g. Compiler.Spawn's `spawnTarget`).
+func _rtv_inject_prelude(lines: PackedStringArray, func_name: String, prelude_lines: PackedStringArray, after_var_decls: bool = false) -> PackedStringArray:
 	var needle := "func " + func_name + "("
-	var target := -1
+	var sig_target := -1
 	for i in lines.size():
 		var line: String = lines[i]
 		if line.begins_with(needle):
-			target = i
+			sig_target = i
 			break
-	if target < 0:
+	if sig_target < 0:
 		_log_info("[RTVCodegen] prelude injection: func %s not found (was it not parsed as hookable?)" % func_name)
 		return lines
+	var insert_after := sig_target
+	if after_var_decls:
+		# Advance past leading body lines that are blank or indented `var ...`
+		# declarations. Stop on the first indented line that isn't a var
+		# declaration. If we hit a top-level line first (next func or EOF),
+		# the function body was empty -- fall back to inserting at signature.
+		var j := sig_target + 1
+		while j < lines.size():
+			var ln: String = lines[j]
+			var stripped: String = ln.strip_edges()
+			if stripped == "":
+				j += 1
+				continue
+			# Top-level line means we ran out of body.
+			if not (ln.begins_with("\t") or ln.begins_with(" ")):
+				break
+			if stripped.begins_with("var "):
+				insert_after = j
+				j += 1
+				continue
+			break
 	var out: Array = []
 	for i in lines.size():
 		out.append(lines[i])
-		if i == target:
+		if i == insert_after:
 			for pl in prelude_lines:
 				out.append(pl)
 	var result := PackedStringArray()
@@ -530,23 +561,97 @@ func _rtv_loader_loadscene_prelude() -> PackedStringArray:
 	p.append("\t\tgameData.shelter = _rtv_scene_entry.get(\"shelter\", false)")
 	p.append("\t\tgameData.permadeath = _rtv_scene_entry.get(\"permadeath\", false)")
 	p.append("\t\tgameData.tutorial = _rtv_scene_entry.get(\"tutorial\", false)")
+	# B_Loader compat: if the entry carries a transition_text, reassign the
+	# `scene` arg so vanilla's `label.text = \"Loading \" + scene + \"...\"`
+	# below uses the modder's preferred display name. Vanilla never reads
+	# `scene` again after the label code, so it's safe to clobber.
+	p.append("\t\tvar _rtv_label: String = String(_rtv_scene_entry.get(\"transition_text\", \"\"))")
+	p.append("\t\tif _rtv_label != \"\":")
+	p.append("\t\t\tscene = _rtv_label")
 	p.append("\t# Fall through: vanilla if-elif won't match mod names; the tail")
 	p.append("\t# runs change_scene_to_file(scenePath) with our path set above.")
 	return p
 
 func _rtv_inject_loader_registry(indent: String) -> String:
-	# Loader.gd registry appendix. Adds the two mod-scene-path dicts and a
-	# snapshot of the vanilla shelters list for integrity/revert.
+	# Loader.gd registry appendix. Adds the mod-scene-path dicts, a snapshot
+	# of the vanilla shelters list for integrity/revert, and the rich
+	# shelter/map entries that Compiler.Spawn's prelude consults at world
+	# transition time (B_Loader-style add_shelter / add_map fields:
+	# transition_text, exit_spawn, entrance_spawn, connected_to,
+	# connected_content, shelter:bool).
+	#
+	# Also injects B_Loader compat shim methods (add_shelter / add_map) so
+	# mods written against the BitByteBytes B_Loader project keep working
+	# without requiring B_Loader as a dependency. The shim translates the
+	# legacy dict shape (map_name + scene_path) to our internal entry
+	# format and writes directly to _rtv_mod_shelters + shelters +
+	# _rtv_mod_scene_paths, mirroring what _register_shelter_or_map does on
+	# the RTVModLib side. Mods can migrate to lib.register at their own
+	# pace; until then, the existing call site Just Works.
 	#
 	# Note: _rtv_vanilla_shelters is captured at @onready time from the
 	# shelters var (which the const->var rewrite left populated with the
 	# vanilla list). The registry can diff shelters against this snapshot
 	# to tell vanilla entries apart from mod additions.
 	var I1 := indent
-	return "\n\n# --- Metro mod loader: Loader registry state ---\n" \
+	var I2 := indent + indent
+	var I3 := indent + indent + indent
+	var out: String = "\n\n# --- Metro mod loader: Loader registry state ---\n" \
 		+ "var _rtv_mod_scene_paths: Dictionary = {}\n" \
 		+ "var _rtv_override_scene_paths: Dictionary = {}\n" \
+		+ "var _rtv_mod_shelters: Dictionary = {}\n" \
 		+ "@onready var _rtv_vanilla_shelters: Array = shelters.duplicate()\n"
+	# B_Loader compat shim. Same dict shape as BitByteBytes/B_Loader README.
+	out += "\n# --- Metro mod loader: B_Loader compat shim ---\n"
+	out += "func add_shelter(d: Dictionary) -> bool:\n"
+	out += I1 + "return _rtv_bloader_compat_register(d, true)\n"
+	out += "\n"
+	out += "func add_map(d: Dictionary) -> bool:\n"
+	out += I1 + "return _rtv_bloader_compat_register(d, false)\n"
+	out += "\n"
+	out += "func _rtv_bloader_compat_register(d: Dictionary, default_shelter: bool) -> bool:\n"
+	out += I1 + "if not (d is Dictionary):\n"
+	out += I2 + "push_warning(\"[B_Loader compat] add_shelter/add_map expects a Dictionary\")\n"
+	out += I2 + "return false\n"
+	out += I1 + "var id: String = String(d.get(\"map_name\", \"\"))\n"
+	out += I1 + "if id == \"\":\n"
+	out += I2 + "push_warning(\"[B_Loader compat] dict is missing 'map_name'\")\n"
+	out += I2 + "return false\n"
+	out += I1 + "if _rtv_mod_shelters.has(id):\n"
+	out += I2 + "push_warning(\"[B_Loader compat] '\" + id + \"' already registered\")\n"
+	out += I2 + "return false\n"
+	out += I1 + "if id in shelters:\n"
+	out += I2 + "push_warning(\"[B_Loader compat] '\" + id + \"' already in vanilla shelters list\")\n"
+	out += I2 + "return false\n"
+	out += I1 + "var is_shelter: bool = bool(d.get(\"shelter\", default_shelter))\n"
+	# B_Loader uses 'scene_path'; our schema uses 'path'. Accept both.
+	out += I1 + "var scene_path: String = String(d.get(\"path\", d.get(\"scene_path\", \"\")))\n"
+	out += I1 + "var entry: Dictionary = {\n"
+	out += I2 + "\"shelter\": is_shelter,\n"
+	out += I2 + "\"transition_text\": String(d.get(\"transition_text\", id)),\n"
+	out += I2 + "\"exit_spawn\": String(d.get(\"exit_spawn\", \"\")),\n"
+	out += I2 + "\"entrance_spawn\": String(d.get(\"entrance_spawn\", \"\")),\n"
+	out += I2 + "\"connected_to\": String(d.get(\"connected_to\", \"\")),\n"
+	out += I2 + "\"connected_content\": d.get(\"connected_content\", []),\n"
+	out += I1 + "}\n"
+	out += I1 + "_rtv_mod_shelters[id] = entry\n"
+	out += I1 + "shelters.append(id)\n"
+	# Auto-register a scene_paths entry if a scene path was provided so the
+	# LoadScene prelude can route to it. Mirrors what _register_shelter_or_map
+	# does on the RTVModLib side.
+	out += I1 + "if scene_path != \"\":\n"
+	out += I2 + "var sp: Dictionary = {\n"
+	out += I3 + "\"path\": scene_path,\n"
+	out += I3 + "\"shelter\": is_shelter,\n"
+	out += I3 + "\"transition_text\": entry[\"transition_text\"],\n"
+	out += I2 + "}\n"
+	out += I2 + "if d.has(\"menu\"): sp[\"menu\"] = d[\"menu\"]\n"
+	out += I2 + "if d.has(\"permadeath\"): sp[\"permadeath\"] = d[\"permadeath\"]\n"
+	out += I2 + "if d.has(\"tutorial\"): sp[\"tutorial\"] = d[\"tutorial\"]\n"
+	out += I2 + "_rtv_mod_scene_paths[id] = sp\n"
+	out += I1 + "print(\"[B_Loader compat] registered '\" + id + \"' (shelter=\" + str(is_shelter) + \", connected_to='\" + entry[\"connected_to\"] + \"')\")\n"
+	out += I1 + "return true\n"
+	return out
 
 # AISpawner.gd transform: rewrite each `agent = <name>` inside _ready() so
 # the assignment goes through the _rtv_resolve_ai_type helper (defined in
@@ -593,6 +698,99 @@ func _rtv_fishpool_ready_prelude() -> PackedStringArray:
 	p.append("\t\tif _rtv_fe.pool_id == \"all\" or _rtv_fe.pool_id == name:")
 	p.append("\t\t\tif not (_rtv_fe.scene in species):")
 	p.append("\t\t\t\tspecies.append(_rtv_fe.scene)")
+	return p
+
+# Compiler.Spawn prelude: handles two B_Loader-style cases at function head.
+#
+#   1. Player just transitioned INTO a registered shelter or map. Run the
+#      vanilla load sequence (LoadWorld + LoadCharacter + optional
+#      LoadShelter + Simulation.simulate=true), set spawnTarget to the
+#      entry's exit_spawn, run the transition-pose loop ourselves, fire
+#      the gameData.* resets, and `return` so vanilla's if-elif chain
+#      doesn't double-process.
+#
+#   2. Player transitioned INTO a vanilla map that has at least one
+#      registered shelter/map hanging off it via `connected_to`. Spawn
+#      the connected_content props into /root/Map/Content additively. If
+#      the player is arriving FROM a registered shelter (previousMap is a
+#      mod entry name), pre-set spawnTarget to that entry's
+#      entrance_spawn -- vanilla's if-elif then runs LoadWorld/LoadChar
+#      etc as normal but its inner `if previousMap == ...` checks only
+#      know vanilla map names, so our spawnTarget survives. Fall through
+#      to vanilla so it handles the rest.
+#
+# Conditions for handling are checked against Loader._rtv_mod_shelters
+# (populated by _register_shelter_or_map). When the mod shelters dict is
+# empty (no relevant mod loaded), the prelude is effectively a tight
+# branch + early continue with no behavior change vs vanilla.
+func _rtv_compiler_spawn_prelude() -> PackedStringArray:
+	var p := PackedStringArray()
+	p.append("\t# --- Metro mod loader: shelters/maps registry prelude ---")
+	p.append("\tvar _rtv_map_node: Node = get_tree().current_scene.get_node_or_null(\"/root/Map\")")
+	p.append("\tif _rtv_map_node != null and \"_rtv_mod_shelters\" in Loader:")
+	p.append("\t\tvar _rtv_mn: String = String(_rtv_map_node.mapName)")
+	p.append("\t\tvar _rtv_entry: Dictionary = Loader._rtv_mod_shelters.get(_rtv_mn, {})")
+	# Case 1: arriving in a registered shelter / map.
+	p.append("\t\tif not _rtv_entry.is_empty():")
+	p.append("\t\t\tLoader.LoadWorld()")
+	p.append("\t\t\tLoader.LoadCharacter()")
+	p.append("\t\t\tif bool(_rtv_entry.get(\"shelter\", false)):")
+	p.append("\t\t\t\tLoader.LoadShelter(_rtv_mn)")
+	p.append("\t\t\tSimulation.simulate = true")
+	p.append("\t\t\tspawnTarget = String(_rtv_entry.get(\"exit_spawn\", \"\"))")
+	# Run the transition-pose loop ourselves so we can early-return. Reuses
+	# vanilla's `transitions` local declared above (the prelude lands after
+	# var decls thanks to after_var_decls=true on the inject call).
+	p.append("\t\t\tif spawnTarget != \"\":")
+	p.append("\t\t\t\tfor _rtv_t in transitions:")
+	p.append("\t\t\t\t\tif _rtv_t.owner.name == spawnTarget:")
+	p.append("\t\t\t\t\t\tvar _rtv_sp = _rtv_t.owner.spawn")
+	p.append("\t\t\t\t\t\tif _rtv_sp:")
+	p.append("\t\t\t\t\t\t\tcontroller.global_transform.basis = _rtv_sp.global_transform.basis")
+	p.append("\t\t\t\t\t\t\tcontroller.global_transform.basis = controller.global_transform.basis.rotated(Vector3.UP, deg_to_rad(180))")
+	p.append("\t\t\t\t\t\t\tcontroller.global_position = _rtv_sp.global_position")
+	p.append("\t\t\tgameData.isTransitioning = false")
+	p.append("\t\t\tgameData.isSleeping = false")
+	p.append("\t\t\tgameData.isOccupied = false")
+	p.append("\t\t\tgameData.freeze = false")
+	p.append("\t\t\treturn")
+	# Case 2: this map is connected_to for one or more registered shelters/maps.
+	p.append("\t\tfor _rtv_key in Loader._rtv_mod_shelters:")
+	p.append("\t\t\tvar _rtv_e: Dictionary = Loader._rtv_mod_shelters[_rtv_key]")
+	p.append("\t\t\tif String(_rtv_e.get(\"connected_to\", \"\")) != _rtv_mn:")
+	p.append("\t\t\t\tcontinue")
+	# Spawn connected_content additively.
+	p.append("\t\t\tvar _rtv_content: Node = get_tree().current_scene.get_node_or_null(\"/root/Map/Content\")")
+	p.append("\t\t\tif _rtv_content != null:")
+	p.append("\t\t\t\tvar _rtv_items: Array = _rtv_e.get(\"connected_content\", [])")
+	p.append("\t\t\t\tfor _rtv_item in _rtv_items:")
+	p.append("\t\t\t\t\tif not (_rtv_item is Dictionary):")
+	p.append("\t\t\t\t\t\tcontinue")
+	p.append("\t\t\t\t\tvar _rtv_p: String = String(_rtv_item.get(\"path\", \"\"))")
+	p.append("\t\t\t\t\tif _rtv_p == \"\":")
+	p.append("\t\t\t\t\t\tcontinue")
+	p.append("\t\t\t\t\tvar _rtv_packed = load(_rtv_p)")
+	p.append("\t\t\t\t\tif _rtv_packed == null:")
+	p.append("\t\t\t\t\t\tpush_warning(\"[Registry] connected_content: failed to load \" + _rtv_p)")
+	p.append("\t\t\t\t\t\tcontinue")
+	p.append("\t\t\t\t\tvar _rtv_inst = _rtv_packed.instantiate()")
+	p.append("\t\t\t\t\tif \"position\" in _rtv_item:")
+	p.append("\t\t\t\t\t\t_rtv_inst.position = _rtv_item[\"position\"]")
+	p.append("\t\t\t\t\tif \"rotation\" in _rtv_item:")
+	p.append("\t\t\t\t\t\t_rtv_inst.rotation_degrees = _rtv_item[\"rotation\"]")
+	p.append("\t\t\t\t\t_rtv_content.add_child(_rtv_inst)")
+	# Refresh the locals `transitions` and `waypoints`: vanilla captured
+	# them at the top of Spawn() BEFORE our connected_content was added,
+	# so any Transition / AI_WP node inside the freshly spawned scenes
+	# wouldn't be in the original snapshot. Without this, the tail's
+	# pose-loop misses the entrance_spawn target and any modded waypoint
+	# spawn never participates in the random-pick fallback.
+	p.append("\t\t\ttransitions = get_tree().get_nodes_in_group(\"Transition\")")
+	p.append("\t\t\twaypoints = get_tree().get_nodes_in_group(\"AI_WP\")")
+	# If player is arriving from this mod shelter, pre-set entrance_spawn.
+	p.append("\t\t\tif String(gameData.previousMap) == _rtv_key:")
+	p.append("\t\t\t\tspawnTarget = String(_rtv_e.get(\"entrance_spawn\", \"\"))")
+	p.append("\t# Fall through to vanilla if-elif (which handles vanilla maps).")
 	return p
 
 func _rtv_inject_aispawner_registry(indent: String) -> String:
