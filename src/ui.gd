@@ -1134,11 +1134,34 @@ func show_mod_ui() -> void:
 	launch_btn.add_theme_stylebox_override("pressed", ls_p)
 	launch_btn.add_theme_color_override("font_color", Color(0.88, 0.88, 0.88))
 	launch_btn.add_theme_color_override("font_hover_color", Color(1.0, 1.0, 1.0))
+
+	# Always-visible self-version label sitting between the hint and Launch.
+	# Default state shows the installed version in dim gray; the
+	# _check_modloader_update_async coroutine flips it to orange and rewrites
+	# the text when ModWorkshop reports a newer release. Click opens the mod
+	# page in the system browser regardless of state.
+	var alert := LinkButton.new()
+	alert.text = "Mod Loader v" + MODLOADER_VERSION
+	alert.underline = LinkButton.UNDERLINE_MODE_ON_HOVER
+	alert.add_theme_font_size_override("font_size", 11)
+	alert.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
+	alert.add_theme_color_override("font_hover_color", Color(0.78, 0.78, 0.78))
+	alert.pressed.connect(func():
+		OS.shell_open(MODWORKSHOP_PAGE_URL_TEMPLATE % str(MODLOADER_MODWORKSHOP_ID))
+	)
+	bottom.add_child(alert)
+	_ui_update_alert_btn = alert
+
 	bottom.add_child(launch_btn)
 	_ui_launch_btn = launch_btn
 
 	# Closing the window with X should behave the same as clicking Launch.
 	win.close_requested.connect(func(): launch_btn.pressed.emit())
+
+	# Fire-and-forget self-update check. Updates _ui_update_alert_btn and may
+	# pop the one-shot dialog when the API returns. Guards on
+	# is_instance_valid so a launcher close mid-flight is harmless.
+	_check_modloader_update_async()
 
 	var mods_tab := build_mods_tab(tabs)
 	mods_tab.name = "Mods"
@@ -1166,6 +1189,7 @@ func show_mod_ui() -> void:
 	_ui_window = null
 	_ui_hint_label = null
 	_ui_launch_btn = null
+	_ui_update_alert_btn = null
 	win.queue_free()
 
 # Pessimistic label: any enabled mod -> "(Restart)". Over-warn beats a
@@ -2170,3 +2194,80 @@ func check_updates_for_ui(status_info: Dictionary, add_log: Callable, check_btn:
 					dl_btn.text = "Retry"
 					add_log.call(mod_name + " -- download failed.")
 			)
+
+# ----- modloader self-update check ----------------------------------------
+
+# Fire-and-forget from show_mod_ui. Hits the ModWorkshop versions API for
+# our own mod id, compares the result against MODLOADER_VERSION, and on a
+# newer release: reveals the launch-row LinkButton, and pops a one-shot
+# dialog the first session each new version is detected. All UI mutations
+# guard on is_instance_valid because the launcher may close before the
+# HTTP request returns.
+func _check_modloader_update_async() -> void:
+	if MODLOADER_MODWORKSHOP_ID <= 0:
+		return
+	var ids: Array[int] = [MODLOADER_MODWORKSHOP_ID]
+	var latest_map: Dictionary = await fetch_latest_modworkshop_versions(ids)
+	var raw = latest_map.get(str(MODLOADER_MODWORKSHOP_ID), null)
+	if raw == null:
+		return
+	var latest := str(raw)
+	if latest.is_empty():
+		return
+	_modloader_latest_version = latest
+	if compare_versions(latest, MODLOADER_VERSION) <= 0:
+		return  # installed is current or newer
+
+	if is_instance_valid(_ui_update_alert_btn):
+		_ui_update_alert_btn.text = "Mod Loader v%s -- v%s available, click to update" % [MODLOADER_VERSION, latest]
+		_ui_update_alert_btn.add_theme_color_override("font_color", Color(1.0, 0.55, 0.45))
+		_ui_update_alert_btn.add_theme_color_override("font_hover_color", Color(1.0, 0.78, 0.65))
+
+	# Pop the dialog only the first session this specific new version is
+	# seen. Stays quiet on subsequent launches until ModWorkshop ships a
+	# newer one. The launch-row alert remains visible regardless.
+	var last_seen := _modloader_update_last_seen_version()
+	if last_seen != latest:
+		_show_modloader_update_dialog(latest)
+
+func _modloader_update_last_seen_version() -> String:
+	var cfg := ConfigFile.new()
+	if cfg.load(UI_CONFIG_PATH) != OK:
+		return ""
+	return str(cfg.get_value("modloader_update", "last_seen_version", ""))
+
+func _modloader_update_mark_seen(latest: String) -> void:
+	var cfg := ConfigFile.new()
+	cfg.load(UI_CONFIG_PATH)
+	cfg.set_value("modloader_update", "last_seen_version", latest)
+	cfg.save(UI_CONFIG_PATH)
+
+# One-shot popup the first session each new modloader version is detected.
+# "Open Page" launches the ModWorkshop browser tab; either action writes the
+# latest version into mod_config.cfg so the dialog stays quiet on subsequent
+# launches until ModWorkshop ships another version.
+func _show_modloader_update_dialog(latest: String) -> void:
+	if not is_instance_valid(_ui_window):
+		return
+	var d := ConfirmationDialog.new()
+	d.title = "Mod Loader update available"
+	d.ok_button_text = "Open Page"
+	d.cancel_button_text = "Dismiss"
+	d.dialog_autowrap = true
+	d.min_size = Vector2(440, 120)
+	d.dialog_text = "A newer version of the Mod Loader is available on ModWorkshop.\n\n" \
+			+ "    Installed: v%s\n    Available: v%s\n\n" % [MODLOADER_VERSION, latest] \
+			+ "Open the ModWorkshop page to download?"
+	_attach_ui_dialog(d)
+	d.exclusive = true
+	d.always_on_top = true
+	_connect_dialog_exits(d,
+		func():
+			OS.shell_open(MODWORKSHOP_PAGE_URL_TEMPLATE % str(MODLOADER_MODWORKSHOP_ID))
+			_modloader_update_mark_seen(latest)
+			d.queue_free(),
+		func():
+			_modloader_update_mark_seen(latest)
+			d.queue_free()
+	)
+	d.popup_centered()
