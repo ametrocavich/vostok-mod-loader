@@ -10,6 +10,12 @@ static func _static_vmz_to_zip(vmz_path: String) -> String:
 	var cache_dir := ProjectSettings.globalize_path(TMP_DIR)
 	if not DirAccess.dir_exists_absolute(cache_dir):
 		DirAccess.make_dir_recursive_absolute(cache_dir)
+	# Defensive: never return a stale cache pointer when the source is gone.
+	# Both current call sites verify existence first, so this is a no-op for
+	# the happy path; the guard prevents future callers from accidentally
+	# resurrecting deleted-source content via a same-basename cache hit.
+	if not FileAccess.file_exists(vmz_path):
+		return ""
 	var zip_name := vmz_path.get_file().get_basename() + ".zip"
 	var zip_path := cache_dir.path_join(zip_name)
 	if FileAccess.file_exists(zip_path):
