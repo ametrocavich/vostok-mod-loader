@@ -138,6 +138,12 @@ var _hidden_folder_profile_keys: Dictionary = {}
 var _hidden_folder_ids: Dictionary = {}
 var _pending_autoloads: Array[Dictionary] = []
 var _report_lines: Array[String] = []
+# Loaded mods, keyed by mod_id. Value is a Dictionary with at least
+# {version, file_name, priority, mod_name}; populated by mod_loading.
+# Public read API: lib.has_mod(id, ?min_version), lib.mod_info(id),
+# lib.loaded_mods(). Code that just checks presence still works via
+# Dict.has() since the key membership is unchanged from when the value
+# was a bare `true`.
 var _loaded_mod_ids: Dictionary = {}
 var _registered_autoload_names: Dictionary = {}
 var _override_registry: Dictionary = {}

@@ -154,7 +154,17 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 				_log_warning("  No mod.txt -- autoloads skipped")
 		return
 
-	_loaded_mod_ids[mod_id] = true
+	# Store full info so the public read API (has_mod/mod_info/loaded_mods)
+	# can answer version queries without re-walking the candidate list.
+	# Key membership is unchanged from when this was a bare `true`, so all
+	# existing _loaded_mod_ids.has(id) checks still work.
+	_loaded_mod_ids[mod_id] = {
+		"mod_id":    mod_id,
+		"mod_name":  mod_name,
+		"version":   String(c.get("version", "")),
+		"file_name": file_name,
+		"priority":  int(c.get("priority", 0)),
+	}
 
 	# [hooks] static declaration (v3.0.1 opt-in model). Escape hatch for
 	# mods that can't get auto-enrolled via the .hook("prefix-method-...",
