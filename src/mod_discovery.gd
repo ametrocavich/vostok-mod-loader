@@ -49,6 +49,7 @@ func collect_mod_metadata() -> Array[Dictionary]:
 		_log_debug("Skipped " + str(skipped_files.size()) + " non-mod file(s) in mods dir:")
 		for sf in skipped_files:
 			_log_debug("  " + sf + "  (not .vmz/.pck)")
+	entries = _dedupe_by_mod_id(entries)
 	if entries.size() == 0:
 		_log_warning("No mods found in: " + _mods_dir)
 	else:
@@ -123,6 +124,7 @@ func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, e
 	var mod_name := file_name
 	var mod_id   := file_name
 	var version  := ""
+	var author   := ""
 	var priority := 0
 	var has_mod_id := false
 
@@ -146,6 +148,7 @@ func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, e
 			mod_id = str(cfg.get_value("mod", "id"))
 			has_mod_id = true
 		version = str(cfg.get_value("mod", "version", ""))
+		author = str(cfg.get_value("mod", "author", ""))
 		if cfg.has_section_key("mod", "priority"):
 			priority = int(str(cfg.get_value("mod", "priority")))
 		elif has_filename_priority:
@@ -163,6 +166,7 @@ func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, e
 	var entry := {
 		"file_name": file_name, "full_path": full_path, "ext": ext,
 		"mod_name": mod_name, "mod_id": mod_id, "version": version,
+		"author": author,
 		"profile_key": profile_key,
 		"priority": priority, "enabled": true,
 		"cfg": cfg, "mod_txt_status": _last_mod_txt_status,
@@ -220,6 +224,70 @@ func compare_versions(a: String, b: String) -> int:
 		if va > vb: return 1
 	return 0
 
+# Collapse same-id duplicates produced when an author publishes the same mod
+# under two filenames (e.g. CoolMod_v1.zip + CoolMod_v1.1.zip). Without this
+# the UI shows both rows and the load-time skip at _process_mod_candidate
+# silently drops one -- the user is left to figure out which to delete.
+#
+# Entries with no declared mod_id (profile_key "zip:<file>") and .pck files
+# are passed through untouched: their identity is the filename, which the
+# scan loop already deduped.
+func _dedupe_by_mod_id(entries: Array[Dictionary]) -> Array[Dictionary]:
+	var groups: Dictionary = {}
+	for e in entries:
+		var pk: String = str(e.get("profile_key", ""))
+		if e["ext"] == "pck" or pk.begins_with("zip:"):
+			continue
+		var mid: String = str(e["mod_id"])
+		if not groups.has(mid):
+			groups[mid] = []
+		(groups[mid] as Array).append(e)
+
+	var winners_by_id: Dictionary = {}
+	for mid in groups.keys():
+		var members: Array = groups[mid]
+		if members.size() == 1:
+			winners_by_id[mid] = members[0]
+			continue
+		members.sort_custom(_compare_dedup_priority)
+		var winner: Dictionary = members[0]
+		var hidden: Array[Dictionary] = []
+		var w_v: String = ("v" + str(winner["version"])) if str(winner["version"]) != "" else "(unversioned)"
+		for j in range(1, members.size()):
+			var loser: Dictionary = members[j]
+			hidden.append({"file_name": loser["file_name"], "version": loser["version"]})
+			var l_v: String = ("v" + str(loser["version"])) if str(loser["version"]) != "" else "(unversioned)"
+			_log_warning("Duplicate mod_id '" + mid + "' detected: keeping "
+					+ str(winner["file_name"]) + " (" + w_v + "), hiding "
+					+ str(loser["file_name"]) + " (" + l_v + ")")
+		winner["duplicates_hidden"] = hidden
+		winners_by_id[mid] = winner
+
+	var seen_ids: Dictionary = {}
+	var out: Array[Dictionary] = []
+	for e in entries:
+		var pk: String = str(e.get("profile_key", ""))
+		if e["ext"] == "pck" or pk.begins_with("zip:"):
+			out.append(e)
+			continue
+		var mid: String = str(e["mod_id"])
+		if seen_ids.has(mid):
+			continue
+		seen_ids[mid] = true
+		out.append(winners_by_id[mid])
+	return out
+
+# Higher version wins; tiebreak newer mtime, then alphabetically lower filename.
+func _compare_dedup_priority(a: Dictionary, b: Dictionary) -> bool:
+	var vc := compare_versions(str(a.get("version", "")), str(b.get("version", "")))
+	if vc != 0:
+		return vc > 0
+	var am: int = FileAccess.get_modified_time(str(a["full_path"]))
+	var bm: int = FileAccess.get_modified_time(str(b["full_path"]))
+	if am != bm:
+		return am > bm
+	return (a["file_name"] as String).to_lower() < (b["file_name"] as String).to_lower()
+
 func fetch_latest_modworkshop_versions(ids: Array[int]) -> Dictionary:
 	var latest_versions := {}
 	for chunk_ids in _chunk_int_array(ids, MODWORKSHOP_BATCH_SIZE):
@@ -242,7 +310,90 @@ func fetch_latest_modworkshop_versions(ids: Array[int]) -> Dictionary:
 			latest_versions.merge(parsed, true)
 	return latest_versions
 
-func download_and_replace_mod(target_path: String, modworkshop_id: int) -> bool:
+# Pull a usable filename out of the response's Content-Disposition header.
+# Supports the common attachment; filename=X and quoted filename="X" forms,
+# plus the RFC 5987 filename*=UTF-8''X variant some CDNs emit. Returns "" if
+# the header is missing or the value isn't a safe basename with one of the
+# extensions we already accept on disk -- we never let a server pick a path
+# we wouldn't have scanned in the first place.
+func _filename_from_content_disposition(headers: PackedStringArray) -> String:
+	for raw in headers:
+		var line: String = raw
+		var colon := line.find(":")
+		if colon < 0:
+			continue
+		if line.substr(0, colon).strip_edges().to_lower() != "content-disposition":
+			continue
+		var value := line.substr(colon + 1).strip_edges()
+		# Try filename* first -- RFC 5987 form is unicode-safe, and servers
+		# that emit both prefer the encoded one for non-ASCII names.
+		var star_val := _extract_disposition_param(value, "filename*")
+		if star_val != "":
+			var sep := star_val.find("''")
+			if sep >= 0:
+				star_val = star_val.substr(sep + 2).uri_decode()
+			if _is_safe_mod_filename(star_val):
+				return star_val.get_file()
+		var plain_val := _extract_disposition_param(value, "filename")
+		if plain_val != "" and _is_safe_mod_filename(plain_val):
+			return plain_val.get_file()
+		return ""
+	return ""
+
+func _extract_disposition_param(header_value: String, param: String) -> String:
+	var pos := header_value.to_lower().find(param.to_lower() + "=")
+	if pos < 0:
+		return ""
+	var rest := header_value.substr(pos + param.length() + 1).strip_edges()
+	if rest.begins_with("\""):
+		var end := rest.find("\"", 1)
+		if end < 0:
+			return ""
+		return rest.substr(1, end - 1)
+	var semi := rest.find(";")
+	if semi < 0:
+		return rest.strip_edges()
+	return rest.substr(0, semi).strip_edges()
+
+# Reject anything that isn't a plain basename with one of the mod extensions
+# we accept. Stops a malicious or misconfigured server from writing under a
+# parent dir or with an executable extension.
+func _is_safe_mod_filename(name: String) -> bool:
+	if name.is_empty():
+		return false
+	if name != name.get_file():
+		return false
+	return name.get_extension().to_lower() in ["vmz", "zip", "pck"]
+
+# Pick the filename the validated download should land under. Prefers
+# Content-Disposition; falls back to splicing the new mod.txt version onto
+# the old stem (CoolMod_v1.0.zip -> CoolMod_v1.1.zip) so the filename never
+# claims an older version than its contents. Returns the original filename
+# unchanged when neither path produces something better -- a rename is
+# best-effort and must never block an update.
+func _derive_updated_filename(old_file_name: String, headers: PackedStringArray, new_version: String) -> String:
+	var server_name := _filename_from_content_disposition(headers)
+	if server_name != "":
+		return server_name
+	if new_version.is_empty():
+		return old_file_name
+	var ext := old_file_name.get_extension()
+	var stem := old_file_name.get_basename()
+	var rx := RegEx.new()
+	rx.compile("[_-][vV]\\d+(?:\\.\\d+)*$")
+	var stripped := rx.sub(stem, "")
+	var new_stem := stripped + "_v" + new_version.lstrip("vV")
+	return new_stem if ext.is_empty() else new_stem + "." + ext
+
+# Returns { ok: bool, new_path: String, new_file_name: String }. On success
+# new_path / new_file_name reflect the on-disk filename the download landed
+# under -- which may differ from target_path when the server provided a
+# Content-Disposition or the mod.txt version-bumped (CoolMod_v1.0.zip ->
+# CoolMod_v1.1.zip). On failure the temp + backup are cleaned up and the
+# original file is left intact; new_path / new_file_name echo target_path.
+func download_and_replace_mod(target_path: String, modworkshop_id: int) -> Dictionary:
+	var failure := {"ok": false, "new_path": target_path, "new_file_name": target_path.get_file()}
+
 	var req := HTTPRequest.new()
 	req.timeout = API_DOWNLOAD_TIMEOUT
 	req.download_body_size_limit = 256 * 1024 * 1024
@@ -250,16 +401,17 @@ func download_and_replace_mod(target_path: String, modworkshop_id: int) -> bool:
 	var err := req.request(MODWORKSHOP_DOWNLOAD_URL_TEMPLATE % str(modworkshop_id))
 	if err != OK:
 		req.queue_free()
-		return false
+		return failure
 	# request_completed -> [result, http_code, headers, body]
 	var res: Array = await req.request_completed
 	req.queue_free()
 
 	if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] < 200 or res[1] >= 300:
-		return false
+		return failure
+	var headers: PackedStringArray = res[2]
 	var response_body: PackedByteArray = res[3]
 	if response_body.is_empty():
-		return false
+		return failure
 
 	var temp_path   := target_path + ".download"
 	var backup_path := target_path + ".bak"
@@ -268,33 +420,49 @@ func download_and_replace_mod(target_path: String, modworkshop_id: int) -> bool:
 
 	var out := FileAccess.open(temp_path, FileAccess.WRITE)
 	if out == null:
-		return false
+		return failure
 	out.store_buffer(response_body)
 	out.close()
 
-	if read_mod_config(temp_path) == null:
+	var new_cfg: ConfigFile = read_mod_config(temp_path)
+	if new_cfg == null:
 		DirAccess.remove_absolute(temp_path)
-		return false
+		return failure
 
 	var dir_access := DirAccess.open(target_path.get_base_dir())
 	if dir_access == null:
 		DirAccess.remove_absolute(temp_path)
-		return false
+		return failure
 
+	# Decide where the validated download should land.
+	var old_file_name := target_path.get_file()
+	var new_version := str(new_cfg.get_value("mod", "version", ""))
+	var new_file_name := _derive_updated_filename(old_file_name, headers, new_version)
+	var new_path := target_path.get_base_dir().path_join(new_file_name)
+
+	# Refuse to overwrite an unrelated archive that already lives at the
+	# derived path. Better to fail loudly than silently clobber a different
+	# mod that happens to share the new versioned name.
+	if new_file_name != old_file_name and FileAccess.file_exists(new_path):
+		DirAccess.remove_absolute(temp_path)
+		return failure
+
+	# Stash the old archive under .bak so a failed rename can roll back.
 	if FileAccess.file_exists(target_path):
 		if dir_access.rename(target_path.get_file(), backup_path.get_file()) != OK:
 			DirAccess.remove_absolute(temp_path)
-			return false
+			return failure
 
-	if dir_access.rename(temp_path.get_file(), target_path.get_file()) != OK:
+	if dir_access.rename(temp_path.get_file(), new_file_name) != OK:
 		if FileAccess.file_exists(backup_path):
 			dir_access.rename(backup_path.get_file(), target_path.get_file())
 		DirAccess.remove_absolute(temp_path)
-		return false
+		return failure
 
+	# New file is in place; the .bak (which is the old archive) can go.
 	if FileAccess.file_exists(backup_path):
 		DirAccess.remove_absolute(backup_path)
-	return true
+	return {"ok": true, "new_path": new_path, "new_file_name": new_file_name}
 
 func _chunk_int_array(arr: Array[int], chunk_size: int) -> Array:
 	var result: Array = []

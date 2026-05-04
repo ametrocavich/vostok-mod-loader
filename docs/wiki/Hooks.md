@@ -43,7 +43,7 @@ That's the whole mod. No `[hooks]` section. No framework imports. The scanner do
 
 ## Opt-in model
 
-v3.0.1 uses an opt-in model: **a modlist that declares nothing produces no wrap, no rewrite, and no hook pack** -- mods run against byte-identical vanilla scripts. Declarations turn individual subsystems on:
+v3.1.1 uses an opt-in model: **a modlist that declares nothing produces no wrap, no rewrite, and no hook pack** -- mods run against byte-identical vanilla scripts. Declarations turn individual subsystems on:
 
 | Trigger | Effect |
 |---|---|
@@ -76,7 +76,7 @@ Method names in the list are case-insensitive (normalized to lowercase on write)
 
 ### `ModLoader.add_hook()` compat
 
-Mods written against [`godot-mod-loader`](https://github.com/GodotModding/godot-mod-loader) call `ModLoader.add_hook(script_path, method_name, callback, is_before)`. The loader provides a compat shim at [hooks_api.gd:80](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd#L80) that:
+Mods written against [`godot-mod-loader`](https://github.com/GodotModding/godot-mod-loader) call `ModLoader.add_hook(script_path, method_name, callback, is_before)`. The loader provides a compat shim at [hooks_api.gd:89](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd#L89) that:
 
 1. Builds the native hook name: `<stem>-<method>-<pre|post>` (all lowercase).
 2. Enrolls `script_path` into `_hooked_methods` so the wrap surface picks it up.
@@ -141,12 +141,47 @@ Suffixes:
 |---|---|---|---|
 | `-pre` | Before vanilla body (or before replace) | Same as the vanilla method | Ignored |
 | (none) | In place of vanilla. **First registration wins, subsequent registrations are rejected** (returns -1). Within a replace callback, call `lib.skip_super()` to suppress vanilla | Same as vanilla | Return value becomes the method's return |
-| `-post` | After vanilla (or after replace if no `skip_super`) | Same as vanilla | Ignored |
+| `-post` | After vanilla (or after replace if no `skip_super`) | Vanilla args, plus trailing `_result` for the 3-arg form | Observed for the new 3-arg form `func(...args, _result)` -- non-null replaces, null passes through. 2-arg legacy form is ignored and emits a one-shot deprecation warning per (hook, callback). See [Return mutation](#return-mutation) below. |
 | `-callback` | Deferred via `Callable.bindv(args).call_deferred()` | Same as vanilla | Ignored |
+
+## Return mutation
+
+Post hooks on **non-void** wrapped methods can transform the return value. Declare your callback with a trailing `_result` parameter:
+
+```gdscript
+func _on_lib_ready():
+    _lib = Engine.get_meta("RTVModLib")
+    # 3-arg form: vanilla args + trailing _result.
+    _lib.hook("weaponrig-getdamage-post", _double_damage)
+
+func _double_damage(_attacker, _result):
+    # Return non-null to replace _result for downstream callbacks +
+    # the method's caller. Returning null is a pass-through ("I
+    # observed but do not want to change anything").
+    return _result * 2
+```
+
+Callbacks chain in priority order. Each one receives the running `_result` left by the previous callback (or by the vanilla body, if it was first). Non-null returns replace the running value; `null` returns pass it through unchanged.
+
+**Limitations**:
+
+- Only non-void wrappers route through `_dispatch_post`. Void post hooks still see the legacy 2-arg shape with no return slot -- a callback declared as `func(args, _result)` against a void method just gets a deprecation warning and runs without mutation.
+- The `null` sentinel is structural: a callback that genuinely wants to set `_result = null` cannot express that here. Use a replace hook instead.
+
+**Legacy 2-arg form**: callbacks declared without the trailing `_result` (the pre-3.1.2 shape, `func(args)`) still run for backwards compatibility. The dispatcher detects the arity via `Callable.get_argument_count()`, fires the callback observation-only, and emits a one-shot warning per `(hook_name, callback)` pair so existing mods keep working without log spam:
+
+```
+[RTVModLib] post hook 'weaponrig-getdamage-post' callback uses legacy 1-arg
+signature (expected 2 for non-void wrapper). Add a trailing _result param
+to your callback to receive + optionally mutate the return value; the
+legacy form will be removed in a future major version.
+```
+
+Implementation: [hooks_api.gd `_dispatch_post`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd).
 
 ## Dispatch semantics
 
-The dispatch wrapper template lives at [rewriter.gd:1023 `_rtv_dispatch_inline_src`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter.gd#L1023). For every hookable vanilla method, the rewriter emits roughly this structure:
+The dispatch wrapper template lives at [rewriter.gd:1039 `_rtv_dispatch_inline_src`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter.gd#L1039). For every hookable vanilla method, the rewriter emits roughly this structure:
 
 ```
 func <name>(args):
@@ -182,7 +217,9 @@ func <name>(args):
     else:
         _result = _rtv_vanilla_<name>(args)
 
-    _lib._dispatch("<hook_base>-post", [args])
+    # Non-void wrappers route post hooks through _dispatch_post so 3-arg
+    # callbacks can mutate _result. Void wrappers still emit plain _dispatch.
+    _result = _lib._dispatch_post("<hook_base>-post", [args], _result)
     _lib._dispatch_deferred("<hook_base>-callback", [args])
     _lib._wrapper_active.erase("<hook_base>")
     return _result
@@ -198,7 +235,7 @@ Void methods, coroutines (`await`), and engine lifecycle methods (`_ready` et al
 
 ## Hook registration, step-by-step
 
-Source: [hooks_api.gd:42-65](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd#L42).
+Source: [hooks_api.gd:44-67](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd#L44).
 
 1. Detect replace vs. aspect: `is_replace = not (name ends_with "-pre/-post/-callback")`.
 2. If replace and `_hooks[name]` is non-empty: debug-log the rejection, return `-1`.
@@ -208,7 +245,7 @@ Source: [hooks_api.gd:42-65](https://github.com/ametrocavich/vostok-mod-loader/b
 
 ## Dispatch internals
 
-Source: [hooks_api.gd:131](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd#L131).
+Source: [hooks_api.gd:142](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd#L142).
 
 ```gdscript
 func _dispatch(hook_name: String, args: Array) -> void:
@@ -222,7 +259,7 @@ func _dispatch(hook_name: String, args: Array) -> void:
 
 The `.duplicate()` is load-bearing: hooks that call `hook()` or `unhook()` mid-dispatch would otherwise mutate the live array during iteration. Snapshotting means new hooks registered during dispatch don't fire in the current dispatch -- they join the next one.
 
-`_dispatch_deferred` uses `callback.bindv(args).call_deferred()` instead, for `-callback` suffix hooks.
+`_dispatch_deferred` uses `callback.bindv(args).call_deferred()` instead, for `-callback` suffix hooks. `_dispatch_post` is the chained variant used by non-void post hooks: same snapshot-then-iterate shape, but each callback receives `args + [current_result]`, threads its non-null return into `current_result`, and the final value is returned to the wrapper. See [Return mutation](#return-mutation).
 
 ## How the code generation works
 

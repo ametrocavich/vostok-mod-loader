@@ -10,6 +10,12 @@ static func _static_vmz_to_zip(vmz_path: String) -> String:
 	var cache_dir := ProjectSettings.globalize_path(TMP_DIR)
 	if not DirAccess.dir_exists_absolute(cache_dir):
 		DirAccess.make_dir_recursive_absolute(cache_dir)
+	# Defensive: never return a stale cache pointer when the source is gone.
+	# Both current call sites verify existence first, so this is a no-op for
+	# the happy path; the guard prevents future callers from accidentally
+	# resurrecting deleted-source content via a same-basename cache hit.
+	if not FileAccess.file_exists(vmz_path):
+		return ""
 	var zip_name := vmz_path.get_file().get_basename() + ".zip"
 	var zip_path := cache_dir.path_join(zip_name)
 	if FileAccess.file_exists(zip_path):
@@ -332,9 +338,15 @@ func zip_folder_to_temp(folder_path: String) -> String:
 	if zp.open(tmp_zip_path) != OK:
 		_log_critical("Failed to create temp zip: " + tmp_zip_path)
 		return ""
-	# Zip contents without a top-level wrapper -- the folder's internal structure
-	# already mirrors the res:// paths the mod expects.
-	_zip_folder_recursive(zp, folder_path, "")
+	# Wrap zip entries under the folder name so res:// paths match what a
+	# conventionally-packed .zip mod produces. A folder at <mods>/MyMod/
+	# containing data/main.gd mounts as res://MyMod/data/main.gd, the same
+	# layout you'd get if MyMod/ were inside a .zip. Without this wrapper,
+	# folder mode dropped contents at res:// directly, so a mod.txt path of
+	# res://MyMod/data/main.gd worked from .zip but resolved nowhere from
+	# the folder. (Pre-v3.1.2 folder mods that relied on the unwrapped
+	# layout need their mod.txt paths re-prefixed with the folder name.)
+	_zip_folder_recursive(zp, folder_path, folder_name)
 	zp.close()
 	return tmp_zip_path
 

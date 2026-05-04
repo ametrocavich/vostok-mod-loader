@@ -153,6 +153,54 @@ func _dispatch(hook_name: String, args: Array) -> void:
 		var cb: Callable = entry["callback"]
 		cb.callv(args)
 
+# Post-hook chained dispatch for non-void wrapped methods. Each callback
+# may transform the running result by returning a non-null value.
+#
+# Callback signature (preferred): `func(<vanilla args>, _result)`. The
+# trailing `_result` is whatever the prior post hook (or vanilla body)
+# left behind. Returning non-null replaces _result for the next callback;
+# returning null is a pass-through ("I observed but don't want to change
+# anything"). Mods needing to actually return a literal null can't model
+# that here -- documented limitation.
+#
+# Backwards compat: callbacks declared with the old 2-arg shape (no
+# trailing _result) still work. The dispatcher detects arity via
+# Callable.get_argument_count() and routes to the appropriate call form.
+# A one-shot deprecation warning fires per (hook_name, callback) pair so
+# legacy mods keep running without log spam, but authors get a clear
+# nudge to update their signatures.
+#
+# Priority order matches _dispatch: ascending by `priority` field, ties
+# broken by registration order (Array iteration).
+func _dispatch_post(hook_name: String, args: Array, current_result: Variant) -> Variant:
+	if not _hooks.has(hook_name):
+		return current_result
+	# Snapshot before iterating: same rationale as _dispatch -- mid-dispatch
+	# hook()/unhook() calls don't disturb the in-flight pass.
+	var entries: Array = (_hooks[hook_name] as Array).duplicate()
+	var expected_with_result: int = args.size() + 1
+	for entry in entries:
+		_seq += 1
+		var cb: Callable = entry["callback"]
+		var argc: int = cb.get_argument_count()
+		var ret: Variant = null
+		if argc == expected_with_result:
+			# New 3-arg form: callback wants the result.
+			ret = cb.callv(args + [current_result])
+		else:
+			# Legacy 2-arg form (or anything else). Fire-and-forget on
+			# args only, ignore return. Warn once.
+			var warn_key: String = "%s::%d" % [hook_name, cb.get_object_id()]
+			if not _post_legacy_warned.has(warn_key):
+				_post_legacy_warned[warn_key] = true
+				_log_warning("[RTVModLib] post hook '%s' callback uses legacy %d-arg signature (expected %d for non-void wrapper). Add a trailing _result param to your callback to receive + optionally mutate the return value; the legacy form will be removed in a future major version." \
+						% [hook_name, argc, expected_with_result])
+			cb.callv(args)
+		# null is the pass-through sentinel: prior _result survives untouched.
+		if ret != null:
+			current_result = ret
+	return current_result
+
 func _dispatch_deferred(hook_name: String, args: Array) -> void:
 	if not _hooks.has(hook_name):
 		return
