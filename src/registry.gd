@@ -39,6 +39,7 @@ const Registry := {
 	INPUTS = "inputs",
 	SCENE_PATHS = "scene_paths",
 	SHELTERS = "shelters",
+	MAPS = "maps",
 	RANDOM_SCENES = "random_scenes",
 	AI_TYPES = "ai_types",
 	FISH_SPECIES = "fish_species",
@@ -88,6 +89,7 @@ func register(registry: String, id: String, data: Variant) -> bool:
 		"inputs": return _register_input(id, data)
 		"scene_paths": return _register_scene_path(id, data)
 		"shelters": return _register_shelter(id, data)
+		"maps": return _register_map(id, data)
 		"random_scenes": return _register_random_scene(id, data)
 		"ai_types": return _register_ai_type(id, data)
 		"fish_species": return _register_fish_species(id, data)
@@ -122,6 +124,9 @@ func override(registry: String, id: String, data: Variant) -> bool:
 		"scene_paths": return _override_scene_path(id, data)
 		"shelters":
 			push_warning("[Registry] override: 'shelters' doesn't support override (it's an append-only list; use register/remove)")
+			return false
+		"maps":
+			push_warning("[Registry] override: 'maps' doesn't support override (append-only; use register/remove, or override('scenes', ...) to swap the underlying scene)")
 			return false
 		"random_scenes":
 			push_warning("[Registry] override: 'random_scenes' doesn't support override (append-only list; use register/remove)")
@@ -187,7 +192,10 @@ func patch(registry: String, id: Variant, fields: Dictionary) -> bool:
 				return false
 			return _patch_scene_path(id, fields)
 		"shelters":
-			push_warning("[Registry] patch: 'shelters' doesn't support patch (entries are bare strings)")
+			push_warning("[Registry] patch: 'shelters' doesn't support patch (use remove + register to change fields, or patch('scene_paths', ...) for path-only edits)")
+			return false
+		"maps":
+			push_warning("[Registry] patch: 'maps' doesn't support patch (use remove + register to change fields, or patch('scene_paths', ...) for path-only edits)")
 			return false
 		"random_scenes":
 			push_warning("[Registry] patch: 'random_scenes' doesn't support patch (entries are bare paths)")
@@ -228,6 +236,7 @@ func remove(registry: String, id: String) -> bool:
 		"inputs": return _remove_input(id)
 		"scene_paths": return _remove_scene_path(id)
 		"shelters": return _remove_shelter(id)
+		"maps": return _remove_map(id)
 		"random_scenes": return _remove_random_scene(id)
 		"ai_types": return _remove_ai_type(id)
 		"fish_species": return _remove_fish_species(id)
@@ -293,6 +302,11 @@ func revert(registry: String, id: Variant, fields: Array = []) -> bool:
 				push_warning("[Registry] revert('shelters', ...): id must be a String")
 				return false
 			return _remove_shelter(id)
+		"maps":
+			if not (id is String):
+				push_warning("[Registry] revert('maps', ...): id must be a String")
+				return false
+			return _remove_map(id)
 		"random_scenes":
 			if not (id is String):
 				push_warning("[Registry] revert('random_scenes', ...): id must be a String")
@@ -361,7 +375,20 @@ func get_entry(registry: String, id: String) -> Variant:
 			return reg.get(id)
 		"shelters":
 			var reg: Dictionary = _registry_registered.get("shelters", {})
-			return reg.get(id)
+			var entry = reg.get(id)
+			# Filter cross-surface lookups: shelters get_entry returns null
+			# for ids that were registered via 'maps'.
+			if entry is Dictionary and entry.get("kind", "shelters") != "shelters":
+				return null
+			return entry
+		"maps":
+			# Maps share the 'shelters' storage bucket but only surface
+			# entries whose kind is "maps" through get_entry('maps').
+			var reg: Dictionary = _registry_registered.get("shelters", {})
+			var entry = reg.get(id)
+			if entry is Dictionary and entry.get("kind", "shelters") != "maps":
+				return null
+			return entry
 		"random_scenes":
 			var reg: Dictionary = _registry_registered.get("random_scenes", {})
 			return reg.get(id)

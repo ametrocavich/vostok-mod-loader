@@ -22,6 +22,7 @@ const REGISTRY_TARGETS: Array[String] = [
 	"Loader.gd",
 	"AISpawner.gd",
 	"FishPool.gd",
+	"Compiler.gd",
 ]
 
 func _is_registry_target(filename: String) -> bool:

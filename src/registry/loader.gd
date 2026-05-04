@@ -256,67 +256,142 @@ func _revert_scene_path(id: String, fields: Array) -> bool:
 	_registry_patched["scene_paths"] = patched
 	return did_something
 
-# -------- shelters --------
+# -------- shelters / maps --------
 #
-# The shelters list holds bare strings. Registering a shelter also requires
-# a scene behind the name; if the mod provides `path`, we auto-register a
-# paired scene_paths entry so LoadScene(name) works. Otherwise we assume
-# the name is already resolvable (vanilla, or previously registered).
+# The shelters list holds bare strings (vanilla shelter names). Registering
+# a shelter or map also requires a scene behind the name; if the mod
+# provides `path`, we auto-register a paired scene_paths entry so
+# LoadScene(name) works. Otherwise we assume the name is already resolvable
+# (vanilla, or previously registered).
+#
+# The shelters and maps registries share storage and behavior -- they
+# differ only in the default `shelter` flag (true for shelters, false for
+# maps). The `shelter` flag controls TWO related things:
+#   1. gameData.shelter -- flipped during LoadScene's prelude (sets HUD/world state)
+#   2. Loader.LoadShelter(name) call in Compiler.Spawn() -- loads/saves
+#      per-shelter persistent state (furniture, stash). Maps don't get this.
+# The vanilla concept of "shelter" lumps both together; we follow suit.
+#
+# Full registration schema (all optional except `path` for newly-added
+# scenes):
+#   path             -- res:// path to the .tscn (auto-registers scene_paths)
+#   transition_text  -- override for the "Loading X..." label (defaults to id)
+#   exit_spawn       -- transition node name to spawn at when arriving in
+#                       this shelter (e.g. "Door_Apartment_Exit")
+#   entrance_spawn   -- transition node name in `connected_to` to spawn at
+#                       when leaving this shelter back to its parent map
+#   connected_to     -- vanilla map name where this shelter's entrance lives
+#   connected_content -- Array of {path, position, rotation} entries spawned
+#                        into /root/Map/Content when player enters connected_to
+#   shelter          -- bool, default true for shelters / false for maps
+#
+# This schema mirrors the B_Loader mod's add_shelter/add_map dict so
+# existing B_Loader-pattern mods migrate by changing one call site.
 
 func _register_shelter(id: String, data: Variant) -> bool:
+	return _register_shelter_or_map(id, data, true, "shelters")
+
+# Maps registry: same storage as shelters, just defaults shelter:false.
+# A "map" is a non-persistent area (no LoadShelter/SaveShelter); a
+# "shelter" gets the full save-file treatment.
+func _register_map(id: String, data: Variant) -> bool:
+	return _register_shelter_or_map(id, data, false, "maps")
+
+func _register_shelter_or_map(id: String, data: Variant, default_shelter: bool, label: String) -> bool:
 	var ldr := _loader_node()
 	if ldr == null:
 		return false
 	if not (data is Dictionary):
-		push_warning("[Registry] register('shelters', '%s', ...) expects Dictionary (can be empty if scene already registered)" % id)
+		push_warning("[Registry] register('%s', '%s', ...) expects Dictionary (can be empty if scene already registered)" % [label, id])
 		return false
 	var d: Dictionary = data
+	# Both 'shelters' and 'maps' write to the same _registry_registered
+	# bucket so collisions across the two surfaces fail loud (a name can
+	# only resolve to one entry in Compiler.Spawn).
 	var reg: Dictionary = _registry_registered.get("shelters", {})
 	if reg.has(id):
-		push_warning("[Registry] register('shelters', '%s'): already registered" % id)
+		push_warning("[Registry] register('%s', '%s'): already registered as shelter or map" % [label, id])
 		return false
 	if id in ldr.shelters:
-		push_warning("[Registry] register('shelters', '%s'): name already in shelters list (vanilla?)" % id)
+		push_warning("[Registry] register('%s', '%s'): name already in shelters list (vanilla?)" % [label, id])
 		return false
+	# Build the full entry that the Compiler.Spawn prelude reads.
+	var is_shelter: bool = bool(d.get("shelter", default_shelter))
+	var entry: Dictionary = {
+		"shelter": is_shelter,
+		"transition_text": String(d.get("transition_text", id)),
+		"exit_spawn": String(d.get("exit_spawn", "")),
+		"entrance_spawn": String(d.get("entrance_spawn", "")),
+		"connected_to": String(d.get("connected_to", "")),
+		"connected_content": d.get("connected_content", []),
+	}
 	# If a `path` is given, auto-register the scene_paths entry so the
-	# shelter name resolves to a real scene. Force the shelter gameData
-	# flag to true by default since it's a shelter.
+	# shelter/map name resolves to a real scene. Forward the shelter flag
+	# to gameData (LoadScene prelude reads `shelter` from the scene_paths
+	# entry) and the transition_text so the loading-screen label uses it.
 	var auto_scene_path := false
 	if d.has("path"):
-		var sp_data: Dictionary = d.duplicate()
-		# Default shelter flag to true; caller can explicitly pass shelter=false
-		# to opt out.
-		if not sp_data.has("shelter"):
-			sp_data["shelter"] = true
+		var sp_data: Dictionary = {}
+		sp_data["path"] = d["path"]
+		sp_data["shelter"] = is_shelter
+		# Forward optional gameData fields the caller might have set.
+		if d.has("menu"): sp_data["menu"] = d["menu"]
+		if d.has("permadeath"): sp_data["permadeath"] = d["permadeath"]
+		if d.has("tutorial"): sp_data["tutorial"] = d["tutorial"]
+		# transition_text lives on the scene_paths entry too -- the LoadScene
+		# prelude reassigns the `scene` arg from this so vanilla's label
+		# code shows the modded label.
+		sp_data["transition_text"] = entry["transition_text"]
 		if not _register_scene_path(id, sp_data):
-			# The scene_paths registration failed (probably a collision);
-			# abort the shelter register too to keep state consistent.
+			# scene_paths registration failed (probably collision); abort.
 			return false
 		auto_scene_path = true
 	ldr.shelters.append(id)
-	reg[id] = {"auto_scene_path": auto_scene_path, "data": d}
+	# Persist the full entry into the rewriter-injected dict on Loader so
+	# Compiler.Spawn's prelude can consult it.
+	if "_rtv_mod_shelters" in ldr:
+		ldr._rtv_mod_shelters[id] = entry
+	else:
+		push_warning("[Registry] register('%s', '%s'): Loader is missing _rtv_mod_shelters; rewriter didn't fire. Does any mod declare [registry]?" % [label, id])
+	reg[id] = {"auto_scene_path": auto_scene_path, "entry": entry, "kind": label}
 	_registry_registered["shelters"] = reg
-	_log_debug("[Registry] registered shelter '%s' (auto scene_path=%s)" % [id, auto_scene_path])
+	_log_debug("[Registry] registered %s '%s' (shelter=%s, connected_to='%s')" \
+			% [label, id, is_shelter, entry["connected_to"]])
 	return true
 
 func _remove_shelter(id: String) -> bool:
+	return _remove_shelter_or_map(id, "shelters")
+
+func _remove_map(id: String) -> bool:
+	return _remove_shelter_or_map(id, "maps")
+
+func _remove_shelter_or_map(id: String, label: String) -> bool:
 	var ldr := _loader_node()
 	if ldr == null:
 		return false
 	var reg: Dictionary = _registry_registered.get("shelters", {})
 	if not reg.has(id):
-		push_warning("[Registry] remove('shelters', '%s'): not a mod registration" % id)
+		push_warning("[Registry] remove('%s', '%s'): not a mod registration" % [label, id])
 		return false
-	var entry: Dictionary = reg[id]
+	var meta: Dictionary = reg[id]
+	# Cross-surface remove guard: don't let `remove('maps', X)` succeed if
+	# X was registered as a shelter (or vice versa). Less surprising than
+	# silently letting through.
+	if meta.get("kind", "shelters") != label:
+		push_warning("[Registry] remove('%s', '%s'): id was registered as '%s', use that registry to remove" \
+				% [label, id, meta.get("kind", "shelters")])
+		return false
 	var idx: int = ldr.shelters.find(id)
 	if idx >= 0:
 		ldr.shelters.remove_at(idx)
 	# Clean up the auto-created scene_paths entry too (if any).
-	if entry.get("auto_scene_path", false):
+	if meta.get("auto_scene_path", false):
 		_remove_scene_path(id)
+	if "_rtv_mod_shelters" in ldr:
+		ldr._rtv_mod_shelters.erase(id)
 	reg.erase(id)
 	_registry_registered["shelters"] = reg
-	_log_debug("[Registry] removed shelter '%s'" % id)
+	_log_debug("[Registry] removed %s '%s'" % [label, id])
 	return true
 
 # -------- random_scenes --------
