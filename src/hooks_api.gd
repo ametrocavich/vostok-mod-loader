@@ -175,6 +175,77 @@ func skip_super() -> void:
 func seq() -> int:
 	return _seq
 
+
+## ---- Mod-discovery API ----
+## Lets a mod ask "is this other mod loaded?" so it can integrate with peers
+## (e.g. defer to RTVCoop's trader-supply logic when present) or skip features
+## that depend on a missing dependency. All three calls operate on mod_id
+## strings (the `id="..."` field in mod.txt; folder/zip name as fallback).
+
+## True when a mod with the given id is loaded. Optional `min_version` does
+## a numeric semver compare (1.2.3 split on '.', component-wise int compare,
+## non-numeric components compare as 0). Mods declaring no version field
+## return version="" which compares as 0.0.0 -- they pass any min_version
+## of "0" but fail anything stricter.
+func has_mod(mod_id: String, min_version: String = "") -> bool:
+	if not _loaded_mod_ids.has(mod_id):
+		return false
+	if min_version == "":
+		return true
+	var info = _loaded_mod_ids[mod_id]
+	var have: String = ""
+	if info is Dictionary:
+		have = String(info.get("version", ""))
+	# Bare-true legacy values (shouldn't happen post-upgrade but defend
+	# against pre-upgrade callers): treat as unknown version, fail strict
+	# checks.
+	return _compare_versions(have, min_version) >= 0
+
+
+## Returns the full info dict for a loaded mod, or {} if not loaded.
+## Shape: {mod_id, mod_name, version, file_name, priority}. Stable enough
+## for mods to inspect for debug prints / MCM displays.
+func mod_info(mod_id: String) -> Dictionary:
+	var info = _loaded_mod_ids.get(mod_id, null)
+	if info is Dictionary:
+		return (info as Dictionary).duplicate()
+	return {}
+
+
+## All loaded mod ids. Order is not guaranteed; callers wanting consistent
+## display order should sort the result.
+func loaded_mods() -> Array[String]:
+	var out: Array[String] = []
+	for k in _loaded_mod_ids.keys():
+		out.append(String(k))
+	return out
+
+
+# Compare two dotted version strings component-wise. Returns -1 / 0 / 1.
+# Non-numeric components compare as 0 ("1.2.beta" -> [1,2,0]). Missing
+# trailing components default to 0 ("1.2" vs "1.2.0" compares equal).
+# This is intentionally minimal -- no semver pre-release / build metadata
+# parsing -- because RTV mods don't use those conventions in practice. If
+# they ever do, this is the spot to upgrade.
+func _compare_versions(a: String, b: String) -> int:
+	var pa: PackedStringArray = a.split(".")
+	var pb: PackedStringArray = b.split(".")
+	var n: int = max(pa.size(), pb.size())
+	for i in n:
+		var ai: int = 0 if i >= pa.size() else _to_version_int(pa[i])
+		var bi: int = 0 if i >= pb.size() else _to_version_int(pb[i])
+		if ai < bi:
+			return -1
+		if ai > bi:
+			return 1
+	return 0
+
+func _to_version_int(s: String) -> int:
+	if s.is_valid_int():
+		return int(s)
+	return 0
+
+
 # Internal dispatch -- called from the generated framework wrappers.
 
 func _dispatch(hook_name: String, args: Array) -> void:
