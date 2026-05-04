@@ -1782,10 +1782,15 @@ func build_updates_tab() -> Control:
 		list.add_child(HSeparator.new())
 
 		if mw_id > 0 and version != "":
+			# Hold a reference to the underlying _ui_mod_entries dict so the
+			# download callback can update full_path / file_name in place
+			# when a successful update lands the archive under a new name.
+			# GDScript dicts are reference-typed, so writing through here
+			# mutates the canonical entry the next discovery pass sees.
 			status_info[entry["file_name"]] = {
 				"label": status_lbl, "ver_lbl": ver_lbl, "version": version, "mw_id": mw_id,
 				"dl_btn": dl_btn, "full_path": entry["full_path"],
-				"mod_name": entry["mod_name"],
+				"mod_name": entry["mod_name"], "entry": entry,
 			}
 
 	if list.get_child_count() == 0:
@@ -1897,13 +1902,13 @@ func check_updates_for_ui(status_info: Dictionary, add_log: Callable, check_btn:
 				dl_btn.text = "Downloading..."
 				lbl.text = "downloading..."
 				check_btn.disabled = true
-				var ok := await download_and_replace_mod(full_path, mw_id)
+				var result: Dictionary = await download_and_replace_mod(full_path, mw_id)
 				if not is_instance_valid(check_btn):
 					return
 				if not is_instance_valid(dl_btn):
 					return
 				check_btn.disabled = false
-				if ok:
+				if result.get("ok", false):
 					lbl.text = "updated -- restart to apply"
 					lbl.modulate = Color(0.80, 0.80, 0.80)
 					dl_btn.modulate.a = 0.0
@@ -1913,7 +1918,19 @@ func check_updates_for_ui(status_info: Dictionary, add_log: Callable, check_btn:
 					# Update cached version so next Check won't re-flag this mod.
 					info["version"] = new_ver
 					(info["ver_lbl"] as Label).text = "v" + new_ver
-					add_log.call(mod_name + " -- updated to v" + new_ver + ". Restart game to apply.")
+					# Reflect the on-disk rename in the in-memory entry so the
+					# next discovery pass (and any subsequent UI rebuild before
+					# relaunch) point at the right archive instead of the old
+					# filename that no longer exists.
+					var new_path: String = result.get("new_path", full_path)
+					var new_fn: String = result.get("new_file_name", full_path.get_file())
+					info["full_path"] = new_path
+					var entry_ref: Dictionary = info.get("entry", {})
+					if not entry_ref.is_empty():
+						entry_ref["full_path"] = new_path
+						entry_ref["file_name"] = new_fn
+					var rename_note: String = (" (renamed to " + new_fn + ")") if new_fn != full_path.get_file() else ""
+					add_log.call(mod_name + " -- updated to v" + new_ver + rename_note + ". Restart game to apply.")
 				else:
 					lbl.text = "download failed"
 					lbl.modulate = Color(1.0, 0.4, 0.4)
