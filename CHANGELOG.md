@@ -1,5 +1,22 @@
 # Changelog
 
+## [3.2.0](https://github.com/ametrocavich/vostok-mod-loader/compare/v3.1.1...v3.2.0) (2026-05-04)
+
+
+### Features
+
+* profile UX bundle (blank/all profiles, select-all, inactive filter, mass dead-mod cleanup) ([#65](https://github.com/ametrocavich/vostok-mod-loader/issues/65)) ([82a7648](https://github.com/ametrocavich/vostok-mod-loader/commit/82a76482677bb6fe748679ec5f37b44dc13471c2))
+* surface modloader version in launcher + self-update check ([#70](https://github.com/ametrocavich/vostok-mod-loader/issues/70)) ([1a82a9b](https://github.com/ametrocavich/vostok-mod-loader/commit/1a82a9b86bf27ef489beaf78192ad8735273f982))
+
+
+### Bug Fixes
+
+* dedupe same-id mods + auto-enable only on Default profile ([#62](https://github.com/ametrocavich/vostok-mod-loader/issues/62)) ([4faa8e0](https://github.com/ametrocavich/vostok-mod-loader/commit/4faa8e07748cf66b3d35865a68d3932c04a4be65))
+* discard stale VMZ cache when source archive is gone ([#58](https://github.com/ametrocavich/vostok-mod-loader/issues/58)) ([172992f](https://github.com/ametrocavich/vostok-mod-loader/commit/172992f91ffc52afa157d773becec78aa60a9c41))
+* download update under the server-supplied filename ([#64](https://github.com/ametrocavich/vostok-mod-loader/issues/64)) ([5874698](https://github.com/ametrocavich/vostok-mod-loader/commit/5874698b0eb26681b7dba8dd4fcc41520a569e00))
+* **linux-installer:** verify each mv operation lands at destination ([#56](https://github.com/ametrocavich/vostok-mod-loader/issues/56)) ([81df36d](https://github.com/ametrocavich/vostok-mod-loader/commit/81df36d6394b5e21fe0b61dbe674f2ba34cfc311))
+* **windows-installer:** [#54](https://github.com/ametrocavich/vostok-mod-loader/issues/54) + two related install-script issues ([#55](https://github.com/ametrocavich/vostok-mod-loader/issues/55)) ([c0a38f1](https://github.com/ametrocavich/vostok-mod-loader/commit/c0a38f169f9d52f36f2cb0887c8ed807c48524a9))
+
 ## [3.1.1](https://github.com/ametrocavich/vostok-mod-loader/compare/v3.1.0...v3.1.1) (2026-04-25)
 
 
