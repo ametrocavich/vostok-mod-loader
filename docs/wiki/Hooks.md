@@ -67,10 +67,12 @@ For these, declare the vanilla script path in `mod.txt`:
 
 ```ini
 [hooks]
-res://Scripts/Interface.gd = _ready, update_tooltip   # specific methods
-res://Scripts/Controller.gd = *                       # wildcard -- all methods
-res://Scripts/Camera.gd =                             # empty value == *
+res://Scripts/Interface.gd = "_ready, update_tooltip"   # specific methods
+res://Scripts/Controller.gd = "*"                       # wildcard -- all methods
+res://Scripts/Camera.gd = ""                            # empty value == *
 ```
+
+Quote the value. ConfigFile parses RHS as a Variant literal, so unquoted method lists or a bare `*` raise "Unexpected identifier" and the entire `mod.txt` fails to parse (silently breaks every mod that loads after yours, since later sections never get read). Our loader auto-wraps unquoted values for backward compat, but mods are more portable when written quoted.
 
 Method names in the list are case-insensitive (normalized to lowercase on write). The wildcard leaves the inner mask empty, which the generator reads as "wrap every non-static method."
 
