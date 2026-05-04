@@ -119,6 +119,16 @@ var _database_replaced_by := ""
 var _boot_complete: bool = false
 var _dirty_since_boot: bool = false
 
+# Mods-tab filter state. _mods_filter_text narrows by name substring (cleared
+# only on game restart; survives _rebuild_mods_tab). _mods_hide_disabled is
+# per-profile, loaded by _apply_profile_to_entries from
+# profile.<name>.settings.hide_disabled and written on toggle.
+# _mods_filter_focus_pending lets the search input reclaim focus after the
+# text_changed rebuild so the user can keep typing without re-clicking.
+var _mods_filter_text: String = ""
+var _mods_hide_disabled: bool = false
+var _mods_filter_focus_pending: bool = false
+
 var _ui_mod_entries: Array[Dictionary] = []
 # profile_keys for folder mods that exist on disk but were skipped from entries
 # because developer mode is off. Orphan-scan treats these as present so
