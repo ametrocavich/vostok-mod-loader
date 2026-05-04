@@ -41,6 +41,11 @@ const HOOK_PACK_MOUNT_BASE := "res://modloader_hooks"
 const VANILLA_CACHE_DIR := "user://modloader_hooks/vanilla"
 const MODWORKSHOP_VERSIONS_URL := "https://api.modworkshop.net/mods/versions"
 const MODWORKSHOP_DOWNLOAD_URL_TEMPLATE := "https://api.modworkshop.net/mods/%s/download"
+const MODWORKSHOP_PAGE_URL_TEMPLATE := "https://modworkshop.net/mod/%s"
+# ModWorkshop ID for this modloader itself. Used by the launcher's self-update
+# check to flag when the installed MODLOADER_VERSION is older than what's
+# published on ModWorkshop. Set to <= 0 to disable the check entirely.
+const MODLOADER_MODWORKSHOP_ID := 55623
 const MODWORKSHOP_BATCH_SIZE := 100
 const API_CHECK_TIMEOUT := 15.0
 const API_DOWNLOAD_TIMEOUT := 30.0
@@ -104,6 +109,14 @@ var _ui_hint_label: Label = null
 # Launch button kept on self so refresh_launch_button_label can reach it
 # from the mod-enable toggle handler.
 var _ui_launch_btn: Button = null
+# Self-update check state. _modloader_latest_version is populated by
+# _check_modloader_update_async once the API responds; empty until then or
+# when the check fails. _ui_update_alert_btn is the inline LinkButton in the
+# launch row -- always shows the installed version dim by default, swaps to
+# an orange "update available" prompt when the API reports a newer release.
+# Both cleared on UI close.
+var _modloader_latest_version: String = ""
+var _ui_update_alert_btn: LinkButton = null
 var _has_loaded := false
 var _last_mod_txt_status := "none"
 # Detailed parse-failure diagnostic written by _parse_mod_txt when ConfigFile
