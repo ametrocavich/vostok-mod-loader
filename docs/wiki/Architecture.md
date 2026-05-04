@@ -9,7 +9,7 @@ The mod loader runs in two stages:
 
 | Stage | Trigger | Code |
 |---|---|---|
-| Static init | Module-scope var initializer evaluates before `_ready` | `var _filescope_mounted := _mount_previous_session()` at [src/constants.gd:198](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L198) |
+| Static init | Module-scope var initializer evaluates before `_ready` | `var _filescope_mounted := _mount_previous_session()` at [src/constants.gd:208](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L208) |
 | `_ready` | Godot calls it after scene enters tree | [src/lifecycle.gd:7](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd#L7) |
 
 The static-init trick works because Godot evaluates `var = <call>()` initializers at script-load time. The mounts land in VFS before any autoload scene graph resolves, so game autoloads can `preload(res://ModPath/Foo.gd)` without the archive being explicitly mounted in `_ready`.

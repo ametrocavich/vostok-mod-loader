@@ -9,9 +9,26 @@ A mod is an archive (`.vmz`, `.zip`, or `.pck`, plus unpacked folders in develop
 | `.vmz` | Copied to `user://vmz_mount_cache/<name>.zip` then `ProjectSettings.load_resource_pack` | Yes | Yes | Yes |
 | `.zip` | `ProjectSettings.load_resource_pack` directly | Yes | Yes | Yes |
 | `.pck` | `ProjectSettings.load_resource_pack` directly | No | No | No |
-| folder | Zipped to `user://vmz_mount_cache/<name>_dev.zip` then mounted. **Developer mode only** | Yes | Yes | Yes |
+| folder | Zipped to `user://vmz_mount_cache/<name>_dev.zip` then mounted. Zip entries are wrapped under the folder name (see [Folder mode wrapper](#folder-mode-wrapper)). **Developer mode only** | Yes | Yes | Yes |
 
 `.vmz` is the historical community convention -- Godot's ZIPReader won't open files with `.vmz` extension directly, so the loader copies them to `<name>.zip` in the cache dir first (see [fs_archive.gd:9 `_static_vmz_to_zip`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/fs_archive.gd#L9)). Re-extraction triggers when the source `.vmz` mtime is newer than the cache. `.zip` archives skip the cache step and mount directly.
+
+### Folder mode wrapper
+
+A folder mod at `<game>/mods/MyMod/` containing `data/main.gd` mounts as `res://MyMod/data/main.gd` -- the folder name is added as a wrapper so the layout matches what a conventionally-packed `.zip` produces. Without this, the same source files would mount at `res://data/main.gd` from the folder but at `res://MyMod/data/main.gd` from a `.zip` of the same mod, and a single `mod.txt` could not satisfy both.
+
+The rule, in one line: **the path inside `mod.txt` is whatever it would be inside the equivalent `.zip` -- prefix with the folder name.**
+
+```
+mods/MyMod/                  Resulting res:// paths after mount
+  mod.txt                    (n/a -- mod.txt is read once, not mounted)
+  Main.gd                    res://MyMod/Main.gd
+  data/items.json            res://MyMod/data/items.json
+```
+
+A matching `mod.txt` autoload entry: `MyMod="res://MyMod/Main.gd"`.
+
+**Breaking change in 3.1.2**: pre-3.1.2 folder mode dropped contents at `res://` directly with no wrapper, so existing folder mods that relied on that layout need their `mod.txt` paths re-prefixed with the folder name. Folder mode is dev-only (gated behind the developer-mode toggle in the launcher) and the prior unwrapped behavior was undocumented; the inconsistency between folder and `.zip` was the actual bug.
 
 ## mod.txt
 
@@ -51,8 +68,9 @@ Only `[mod]` is required. `[autoload]`, `[updates]`, `[hooks]`, `[script_extend]
 | `id` | string | filename | Unique id. Duplicates after the first loaded mod are skipped |
 | `version` | string | `""` | Used by the Updates tab to compare against ModWorkshop |
 | `priority` | int | 0 (or parsed from filename prefix) | Higher loads later, wins file conflicts. Clamped to `-999..999` |
+| `author` | string | `""` | Optional author/credit string. Parsed and stored on the entry dict; no UI surface yet (added 3.1.2) |
 
-**VostokMods compat**: if the archive filename matches `^(-?\d+)-(.*)`, the numeric prefix is used as a fallback priority when `[mod] priority` isn't set. Example: `100-BetterAI.vmz` loads with `priority=100`. See [mod_discovery.gd:129-152](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd#L129).
+**VostokMods compat**: if the archive filename matches `^(-?\d+)-(.*)`, the numeric prefix is used as a fallback priority when `[mod] priority` isn't set. Example: `100-BetterAI.vmz` loads with `priority=100`. See [mod_discovery.gd:130-154](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd#L130).
 
 ### `[autoload]` section
 
@@ -82,7 +100,7 @@ Duplicate autoload names are logged and skipped (first wins). Paths not present 
 |---|---|---|
 | `modworkshop` | int | ModWorkshop mod id. Enables the Updates tab for this mod |
 
-Version compare uses [mod_discovery.gd:208 `compare_versions`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd#L208) -- splits on `.`, strips `v`/`V` prefix, pads shorter side with `"0"`, lexicographic int comparison.
+Version compare uses [mod_discovery.gd:211 `compare_versions`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd#L211) -- splits on `.`, strips `v`/`V` prefix, pads shorter side with `"0"`, lexicographic int comparison.
 
 ### `[hooks]` section
 
