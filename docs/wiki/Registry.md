@@ -45,11 +45,48 @@ lib.revert(lib.Registry.SCENES, "Potato")
 | `register(registry, id, data) -> bool` | Add a new entry. Fails on id collision with vanilla or prior mod registrations |
 | `override(registry, id, data) -> bool` | Replace an existing entry wholesale. Fails if the id doesn't resolve |
 | `patch(registry, id, fields) -> bool` | Mutate individual fields on an entry. Original values are stashed for revert |
+| `append(registry, id, field, values, allow_duplicates=false) -> bool` | Add to an Array field. De-dups by default. Stash shared with `patch` |
+| `prepend(registry, id, field, values, allow_duplicates=false) -> bool` | Same as `append` but inserts at the front |
+| `remove_from(registry, id, field, values) -> bool` | Drop matching values from an Array field. Removes all occurrences, idempotent |
 | `remove(registry, id) -> bool` | Undo a `register`. Fails on override-backed ids (use `revert`) |
 | `revert(registry, id, fields=[]) -> bool` | Undo an `override` or `patch`. Per-field revert when `fields` is non-empty |
+| `register_many(registry, {id: data, ...}) -> Dictionary` | Batched register; returns `{ok, results}` |
+| `override_many(registry, {id: data, ...}) -> Dictionary` | Batched override |
+| `patch_many(registry, {id: fields, ...}) -> Dictionary` | Batched patch |
+| `append_many(registry, field, {id: values, ...}, allow_duplicates=false) -> Dictionary` | Batched append on the same field across many ids |
+| `prepend_many(registry, field, {id: values, ...}, allow_duplicates=false) -> Dictionary` | Batched prepend |
+| `remove_from_many(registry, field, {id: values, ...}) -> Dictionary` | Batched remove_from |
+| `revert_many(registry, {id: fields_array, ...}) -> Dictionary` | Batched revert; per-id `fields_array` (empty = full revert of that id) |
+| `remove_many(registry, [id, ...]) -> Dictionary` | Batched remove |
+| `setup(plan) -> Dictionary` | Declarative entry point: list of `[verb, ...args]` entries dispatched in order. See the **`setup` plan** section below |
 | `get_entry(registry, id) -> Variant` | Read the current entry (after any registry mutations). Returns `null` if missing |
+| `has(registry, id, include_vanilla=true) -> bool` | Membership check. Cheaper than `get_entry(...) != null` |
+| `keys(registry, include_vanilla=true) -> Array[String]` | All ids in the registry |
+| `list(registry, include_vanilla=true) -> Dictionary` | All `id -> entry` pairs |
+| `find(registry, predicate, include_vanilla=true) -> Array` | Filtered iteration; returns `[{id, entry}, ...]` |
 
-Every verb returns a bool indicating success; failures log a `push_warning` with the reason.
+Every mutating verb returns a bool indicating success; failures log a `push_warning` with the reason. The read methods (`get_entry`, `has`, `keys`, `list`, `find`) never warn; they return empty / null / false for misses.
+
+### Aggregator helpers
+
+Five high-level helpers that fan out to multiple primitive registries in one declarative call. They live alongside the standard verbs, take a `Dictionary` of `{id: data, ...}` (one entry or many), and return a wrapped granular result `{ok, results: {id: per_id_dict}}`.
+
+| Method | Purpose |
+|---|---|
+| `register_item({id: dict, ...}) -> Dictionary` | Generic item bundle: ItemData + optional scene/icon/loot_tables/trader_pools |
+| `register_weapon({id: dict, ...}) -> Dictionary` | Weapon + rig + inline magazines + fits_attachments + loot_tables |
+| `register_magazine({id: dict, ...}) -> Dictionary` | Magazine + scene + fits_weapons (additive append to weapons' compatible) |
+| `register_attachment({id: dict, ...}) -> Dictionary` | Attachment + scene + fits_weapons (same shape as magazine; split for readability) |
+| `register_furniture({id: dict, ...}) -> Dictionary` | Furniture item + scene + trader_pools (default Generalist) + optional crafting recipe |
+
+Aggregators are pure fan-out -- they call existing primitives under the hood. There's no separate storage; mods can drop down to primitives any time. Use the aggregators when you're shipping a complete content unit (one weapon, one furniture piece) and want all the registrations + cross-compat patches in one call. Use primitives when you need fine-grained control or you're modifying existing content rather than adding.
+
+The wrapped result is always `{ok: bool, results: {id: per_id_dict}}`. Top-level `ok` is true when every entry's per-id `ok` is true. Per-id dict shape varies by helper but always includes:
+- `ok: bool` -- did this entry's full fan-out succeed
+- One bool per fanned-out registry call (e.g. `items`, `scene`, `rig`, `loot_count: int`)
+- For helpers with cross-compat fields: `<rel>: [String]` (resolved ids) and `<rel>_failed: [String]` (ids that didn't resolve)
+
+Each helper section below documents its specific schema. Source: [src/registry/aggregators.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/registry/aggregators.gd).
 
 ### Registry constants
 
@@ -58,23 +95,29 @@ Use `lib.Registry.<NAME>` rather than raw strings so typos surface at parse time
 | Constant | String | Underlying store | Verbs supported |
 |---|---|---|---|
 | `SCENES` | `"scenes"` | `Database.gd` scene consts | register, override, remove, revert |
-| `ITEMS` | `"items"` | `ItemData` `.tres` keyed by `file` | register, override, patch, remove, revert |
+| `ITEMS` | `"items"` | `ItemData` `.tres` keyed by `file` | register, override, patch, append/prepend/remove_from, remove, revert |
 | `LOOT` | `"loot"` | `LootTable.items` arrays | register, override, remove, revert |
-| `SOUNDS` | `"sounds"` | `AudioLibrary.tres` `@export` fields | register, override, patch, remove, revert |
-| `RECIPES` | `"recipes"` | `Recipes.tres` category arrays | register, override, patch, remove, revert |
-| `EVENTS` | `"events"` | `Events.tres` events array | register, override, patch, remove, revert |
+| `SOUNDS` | `"sounds"` | `AudioLibrary.tres` `@export` fields | register, override, patch, append/prepend/remove_from, remove, revert |
+| `RECIPES` | `"recipes"` | `Recipes.tres` category arrays | register, override, patch, append/prepend/remove_from, remove, revert |
+| `EVENTS` | `"events"` | `Events.tres` events array | register, override, patch, append/prepend/remove_from, remove, revert |
 | `TRADER_POOLS` | `"trader_pools"` | Per-item trader boolean flags | register, remove, revert |
-| `TRADER_TASKS` | `"trader_tasks"` | `TraderData.tasks` arrays | register, override, patch, remove, revert |
+| `TRADER_TASKS` | `"trader_tasks"` | `TraderData.tasks` arrays | register, override, patch, append/prepend/remove_from, remove, revert |
 | `INPUTS` | `"inputs"` | `InputMap` actions | register, override, patch, remove, revert |
 | `SCENE_PATHS` | `"scene_paths"` | Named scene lookup on `Loader.gd` | register, override, patch, remove, revert |
 | `SHELTERS` | `"shelters"` | `Loader.shelters` append-only list | register, remove |
 | `RANDOM_SCENES` | `"random_scenes"` | `Loader.randomScenes` append-only list | register, remove |
 | `AI_TYPES` | `"ai_types"` | Zone → agent scene overrides on `AISpawner` | register, override, remove, revert |
+| `AI_LOADOUTS` | `"ai_loadouts"` | Per-AI-category weapon injections (`AI.SelectWeapon` prelude) | register, override, remove, revert |
 | `FISH_SPECIES` | `"fish_species"` | `FishPool` extra species | register, remove |
-| `RESOURCES` | `"resources"` | Arbitrary `.tres` by absolute path | patch, revert |
-| `SCENE_NODES` | `"scene_nodes"` | Node properties on vanilla scenes (per-instance, via `node_added`) | patch, revert |
+| `RESOURCES` | `"resources"` | Arbitrary `.tres` by absolute path | patch, append/prepend/remove_from, revert |
+| `SCENE_NODES` | `"scene_nodes"` | Property mutations on nodes inside any scene | patch, revert |
+| `WEAPONS` | `"weapons"` | Aggregator-only; routes to `register_weapon` | register (collapses to bool) |
+| `MAGAZINES` | `"magazines"` | Aggregator-only; routes to `register_magazine` | register (collapses to bool) |
+| `ATTACHMENTS` | `"attachments"` | Aggregator-only; routes to `register_attachment` | register (collapses to bool) |
 
 Unsupported verbs return `false` with a guidance warning (e.g. "patch on loot rejected, use override for content swaps").
+
+Aggregator-only registries (`WEAPONS`, `MAGAZINES`, `ATTACHMENTS`) reject `override`/`patch`/`remove`/`revert` at the standard-verb dispatcher with guidance to use the underlying primitives. They exist so mods that want bool-only routing (e.g. checking `register('weapons', ...)` in a generic loop) get consistent behavior, but the dedicated `register_weapon` / etc. methods are the preferred way to call them since you get the granular result dict.
 
 ## Timing
 
@@ -121,6 +164,33 @@ lib.revert(lib.Registry.ITEMS, "Potato")              # restore everything else
 
 Registries that don't support patch (loot, scenes, trader_pools, fish_species) return `false` with guidance.
 
+### append / prepend / remove_from
+
+Array-only mutations on a single field. Use these instead of `patch` when you want to **add to** or **subtract from** an existing array (e.g. a weapon's `compatible` list) without overwriting other entries other mods may have contributed.
+
+```gdscript
+# Add new magazines as compatible options on the AKM, without clobbering vanilla's list:
+lib.append(lib.Registry.ITEMS, "res://Items/Magazines/AKM.tres", "compatible", [magA, magB])
+
+# Single value also works (no need to wrap in an array):
+lib.append(lib.Registry.ITEMS, "res://Items/Magazines/AKM.tres", "compatible", magC)
+
+# Insert at the front instead of the end:
+lib.prepend(lib.Registry.SOUNDS, "footsteps_dirt", "audio", newClip)
+
+# Remove an entry; silent skip if it isn't there.
+lib.remove_from(lib.Registry.ITEMS, "res://Items/Magazines/AKM.tres", "compatible", oldMag)
+```
+
+**Semantics:**
+- **Array fields only.** Calling on a non-Array field returns `false` with a "field is not an Array" warning. For scalar fields, use `patch` instead.
+- **De-dup on append/prepend by default.** If a value is already in the array, it isn't appended again. Pass `allow_duplicates=true` to permit repeats.
+- **`remove_from` removes all matching occurrences,** not just the first. Idempotent — re-running with the same value is a no-op after the first call.
+- **Stash is shared with `patch`.** A `patch` on `compatible` followed by `append` to `compatible` keeps the *original* (pre-patch, pre-append) value on first-write-wins. `revert(reg, id, ["compatible"])` restores the true original.
+- **Typed-array safety.** Values that don't match the array's declared type (e.g. trying to append a non-`ItemData` Resource into `Array[ItemData]`) are rejected before any mutation, with a "rejected by typed-array constraint" warning.
+
+**Supported registries:** `items`, `sounds`, `recipes`, `events`, `trader_tasks`, `resources`. Other registries either don't have Array fields (`inputs`, `scene_paths`) or have non-Resource entries (`scenes`, `loot`, `shelters`, etc.); calls return `false` with guidance.
+
 ### remove
 
 Reverses a prior `register`. Fails on override-backed or vanilla ids, those need `revert`.
@@ -131,6 +201,68 @@ Reverses an `override` or `patch`. Fails if there's nothing to undo (nothing ove
 
 - Bare `revert(registry, id)` with no `fields` argument unwinds everything for that id (patches first, then the override).
 - `revert(registry, id, ["field1", "field2"])` unwinds only those specific patched fields; other patches and the override stay.
+
+### Batched forms (`*_many`)
+
+Every mutation verb has a sibling that takes a Dictionary of ids (or, for `remove_many`, an Array). One call, many entries, single-registry. Useful for table-driven mods that already store their data as a dict.
+
+```gdscript
+# Patch many items in one call.
+lib.patch_many(lib.Registry.ITEMS, {
+    "res://Items/Weapons/AKM/AKM.tres":  {"damage": 45},
+    "res://Items/Weapons/AK74/AK74.tres": {"damage": 40},
+})
+
+# Append the same field across many ids.
+lib.append_many(lib.Registry.ITEMS, "compatible", {
+    "res://Items/Weapons/AKM/AKM.tres":  [magA, magB],
+    "res://Items/Weapons/AK74/AK74.tres": [magC],
+})
+
+# Per-id field lists for revert. Empty array = full revert of that id.
+lib.revert_many(lib.Registry.ITEMS, {
+    "res://Items/Weapons/AKM/AKM.tres":  ["damage", "compatible"],
+    "res://Items/Weapons/AK74/AK74.tres": [],
+})
+
+# Remove a list of mod-registered entries.
+lib.remove_many(lib.Registry.ITEMS, ["my_mod_potion", "my_mod_grenade"])
+```
+
+**Return shape.** Each `_many` returns `{ok: bool, results: {id: bool, ...}}`. `ok` is true only when every entry succeeded. Failures are isolated — one bad id doesn't stop the others, and the per-id success bools tell you which ones landed.
+
+```gdscript
+var result := lib.patch_many(lib.Registry.ITEMS, {...})
+if not result.ok:
+    for id in result.results:
+        if not result.results[id]:
+            push_warning("[mymod] failed to patch %s" % id)
+```
+
+**One field per call** for the array verbs. `append_many` / `prepend_many` / `remove_from_many` all take a single `field` arg that applies to every entry in the dict. If you need different fields per id, make multiple calls — or use `setup` (below) which runs an ordered sequence of verbs in one call.
+
+### setup -- declarative plan
+
+`setup(plan)` runs an ordered list of `[verb, ...args]` entries that map to the registry verbs above plus `hooks` (batched hook registration) and `when` (conditional sub-plans). One declarative literal replaces the typical pile of administrative `_ready` lines.
+
+```gdscript
+const PLAN = [
+    ["register", lib.Registry.ITEMS, {"my_mod_potion": myPotionData}],
+    ["patch",    lib.Registry.ITEMS, {"res://Items/Weapons/AKM/AKM.tres": {"damage": 45}}],
+    ["append",   lib.Registry.ITEMS, "compatible", {"res://Items/Weapons/AKM/AKM.tres": [magA, magB]}],
+    ["hooks",    {"interface-getmagazine": _replace_get_mag}],
+    ["when",     _is_hardcore, [
+        ["patch", lib.Registry.ITEMS, {"res://Items/Misc/Sticks/Sticks.tres": {"value": 200}}],
+    ]],
+]
+
+func _ready() -> void:
+    var lib = Engine.get_meta("RTVModLib")
+    await lib.frameworks_ready
+    lib.setup(PLAN)
+```
+
+See **[Setup](Setup)** for the full verb table, predicate forms, return shape, and a comprehensive example covering every supported entry.
 
 ### get_entry
 
@@ -614,44 +746,217 @@ lib.revert(lib.Registry.RESOURCES, path)
 
 ## SCENE_NODES
 
-Mutates node properties inside vanilla scenes without shipping a full-scene override. Patches land **per-instance at `node_added` time**, before the scene root's `_ready` runs, so `@onready` values that depend on the patched properties observe the patched state. Verbs: `patch`, `revert` only. See [src/registry/scene_nodes.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/registry/scene_nodes.gd).
-
-IDs use a compound format: `"<res://scene_path>#<node_path>"`. The scene path is the `.tscn` res path; the node path is relative to that scene's root. The ID splits on the first `#` (scene paths don't legally contain `#`, and node names can't either).
+Patch property values on a specific node inside a scene without shipping a full scene override. Verbs: `patch`, `revert` only. Id format: `"<scene_path>#<node_path>"`.
 
 ```gdscript
 var lib = Engine.get_meta("RTVModLib")
 
-# patch: flip properties on a named node inside Interface.tscn
+# Mutate a button's `disabled` property inside Interface.tscn
 lib.patch(lib.Registry.SCENE_NODES,
     "res://UI/Interface.tscn#Tools/Crafting/Types/Margin/Buttons/Equipment",
     {"disabled": false, "modulate": Color(1, 1, 1, 1)})
 
-# revert per-field
-lib.revert(lib.Registry.SCENE_NODES,
-    "res://UI/Interface.tscn#Tools/Crafting/Types/Margin/Buttons/Equipment",
-    ["disabled"])
-
-# revert everything patched at this id
+# Revert
 lib.revert(lib.Registry.SCENE_NODES,
     "res://UI/Interface.tscn#Tools/Crafting/Types/Margin/Buttons/Equipment")
 ```
 
-**Validation.** At `patch` time the registry loads the PackedScene, instantiates a probe, resolves the node path, and checks each property exists on the target. Failures emit a `push_warning` and return `false`. The probe is freed immediately. Successful validations are memoized by `"<scene>#<node>|<sorted,fields>"` so repeat patches with the same id + field set don't re-instantiate the scene.
+The loader subscribes to `SceneTree.node_added`. When a scene whose path matches a registered patch instantiates, the loader walks the registered node paths inside that scene and applies the patch to each match. The PackedScene resource is never mutated; only live instances. Late patches (registered after the scene is already in the tree) scan existing live instances and apply retroactively.
 
-**Timing.** The listener is connected automatically at `frameworks_ready`; patches called earlier are fine (the listener connects lazily on the first `patch` call). Live instances already in the tree at `patch` time are walked and updated in-place.
+**No `register` / `override`**. To add new nodes use `override(SCENES, ...)` with a full replacement scene. To swap the whole scene's PackedScene wholesale, same. `SCENE_NODES` is patch-only.
 
-**Stash.** The revert stash populates at *apply* time, not at `patch` time -- the registry doesn't hold a live instance until one enters the tree. Per-field revert on a field that no live instance ever observed emits a warning since there's nothing to restore on any instance.
+**Conflicts.** Multiple mods patching different properties on the same node compose cleanly. Multiple mods patching the **same** property: last call wins; revert restores vanilla.
 
-**The PackedScene resource is never mutated.** Patches apply per-instance at `node_added`. Code that calls `packed_scene.get_bundled_scene()` directly still sees vanilla values.
+---
 
-**What SCENE_NODES can't do:**
-- Add or remove nodes (structural changes) -- use `override(lib.Registry.SCENES, ...)` to swap the whole scene.
-- Patch sub-resources embedded inside the scene. Inline `sub_resource` entries in the `.tscn` have no res:// path to target. Externally-referenced `.tres` sub-resources (via `ext_resource`) can be patched through `RESOURCES` by their path.
-- Patch values on scenes that never enter the tree (code that calls `packed_scene.get_bundled_scene()` directly still sees vanilla values).
+## Aggregator helpers (registries to use them with)
 
-**Conflicts.**
-- Two mods patching the **same field** on the same `(scene, node)`: both calls succeed in registration order; the second value is what the live instance observes. The stash holds the vanilla pre-patch value, so any `revert` returns to vanilla, not to mod A's value.
-- Two mods patching **different fields** on the same `(scene, node)`: both coexist with independent per-field stashes.
+The five `register_<thing>(entries)` methods are pure fan-out wrappers that call multiple primitive registry verbs. Use them when you're shipping a complete content unit and want one declarative call. They're also reachable from [Setup](Setup) as `["register_weapon", {...}]` etc.
+
+**Always take a Dictionary**. Even a single registration goes in as a one-key dict. There is no `(id, data)` overload.
+
+```gdscript
+# Single registration
+lib.register_weapon({"my_ak": {item_path: ..., scene_path: ..., rig_path: ...}})
+
+# Multiple registrations -- same shape, more keys
+lib.register_weapon({
+    "my_ak":  {item_path: ..., scene_path: ..., rig_path: ...},
+    "my_m4":  {item_path: ..., scene_path: ..., rig_path: ...},
+})
+```
+
+**Return shape** is uniform: `{ok: bool, results: {id: granular_dict}}`. Each value in `results` is the per-id granular dict. `ok` at the top is true only when every entry succeeded.
+
+```gdscript
+var result := lib.register_weapon({"my_ak": {...}, "my_m4": {...}})
+if not result.ok:
+    for id in result.results:
+        var per: Dictionary = result.results[id]
+        if not per.ok:
+            push_warning("[mymod] %s failed: items=%s scene=%s rig=%s" \
+                    % [id, per.items, per.scene, per.rig])
+```
+
+### register_item
+
+Generic item bundle. Use for content that doesn't fit weapon/mag/attachment/furniture (consumables, keys, tools, ammo).
+
+```gdscript
+var result: Dictionary = lib.register_item({
+    "MyMedkit": {
+        "item_path":    "res://mymod/items/MyMedkit.tres",     # required
+        "scene_path":   "res://mymod/items/MyMedkit.tscn",     # optional
+        "icon_path":    "res://mymod/icons/MyMedkit.png",      # optional, sets ItemData.icon
+        "loot_tables":  ["LT_Master"],                         # optional
+        "trader_pools": ["Doctor"],                            # optional
+    },
+})
+# result.results.MyMedkit = {ok, items, scene, loot_count, trader_pool_count,
+#                            trader_pools: [String], trader_pools_failed: [String]}
+```
+
+Per-id `scene` defaults to `true` when no `scene_path` is provided (vacuously satisfied). The per-id `ok` requires `items` + `scene` + no failed trader_pools.
+
+### register_weapon
+
+Weapon + first-person rig + optional inline magazines + optional fits_attachments + optional loot tables.
+
+```gdscript
+var result: Dictionary = lib.register_weapon({
+    "MyRifle": {
+        "item_path":  "res://mymod/MyRifle.tres",                # required
+        "scene_path": "res://mymod/MyRifle.tscn",                # required (world model)
+        "rig_path":   "res://mymod/MyRifle_Rig.tscn",            # required (first-person rig)
+        "icon_path":  "res://mymod/Icon_MyRifle.png",            # optional
+        "magazines": [                                            # optional, mixed array
+            {                                                     # inline = new mag registration
+                "id": "MyRifle_StdMag",
+                "item_path":  "res://mymod/MyRifle_Mag.tres",
+                "scene_path": "res://mymod/MyRifle_Mag.tscn",
+                "loot_tables": ["LT_Master"],                     # mag's own loot
+            },
+            "AK_12_Magazine",                                     # id-string = ref to existing mag
+        ],
+        "fits_attachments": ["ACOG", "Kobra"],                    # optional
+        "loot_tables": ["LT_Master"],                             # optional, weapon's own loot
+    },
+})
+# result.results.MyRifle = {ok, items, scene, rig,
+#                           magazines: [{id, ok, items, scene, loot_count}, ...],
+#                           fits_attachments: [String], fits_attachments_failed: [String],
+#                           loot_count: int}
+```
+
+The `magazines` field auto-populates the weapon's `compatible` array with each magazine's ItemData ref. `fits_attachments` resolves vanilla / mod-registered attachment ids and appends them to `compatible` too.
+
+### register_magazine
+
+Standalone magazine. Registers item + scene + optional loot. `fits_weapons` patches each target weapon's `compatible` to include this magazine.
+
+```gdscript
+var result: Dictionary = lib.register_magazine({
+    "MyExtendedMag": {
+        "item_path":  "res://mymod/MyExtendedMag.tres",       # required
+        "scene_path": "res://mymod/MyExtendedMag.tscn",       # required
+        "icon_path":  "res://mymod/Icon_MyMag.png",           # optional
+        "fits_weapons": ["AK_12", "AKM"],                     # optional
+        "loot_tables": ["LT_Master"],                         # optional
+    },
+})
+# result.results.MyExtendedMag = {ok, items, scene,
+#                                 fits_weapons: [String], fits_weapons_failed: [String],
+#                                 loot_count: int}
+```
+
+### register_attachment
+
+Same per-entry shape as `register_magazine`. Vanilla's `compatible` field accepts mags and attachments interchangeably; the API split is for mod-author readability.
+
+```gdscript
+var result: Dictionary = lib.register_attachment({
+    "MyOptic": {
+        "item_path":  "res://mymod/MyOptic.tres",
+        "scene_path": "res://mymod/MyOptic.tscn",
+        "fits_weapons": ["AK_12", "AKM", "M4A1"],
+        "loot_tables": ["LT_Master"],
+    },
+})
+```
+
+### register_furniture
+
+Furniture is structurally an ItemData with `type = "Furniture"` plus a placed world scene. Distinct from `register_item` because furniture has a different obtainment path: it's never loot-pool spawnable, it's bought from traders or crafted, and on purchase vanilla routes it to the catalog grid (not the inventory grid).
+
+```gdscript
+var result: Dictionary = lib.register_furniture({
+    "MyBed": {
+        "item_path":    "res://mymod/MyBed_F.tres",                # required, expects type="Furniture"
+        "scene_path":   "res://mymod/MyBed_F.tscn",                # required (placed world scene)
+        "icon_path":    "res://mymod/Icon_MyBed.png",              # optional
+        "trader_pools": ["Generalist"],                            # optional, defaults to ["Generalist"] with warn
+        "recipe": {                                                # optional crafting recipe
+            "name":  "My Bed",                                     # display name
+            "input": [<ItemData refs>],                            # required if recipe present
+            "time":  10.0,
+            "audio": <AudioEvent ref>,                             # optional
+        },
+    },
+})
+# result.results.MyBed = {ok, items, scene, trader_pool_count,
+#                         trader_pools: [String], trader_pools_failed: [String], recipe: bool}
+```
+
+**`loot_tables` is rejected with a warning** -- furniture isn't loot-pool spawnable in vanilla. If the modder includes it, the field is logged as ignored.
+
+**Type validation**: warns (doesn't fail) if `ItemData.type` isn't `"Furniture"`. Vanilla code branches on this string when the player buys the item; a wrong type means the item goes to the inventory grid instead of the catalog.
+
+**Recipe construction**: builds a fresh `RecipeData` with output = the registered item, `category = "furniture"` locked. Mods that just want trader-only furniture skip the `recipe` field entirely.
+
+---
+
+## Reading the registry
+
+Three methods complement `get_entry` for bulk reads. All take an optional `include_vanilla: bool = true` -- pass `false` to see only what mods registered.
+
+```gdscript
+var lib = Engine.get_meta("RTVModLib")
+
+# Membership check
+if lib.has(lib.Registry.ITEMS, "AK_12"):
+    lib.patch(lib.Registry.ITEMS, "AK_12", {"damage": 50})
+
+# All ids in this registry (default: vanilla + mod)
+var all_item_ids: Array[String] = lib.keys(lib.Registry.ITEMS)
+var only_mod_items: Array[String] = lib.keys(lib.Registry.ITEMS, false)
+
+# Full id -> entry mapping
+var all_items: Dictionary = lib.list(lib.Registry.ITEMS)
+for id in all_items:
+    var item_data = all_items[id]
+
+# Filtered iteration. Predicate signature: func(entry) -> bool
+# Returns Array of {id, entry} dicts so callers don't need a separate id lookup
+var weapons: Array = lib.find(lib.Registry.ITEMS, func(it):
+    return it != null and "type" in it and it.get("type") == "Weapon"
+)
+for entry in weapons:
+    print(entry["id"], " -> ", entry["entry"].get("name"))
+```
+
+**Mod-vs-vanilla precedence** matches `get_entry`: mod entries override vanilla on id collision. So `list(ITEMS)` returns the mod's version when both exist.
+
+**Per-registry vanilla enumeration**:
+- `ITEMS` -- walks `LT_Master.items`, keyed by `.file`
+- `SCENES` -- Database script's const map filtered to `PackedScene`
+- `SCENE_PATHS` -- Loader script's const map filtered to `res://` strings
+- `SHELTERS` -- vanilla shelter list snapshot
+- `RECIPES` -- walks `Recipes.tres` seven category arrays, ids synthesized as `"<category>:<name>"`
+- All other registries (loot, trader_pools, sounds, events, inputs, etc.) -- vanilla side returns empty; these are mod-only registries by nature, the registry primitives only track what mods added
+
+`include_vanilla = false` returns only `_registry_registered[name]` for any registry.
+
+---
 
 ## Troubleshooting
 

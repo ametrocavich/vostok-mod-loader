@@ -41,6 +41,19 @@ func _emit_frameworks_ready() -> void:
 	# ext_resource staleness that take_over_path can't fix).
 	_verify_script_overrides()
 
+## Extract the hook_base ("<script>-<method>") from a full hook name by
+## stripping any -pre/-post/-callback suffix. A bare name (replace hook) is
+## already its own base. Used to maintain _hooked_bases.
+static func _hook_base_of(hook_name: String) -> String:
+	if hook_name.ends_with("-pre"):
+		return hook_name.substr(0, hook_name.length() - 4)
+	if hook_name.ends_with("-post"):
+		return hook_name.substr(0, hook_name.length() - 5)
+	if hook_name.ends_with("-callback"):
+		return hook_name.substr(0, hook_name.length() - 9)
+	return hook_name
+
+
 func hook(hook_name: String, callback: Callable, priority: int = 100) -> int:
 	var is_replace := not (hook_name.ends_with("-pre") \
 			or hook_name.ends_with("-post") \
@@ -62,6 +75,10 @@ func hook(hook_name: String, callback: Callable, priority: int = 100) -> int:
 	(_hooks[hook_name] as Array).sort_custom(func(a, b): return a["priority"] < b["priority"])
 	# Flip the global short-circuit so dispatch wrappers stop skipping.
 	_any_mod_hooked = true
+	# Refcount the hook_base so wrappers for never-hooked methods can
+	# fast-path past dispatch. Pre/post/callback all share the same base.
+	var base := _hook_base_of(hook_name)
+	_hooked_bases[base] = int(_hooked_bases.get(base, 0)) + 1
 	var id := _next_id
 	_next_id += 1
 	return id
@@ -105,6 +122,21 @@ func add_hook(script_path: String, method_name: String, callback: Callable, is_b
 	(_hooked_methods[res_path] as Dictionary)[method_name.to_lower()] = true
 	return hook(hook_name, callback, 100)
 
+## Batched form of hook(). `entries` is `{hook_name: callback, ...}`. Returns
+## `{ok: bool, results: {hook_name: hook_id_or_-1, ...}}`. Failures (e.g. a
+## replace name already owned by another mod) surface as -1 in the results
+## dict; ok is false if any registration returned -1.
+func hook_many(entries: Dictionary, priority: int = 100) -> Dictionary:
+	var results: Dictionary = {}
+	var all_ok := true
+	for hook_name in entries.keys():
+		var id: int = hook(String(hook_name), entries[hook_name], priority)
+		results[hook_name] = id
+		if id == -1:
+			all_ok = false
+	return {"ok": all_ok, "results": results}
+
+
 ## Remove a hook by ID.
 func unhook(hook_id: int) -> void:
 	for hook_name in _hooks:
@@ -112,6 +144,12 @@ func unhook(hook_id: int) -> void:
 		for i in range(arr.size() - 1, -1, -1):
 			if arr[i]["id"] == hook_id:
 				arr.remove_at(i)
+				var base := _hook_base_of(hook_name)
+				var c: int = int(_hooked_bases.get(base, 0)) - 1
+				if c <= 0:
+					_hooked_bases.erase(base)
+				else:
+					_hooked_bases[base] = c
 				return
 
 ## Any hooks registered at this name?
@@ -136,6 +174,77 @@ func skip_super() -> void:
 ## Monotonic dispatch counter, for tests + debug logging.
 func seq() -> int:
 	return _seq
+
+
+## ---- Mod-discovery API ----
+## Lets a mod ask "is this other mod loaded?" so it can integrate with peers
+## (e.g. defer to RTVCoop's trader-supply logic when present) or skip features
+## that depend on a missing dependency. All three calls operate on mod_id
+## strings (the `id="..."` field in mod.txt; folder/zip name as fallback).
+
+## True when a mod with the given id is loaded. Optional `min_version` does
+## a numeric semver compare (1.2.3 split on '.', component-wise int compare,
+## non-numeric components compare as 0). Mods declaring no version field
+## return version="" which compares as 0.0.0 -- they pass any min_version
+## of "0" but fail anything stricter.
+func has_mod(mod_id: String, min_version: String = "") -> bool:
+	if not _loaded_mod_ids.has(mod_id):
+		return false
+	if min_version == "":
+		return true
+	var info = _loaded_mod_ids[mod_id]
+	var have: String = ""
+	if info is Dictionary:
+		have = String(info.get("version", ""))
+	# Bare-true legacy values (shouldn't happen post-upgrade but defend
+	# against pre-upgrade callers): treat as unknown version, fail strict
+	# checks.
+	return _compare_versions(have, min_version) >= 0
+
+
+## Returns the full info dict for a loaded mod, or {} if not loaded.
+## Shape: {mod_id, mod_name, version, file_name, priority}. Stable enough
+## for mods to inspect for debug prints / MCM displays.
+func mod_info(mod_id: String) -> Dictionary:
+	var info = _loaded_mod_ids.get(mod_id, null)
+	if info is Dictionary:
+		return (info as Dictionary).duplicate()
+	return {}
+
+
+## All loaded mod ids. Order is not guaranteed; callers wanting consistent
+## display order should sort the result.
+func loaded_mods() -> Array[String]:
+	var out: Array[String] = []
+	for k in _loaded_mod_ids.keys():
+		out.append(String(k))
+	return out
+
+
+# Compare two dotted version strings component-wise. Returns -1 / 0 / 1.
+# Non-numeric components compare as 0 ("1.2.beta" -> [1,2,0]). Missing
+# trailing components default to 0 ("1.2" vs "1.2.0" compares equal).
+# This is intentionally minimal -- no semver pre-release / build metadata
+# parsing -- because RTV mods don't use those conventions in practice. If
+# they ever do, this is the spot to upgrade.
+func _compare_versions(a: String, b: String) -> int:
+	var pa: PackedStringArray = a.split(".")
+	var pb: PackedStringArray = b.split(".")
+	var n: int = max(pa.size(), pb.size())
+	for i in n:
+		var ai: int = 0 if i >= pa.size() else _to_version_int(pa[i])
+		var bi: int = 0 if i >= pb.size() else _to_version_int(pb[i])
+		if ai < bi:
+			return -1
+		if ai > bi:
+			return 1
+	return 0
+
+func _to_version_int(s: String) -> int:
+	if s.is_valid_int():
+		return int(s)
+	return 0
+
 
 # Internal dispatch -- called from the generated framework wrappers.
 

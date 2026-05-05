@@ -71,7 +71,7 @@ v3.0.1 uses an opt-in model: a modlist that declares nothing loads byte-identica
 
 ```ini
 [script_extend]
-res://Scripts/Camera.gd = res://MyMod/MyCamera.gd
+res://Scripts/Camera.gd = "res://MyMod/MyCamera.gd"
 
 [registry]
 ; declaring this section is enough to enable lib.register() / lib.override()
@@ -84,11 +84,13 @@ res://Scripts/Camera.gd = res://MyMod/MyCamera.gd
 
 ```ini
 [hooks]
-res://Scripts/Interface.gd = _ready, update_tooltip   # specific methods
-res://Scripts/Controller.gd = *                       # or wrap all methods
+res://Scripts/Interface.gd = "_ready, update_tooltip"   # specific methods
+res://Scripts/Controller.gd = "*"                       # or wrap all methods
 ```
 
-The `*` (or an empty value) wraps every hookable method in the script. Use it when you don't know up front which methods you'll hook or the list is long enough that enumerating is noise.
+Quote the value -- ConfigFile parses RHS as a Variant literal, so unquoted method lists or a bare `*` raise "Unexpected identifier" and the entire `mod.txt` fails to parse (silently breaking every mod that loads after yours). Our loader auto-wraps unquoted values for backward compat, but mods are more portable when written quoted.
+
+The `*` (or an empty value, written as `""`) wraps every hookable method in the script. Use it when you don't know up front which methods you'll hook or the list is long enough that enumerating is noise.
 
 Full schema (including `[rtvmodlib] needs=`, the `!` prefix semantics, and packaging gotchas): see the [Mod-Format wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Mod-Format).
 

@@ -49,10 +49,10 @@ EarlyNode="!res://MyMod/Early.gd"
 modworkshop=12345
 
 [hooks]
-res://Scripts/Interface.gd = _ready, update_tooltip
+res://Scripts/Interface.gd = "_ready, update_tooltip"
 
 [script_extend]
-res://Scripts/Camera.gd = res://MyMod/MyCamera.gd
+res://Scripts/Camera.gd = "res://MyMod/MyCamera.gd"
 
 [registry]
 ; empty section is enough -- presence enables the registry API
@@ -116,10 +116,12 @@ Format:
 
 ```ini
 [hooks]
-res://Scripts/Interface.gd = _ready, update_tooltip   # specific methods
-res://Scripts/Controller.gd = *                       # wildcard -- all methods
-res://Scripts/Camera.gd =                             # empty == *
+res://Scripts/Interface.gd = "_ready, update_tooltip"   # specific methods
+res://Scripts/Controller.gd = "*"                       # wildcard -- all methods
+res://Scripts/Camera.gd = ""                            # empty == *
 ```
+
+Quote the value (right-hand side). ConfigFile parses RHS as a Variant literal, so unquoted method lists like `_ready, update_tooltip` and bare `*` are rejected as "Unexpected identifier". Our loader auto-wraps unquoted values for backward compat, but mods are more portable (other loaders, raw `ConfigFile.parse()`) when written quoted from the start.
 
 Method names are case-insensitive (normalized to lowercase on write to match the rewriter's comparison). The wildcard leaves the inner mask empty; the generator reads that as "wrap every non-static method."
 
@@ -131,8 +133,10 @@ Full-script replacement that chains via Godot's `extends` resolution.
 
 ```ini
 [script_extend]
-res://Scripts/Camera.gd = res://MyMod/MyCamera.gd
+res://Scripts/Camera.gd = "res://MyMod/MyCamera.gd"
 ```
+
+Quote the value -- ConfigFile parses RHS as a Variant, and `res://...` unquoted tokenizes as the identifier `res` and errors. Unlike `[hooks]`, `[script_extend]` values are *not* auto-wrapped by the loader, so quoting here is mandatory, not just a portability nicety.
 
 The mod script is expected to `extends "res://Scripts/Camera.gd"`. Applied in priority order (lowest first). Each subsequent override's `extends` resolves to the previous chain tip, forming `ModC -> ModB -> ModA -> (rewritten_)vanilla`.
 

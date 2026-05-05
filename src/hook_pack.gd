@@ -21,6 +21,7 @@ const REGISTRY_TARGETS: Array[String] = [
 	"Database.gd",
 	"Loader.gd",
 	"AISpawner.gd",
+	"AI.gd",
 	"FishPool.gd",
 	"Compiler.gd",
 ]

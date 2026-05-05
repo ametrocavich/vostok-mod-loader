@@ -12,6 +12,11 @@
 ## are split on the FIRST '#' (scene paths don't legally contain #, node
 ## names in Godot can't either).
 ##
+## To target the scene's ROOT node directly (e.g. for properties on a script
+## attached to the root), use "<scene_path>#" or "<scene_path>#.". Without
+## a special root path get_node_or_null can only walk DOWN from the root,
+## so root-attached properties would otherwise be unreachable.
+##
 ## How it works: we subscribe to get_tree().node_added at frameworks_ready
 ## time. Godot sets `node.scene_file_path` on the ROOT of an instantiated
 ## scene (and only there); we use that as a cheap filter. When a match
@@ -81,7 +86,7 @@ func _apply_patches_for_scene_root(scene_path: String, scene_root: Node) -> void
 	var per_node: Dictionary = _scene_node_patches[scene_path]
 	var stash_per_scene: Dictionary = _scene_node_stash.get(scene_path, {})
 	for node_path in per_node.keys():
-		var target: Node = scene_root.get_node_or_null(NodePath(node_path))
+		var target: Node = _resolve_scene_target(scene_root, node_path)
 		if target == null:
 			_log_warning("[Registry] scene_nodes: node '%s' not found in instantiated '%s'; patch skipped for this instance" \
 					% [node_path, scene_path])
@@ -102,15 +107,32 @@ func _apply_patches_for_scene_root(scene_path: String, scene_root: Node) -> void
 
 # Split 'scene#node' id on the first '#'. Returns [scene_path, node_path] or
 # [null, null] on malformed input.
+#
+# Accepts three forms for the node_path side:
+#   "...tscn#Foo/Bar"  -> node_path = "Foo/Bar"   (descendant)
+#   "...tscn#."        -> node_path = "."         (root, explicit)
+#   "...tscn#"         -> node_path = ""          (root, empty form)
+# The empty and "." forms both target the scene's root node. Without this,
+# patching a property that lives on the scene's root requires constructing
+# an artificial child path (which may not exist), since get_node_or_null
+# walks DOWN from the root and can't return the root itself by name.
 func _split_scene_node_id(id: String) -> Array:
 	var hash_idx: int = id.find("#")
-	if hash_idx <= 0 or hash_idx == id.length() - 1:
+	if hash_idx <= 0:
 		return [null, null]
 	var scene_path: String = id.substr(0, hash_idx)
 	var node_path: String = id.substr(hash_idx + 1)
 	if not scene_path.begins_with("res://"):
 		return [null, null]
 	return [scene_path, node_path]
+
+# Resolve a node_path against a scene root. Empty or "." means the root
+# itself; anything else falls through to get_node_or_null. Returns null
+# only when a non-root path doesn't resolve.
+func _resolve_scene_target(scene_root: Node, node_path: String) -> Node:
+	if node_path == "" or node_path == ".":
+		return scene_root
+	return scene_root.get_node_or_null(NodePath(node_path))
 
 # Check property existence at patch-time against a freshly-instantiated
 # probe. We don't require the scene to be in the tree at patch() time
@@ -135,7 +157,7 @@ func _validate_scene_node_patch(scene_path: String, node_path: String, fields: D
 	if probe == null:
 		push_warning("[Registry] patch('scene_nodes'): scene '%s' failed to instantiate for validation" % scene_path)
 		return false
-	var target: Node = probe.get_node_or_null(NodePath(node_path))
+	var target: Node = _resolve_scene_target(probe, node_path)
 	if target == null:
 		push_warning("[Registry] patch('scene_nodes', '%s#%s'): node path doesn't resolve in the scene; check node hierarchy" \
 				% [scene_path, node_path])
@@ -259,7 +281,7 @@ func _revert_scene_node(id: String, fields: Array) -> bool:
 			continue
 		if stash_per_node.has(fname):
 			for root in live_roots:
-				var target: Node = root.get_node_or_null(NodePath(node_path))
+				var target: Node = _resolve_scene_target(root, node_path)
 				if target != null and _node_has_property(target, fname):
 					target.set(fname, stash_per_node[fname])
 			stash_per_node.erase(fname)

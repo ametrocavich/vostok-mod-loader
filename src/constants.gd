@@ -151,6 +151,12 @@ var _hidden_folder_profile_keys: Dictionary = {}
 var _hidden_folder_ids: Dictionary = {}
 var _pending_autoloads: Array[Dictionary] = []
 var _report_lines: Array[String] = []
+# Loaded mods, keyed by mod_id. Value is a Dictionary with at least
+# {version, file_name, priority, mod_name}; populated by mod_loading.
+# Public read API: lib.has_mod(id, ?min_version), lib.mod_info(id),
+# lib.loaded_mods(). Code that just checks presence still works via
+# Dict.has() since the key membership is unchanged from when the value
+# was a bare `true`.
 var _loaded_mod_ids: Dictionary = {}
 var _registered_autoload_names: Dictionary = {}
 var _override_registry: Dictionary = {}
@@ -172,6 +178,13 @@ var _dispatch_counts: Dictionary = {}
 # when no mod has hooked anything at all. Sticky -- stays true once set.
 # Same approach as godot-mod-loader's `_ModLoaderHooks.any_mod_hooked`.
 var _any_mod_hooked: bool = false
+# Per-hook-base reference count. Keyed by hook_base ("<script>-<method>"
+# lowercase, no -pre/-post/-callback suffix). Incremented when hook() registers
+# any variant under that base, decremented (and erased at 0) by unhook(). The
+# generated wrapper short-circuits when _hooked_bases.has(base) is false, so a
+# wrapped method that nobody actually hooks costs one Dictionary.has() per call
+# instead of the full _wrapper_active/_caller/_dispatch pipeline.
+var _hooked_bases: Dictionary = {}
 var _next_id: int = 1
 var _skip_super: bool = false
 var _seq: int = 0

@@ -67,10 +67,12 @@ For these, declare the vanilla script path in `mod.txt`:
 
 ```ini
 [hooks]
-res://Scripts/Interface.gd = _ready, update_tooltip   # specific methods
-res://Scripts/Controller.gd = *                       # wildcard -- all methods
-res://Scripts/Camera.gd =                             # empty value == *
+res://Scripts/Interface.gd = "_ready, update_tooltip"   # specific methods
+res://Scripts/Controller.gd = "*"                       # wildcard -- all methods
+res://Scripts/Camera.gd = ""                            # empty value == *
 ```
+
+Quote the value. ConfigFile parses RHS as a Variant literal, so unquoted method lists or a bare `*` raise "Unexpected identifier" and the entire `mod.txt` fails to parse (silently breaks every mod that loads after yours, since later sections never get read). Our loader auto-wraps unquoted values for backward compat, but mods are more portable when written quoted.
 
 Method names in the list are case-insensitive (normalized to lowercase on write). The wildcard leaves the inner mask empty, which the generator reads as "wrap every non-static method."
 
@@ -102,13 +104,23 @@ lib.unhook(id)
 
 if lib.has_replace("weaponrig-shoot"):
     print("another mod already replaced shoot")
+
+# Batched form for mods with many hooks at once.
+lib.hook_many({
+    "controller-_physics_process-pre":  _on_phys_pre,
+    "interface-getmagazine":            _replace_get_mag,
+    "interface-close-post":             _on_close_post,
+})
 ```
+
+For mods that register hooks alongside registry mutations as a single installation step, `hook_many` is also available as a `["hooks", {...}]` entry inside `lib.setup(plan)`. See [Setup](Setup) for the declarative form.
 
 ### Methods
 
 | Method | Purpose |
 |---|---|
 | `hook(name, callback, priority=100) -> int` | Register a callback, return its id. Replace hooks are single-owner (returns -1 if already taken) |
+| `hook_many({name: callback, ...}, priority=100) -> Dictionary` | Batched register; returns `{ok, results}` where `results[name]` is the hook id or -1 |
 | `unhook(id) -> void` | Remove a hook by id (linear scan across all hook names) |
 | `add_hook(path, method, cb, before=true) -> int` | godot-mod-loader compat wrapper around `hook()` + wrap-mask enrollment |
 | `has_hooks(name) -> bool` | Any callbacks registered at this name? |
@@ -116,6 +128,9 @@ if lib.has_replace("weaponrig-shoot"):
 | `get_replace_owner(name) -> int` | Returns id of the current replace owner, or -1 |
 | `skip_super() -> void` | Inside a replace callback: prevent the vanilla body from running on return |
 | `seq() -> int` | Monotonic dispatch counter, useful for tests |
+| `has_mod(id, min_version="") -> bool` | True if a mod with the given id is loaded; optional `min_version` does a numeric semver compare (`>=`) |
+| `mod_info(id) -> Dictionary` | `{mod_id, mod_name, version, file_name, priority}` for a loaded mod, `{}` if absent. Returns a duplicate -- callers can mutate freely |
+| `loaded_mods() -> Array[String]` | All loaded mod ids. Order is not guaranteed |
 | `static version() -> String` | `MODLOADER_VERSION` |
 | `static major_version() -> int` | Parse major from `MODLOADER_VERSION` |
 | `static minor_version() -> int` | Same, minor |
@@ -141,43 +156,44 @@ Suffixes:
 |---|---|---|---|
 | `-pre` | Before vanilla body (or before replace) | Same as the vanilla method | Ignored |
 | (none) | In place of vanilla. **First registration wins, subsequent registrations are rejected** (returns -1). Within a replace callback, call `lib.skip_super()` to suppress vanilla | Same as vanilla | Return value becomes the method's return |
-| `-post` | After vanilla (or after replace if no `skip_super`) | Vanilla args, plus trailing `_result` for the 3-arg form | Observed for the new 3-arg form `func(...args, _result)` -- non-null replaces, null passes through. 2-arg legacy form is ignored and emits a one-shot deprecation warning per (hook, callback). See [Return mutation](#return-mutation) below. |
+| `-post` | After vanilla (or after replace if no `skip_super`). For **non-void** wrapped methods, post hooks may receive the running `_result` and mutate it; see below | Same as vanilla, **plus a trailing `_result` arg** for non-void methods if the callback declares it | For non-void methods: return non-null to replace `_result` for downstream post hooks; return null to pass through unchanged. Multiple post hooks chain in priority order |
 | `-callback` | Deferred via `Callable.bindv(args).call_deferred()` | Same as vanilla | Ignored |
 
-## Return mutation
+### Post-hook return mutation (non-void methods only)
 
-Post hooks on **non-void** wrapped methods can transform the return value. Declare your callback with a trailing `_result` parameter:
+When the wrapped vanilla method returns a value, post hooks can transform it. Two callback signatures are supported:
 
 ```gdscript
-func _on_lib_ready():
-    _lib = Engine.get_meta("RTVModLib")
-    # 3-arg form: vanilla args + trailing _result.
-    _lib.hook("weaponrig-getdamage-post", _double_damage)
+# Preferred form: declare the trailing _result param to receive + mutate
+func _on_value_post(current_result: int) -> int:
+    return current_result + 100  # bumps the result by 100
 
-func _double_damage(_attacker, _result):
-    # Return non-null to replace _result for downstream callbacks +
-    # the method's caller. Returning null is a pass-through ("I
-    # observed but do not want to change anything").
-    return _result * 2
+# Legacy form: just vanilla args, no _result, no return propagation.
+# Still works (read-only observer), but emits a one-shot deprecation warning
+# per (hook_name, callback) pair. Will be removed in a future major version.
+func _on_value_post() -> void:
+    print("Item.Value() ran")
 ```
 
-Callbacks chain in priority order. Each one receives the running `_result` left by the previous callback (or by the vanilla body, if it was first). Non-null returns replace the running value; `null` returns pass it through unchanged.
+The dispatcher detects callback arity via `Callable.get_argument_count()`. If the count matches `vanilla_args.size() + 1`, the trailing `_result` is passed and the return value chains forward. If the count matches just `vanilla_args.size()`, the legacy 2-arg path runs (fire-and-forget) and a deprecation warning fires once per callback registration.
 
-**Limitations**:
+Multiple post hooks chain in priority-ascending order. Each hook sees the running `_result` after all prior post hooks have transformed it:
 
-- Only non-void wrappers route through `_dispatch_post`. Void post hooks still see the legacy 2-arg shape with no return slot -- a callback declared as `func(args, _result)` against a void method just gets a deprecation warning and runs without mutation.
-- The `null` sentinel is structural: a callback that genuinely wants to set `_result = null` cannot express that here. Use a replace hook instead.
+```gdscript
+# Vanilla Item.Value() returns V (an int)
+lib.hook("item-value-post", func(r): return r + 100, 50)        # priority 50, runs first
+lib.hook("item-value-post", func(r): return min(r, 200), 100)   # priority 100, runs second
 
-**Legacy 2-arg form**: callbacks declared without the trailing `_result` (the pre-3.1.2 shape, `func(args)`) still run for backwards compatibility. The dispatcher detects the arity via `Callable.get_argument_count()`, fires the callback observation-only, and emits a one-shot warning per `(hook_name, callback)` pair so existing mods keep working without log spam:
-
+# For an item with vanilla value=50:
+#   1. vanilla returns 50
+#   2. priority-50 hook: r=50 -> returns 150 -> _result=150
+#   3. priority-100 hook: r=150 -> returns min(150, 200)=150 -> _result=150
+#   4. wrapper returns 150 to caller
 ```
-[RTVModLib] post hook 'weaponrig-getdamage-post' callback uses legacy 1-arg
-signature (expected 2 for non-void wrapper). Add a trailing _result param
-to your callback to receive + optionally mutate the return value; the
-legacy form will be removed in a future major version.
-```
 
-Implementation: [hooks_api.gd `_dispatch_post`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd).
+`null` returns are pass-through ("I observed but don't want to change anything"). Methods that legitimately return `null` for valid values can't be modeled via a mutator; document that limitation and pick a different sentinel if needed.
+
+**Void methods**: post hooks for void wrapped methods continue to be fire-and-forget. There's no `_result` to pass; the void wrapper template doesn't call `_dispatch_post`.
 
 ## Dispatch semantics
 
@@ -217,9 +233,12 @@ func <name>(args):
     else:
         _result = _rtv_vanilla_<name>(args)
 
-    # Non-void wrappers route post hooks through _dispatch_post so 3-arg
-    # callbacks can mutate _result. Void wrappers still emit plain _dispatch.
+    # Non-void wrapper: chained post-hook dispatch with arity detection.
+    # `_dispatch_post` walks each post hook in priority order, passes the
+    # running `_result` if the callback declared the trailing param, and
+    # propagates the callback's return value forward.
     _result = _lib._dispatch_post("<hook_base>-post", [args], _result)
+
     _lib._dispatch_deferred("<hook_base>-callback", [args])
     _lib._wrapper_active.erase("<hook_base>")
     return _result
@@ -231,7 +250,9 @@ Three performance / correctness features:
 - **Global short-circuit**: `_lib._any_mod_hooked` is a sticky bool flipped true by the first `hook()` call. Dispatch wrappers skip every dict/function call when no mod has registered anything. Same approach as godot-mod-loader's `_ModLoaderHooks.any_mod_hooked`.
 - **Re-entry guard**: when a mod script that extends wrapped vanilla calls `super()`, control lands back in the vanilla wrapper. Without the guard, the vanilla wrapper would dispatch hooks again. The guard flips `_wrapper_active[hook_base]` = true on entry; nested re-entry at the same `hook_base` skips dispatch and runs the body directly. One dispatch per logical call regardless of chain depth.
 
-Void methods, coroutines (`await`), and engine lifecycle methods (`_ready` et al.) use structurally similar templates with appropriate adjustments -- `await` prepended to vanilla calls for coroutines, no `_result` for void, etc.
+**Void methods** use a structurally similar template but call `_lib._dispatch("<hook_base>-post", [args])` (fire-and-forget, return ignored) instead of `_dispatch_post`, since there's no `_result` to mutate.
+
+**Coroutines** (`await`) and engine lifecycle methods (`_ready` et al.) use structurally similar templates with appropriate adjustments -- `await` prepended to vanilla calls for coroutines.
 
 ## Hook registration, step-by-step
 
@@ -260,6 +281,31 @@ func _dispatch(hook_name: String, args: Array) -> void:
 The `.duplicate()` is load-bearing: hooks that call `hook()` or `unhook()` mid-dispatch would otherwise mutate the live array during iteration. Snapshotting means new hooks registered during dispatch don't fire in the current dispatch -- they join the next one.
 
 `_dispatch_deferred` uses `callback.bindv(args).call_deferred()` instead, for `-callback` suffix hooks. `_dispatch_post` is the chained variant used by non-void post hooks: same snapshot-then-iterate shape, but each callback receives `args + [current_result]`, threads its non-null return into `current_result`, and the final value is returned to the wrapper. See [Return mutation](#return-mutation).
+
+`_dispatch_post` is the chained variant for non-void post hooks. Same snapshot-iterate pattern as `_dispatch`, but it inspects each callback's arity before calling and threads a running result through the chain:
+
+```gdscript
+func _dispatch_post(hook_name: String, args: Array, current_result: Variant) -> Variant:
+    if not _hooks.has(hook_name):
+        return current_result
+    var entries: Array = (_hooks[hook_name] as Array).duplicate()
+    var expected_with_result: int = args.size() + 1
+    for entry in entries:
+        _seq += 1
+        var cb: Callable = entry["callback"]
+        var argc: int = cb.get_argument_count()
+        var ret: Variant = null
+        if argc == expected_with_result:
+            ret = cb.callv(args + [current_result])  # 3-arg form: receive _result
+        else:
+            cb.callv(args)                            # legacy 2-arg form
+            # one-shot deprecation warning per (hook_name, callback) pair
+        if ret != null:
+            current_result = ret
+    return current_result
+```
+
+Per-callback warning suppression uses `_post_legacy_warned: Dictionary` keyed by `"<hook_name>::<callback_object_id>"`. First time a 2-arg callback is seen, the warning prints and the key flips. Subsequent dispatches against the same callback are silent. This is cheap enough that even a hot-path wrapped method with hundreds of dispatches per frame doesn't spam the log.
 
 ## How the code generation works
 
@@ -384,6 +430,66 @@ func _modify_prices():
         var current = int(interface.requestValue.text)
         interface.requestValue.text = str(current * 2)
 ```
+
+### Post-hook mutator chain
+
+A clean compose: two mods both transform a return value without conflicting. `Item.Value()` returns an `int`. Mod A wants to bump prices by a flat amount; Mod B wants to cap them. Both register `-post` hooks with priorities; the chain runs in order, each mod sees the running value.
+
+```gdscript
+# Mod A: Trader Inflation -- adds +50 to every item value
+extends Node
+var _lib = null
+
+func _ready():
+    if Engine.has_meta("RTVModLib"):
+        var lib = Engine.get_meta("RTVModLib")
+        if lib._is_ready: _register()
+        else: lib.frameworks_ready.connect(_register)
+
+func _register():
+    _lib = Engine.get_meta("RTVModLib")
+    # Priority 50 -- runs early in the chain
+    _lib.hook("item-value-post", _bump_value, 50)
+
+func _bump_value(current_result: int) -> int:
+    return current_result + 50
+```
+
+```gdscript
+# Mod B: Price Cap -- caps every item value at 1000
+extends Node
+var _lib = null
+
+func _ready():
+    if Engine.has_meta("RTVModLib"):
+        var lib = Engine.get_meta("RTVModLib")
+        if lib._is_ready: _register()
+        else: lib.frameworks_ready.connect(_register)
+
+func _register():
+    _lib = Engine.get_meta("RTVModLib")
+    # Priority 100 -- runs after Mod A, so caps the inflated value
+    _lib.hook("item-value-post", _cap_value, 100)
+
+func _cap_value(current_result: int) -> int:
+    if current_result > 1000:
+        return 1000
+    return null  # null = pass-through, leaves _result unchanged
+```
+
+For a vanilla item with `value=970`:
+1. Vanilla `Item.Value()` returns 970
+2. Mod A's hook fires with `current_result=970`, returns 1020 → `_result=1020`
+3. Mod B's hook fires with `current_result=1020`, returns 1000 → `_result=1000`
+4. Wrapper returns 1000 to caller
+
+For a vanilla item with `value=500`:
+1. Vanilla returns 500
+2. Mod A: `current_result=500`, returns 550 → `_result=550`
+3. Mod B: `current_result=550`, returns null (no cap needed) → `_result` stays at 550
+4. Wrapper returns 550
+
+The chain composes without either mod knowing about the other. If a third mod ships and registers `item-value-post` with priority=75, it slots between Mod A and Mod B without code changes.
 
 ### Replace hook with fallback
 
