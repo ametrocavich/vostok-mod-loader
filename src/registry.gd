@@ -374,6 +374,14 @@ func _array_op_dispatch(registry: String, id: Variant, field: String, op: String
 	if field == "":
 		push_warning("[Registry] %s(%s, ...) called with empty field" % [op, registry])
 		return false
+	# Reject null up front. Without this, _coerce_to_array(null) returns
+	# [null] (not []), the empty-check passes, and the typed-array validator
+	# rejects null with a misleading "rejected by typed-array constraint"
+	# message that doesn't tell the caller the real problem.
+	if values == null:
+		push_warning("[Registry] %s('%s', %s): null is not a valid value (pass a value or an Array of values)" \
+				% [op, registry, str(id)])
+		return false
 	var arr: Array = _coerce_to_array(values)
 	if arr.is_empty():
 		push_warning("[Registry] %s('%s', ...): empty values is a no-op" % [op, registry])
@@ -671,8 +679,19 @@ func revert_many(registry: String, entries: Dictionary) -> Dictionary:
 	var results: Dictionary = {}
 	var all_ok := true
 	for id in entries.keys():
-		var fields_arg: Array = entries[id] if entries[id] is Array else []
-		var ok: bool = revert(registry, id, fields_arg)
+		var v: Variant = entries[id]
+		# Strict: a non-Array value (typo like {id: "field_name"} instead of
+		# {id: ["field_name"]}) used to silently coerce to [] and trigger a
+		# full revert, losing other unrelated patches on the same id. Reject
+		# instead so the caller sees the typo. Pass [] explicitly for full
+		# revert.
+		if not (v is Array):
+			push_warning("[Registry] revert_many('%s', '%s'): value must be an Array of field names (use [] for full revert); got %s. Skipping." \
+					% [registry, str(id), type_string(typeof(v))])
+			results[id] = false
+			all_ok = false
+			continue
+		var ok: bool = revert(registry, id, v)
 		results[id] = ok
 		if not ok:
 			all_ok = false
