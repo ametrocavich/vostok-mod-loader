@@ -387,7 +387,10 @@ func _register_furniture_bundle(id: String, data: Variant) -> Dictionary:
 		"trader_pool_count": 0,
 		"trader_pools": [],
 		"trader_pools_failed": [],
-		"recipe": false,
+		# null = recipe not requested; bool = requested + outcome.
+		# Matches register_weapon's `ai_loadout` convention so callers can
+		# distinguish "I never asked for one" from "I asked, it failed".
+		"recipe": null,
 	}
 	if not (data is Dictionary):
 		push_warning("[Registry] register_furniture('%s', ...) expects Dictionary" % id)
