@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.1](https://github.com/ametrocavich/vostok-mod-loader/compare/v3.2.0...v3.2.1) (2026-05-05)
+
+
+### Bug Fixes
+
+* registry follow-ups from PR [#69](https://github.com/ametrocavich/vostok-mod-loader/issues/69) review ([4950cfc](https://github.com/ametrocavich/vostok-mod-loader/commit/4950cfc8999a8185edd42d6768d7d45cf67833f3))
+
 ## [3.2.0](https://github.com/ametrocavich/vostok-mod-loader/compare/v3.1.1...v3.2.0) (2026-05-04)
 
 
