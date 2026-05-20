@@ -203,8 +203,9 @@ func has_mod(mod_id: String, min_version: String = "") -> bool:
 
 
 ## Returns the full info dict for a loaded mod, or {} if not loaded.
-## Shape: {mod_id, mod_name, version, file_name, priority}. Stable enough
-## for mods to inspect for debug prints / MCM displays.
+## Shape: {mod_id, mod_name, version, file_name, priority,
+## required_dependencies, optional_dependencies}. Stable enough for mods to
+## inspect for debug prints / MCM displays.
 func mod_info(mod_id: String) -> Dictionary:
 	var info = _loaded_mod_ids.get(mod_id, null)
 	if info is Dictionary:

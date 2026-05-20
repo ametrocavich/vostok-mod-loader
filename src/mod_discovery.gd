@@ -127,6 +127,8 @@ func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, e
 	var author   := ""
 	var priority := 0
 	var has_mod_id := false
+	var required_dependencies: Array[String] = []
+	var optional_dependencies: Array[String] = []
 
 	# VostokMods compat: parse "100-ModName.vmz" filename priority prefix.
 	# The prefix is stripped from mod_name/mod_id defaults and used as fallback priority.
@@ -153,6 +155,8 @@ func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, e
 			priority = int(str(cfg.get_value("mod", "priority")))
 		elif has_filename_priority:
 			priority = filename_priority
+		required_dependencies = _parse_dependency_list(cfg, "required")
+		optional_dependencies = _parse_dependency_list(cfg, "optional")
 	elif has_filename_priority:
 		priority = filename_priority
 	priority = clampi(priority, PRIORITY_MIN, PRIORITY_MAX)
@@ -169,6 +173,10 @@ func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, e
 		"author": author,
 		"profile_key": profile_key,
 		"priority": priority, "enabled": true,
+		"required_dependencies": required_dependencies,
+		"optional_dependencies": optional_dependencies,
+		"dependency_warnings": [], "dependency_blockers": [],
+		"dependencies_satisfied": true,
 		"cfg": cfg, "mod_txt_status": _last_mod_txt_status,
 		"mod_txt_error": _last_mod_txt_error,
 	}
@@ -195,6 +203,44 @@ func _build_entry_warnings(entry: Dictionary) -> Array[String]:
 		warnings.append("Invalid mod -- packaged incorrectly. Try re-downloading.")
 	return warnings
 
+func _parse_dependency_list(cfg: ConfigFile, key: String) -> Array[String]:
+	var deps: Array[String] = []
+	if cfg == null or not cfg.has_section_key("dependencies", key):
+		return deps
+	var raw: Variant = cfg.get_value("dependencies", key)
+	if raw is Array:
+		for item in (raw as Array):
+			_append_dependency_id(deps, str(item))
+		return deps
+	if typeof(raw) == TYPE_PACKED_STRING_ARRAY:
+		for item in (raw as PackedStringArray):
+			_append_dependency_id(deps, str(item))
+		return deps
+
+	# Support whole-value strings like "foo, bar" for older author tools.
+	# Godot ConfigFile already parsed strict array syntax into Array above.
+	var text := str(raw).strip_edges()
+	if text.begins_with("[") and text.ends_with("]") and text.length() >= 2:
+		text = text.substr(1, text.length() - 2)
+	for part in text.split(","):
+		_append_dependency_id(deps, part)
+	return deps
+
+func _append_dependency_id(deps: Array[String], raw_id: String) -> void:
+	var dep_id := raw_id.strip_edges()
+	if dep_id.length() >= 2:
+		var quoted := (dep_id.begins_with("\"") and dep_id.ends_with("\"")) \
+				or (dep_id.begins_with("'") and dep_id.ends_with("'"))
+		if quoted:
+			dep_id = dep_id.substr(1, dep_id.length() - 2).strip_edges()
+	if dep_id == "":
+		return
+	var dep_key := dep_id.to_lower()
+	for existing in deps:
+		if existing.to_lower() == dep_key:
+			return
+	deps.append(dep_id)
+
 # Config persistence
 
 
@@ -207,6 +253,144 @@ func _compare_load_order(a: Dictionary, b: Dictionary) -> bool:
 		return a_name < b_name
 	# Filename tiebreaker for stable sort.
 	return (a["file_name"] as String).to_lower() < (b["file_name"] as String).to_lower()
+
+func _entry_mod_key(entry: Dictionary) -> String:
+	return str(entry.get("mod_id", "")).strip_edges().to_lower()
+
+func _entries_by_mod_id(entries: Array) -> Dictionary:
+	var by_id: Dictionary = {}
+	for entry in entries:
+		var key := _entry_mod_key(entry)
+		if key == "":
+			continue
+		if not by_id.has(key):
+			by_id[key] = entry
+	return by_id
+
+func _dependency_display(entry: Dictionary) -> String:
+	var name := str(entry.get("mod_name", "")).strip_edges()
+	var mod_id := str(entry.get("mod_id", "")).strip_edges()
+	if name != "" and mod_id != "" and name != mod_id:
+		return name + " (" + mod_id + ")"
+	if mod_id != "":
+		return mod_id
+	return name
+
+func _join_string_items(items: Array, sep: String = ", ") -> String:
+	var out := PackedStringArray()
+	for item in items:
+		out.append(str(item))
+	return sep.join(out)
+
+func _filter_dependency_ready_candidates(candidates: Array,
+		log_skips: bool = false) -> Array:
+	var active_by_id := _entries_by_mod_id(candidates)
+	var installed_by_id := _entries_by_mod_id(_ui_mod_entries)
+	var blocked: Dictionary = {}
+	var changed := true
+	while changed:
+		changed = false
+		for entry in candidates:
+			var entry_key := _entry_mod_key(entry)
+			if entry_key == "" or blocked.has(entry_key):
+				continue
+			for raw_dep in entry.get("required_dependencies", []):
+				var dep_id := str(raw_dep).strip_edges()
+				if dep_id == "":
+					continue
+				var dep_key := dep_id.to_lower()
+				if dep_key == entry_key:
+					blocked[entry_key] = {"dependency": dep_id, "status": "self"}
+					changed = true
+					break
+				if active_by_id.has(dep_key) and not blocked.has(dep_key):
+					continue
+				var status := "not_installed"
+				if active_by_id.has(dep_key) and blocked.has(dep_key):
+					status = "not_loaded"
+				elif installed_by_id.has(dep_key):
+					var installed: Dictionary = installed_by_id[dep_key]
+					status = "disabled" if not bool(installed.get("enabled", false)) else "not_loaded"
+				blocked[entry_key] = {"dependency": dep_id, "status": status}
+				changed = true
+				break
+
+	var ready: Array = []
+	for entry in candidates:
+		var entry_key := _entry_mod_key(entry)
+		if entry_key != "" and blocked.has(entry_key):
+			if log_skips:
+				var info: Dictionary = blocked[entry_key]
+				_log_critical("Skipping %s -- required dependency %s is %s" \
+						% [_dependency_display(entry), info["dependency"],
+						   _dependency_status_label(str(info["status"]))])
+			continue
+		ready.append(entry)
+	return ready
+
+func _dependency_status_label(status: String) -> String:
+	match status:
+		"self":
+			return "declared as itself"
+		"disabled":
+			return "installed but disabled"
+		"not_loaded":
+			return "not loadable"
+		_:
+			return "not installed"
+
+func _refresh_dependency_status() -> void:
+	var installed_by_id := _entries_by_mod_id(_ui_mod_entries)
+	var enabled_candidates: Array[Dictionary] = []
+	for entry in _ui_mod_entries:
+		entry["dependency_warnings"] = []
+		entry["dependency_blockers"] = []
+		entry["dependencies_satisfied"] = true
+		if bool(entry.get("enabled", false)):
+			enabled_candidates.append(entry)
+
+	enabled_candidates.sort_custom(_compare_load_order)
+	var loadable := _filter_dependency_ready_candidates(enabled_candidates, false)
+	var loadable_by_id := _entries_by_mod_id(loadable)
+	var order_index: Dictionary = {}
+	for i in loadable.size():
+		order_index[_entry_mod_key(loadable[i])] = i
+
+	for entry in _ui_mod_entries:
+		if not bool(entry.get("enabled", false)):
+			continue
+		var warnings: Array[String] = []
+		var blockers: Array[String] = []
+		var entry_key := _entry_mod_key(entry)
+		for raw_dep in entry.get("required_dependencies", []):
+			var dep_id := str(raw_dep).strip_edges()
+			if dep_id == "":
+				continue
+			var dep_key := dep_id.to_lower()
+			if dep_key == entry_key:
+				warnings.append("invalid required dependency: " + dep_id)
+				blockers.append(dep_id)
+				continue
+			if not installed_by_id.has(dep_key):
+				warnings.append("missing required dependency: " + dep_id)
+				blockers.append(dep_id)
+				continue
+			var dep_entry: Dictionary = installed_by_id[dep_key]
+			if not bool(dep_entry.get("enabled", false)):
+				warnings.append("required dependency disabled: " + _dependency_display(dep_entry))
+				blockers.append(dep_id)
+				continue
+			if not loadable_by_id.has(dep_key):
+				warnings.append("required dependency not loadable: " + _dependency_display(dep_entry))
+				blockers.append(dep_id)
+				continue
+			if order_index.has(dep_key) and order_index.has(entry_key) \
+					and int(order_index[dep_key]) > int(order_index[entry_key]):
+				warnings.append("load order: " + _dependency_display(dep_entry)
+						+ " must load before this mod")
+		entry["dependency_warnings"] = warnings
+		entry["dependency_blockers"] = blockers
+		entry["dependencies_satisfied"] = blockers.is_empty()
 
 # Returns -1/0/1 for version comparison (a < b, equal, a > b).
 func compare_versions(a: String, b: String) -> int:

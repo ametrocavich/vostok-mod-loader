@@ -12,6 +12,7 @@
 # x-release-please-start-version
 const MODLOADER_VERSION := "3.2.1"
 # x-release-please-end
+const MODLOADER_BUILD_TAG := "Joao feat/mod-dependencies"
 
 const MODLOADER_RES_PATH := "res://modloader.gd"
 const MOD_DIR := "mods"
@@ -152,7 +153,7 @@ var _hidden_folder_ids: Dictionary = {}
 var _pending_autoloads: Array[Dictionary] = []
 var _report_lines: Array[String] = []
 # Loaded mods, keyed by mod_id. Value is a Dictionary with at least
-# {version, file_name, priority, mod_name}; populated by mod_loading.
+# {version, file_name, priority, mod_name, dependencies}; populated by mod_loading.
 # Public read API: lib.has_mod(id, ?min_version), lib.mod_info(id),
 # lib.loaded_mods(). Code that just checks presence still works via
 # Dict.has() since the key membership is unchanged from when the value

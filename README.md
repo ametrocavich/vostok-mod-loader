@@ -25,6 +25,7 @@ Two tabs:
 
 - **Mods** -- detected mods with checkboxes and a priority spinbox. Higher priority loads later and wins file conflicts. Load-order preview on the right updates in real time.
 - **Updates** -- for mods with `[updates] modworkshop=<id>` in `mod.txt`, check for and download updates from ModWorkshop.
+- **Dependencies** -- for mods with `[dependencies] required=[...]` in `mod.txt`, identify missing/disabled requirements and skip mods whose required dependencies are not loadable.
 
 Click **Launch Game** or close the window to start.
 
@@ -50,6 +51,10 @@ MyModMain="res://MyMod/Main.gd"
 
 [updates]
 modworkshop=12345
+
+[dependencies]
+required=["mod_configuration_menu"]
+optional=["some_soft_integration"]
 ```
 
 | Field | Description |
@@ -60,6 +65,7 @@ modworkshop=12345
 | `priority` | Higher loads later, wins file conflicts. Default 0 |
 | `[autoload]` | `Name="res://path.gd"` (or `.tscn`). Prefix value with `!` to load before the game's own autoloads |
 | `[updates] modworkshop` | ModWorkshop mod ID |
+| `[dependencies] required/optional` | Godot string arrays of mod IDs. Required deps must be installed, enabled, and load before the dependent mod |
 
 Mods without `mod.txt` still mount as resource packs -- their files override vanilla resources, but no autoloads run.
 

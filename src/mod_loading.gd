@@ -21,7 +21,7 @@ func load_all_mods(pass_label: String = "") -> void:
 
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(TMP_DIR))
 
-	var candidates: Array[Dictionary] = []
+	var candidates: Array = []
 	for entry in _ui_mod_entries:
 		if not entry["enabled"]:
 			continue
@@ -31,6 +31,11 @@ func load_all_mods(pass_label: String = "") -> void:
 	if candidates.is_empty():
 		_log_info("No mods enabled.")
 		return
+	candidates = _filter_dependency_ready_candidates(candidates, true)
+	if candidates.is_empty():
+		_log_warning("No enabled mods are loadable after dependency checks.")
+		return
+	_log_dependency_order_warnings(candidates)
 
 	# Warn about duplicate mod names -- likely a packaging mistake or fork.
 	# The sort is still deterministic (file_name tiebreaker), but users should know.
@@ -164,6 +169,8 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 		"version":   String(c.get("version", "")),
 		"file_name": file_name,
 		"priority":  int(c.get("priority", 0)),
+		"required_dependencies": c.get("required_dependencies", []),
+		"optional_dependencies": c.get("optional_dependencies", []),
 	}
 
 	# [hooks] static declaration (v3.0.1 opt-in model). Escape hatch for
@@ -320,6 +327,28 @@ func _register_claim(res_path: String, mod_name: String, archive: String,
 	_override_registry[res_path].append({
 		"mod_name": mod_name, "archive": archive, "load_index": load_index,
 	})
+
+func _log_dependency_order_warnings(candidates: Array) -> void:
+	var by_id := _entries_by_mod_id(candidates)
+	var order_index: Dictionary = {}
+	for i in candidates.size():
+		order_index[_entry_mod_key(candidates[i])] = i
+	for dependent in candidates:
+		var dependent_key := _entry_mod_key(dependent)
+		if dependent_key == "":
+			continue
+		for raw_dep in dependent.get("required_dependencies", []):
+			var dep_id := str(raw_dep).strip_edges()
+			if dep_id == "":
+				continue
+			var dep_key := dep_id.to_lower()
+			if not by_id.has(dep_key):
+				continue
+			if order_index.has(dep_key) and order_index.has(dependent_key) \
+					and int(order_index[dep_key]) > int(order_index[dependent_key]):
+				var msg := "Dependency load order issue: %s requires %s, " \
+						+ "but the dependency currently loads later. Raise the dependent's priority."
+				_log_warning(msg % [_dependency_display(dependent), _dependency_display(by_id[dep_key])])
 
 
 # Apply [script_overrides] / [script_extend] entries via take_over_path.

@@ -48,6 +48,10 @@ EarlyNode="!res://MyMod/Early.gd"
 [updates]
 modworkshop=12345
 
+[dependencies]
+required=["mod_configuration_menu"]
+optional=["some_soft_integration"]
+
 [hooks]
 res://Scripts/Interface.gd = "_ready, update_tooltip"
 
@@ -58,7 +62,7 @@ res://Scripts/Camera.gd = "res://MyMod/MyCamera.gd"
 ; empty section is enough -- presence enables the registry API
 ```
 
-Only `[mod]` is required. `[autoload]`, `[updates]`, `[hooks]`, `[script_extend]`, `[registry]` are all optional; use the ones your mod needs.
+Only `[mod]` is required. `[autoload]`, `[updates]`, `[dependencies]`, `[hooks]`, `[script_extend]`, `[registry]` are all optional; use the ones your mod needs.
 
 ### `[mod]` section
 
@@ -71,6 +75,25 @@ Only `[mod]` is required. `[autoload]`, `[updates]`, `[hooks]`, `[script_extend]
 | `author` | string | `""` | Optional author/credit string. Parsed and stored on the entry dict; no UI surface yet (added 3.1.2) |
 
 **VostokMods compat**: if the archive filename matches `^(-?\d+)-(.*)`, the numeric prefix is used as a fallback priority when `[mod] priority` isn't set. Example: `100-BetterAI.vmz` loads with `priority=100`. See [mod_discovery.gd:130-154](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd#L130).
+
+### `[dependencies]` section
+
+Declares other mods by `[mod] id` so the launcher can identify missing requirements and the runtime loader can avoid starting mods that cannot work.
+
+```ini
+[dependencies]
+required=["mod_configuration_menu", "rtv_shared_lib"]
+optional=["happy_fireplace"]
+```
+
+Use Godot `ConfigFile` string arrays. Bare CSV (`required=a, b`) is not valid `ConfigFile` syntax and causes the whole `mod.txt` parse to fail.
+
+| Key | Type | Meaning |
+|---|---|---|
+| `required` | string array | Mods that must be installed and enabled. If any required dependency is missing, disabled, or not loadable, this mod is skipped. |
+| `optional` | string array | Soft integrations. Parsed and displayed by the launcher; absence does not block loading. |
+
+Required dependencies should load before the dependent mod. If the current priority/name ordering would load a dependency later than its dependent, the launcher and boot log report a load-order warning. Set the dependent mod's priority higher than its required dependency to resolve it.
 
 ### `[autoload]` section
 

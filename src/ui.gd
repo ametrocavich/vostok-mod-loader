@@ -116,6 +116,7 @@ func _apply_profile_to_entries(cfg: ConfigFile, profile: String) -> void:
 			entry["enabled"] = profile == "Default"
 		if resolved_key != "" and cfg.has_section_key(pr_sec, resolved_key):
 			entry["priority"] = int(str(cfg.get_value(pr_sec, resolved_key)))
+	_refresh_dependency_status()
 
 # Per-profile UI settings live in profile.<name>.settings, separate from the
 # .enabled / .priority sections so _save_ui_config's erase-and-rewrite pass
@@ -1040,7 +1041,7 @@ func _show_delete_confirm(tabs: TabContainer) -> void:
 
 func show_mod_ui() -> void:
 	var win := Window.new()
-	win.title = "Road to Vostok -- Mod Loader"
+	win.title = "Road to Vostok -- MML " + MODLOADER_BUILD_TAG
 	win.size = Vector2i(960, 640)
 	win.min_size = Vector2i(640, 420)
 	win.wrap_controls = false
@@ -1105,7 +1106,7 @@ func show_mod_ui() -> void:
 
 	var hint := Label.new()
 	hint.text = "Higher number loads later and wins when mods share files.\n" \
-			+ "Developer Mode: verbose logging, conflict report, and loose folder loading."
+			+ "Required dependencies from mod.txt must be enabled and load first."
 	hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.add_theme_font_size_override("font_size", 11)
@@ -1141,7 +1142,7 @@ func show_mod_ui() -> void:
 	# the text when ModWorkshop reports a newer release. Click opens the mod
 	# page in the system browser regardless of state.
 	var alert := LinkButton.new()
-	alert.text = "Mod Loader v" + MODLOADER_VERSION
+	alert.text = "MML v" + MODLOADER_VERSION + " -- " + MODLOADER_BUILD_TAG
 	alert.underline = LinkButton.UNDERLINE_MODE_ON_HOVER
 	alert.add_theme_font_size_override("font_size", 11)
 	alert.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
@@ -1410,6 +1411,7 @@ func make_dark_theme() -> Theme:
 	return t
 
 func build_mods_tab(tabs: TabContainer) -> Control:
+	_refresh_dependency_status()
 	var outer := VBoxContainer.new()
 	outer.size_flags_vertical = Control.SIZE_EXPAND_FILL
 
@@ -1673,24 +1675,41 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 
 	# Rebuilds the right-side order list from current entry state.
 	var refresh_order := func():
+		_refresh_dependency_status()
 		for child in order_list.get_children():
 			child.queue_free()
 		var sorted := _ui_mod_entries.filter(func(e): return e["enabled"])
 		sorted.sort_custom(_compare_load_order)
+		var loadable := _filter_dependency_ready_candidates(sorted, false)
 		if sorted.is_empty():
 			var lbl := Label.new()
 			lbl.text = "(none enabled)"
 			lbl.modulate = Color(0.5, 0.5, 0.5)
 			order_list.add_child(lbl)
 			return
-		for i in sorted.size():
-			var e: Dictionary = sorted[i]
+		if loadable.is_empty():
+			var lbl := Label.new()
+			lbl.text = "(enabled mods blocked by dependencies)"
+			lbl.modulate = Color(1.0, 0.6, 0.2)
+			lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			order_list.add_child(lbl)
+			return
+		for i in loadable.size():
+			var e: Dictionary = loadable[i]
 			var lbl := Label.new()
 			lbl.text = str(i + 1) + ".  " + e["mod_name"]
 			lbl.add_theme_font_size_override("font_size", 12)
 			lbl.modulate = Color(0.80, 0.80, 0.80)
 			lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 			order_list.add_child(lbl)
+		var blocked_count := sorted.size() - loadable.size()
+		if blocked_count > 0:
+			var blocked_lbl := Label.new()
+			blocked_lbl.text = str(blocked_count) + " enabled mod(s) blocked by required dependencies"
+			blocked_lbl.modulate = Color(1.0, 0.6, 0.2)
+			blocked_lbl.add_theme_font_size_override("font_size", 11)
+			blocked_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			order_list.add_child(blocked_lbl)
 
 	# -- Missing from this profile --------------------------------------------
 	# Mods the active profile references but that aren't on disk. Shown at the
@@ -1815,11 +1834,32 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			dev_lbl.modulate = Color(0.9, 0.3, 0.3)
 			dev_lbl.add_theme_font_size_override("font_size", 11)
 			name_col.add_child(dev_lbl)
+		var dep_summary := PackedStringArray()
+		var required_deps: Array = entry.get("required_dependencies", [])
+		var optional_deps: Array = entry.get("optional_dependencies", [])
+		if required_deps.size() > 0:
+			dep_summary.append("requires: " + _join_string_items(required_deps))
+		if optional_deps.size() > 0:
+			dep_summary.append("optional: " + _join_string_items(optional_deps))
+		if dep_summary.size() > 0:
+			var dep_lbl := Label.new()
+			dep_lbl.text = "; ".join(dep_summary)
+			dep_lbl.modulate = Color(0.45, 0.55, 0.70)
+			dep_lbl.add_theme_font_size_override("font_size", 11)
+			dep_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			name_col.add_child(dep_lbl)
 		for warn_text: String in entry.get("warnings", []):
 			var warn := Label.new()
 			warn.text = warn_text
 			warn.modulate = Color(1.0, 0.6, 0.2)
 			warn.add_theme_font_size_override("font_size", 11)
+			name_col.add_child(warn)
+		for warn_text: String in entry.get("dependency_warnings", []):
+			var warn := Label.new()
+			warn.text = warn_text
+			warn.modulate = Color(1.0, 0.6, 0.2)
+			warn.add_theme_font_size_override("font_size", 11)
+			warn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 			name_col.add_child(warn)
 
 		# Older same-id archives the dedup pass hid. Surface the filename
@@ -1886,18 +1926,17 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 
 		# Capture entry by reference (Dictionaries are reference types in GDScript)
 		var e := entry
-		var nlbl := name_lbl
 		check.toggled.connect(func(on: bool):
 			e["enabled"] = on
-			nlbl.modulate = Color(0.58, 0.82, 0.38) if on else Color(0.5, 0.5, 0.5)
-			refresh_order.call()
-			refresh_launch_button_label()
+			_refresh_dependency_status()
 			_save_ui_config()
+			_rebuild_mods_tab(tabs)
 		)
 		spin.value_changed.connect(func(val: float):
 			e["priority"] = int(val)
-			refresh_order.call()
+			_refresh_dependency_status()
 			_save_ui_config()
+			_rebuild_mods_tab(tabs)
 		)
 
 	# Filter narrowed every row out -- distinguish from "no mods installed"
@@ -2219,7 +2258,7 @@ func _check_modloader_update_async() -> void:
 		return  # installed is current or newer
 
 	if is_instance_valid(_ui_update_alert_btn):
-		_ui_update_alert_btn.text = "Mod Loader v%s -- v%s available, click to update" % [MODLOADER_VERSION, latest]
+		_ui_update_alert_btn.text = "MML v%s -- %s -- v%s available, click to update" % [MODLOADER_VERSION, MODLOADER_BUILD_TAG, latest]
 		_ui_update_alert_btn.add_theme_color_override("font_color", Color(1.0, 0.55, 0.45))
 		_ui_update_alert_btn.add_theme_color_override("font_hover_color", Color(1.0, 0.78, 0.65))
 
