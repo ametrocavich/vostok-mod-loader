@@ -1,5 +1,5 @@
 ## ----- ui.gd -----
-## The launcher window shown before the game starts.
+## The manager window opened from the main-menu Mods button.
 ##   - Mods tab: per-mod enable checkbox + load-order spin, profile selector
 ##     (switch / create / delete) with a Vanilla entry that confirms then
 ##     resets + restarts, and a live load-order preview.
@@ -8,8 +8,8 @@
 ##     `profile.<name>.priority`; the active profile is stored in
 ##     `[settings] active_profile`. VANILLA_PROFILE is a sentinel meaning
 ##     "all mods off" and keeps stored profiles untouched on reset.
-## Closing the window (or clicking Launch Game) hands control back to
-## _run_pass_1.
+## Closing the window (or clicking the bottom action button) hands control back
+## to the game; post-boot config changes restart so the new profile can load.
 
 func _load_developer_mode_setting() -> void:
 	var cfg := ConfigFile.new()
@@ -66,7 +66,7 @@ func _load_ui_config() -> void:
 	# a silent-overwrite gap where an imported profile named "Default"
 	# would write without the overwrite confirm (since _list_profiles()
 	# wouldn't yet include the untoggled placeholder). Writing the section
-	# here makes Default a persistent profile like every other launcher
+	# here makes Default a persistent profile like every other game manager
 	# (Firefox, Minecraft, Steam). Users can rename or delete it if they
 	# want.
 	#
@@ -215,7 +215,7 @@ func _save_ui_config() -> void:
 
 	# Skip profile-section writes while the Vanilla sentinel is active -- it's
 	# not a real profile and must not materialize stored sections, even from
-	# the Launch-time save in lifecycle.gd.
+	# the startup save in lifecycle.gd.
 	if _active_profile != VANILLA_PROFILE:
 		# Rewrite the active profile's sections fresh so removed mods don't linger.
 		var en_sec := "profile." + _active_profile + ".enabled"
@@ -584,7 +584,7 @@ func _rebuild_mods_tab(tabs: TabContainer) -> void:
 	# hitting the per-row checkbox handler.
 	refresh_launch_button_label()
 
-# Parent a dialog on the launcher window (fallback: tree root) so it layers
+# Parent a dialog on the manager window (fallback: tree root) so it layers
 # over our always_on_top Window, and copy our dark theme onto it since theme
 # lookup doesn't cross Window boundaries reliably.
 func _attach_ui_dialog(d: Window) -> void:
@@ -603,7 +603,7 @@ func _connect_dialog_exits(d: ConfirmationDialog, on_confirm: Callable, on_dismi
 
 # Make a Control swap the bottom-bar hint label to `text` while hovered and
 # restore the original on exit. Stand-in for Godot tooltips, which are popups
-# that render behind our always_on_top launcher window.
+# that render behind our always_on_top manager window.
 func _wire_hint(c: Control, text: String) -> void:
 	if _ui_hint_label == null:
 		return
@@ -705,16 +705,16 @@ func _enabled_red_mods() -> Array:
 			out.append(entry)
 	return out
 
-# Launch-time confirmation when one or more enabled mods are scored RED.
-# Returns true if the user confirms launch, false if they go back. Loading
-# is never silently bypassed; the user must explicitly acknowledge.
+# Confirmation when one or more enabled mods are scored RED. Returns true if
+# the user confirms, false if they go back. Loading is never silently bypassed;
+# the user must explicitly acknowledge.
 #
 # Uses plain dialog_text so Godot auto-sizes the window to its content.
 # A custom VBoxContainer body would let the window grow off-screen.
 func _confirm_red_launch(red_mods: Array) -> bool:
 	var d := ConfirmationDialog.new()
 	d.title = "Suspicious mods enabled"
-	d.ok_button_text = "Launch anyway"
+	d.ok_button_text = "Continue anyway"
 	d.cancel_button_text = "Go back"
 	d.dialog_autowrap = true
 	# Width floor so the autowrap doesn't squeeze the text into a narrow
@@ -722,19 +722,19 @@ func _confirm_red_launch(red_mods: Array) -> bool:
 	d.min_size = Vector2(560, 120)
 
 	var lines := PackedStringArray()
-	lines.append("The scanner found patterns in the following mod(s) that are commonly used by malware. If you don't trust them, go back and disable them before launching.")
+	lines.append("The scanner found patterns in the following mod(s) that are commonly used by malware. If you don't trust them, go back and disable them before continuing.")
 	lines.append("")
 	for entry: Dictionary in red_mods:
 		lines.append("    " + str(entry.get("mod_name", "?")))
 	d.dialog_text = "\n".join(lines)
 
 	_attach_ui_dialog(d)
-	# Force dialog above the always_on_top launcher. Without this, clicking
-	# the launcher's X (which routes to the same Launch handler) sometimes
-	# parents-off the dialog behind the launcher and leaves input frozen.
+	# Force dialog above the always_on_top manager. Without this, clicking
+	# the manager's X (which routes to the same action handler) sometimes
+	# parents-off the dialog behind the manager and leaves input frozen.
 	d.exclusive = true
 	d.always_on_top = true
-	# Red text on the destructive button so "Launch anyway" reads as the
+	# Red text on the destructive button so "Continue anyway" reads as the
 	# risky option. Same modulate trick as _show_vanilla_confirm.
 	d.get_ok_button().modulate = Color(1.0, 0.55, 0.55)
 
@@ -1099,7 +1099,7 @@ func show_mod_ui() -> void:
 
 	root.add_child(HSeparator.new())
 
-	# Bottom bar: instructions + launch button
+	# Bottom bar: status hint + close/apply button
 	var bottom := HBoxContainer.new()
 	bottom.add_theme_constant_override("separation", 10)
 	root.add_child(bottom)
@@ -1117,7 +1117,7 @@ func show_mod_ui() -> void:
 	_ui_hint_label = hint
 
 	var launch_btn := Button.new()
-	launch_btn.text = "  Launch Game  "
+	launch_btn.text = "  Close  "
 	launch_btn.custom_minimum_size = Vector2(130, 36)
 	var ls_n := StyleBoxFlat.new()
 	ls_n.bg_color = Color(0.05, 0.05, 0.05)
@@ -1136,7 +1136,7 @@ func show_mod_ui() -> void:
 	launch_btn.add_theme_color_override("font_color", Color(0.88, 0.88, 0.88))
 	launch_btn.add_theme_color_override("font_hover_color", Color(1.0, 1.0, 1.0))
 
-	# Always-visible self-version label sitting between the hint and Launch.
+	# Always-visible self-version label sitting between the hint and action.
 	# Default state shows the installed version in dim gray; the
 	# _check_modloader_update_async coroutine flips it to orange and rewrites
 	# the text when ModWorkshop reports a newer release. Click opens the mod
@@ -1156,12 +1156,12 @@ func show_mod_ui() -> void:
 	bottom.add_child(launch_btn)
 	_ui_launch_btn = launch_btn
 
-	# Closing the window with X should behave the same as clicking Launch.
+	# Closing the window with X should behave the same as clicking the action.
 	win.close_requested.connect(func(): launch_btn.pressed.emit())
 
 	# Fire-and-forget self-update check. Updates _ui_update_alert_btn and may
 	# pop the one-shot dialog when the API returns. Guards on
-	# is_instance_valid so a launcher close mid-flight is harmless.
+	# is_instance_valid so a manager close mid-flight is harmless.
 	_check_modloader_update_async()
 
 	var mods_tab := build_mods_tab(tabs)
@@ -1174,10 +1174,10 @@ func show_mod_ui() -> void:
 
 	refresh_launch_button_label()
 
-	# Launch loop. If any enabled mod has the scanner's RED risk_level,
-	# show a confirmation dialog before proceeding. Cancel returns the
-	# user to the launcher so they can disable the flagged mod or
-	# reconsider; confirm proceeds. No gate when no red mods are enabled.
+	# Close/apply loop. If any enabled mod has the scanner's RED risk_level,
+	# show a confirmation dialog before proceeding. Cancel returns the user to
+	# the manager so they can disable the flagged mod or reconsider; confirm
+	# proceeds. No gate when no red mods are enabled.
 	while true:
 		await launch_btn.pressed
 		var red_mods := _enabled_red_mods()
@@ -1193,12 +1193,17 @@ func show_mod_ui() -> void:
 	_ui_update_alert_btn = null
 	win.queue_free()
 
-# Pessimistic label: any enabled mod -> "(Restart)". Over-warn beats a
-# surprise close/reopen; the rare hash-match no-restart case just launches
-# faster than promised.
 func refresh_launch_button_label() -> void:
 	if not is_instance_valid(_ui_launch_btn):
 		return
+	if _boot_complete:
+		if _dirty_since_boot:
+			_ui_launch_btn.text = "  Apply & Restart  "
+		else:
+			_ui_launch_btn.text = "  Close  "
+		return
+	# Legacy pre-boot fallback, kept in case a future recovery path opens the
+	# manager before the main menu exists.
 	var any_enabled := false
 	for entry in _ui_mod_entries:
 		if entry.get("enabled", false):
@@ -1382,7 +1387,7 @@ func make_dark_theme() -> Theme:
 
 	# -- Tooltip (hover hint panel) --------------------------------------------
 	# Without these our tooltips render with the default light theme and get
-	# lost behind the always_on_top launcher window.
+	# lost behind the always_on_top manager window.
 	var tt_panel := StyleBoxFlat.new()
 	tt_panel.bg_color = Color(0.10, 0.10, 0.10)
 	tt_panel.border_color = C_BORD
@@ -2238,9 +2243,9 @@ func check_updates_for_ui(status_info: Dictionary, add_log: Callable, check_btn:
 
 # Fire-and-forget from show_mod_ui. Hits the ModWorkshop versions API for
 # our own mod id, compares the result against MODLOADER_VERSION, and on a
-# newer release: reveals the launch-row LinkButton, and pops a one-shot
+# newer release: reveals the bottom-row LinkButton, and pops a one-shot
 # dialog the first session each new version is detected. All UI mutations
-# guard on is_instance_valid because the launcher may close before the
+# guard on is_instance_valid because the manager may close before the
 # HTTP request returns.
 func _check_modloader_update_async() -> void:
 	if MODLOADER_MODWORKSHOP_ID <= 0:
@@ -2264,7 +2269,7 @@ func _check_modloader_update_async() -> void:
 
 	# Pop the dialog only the first session this specific new version is
 	# seen. Stays quiet on subsequent launches until ModWorkshop ships a
-	# newer one. The launch-row alert remains visible regardless.
+	# newer one. The bottom-row alert remains visible regardless.
 	var last_seen := _modloader_update_last_seen_version()
 	if last_seen != latest:
 		_show_modloader_update_dialog(latest)

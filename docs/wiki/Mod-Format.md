@@ -28,7 +28,7 @@ mods/MyMod/                  Resulting res:// paths after mount
 
 A matching `mod.txt` autoload entry: `MyMod="res://MyMod/Main.gd"`.
 
-**Breaking change in 3.1.2**: pre-3.1.2 folder mode dropped contents at `res://` directly with no wrapper, so existing folder mods that relied on that layout need their `mod.txt` paths re-prefixed with the folder name. Folder mode is dev-only (gated behind the developer-mode toggle in the launcher) and the prior unwrapped behavior was undocumented; the inconsistency between folder and `.zip` was the actual bug.
+**Breaking change in 3.1.2**: pre-3.1.2 folder mode dropped contents at `res://` directly with no wrapper, so existing folder mods that relied on that layout need their `mod.txt` paths re-prefixed with the folder name. Folder mode is dev-only (gated behind the developer-mode toggle in the manager) and the prior unwrapped behavior was undocumented; the inconsistency between folder and `.zip` was the actual bug.
 
 ## mod.txt
 
@@ -78,7 +78,7 @@ Only `[mod]` is required. `[autoload]`, `[updates]`, `[dependencies]`, `[hooks]`
 
 ### `[dependencies]` section
 
-Declares other mods by `[mod] id` so the launcher can identify missing requirements and the runtime loader can avoid starting mods that cannot work.
+Declares other mods by `[mod] id` so the manager can identify missing requirements and the runtime loader can avoid starting mods that cannot work.
 
 ```ini
 [dependencies]
@@ -91,9 +91,9 @@ Use Godot `ConfigFile` string arrays. Bare CSV (`required=a, b`) is not valid `C
 | Key | Type | Meaning |
 |---|---|---|
 | `required` | string array | Mods that must be installed and enabled. If any required dependency is missing, disabled, or not loadable, this mod is skipped. |
-| `optional` | string array | Soft integrations. Parsed and displayed by the launcher; absence does not block loading. |
+| `optional` | string array | Soft integrations. Parsed and displayed by the manager; absence does not block loading. |
 
-Required dependencies should load before the dependent mod. If the current priority/name ordering would load a dependency later than its dependent, the launcher and boot log report a load-order warning. Set the dependent mod's priority higher than its required dependency to resolve it.
+Required dependencies should load before the dependent mod. If the current priority/name ordering would load a dependency later than its dependent, the manager and boot log report a load-order warning. Set the dependent mod's priority higher than its required dependency to resolve it.
 
 ### `[autoload]` section
 

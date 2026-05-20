@@ -1,8 +1,8 @@
 ## ----- lifecycle.gd -----
 ## Top-level orchestration: _ready is the entrypoint, dispatches to
-## _run_pass_1 (first launch, show UI) or _run_pass_2 (post-restart).
-## _finish_* helpers wrap up either path by instantiating queued autoloads
-## and emitting frameworks_ready.
+## _run_pass_1 (normal launch, saved profile auto-loads) or _run_pass_2
+## (post-restart). _finish_* helpers wrap up either path by instantiating
+## queued autoloads and emitting frameworks_ready.
 
 func _ready() -> void:
 	if _has_loaded:
@@ -72,7 +72,7 @@ func _preserve_engine_driver_args(args: Array) -> void:
 			args.append("--rendering-method")
 			args.append(method)
 
-# Public entry point for the main-menu "Mods" button. Re-shows the launcher UI
+# Public entry point for the main-menu "Mods" button. Re-shows the manager UI
 # post-boot; if any mutation sets _dirty_since_boot, quits + restarts into a
 # clean Pass 1. Noop when the UI is already open.
 func reopen_mod_ui() -> void:
@@ -101,7 +101,10 @@ func _run_pass_1() -> void:
 	_ui_mod_entries = collect_mod_metadata()
 	_clean_stale_cache()
 	_load_ui_config()
-	await show_mod_ui()
+	_log_info("Startup manager skipped -- use the main-menu Mods button to change mod selections.")
+	var red_mods := _enabled_red_mods()
+	if not red_mods.is_empty():
+		_log_warning("[Security] %d enabled mod(s) have suspicious-code findings. Open Mods from the main menu to review them." % red_mods.size())
 	_save_ui_config()
 
 	load_all_mods()
@@ -172,7 +175,7 @@ func _finish_with_existing_mounts() -> void:
 	# check; no need to re-apply from pass state.
 	_boot_complete = true
 	_register_rtv_modlib_meta()
-	_generate_hook_pack()
+	var hook_pack := _generate_hook_pack()
 	for entry in _pending_autoloads:
 		if get_tree().root.has_node(entry["name"]):
 			_log_info("  Autoload '%s' already in tree -- skipped" % entry["name"])
@@ -184,7 +187,7 @@ func _finish_with_existing_mounts() -> void:
 		_write_conflict_report()
 	_emit_frameworks_ready()
 	_delete_heartbeat()
-	if not _filescope_mounted.is_empty() or not _archive_file_sets.is_empty() or _pending_autoloads.size() > 0:
+	if hook_pack != "" or not _filescope_mounted.is_empty() or not _archive_file_sets.is_empty() or _pending_autoloads.size() > 0:
 		var err := get_tree().reload_current_scene()
 		if err != OK:
 			_log_critical("reload_current_scene() failed with error " + str(err))
@@ -193,7 +196,7 @@ func _finish_with_existing_mounts() -> void:
 func _finish_single_pass() -> void:
 	_boot_complete = true
 	_register_rtv_modlib_meta()
-	_generate_hook_pack()
+	var hook_pack := _generate_hook_pack()
 	for entry in _pending_autoloads:
 		_instantiate_autoload(entry["mod_name"], entry["name"], entry["path"])
 	if _developer_mode:
@@ -202,7 +205,7 @@ func _finish_single_pass() -> void:
 		_write_conflict_report()
 	_emit_frameworks_ready()
 	_delete_heartbeat()
-	if not _archive_file_sets.is_empty() or _pending_autoloads.size() > 0:
+	if hook_pack != "" or not _archive_file_sets.is_empty() or _pending_autoloads.size() > 0:
 		var err := get_tree().reload_current_scene()
 		if err != OK:
 			_log_critical("reload_current_scene() failed with error " + str(err))
@@ -242,7 +245,7 @@ func _run_pass_2() -> void:
 
 	load_all_mods("Pass 2")
 	_register_rtv_modlib_meta()
-	_generate_hook_pack()
+	var hook_pack := _generate_hook_pack()
 	# After load_all_mods re-mounts mod archives (wiping our IXP/Controller
 	# override), remount the already-generated test pack to re-apply.
 	# NOTE: Godot dedupes load_resource_pack by path, so mounting the same
@@ -287,7 +290,7 @@ func _run_pass_2() -> void:
 	# want the marker gone; the state we wrote IS consistent at this point.
 	if FileAccess.file_exists(PASS2_DIRTY_PATH):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(PASS2_DIRTY_PATH))
-	if not _filescope_mounted.is_empty() or not _archive_file_sets.is_empty() or _pending_autoloads.size() > 0:
+	if hook_pack != "" or not _filescope_mounted.is_empty() or not _archive_file_sets.is_empty() or _pending_autoloads.size() > 0:
 		var err := get_tree().reload_current_scene()
 		if err != OK:
 			_log_critical("reload_current_scene() failed with error " + str(err))

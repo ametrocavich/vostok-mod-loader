@@ -155,7 +155,7 @@ func read_mod_config(path: String) -> ConfigFile:
 	# Reset diagnostic alongside status: paths below (empty mod.txt, missing
 	# mod.txt, ZIPReader open failure) set parse_error without going through
 	# _parse_mod_txt, so without this reset the prior mod's error message
-	# would leak into the next mod's launcher warning.
+	# would leak into the next mod's manager warning.
 	_last_mod_txt_error = ""
 	var zr := ZIPReader.new()
 	if zr.open(path) != OK:
@@ -221,7 +221,7 @@ func _parse_mod_txt(text: String) -> ConfigFile:
 		# The Variant-parser failure code from cfg.parse() doesn't carry the
 		# offending line number. Walk the source per-line to locate it; the
 		# diagnostic flows through _last_mod_txt_error -> mod_txt_error on
-		# the entry -> launcher warning + boot log so authors see the broken
+		# the entry -> manager warning + boot log so authors see the broken
 		# section/line instead of a generic "re-download" hint.
 		_last_mod_txt_error = _diagnose_parse_failure(preprocessed)
 		return null
@@ -296,7 +296,7 @@ func _quote_unquoted_hooks_values(text: String) -> String:
 
 # Locate the first line that ConfigFile.parse() would reject. Used only on
 # the failure path -- the per-line probe is O(N) parses but only fires when
-# the mod is already broken, and the result lets the launcher tell authors
+# the mod is already broken, and the result lets the manager tell authors
 # *which* line/section to look at instead of "Invalid mod, re-download".
 func _diagnose_parse_failure(text: String) -> String:
 	var current_section := ""

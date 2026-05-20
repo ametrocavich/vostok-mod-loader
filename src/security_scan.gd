@@ -9,8 +9,8 @@
 ## (see the Road to Vostok dropper that motivated this branch); a
 ## determined attacker with the modloader source can evade specific
 ## patterns. Loading is never blocked. Only mods that hit a red trigger
-## get a "suspicious code" tag in the launcher and a confirmation
-## dialog at Launch time.
+## get a "suspicious code" tag in the manager and a confirmation dialog
+## when the user closes/applies with them enabled.
 
 # Source files we run regex content scans on (GDScript text + text-form
 # Godot resources that can embed inline GDScript).

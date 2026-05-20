@@ -1,6 +1,6 @@
 # Road to Vostok -- Community Mod Loader
 
-Mod loader for Road to Vostok (Godot 4.6). Adds a pre-game UI for managing mods, load order, and updates.
+Mod loader for Road to Vostok (Godot 4.6). Adds a main-menu manager for mods, load order, and updates.
 
 **Developer docs**: [Wiki](https://github.com/ametrocavich/vostok-mod-loader/wiki) -- architecture, hook internals, mod format schema, stability canaries, limitations.
 
@@ -17,21 +17,21 @@ Mod loader for Road to Vostok (Godot 4.6). Adds a pre-game UI for managing mods,
    ```
 2. Create a `mods` folder there if it doesn't exist.
 3. Drop `.vmz` files into `mods/`.
-4. Launch the game. The mod loader UI appears before the main menu.
+4. Launch the game. The saved profile loads automatically; use the main-menu **Mods** button to open the manager.
 
-## Launcher UI
+## Mod Manager
 
-Two tabs:
+The manager opens from the main-menu **Mods** button:
 
 - **Mods** -- detected mods with checkboxes and a priority spinbox. Higher priority loads later and wins file conflicts. Load-order preview on the right updates in real time.
 - **Updates** -- for mods with `[updates] modworkshop=<id>` in `mod.txt`, check for and download updates from ModWorkshop.
-- **Dependencies** -- for mods with `[dependencies] required=[...]` in `mod.txt`, identify missing/disabled requirements and skip mods whose required dependencies are not loadable.
+- Dependency notices appear in the Mods tab for mods with `[dependencies] required=[...]` in `mod.txt`; mods whose required dependencies are not loadable are skipped.
 
-Click **Launch Game** or close the window to start.
+Click **Close** or close the window to return to the game. If you changed the active profile, enabled state, priorities, or Developer Mode after boot, the button becomes **Apply & Restart** so the new mod set can take effect.
 
 ### Guardrails
 
-The launcher does a static scan of every mod's source for a small set of patterns that have been seen in actual malicious mods (obfuscated string decoding paired with process spawning, anti-debug crashes, ransomware-setup calls). Mods that match get a small red "suspicious code" tag in the list, and clicking **Launch Game** with one enabled pops a confirmation dialog before the game starts.
+The manager does a static scan of every mod's source for a small set of patterns that have been seen in actual malicious mods (obfuscated string decoding paired with process spawning, anti-debug crashes, ransomware-setup calls). Mods that match get a small red "suspicious code" tag in the list. Startup also logs a warning if any enabled mod has suspicious-code findings.
 
 This is **not** a virus scanner. It catches lazy / copy-paste attacks; a determined attacker with the modloader source can write around the patterns. Loading is never silently blocked -- you can confirm and launch any mod. The scanner exists to slow down the obvious cases, nothing more. Always install mods from sources you trust.
 
@@ -153,7 +153,7 @@ Full API reference, dispatch semantics, and three-entry pack recipe: [Hooks wiki
 
 ## Troubleshooting
 
-**From the UI**: click **Reset to Vanilla** in the pre-launch window. Wipes mod state (hook pack, override.cfg, pass state), unchecks every mod, restarts clean. Your mods stay in `mods/`.
+**From the UI**: click **Reset to Vanilla** in the manager window. Wipes mod state (hook pack, override.cfg, pass state), unchecks every mod, restarts clean. Your mods stay in `mods/`.
 
 **If the game crashes or won't launch**:
 

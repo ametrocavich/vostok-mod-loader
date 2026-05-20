@@ -1,6 +1,6 @@
 ## ----- main_menu_hook.gd -----
 ## Injects a "Mods" button into RTV's main menu (res://Scripts/Menu.gd) that
-## re-opens the launcher UI post-boot. Any mutation to mod_config.cfg while
+## re-opens the manager UI post-boot. Any mutation to mod_config.cfg while
 ## the UI is open flips _dirty_since_boot; on close we restart into a clean
 ## Pass 1 so the new mod set takes effect.
 ##

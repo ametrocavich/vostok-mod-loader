@@ -89,7 +89,7 @@ Boot-time probes that alarm loudly when something the loader depends on silently
 
 ### UI Reset-to-Vanilla button
 
-**Location**: bottom bar of the launcher UI, left of Launch Game.
+**Location**: bottom bar of the manager UI, left of the Close / Apply & Restart action.
 
 **Effect**: unchecks every mod in memory, saves config, calls `_static_force_vanilla_state` (same cleanup as the disabled sentinel), strips `--modloader-restart` from cmdline args, and restarts the game clean.
 
