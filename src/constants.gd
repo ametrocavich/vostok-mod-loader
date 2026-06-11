@@ -43,7 +43,7 @@ const VANILLA_CACHE_DIR := "user://modloader_hooks/vanilla"
 const MODWORKSHOP_VERSIONS_URL := "https://api.modworkshop.net/mods/versions"
 const MODWORKSHOP_DOWNLOAD_URL_TEMPLATE := "https://api.modworkshop.net/mods/%s/download"
 const MODWORKSHOP_PAGE_URL_TEMPLATE := "https://modworkshop.net/mod/%s"
-# ModWorkshop ID for this modloader itself. Used by the manager's self-update
+# ModWorkshop ID for this modloader itself. Used by the launcher's self-update
 # check to flag when the installed MODLOADER_VERSION is older than what's
 # published on ModWorkshop. Set to <= 0 to disable the check entirely.
 const MODLOADER_MODWORKSHOP_ID := 55623
@@ -105,10 +105,10 @@ var _developer_mode := false
 var _active_profile := "Default"
 var _ui_window: Window = null
 # Bottom-bar label used as a makeshift status hint because Godot's native
-# tooltips get layered behind our always_on_top manager window and aren't visible.
+# tooltips get layered behind our always_on_top launcher and aren't visible.
 var _ui_hint_label: Label = null
-# Bottom action button kept on self so refresh_launch_button_label can reach it
-# from mod-enable/profile handlers.
+# Launch button kept on self so refresh_launch_button_label can reach it
+# from the mod-enable toggle handler.
 var _ui_launch_btn: Button = null
 # Self-update check state. _modloader_latest_version is populated by
 # _check_modloader_update_async once the API responds; empty until then or
@@ -128,7 +128,7 @@ var _last_mod_txt_error := ""
 var _database_replaced_by := ""
 # Post-boot UI re-open state. _boot_complete flips true once Pass 1 / Pass 2 /
 # single-pass finish paths finalize. Once true, any mutation of mod_config.cfg
-# via the manager UI sets _dirty_since_boot, which the main-menu reopen flow
+# via the launcher UI sets _dirty_since_boot, which the main-menu reopen flow
 # uses to decide whether to restart on UI close.
 var _boot_complete: bool = false
 var _dirty_since_boot: bool = false
@@ -215,9 +215,9 @@ var _applied_script_overrides: Dictionary = {}         # vanilla_path -> true
 
 # Opt-in declarations (v3.0.1 cutover). Populated by the [hooks] parser in
 # mod_loading.gd and by .hook() call scanning. Drives the wrap surface in
-# _generate_hook_pack. If both are empty AND _any_mod_declared_registry is false,
-# user mods' vanilla targets stay byte-identical to pre-hook-system (v2.1.0)
-# behavior; core-owned hooks may still generate the main-menu Mods button.
+# _generate_hook_pack. If both are empty AND _any_mod_declared_registry is
+# false, _generate_hook_pack early-returns and no hook pack is produced --
+# the modlist behaves byte-identical to pre-hook-system (v2.1.0) behavior.
 var _hooked_methods: Dictionary = {}             # res_path -> {method_name: true}
 var _any_mod_declared_registry: bool = false     # set by [registry] parser
 

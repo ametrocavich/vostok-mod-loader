@@ -51,7 +51,7 @@ See [Architecture](Architecture) for the control flow.
 
 Lightweight static scanner. Reads each file inside a candidate mod (`.vmz`/`.zip`, `.pck`, or developer-mode folder) WITHOUT mounting it and looks for combinations of GDScript patterns that are nearly diagnostic of known malware.
 
-Not a virus scanner. Catches lazy / copy-paste attacks (the dropper screenshot that motivated this branch); a determined attacker with the modloader source can write around the rules. Loading is never blocked. The manager shows a "suspicious code" tag on flagged mods, asks for confirmation when closing/applying with flagged mods enabled, and logs a startup warning if flagged mods are already enabled.
+Not a virus scanner. Catches lazy / copy-paste attacks (the dropper screenshot that motivated this branch); a determined attacker with the modloader source can write around the rules. Loading is never blocked. The launcher shows a "suspicious code" tag on flagged mods and pops a confirmation dialog at Launch time.
 
 - `scan_mod` -- top-level entry called from `_build_archive_entry` / `_build_folder_entry`
 - 13 rules grouped into solo red triggers (`os_crash`, `disable_save_safety`), process-spawn, runtime-code-build, and obfuscation families
@@ -90,12 +90,12 @@ Override verification:
 
 ### [ui.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd)
 
-Manager window opened from the main-menu Mods button. Two tabs (Mods, Updates), dark theme, Reset-to-Vanilla action. Closing the window returns to the game; post-boot changes restart cleanly when applied.
+Pre-game launcher window. Two tabs (Mods, Updates), dark theme, Reset-to-Vanilla action. Closing the window equals clicking Launch Game.
 
 - `show_mod_ui` at [ui.gd:930](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L930)
 - `build_mods_tab` / `build_updates_tab` -- tab content
 - `make_dark_theme` -- Theme resource with pure-black backgrounds
-- `refresh_launch_button_label` at [ui.gd:1063](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L1063) -- post-boot label switches between `"Close"` and `"Apply & Restart"` depending on whether the manager changed runtime mod state. Legacy pre-boot fallback still uses the old launch labels.
+- `refresh_launch_button_label` at [ui.gd:1063](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L1063) -- pessimistic label: switches between `"Launch with Mods (Restart)"` and `"Launch Unmodded"` depending on whether any enabled mod exists. Called on init, per-checkbox toggle, and profile/dev-mode tab rebuilds. Over-warns in the rare hash-match no-restart case
 - `_reset_to_vanilla_and_restart` at [ui.gd:479](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L479) -- unchecks every mod, calls `_static_force_vanilla_state`, strips `--modloader-restart` from cmdline so the relaunch is a clean Pass 1
 
 ## Public API
@@ -160,7 +160,7 @@ See [Hooks](Hooks) for details.
 
 Orchestrates the full rewrite pipeline:
 
-1. **Opt-in gate**: core hooks are seeded even when no mods are loaded so the main-menu Mods button remains available. If mods are loaded but `_hooked_methods` is empty and no mod declared `[registry]`, log the "no user opt-in declarations" banner and proceed with a minimal pack containing only the core-owned `Menu.gd :: _ready` wrap. User mods' vanilla targets stay unmodified either way.
+1. **Opt-in gate**: if no mods are loaded, early-return (no pack file written). If mods are loaded but `_hooked_methods` is empty and no mod declared `[registry]`, log the "no user opt-in declarations" banner and proceed with a minimal pack containing only the core-owned `Menu.gd :: _ready` wrap (launcher main-menu button injection). User mods' vanilla targets stay unmodified either way.
 2. Verify GDSC tokenizer version (STABILITY canary B)
 3. Enumerate game scripts
 4. Pre-read mod sibling scripts (before `ZIPPacker.open` invalidates existing VFS handles)
@@ -185,7 +185,7 @@ See [Architecture](Architecture).
 
 ### [main_menu_hook.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/main_menu_hook.gd)
 
-Injects a "Mods" button into RTV's main menu (`res://Scripts/Menu.gd`) so users can open the manager post-boot without restarting the game. Uses the same hook machinery mods use:
+Injects a "Mods" button into RTV's main menu (`res://Scripts/Menu.gd`) so users can reopen the launcher post-boot without restarting the game. Uses the same hook machinery mods use:
 
 - `_seed_core_hooks` pre-populates `_hooked_methods["res://Scripts/Menu.gd"]["_ready"]` so the rewriter wraps `Menu.gd :: _ready` even when no user mod asked for it. Called from each finish path and from Pass 1's pre-restart pack generation so every code path that produces a hook pack includes this wrap.
 - `_register_core_hooks` subscribes `_on_menu_ready` to `menu-_ready-post` via the public `hook()` API, fired from `_emit_frameworks_ready` in [hooks_api.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd).

@@ -87,6 +87,9 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		_log_info("[STABILITY] Detokenizer compatible: GDSC v%d on Godot %s" \
 				% [tok_version, Engine.get_version_info().get("string", "unknown")])
 
+	if _loaded_mod_ids.is_empty():
+		return ""
+
 	# OPT-IN GATE (v3.0.1): user mods run against unmodified vanilla unless
 	# at least one mod declares [hooks] / .hook() / [registry]. Prior
 	# versions' inference triggers (extends_paths, take_over_literal_paths,
@@ -102,16 +105,13 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	# would hook against, so it's effectively v2.1.0-equivalent from a
 	# mod-author perspective.
 	var user_wrap_empty: bool = _hooked_methods.is_empty() and not _any_mod_declared_registry
-	var no_loaded_mods := _loaded_mod_ids.is_empty()
 
 	# Seed core-owned hook declarations (e.g. Menu.gd _ready for the main-menu
-	# Mods button). This always runs now: startup no longer shows the manager,
-	# so even pure-vanilla sessions need the main-menu button as the recovery
-	# path back into mod/profile management.
+	# Mods button). Done after the no-mods short-circuit above so pure-vanilla
+	# sessions generate no pack, but before the legacy-mode log below so the
+	# pack includes the core wrap when at least one mod is loaded.
 	_seed_core_hooks()
 
-	if no_loaded_mods:
-		_log_info("[RTVCodegen] No mods loaded -- pack contains core hooks only for the main-menu Mods button.")
 	if user_wrap_empty:
 		_log_info("[RTVCodegen] No user opt-in declarations ([hooks] / .hook() / [registry]) -- user mods' vanilla targets run unmodified (v2.1.0-equivalent). Pack contains core hooks only.")
 

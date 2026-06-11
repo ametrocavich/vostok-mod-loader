@@ -18,7 +18,7 @@ Three sentinel files live in the **game's install directory** (next to the `.exe
 
 ## `mod_config.cfg` -- your profiles and settings
 
-This is the user-facing config. The main-menu manager UI reads and writes it. Plain INI, safe to inspect or edit by hand.
+This is the user-facing config. The pre-launch UI reads and writes it. Plain INI, safe to inspect or edit by hand.
 
 ### Shape
 
@@ -97,7 +97,7 @@ Copy `mod_config.cfg` somewhere safe. That one file contains all profiles and se
 **Copy your setup to another install**
 Two ways:
 1. **Full config copy** -- copy `mod_config.cfg` and paste into the same path on the other machine. Carries every profile + settings.
-2. **Shareable profile payload** -- in-game, open the manager from the main-menu Mods button, click **Share** on the profile, copy the `MTRPRF1....` string, paste into Discord / whatever, recipient clicks **Import** and pastes. Carries only that one profile. See [Profile-Format](Profile-Format) for the wire format.
+2. **Shareable profile payload** -- in-game, open the launcher, click **Share** on the profile, copy the `MTRPRF1....` string, paste into Discord / whatever, recipient clicks **Import** and pastes. Carries only that one profile. See [Profile-Format](Profile-Format) for the wire format.
 
 **Reset one profile to empty**
 Delete its two sections (`[profile.<name>.enabled]` and `[profile.<name>.priority]`). Keep your other profiles.
