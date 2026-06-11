@@ -1,13 +1,17 @@
 ## ----- ui.gd -----
 ## The launcher window shown before the game starts.
 ##   - Mods tab: per-mod enable checkbox + load-order spin, profile selector
-##     (switch / create / delete) with a Vanilla entry that confirms then
-##     resets + restarts, and a live load-order preview.
+##     (switch / create / delete), and a live load-order preview.
+##   - Browse tab: ModWorkshop catalog + install.
+##   - Modpacks tab: apply/unload modpack zips.
 ##   - Updates tab: ModWorkshop version checking + downloads.
+##   - Bottom bar has "Launch Vanilla" (one-shot bypass via the
+##     DISABLED_ONCE_FILE sentinel) alongside the main Launch Game button.
 ##   - Profiles live in UI_CONFIG_PATH under `profile.<name>.enabled` and
 ##     `profile.<name>.priority`; the active profile is stored in
-##     `[settings] active_profile`. VANILLA_PROFILE is a sentinel meaning
-##     "all mods off" and keeps stored profiles untouched on reset.
+##     `[settings] active_profile`. VANILLA_PROFILE is kept only as a
+##     legacy migration target -- pre-3.2.2 users may have it stored,
+##     and _load_ui_config rewrites it to the first real profile.
 ## Closing the window (or clicking Launch Game) hands control back to
 ## _run_pass_1.
 
@@ -47,9 +51,12 @@ func _load_ui_config() -> void:
 
 	var stored := str(cfg.get_value("settings", "active_profile", "Default"))
 	var profiles := _list_profiles_in_cfg(cfg)
+	# Legacy: pre-Vanilla-removal users have stored = VANILLA_PROFILE in their
+	# config. Treat it as missing so we fall through to the first user profile
+	# rather than a sentinel value with no UI presence.
 	if stored == VANILLA_PROFILE:
-		_active_profile = VANILLA_PROFILE
-	elif stored in profiles:
+		stored = ""
+	if stored in profiles:
 		_active_profile = stored
 	elif not profiles.is_empty():
 		_active_profile = profiles[0]
@@ -278,14 +285,17 @@ func _save_ui_config() -> void:
 
 # Profile management: snapshot the current in-memory state to a new profile
 # and switch to it. Caller is responsible for validating `name` (unique,
-# non-empty, not "Vanilla").
+# non-empty, not "Vanilla"). Seeds the new profile's MCM slot from whatever
+# is currently in user://MCM/ so the user's tweaks-so-far become the new
+# profile's starting state instead of getting lost.
 func _create_profile(name: String) -> void:
 	_active_profile = name
 	_save_ui_config()
+	_snapshot_mcm_to(name)
 
 # Delete the active profile's sections and switch to whichever profile remains
 # first in alphabetical order. Caller must ensure at least one other profile
-# exists before calling this.
+# exists before calling this. Also wipes the deleted profile's MCM snapshot.
 func _delete_active_profile() -> void:
 	var cfg := ConfigFile.new()
 	if cfg.load(UI_CONFIG_PATH) != OK:
@@ -295,6 +305,7 @@ func _delete_active_profile() -> void:
 		var sec := "profile." + target + suffix
 		if cfg.has_section(sec):
 			cfg.erase_section(sec)
+	_delete_mcm_snapshot(target)
 	var remaining := _list_profiles_in_cfg(cfg)
 	if remaining.is_empty():
 		_active_profile = "Default"
@@ -303,19 +314,41 @@ func _delete_active_profile() -> void:
 	cfg.set_value("settings", "active_profile", _active_profile)
 	cfg.save(UI_CONFIG_PATH)
 	_apply_profile_to_entries(cfg, _active_profile)
+	# Restore the new active profile's MCM if it has one. Skip for Vanilla
+	# (no slot, no swap -- user://MCM/ left alone).
+	if _active_profile != VANILLA_PROFILE and _has_mcm_snapshot(_active_profile):
+		_restore_mcm_from(_active_profile)
 	if _boot_complete:
 		_dirty_since_boot = true
 
-# Swap in-memory mod state to an existing profile. Does not write to disk
-# beyond updating the active_profile pointer -- mod enabled/priority values
-# already live in the profile sections.
+# Swap in-memory mod state to an existing profile. Snapshots the outgoing
+# profile's MCM, restores the incoming profile's MCM (or seeds it from
+# current contents on first switch). Vanilla incoming leaves user://MCM/
+# alone since vanilla = no mods active and MCM is harmless without them.
+# Same-profile early-return: switching to the currently active profile is
+# a no-op. The naive flow (snapshot OUT, restore IN) would clobber any
+# unsaved MCM edits because the snapshot dir lags user://MCM/ until the
+# next outgoing-snapshot fires.
 func _switch_profile(name: String) -> void:
+	var old := _active_profile
+	if old == name:
+		return
+	if old != VANILLA_PROFILE and old != name:
+		_snapshot_mcm_to(old)
 	_active_profile = name
 	var cfg := ConfigFile.new()
 	cfg.load(UI_CONFIG_PATH)
 	cfg.set_value("settings", "active_profile", _active_profile)
 	cfg.save(UI_CONFIG_PATH)
 	_apply_profile_to_entries(cfg, _active_profile)
+	if name != VANILLA_PROFILE:
+		if _has_mcm_snapshot(name):
+			_restore_mcm_from(name)
+		else:
+			# First-time switch to this profile: seed its slot from the
+			# outgoing user://MCM/ contents so subsequent switches will
+			# preserve per-profile MCM state.
+			_snapshot_mcm_to(name)
 	if _boot_complete:
 		_dirty_since_boot = true
 
@@ -323,6 +356,7 @@ func _switch_profile(name: String) -> void:
 # the sections from current in-memory state, matching what the old profile
 # held), then erase the old sections. Handles fresh-install placeholder cleanly
 # since _save_ui_config doesn't care whether sections existed previously.
+# Also renames the MCM snapshot dir so the per-profile MCM stays bound.
 func _rename_profile(new_name: String) -> void:
 	var old := _active_profile
 	if old == new_name:
@@ -345,6 +379,433 @@ func _rename_profile(new_name: String) -> void:
 		if cfg.has_section(sec):
 			cfg.erase_section(sec)
 	cfg.save(UI_CONFIG_PATH)
+	_rename_mcm_snapshot(old, new_name)
+
+# --- MCM snapshot mechanic ------------------------------------------------
+#
+# Each user-defined profile owns a private snapshot of user://MCM/, stored at
+# user://.profile_snapshots/<profile>/MCM/. Switching profiles snapshots the
+# outgoing profile's MCM, then restores (or seeds, on first switch) the
+# incoming profile's MCM. Vanilla is special-cased: switching TO Vanilla
+# leaves user://MCM/ untouched (vanilla = no mods active, so MCM is
+# harmlessly orphaned), but the outgoing profile's MCM is still snapshotted
+# so coming back to it later is lossless.
+
+func _mcm_snapshot_dir(profile_name: String) -> String:
+	return MCM_SNAPSHOT_BASE.path_join(profile_name).path_join("MCM")
+
+func _has_mcm_snapshot(profile_name: String) -> bool:
+	return DirAccess.dir_exists_absolute(_mcm_snapshot_dir(profile_name))
+
+# Recursively copy src/ -> dst/, replacing dst/ if it already existed. Used
+# both ways during a profile swap. Returns true when the source had at least
+# one entry; false if the source dir didn't exist or was empty (caller may
+# choose to skip the swap entirely in that case).
+func _copy_dir_recursive(src: String, dst: String) -> bool:
+	if not DirAccess.dir_exists_absolute(src):
+		return false
+	DirAccess.make_dir_recursive_absolute(dst)
+	var dir := DirAccess.open(src)
+	if dir == null:
+		return false
+	var any := false
+	dir.list_dir_begin()
+	while true:
+		var name := dir.get_next()
+		if name == "":
+			break
+		# Skip hidden entries (".profile_snapshots" lives here too if MCM
+		# accidentally got nested; defensive).
+		if name.begins_with("."):
+			continue
+		var src_full := src.path_join(name)
+		var dst_full := dst.path_join(name)
+		if dir.current_is_dir():
+			_copy_dir_recursive(src_full, dst_full)
+			any = true
+		else:
+			var src_f := FileAccess.open(src_full, FileAccess.READ)
+			if src_f == null:
+				continue
+			var bytes := src_f.get_buffer(src_f.get_length())
+			src_f.close()
+			var dst_f := FileAccess.open(dst_full, FileAccess.WRITE)
+			if dst_f != null:
+				dst_f.store_buffer(bytes)
+				dst_f.close()
+				any = true
+	dir.list_dir_end()
+	return any
+
+# Recursively delete a directory and its contents. Used for snapshot removal
+# during profile delete + before restore (so a stale entry from a prior
+# config doesn't survive a swap).
+func _remove_dir_recursive(path: String) -> void:
+	if not DirAccess.dir_exists_absolute(path):
+		return
+	var dir := DirAccess.open(path)
+	if dir == null:
+		return
+	dir.list_dir_begin()
+	while true:
+		var name := dir.get_next()
+		if name == "":
+			break
+		var full := path.path_join(name)
+		if dir.current_is_dir():
+			_remove_dir_recursive(full)
+		else:
+			DirAccess.remove_absolute(full)
+	dir.list_dir_end()
+	DirAccess.remove_absolute(path)
+
+func _snapshot_mcm_to(profile_name: String) -> bool:
+	var dst := _mcm_snapshot_dir(profile_name)
+	# Wipe stale snapshot first so deleted-from-MCM files don't survive.
+	_remove_dir_recursive(dst)
+	return _copy_dir_recursive(MCM_SOURCE_DIR, dst)
+
+func _restore_mcm_from(profile_name: String) -> bool:
+	var src := _mcm_snapshot_dir(profile_name)
+	# Replace user://MCM/ contents wholesale -- partial overlay would leak
+	# leftover files from the previous profile.
+	_remove_dir_recursive(MCM_SOURCE_DIR)
+	return _copy_dir_recursive(src, MCM_SOURCE_DIR)
+
+func _delete_mcm_snapshot(profile_name: String) -> void:
+	# Also clean up the parent profile dir if it ends up empty after removing
+	# MCM/, so .profile_snapshots/ doesn't accumulate empty husks.
+	_remove_dir_recursive(_mcm_snapshot_dir(profile_name))
+	var parent := MCM_SNAPSHOT_BASE.path_join(profile_name)
+	if DirAccess.dir_exists_absolute(parent):
+		DirAccess.remove_absolute(parent)
+
+func _rename_mcm_snapshot(old_name: String, new_name: String) -> void:
+	var old_parent := MCM_SNAPSHOT_BASE.path_join(old_name)
+	var new_parent := MCM_SNAPSHOT_BASE.path_join(new_name)
+	if not DirAccess.dir_exists_absolute(old_parent):
+		return
+	# Rename via DirAccess.rename works on directories too in Godot 4 when
+	# the parent doesn't exist; create base dir defensively.
+	DirAccess.make_dir_recursive_absolute(MCM_SNAPSHOT_BASE)
+	var da := DirAccess.open(MCM_SNAPSHOT_BASE)
+	if da != null:
+		da.rename(old_name, new_name)
+
+# --- Profile <-> zip serialization -----------------------------------------
+#
+# File-based save/load. The zip layout is "profile.json" at the root plus an
+# optional "MCM/" tree mirroring user://MCM/. No new file extension is
+# introduced; the modloader sniffs the contents on load. Format chosen so
+# someone with a zip viewer can inspect what they're about to import.
+
+# Per-mod MWS source URLs derived from the [updates] modworkshop= field +
+# [mod] version= in each mod.txt. Embedded in saved profile.json under
+# "sources" so an import can look up where to fetch missing mods AND pin
+# the exact version the modpack author had installed (download_new_mod
+# uses /files/{version} when version is set, else /files/primary). Forward-
+# compatible v1 metroprofile field -- old parsers ignore it.
+func _build_profile_sources() -> Dictionary:
+	var sources: Dictionary = {}
+	for entry in _ui_mod_entries:
+		var cfg2: ConfigFile = entry.get("cfg")
+		if cfg2 == null:
+			continue
+		if not cfg2.has_section_key("updates", "modworkshop"):
+			continue
+		var mws_id := int(str(cfg2.get_value("updates", "modworkshop", "0")))
+		if mws_id <= 0:
+			continue
+		var pk: String = entry["profile_key"]
+		var src_entry: Dictionary = {"modworkshop_id": mws_id}
+		var version_str := str(cfg2.get_value("mod", "version", "")).strip_edges()
+		if not version_str.is_empty():
+			src_entry["version"] = version_str
+		sources[pk] = src_entry
+	return sources
+
+# Read the persisted preferred author name from mod_config.cfg. Used to
+# auto-fill the author field in the save-as-modpack dialog so users don't
+# retype their handle every time. Empty string when not yet set.
+func _load_preferred_author() -> String:
+	var cfg := ConfigFile.new()
+	if cfg.load(UI_CONFIG_PATH) != OK:
+		return ""
+	return str(cfg.get_value("settings", "preferred_author", ""))
+
+# Persist the preferred author for future modpack saves. Pass empty to
+# clear -- the next save dialog will open with an empty field.
+func _save_preferred_author(author: String) -> void:
+	var cfg := ConfigFile.new()
+	cfg.load(UI_CONFIG_PATH)
+	cfg.set_value("settings", "preferred_author", author)
+	cfg.save(UI_CONFIG_PATH)
+
+
+# Mods that are enabled in the active profile but whose mod.txt doesn't
+# carry [updates] modworkshop=N. These get written to profile.enabled in the
+# exported modpack zip but NOT to profile.sources, so anyone applying the
+# modpack on a clean install would see them as unresolved missing-mod stubs.
+# Returned for the save-as-modpack pre-confirm so the user is warned before
+# sharing a partial modpack. Each entry is {mod_name, profile_key}.
+func _enabled_mods_without_modworkshop_id() -> Array:
+	var out: Array = []
+	for entry in _ui_mod_entries:
+		if not bool(entry.get("enabled", false)):
+			continue
+		var cfg2: ConfigFile = entry.get("cfg")
+		var has_id := false
+		if cfg2 != null and cfg2.has_section_key("updates", "modworkshop"):
+			has_id = int(str(cfg2.get_value("updates", "modworkshop", "0"))) > 0
+		if not has_id:
+			out.append({
+				"mod_name": str(entry.get("mod_name", "?")),
+				"profile_key": str(entry.get("profile_key", "?")),
+			})
+	return out
+
+# Save-as-modpack dialog. Shows the profile being saved, a description
+# input, and (when applicable) a warning section listing enabled mods that
+# lack [updates] modworkshop=N -- these get written without download info,
+# so recipients have to source them manually. The OK button text + tint
+# shift between "Save" and "Save Anyway" based on whether orphans exist.
+# Whole body is wrapped in a single ScrollContainer with a fixed max
+# height so the orphan list can't push the dialog past the launcher's
+# bottom edge on a long list.
+func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: TabContainer) -> void:
+	var has_orphans := not orphans.is_empty()
+	var d := ConfirmationDialog.new()
+	d.title = "Save Partial Modpack?" if has_orphans else "Save as Modpack"
+	# Capped to fit comfortably inside a 640px launcher (chrome ~80px,
+	# leaves ~480px for body). Width stays at 560.
+	d.min_size = Vector2i(560, 320 if has_orphans else 220)
+	d.max_size = Vector2i(700, 540)
+
+	var outer_scroll := ScrollContainer.new()
+	outer_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	outer_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	d.add_child(outer_scroll)
+
+	var box := VBoxContainer.new()
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_theme_constant_override("separation", 8)
+	outer_scroll.add_child(box)
+
+	var from_lbl := Label.new()
+	from_lbl.text = "Saving from profile: " + profile_to_save
+	from_lbl.modulate = Color(0.78, 0.78, 0.78)
+	box.add_child(from_lbl)
+
+	var author_hdr := Label.new()
+	author_hdr.text = "Author (optional):"
+	author_hdr.add_theme_font_size_override("font_size", 11)
+	author_hdr.modulate = Color(0.65, 0.65, 0.65)
+	box.add_child(author_hdr)
+
+	var author_input := LineEdit.new()
+	author_input.placeholder_text = "Your modder name or handle"
+	author_input.text = _load_preferred_author()
+	author_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_child(author_input)
+
+	var desc_hdr := Label.new()
+	desc_hdr.text = "Description (optional, shown in the Modpacks tab):"
+	desc_hdr.add_theme_font_size_override("font_size", 11)
+	desc_hdr.modulate = Color(0.65, 0.65, 0.65)
+	box.add_child(desc_hdr)
+
+	var desc_input := TextEdit.new()
+	desc_input.placeholder_text = "e.g. \"Tarkov-style loot economy + harder AI\""
+	desc_input.custom_minimum_size = Vector2(520, 56)
+	desc_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	desc_input.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	desc_input.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+	box.add_child(desc_input)
+
+	if has_orphans:
+		box.add_child(HSeparator.new())
+		var warn_hdr := Label.new()
+		warn_hdr.text = "%d enabled mod(s) lack [updates] modworkshop= in mod.txt:" % orphans.size()
+		warn_hdr.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		warn_hdr.modulate = Color(0.95, 0.75, 0.55)
+		box.add_child(warn_hdr)
+
+		# Footer above the list so the consequence is visible without
+		# scrolling. The orphan list can grow naturally; outer_scroll handles
+		# overflow if the list is long.
+		var footer := Label.new()
+		footer.text = "Without a ModWorkshop ID, these mods can't auto-download when someone applies the modpack -- recipients install them manually."
+		footer.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		footer.modulate = Color(0.85, 0.75, 0.55)
+		footer.add_theme_font_size_override("font_size", 11)
+		box.add_child(footer)
+
+		var list := VBoxContainer.new()
+		list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		list.add_theme_constant_override("separation", 2)
+		box.add_child(list)
+
+		for o_v in orphans:
+			if not (o_v is Dictionary):
+				continue
+			var o: Dictionary = o_v
+			var lbl := Label.new()
+			lbl.text = "  - %s  (%s)" % [str(o.get("mod_name", "?")), str(o.get("profile_key", "?"))]
+			lbl.add_theme_font_size_override("font_size", 11)
+			list.add_child(lbl)
+
+	d.ok_button_text = "Save Anyway" if has_orphans else "Save"
+	_attach_ui_dialog(d)
+	if has_orphans:
+		d.get_ok_button().modulate = Color(1.0, 0.55, 0.55)
+	_connect_dialog_exits(d,
+		func():
+			var desc := desc_input.text
+			var author := author_input.text.strip_edges()
+			d.queue_free()
+			# Remember author across saves -- avoids forcing the user to
+			# retype their handle every modpack. Cleared if they explicitly
+			# blank it out.
+			_save_preferred_author(author)
+			var result := save_profile_as_modpack(profile_to_save, desc, author)
+			if not bool(result.get("ok", false)):
+				_show_error_dialog("Save Modpack Failed", str(result.get("error", "unknown")))
+				return
+			_rebuild_profile_tab(tabs),
+		func(): d.queue_free())
+	d.popup_centered()
+
+# Walk the source tree and write every file into the zip under zip_prefix.
+# Subdirectories are recursed; symlinks aren't followed (DirAccess never
+# does in Godot 4). Hidden entries (starts with ".") are skipped.
+func _add_dir_to_zip(packer: ZIPPacker, fs_path: String, zip_prefix: String) -> void:
+	var dir := DirAccess.open(fs_path)
+	if dir == null:
+		return
+	dir.list_dir_begin()
+	while true:
+		var name := dir.get_next()
+		if name == "":
+			break
+		if name.begins_with("."):
+			continue
+		var src_full := fs_path.path_join(name)
+		var zip_path := zip_prefix + "/" + name
+		if dir.current_is_dir():
+			_add_dir_to_zip(packer, src_full, zip_path)
+		else:
+			var f := FileAccess.open(src_full, FileAccess.READ)
+			if f == null:
+				continue
+			var bytes := f.get_buffer(f.get_length())
+			f.close()
+			if packer.start_file(zip_path) == OK:
+				packer.write_file(bytes)
+				packer.close_file()
+	dir.list_dir_end()
+
+# Build a profile zip at output_path. Includes profile.json (with sources) +
+# MCM/ snapshot of user://MCM/. Returns {"ok": true} or {"error": "..."}.
+# Cleans up partial output on any failure path so a corrupt half-zip
+# doesn't survive to confuse the user (or block a retry).
+func _export_profile_to_zip(profile_name: String, output_path: String, description: String = "", author: String = "") -> Dictionary:
+	var json_str := _profile_to_json_string(profile_name, description, author)
+	if json_str == "":
+		return {"error": "Active profile has no data to save."}
+
+	var packer := ZIPPacker.new()
+	if packer.open(output_path) != OK:
+		return {"error": "Cannot write to that location."}
+
+	if packer.start_file("profile.json") != OK:
+		packer.close()
+		if FileAccess.file_exists(output_path):
+			DirAccess.remove_absolute(output_path)
+		return {"error": "Failed to write profile.json."}
+	packer.write_file(json_str.to_utf8_buffer())
+	packer.close_file()
+
+	if DirAccess.dir_exists_absolute(MCM_SOURCE_DIR):
+		_add_dir_to_zip(packer, MCM_SOURCE_DIR, "MCM")
+
+	packer.close()
+	return {"ok": true}
+
+# Read a profile zip and apply it as a profile, including any MCM/ tree.
+# Returns {"ok": true, "name": "..."} on success or {"error": "..."} on
+# failure. The actual profile data is routed through the same
+# _import_profile_from_parsed path the clipboard import uses; the only
+# difference is the optional MCM payload that lands in the new profile's
+# snapshot slot before the swap completes.
+func _import_profile_from_zip(zip_path: String) -> Dictionary:
+	var reader := ZIPReader.new()
+	if reader.open(zip_path) != OK:
+		return {"error": "Cannot open file."}
+
+	var files := reader.get_files()
+	if not ("profile.json" in files):
+		reader.close()
+		return {"error": "Not a profile file (no profile.json inside)."}
+
+	var profile_bytes := reader.read_file("profile.json")
+	if profile_bytes.is_empty():
+		reader.close()
+		return {"error": "profile.json is empty."}
+
+	var parsed_v: Variant = JSON.parse_string(profile_bytes.get_string_from_utf8())
+	if not (parsed_v is Dictionary):
+		reader.close()
+		return {"error": "profile.json is not valid JSON."}
+	var parsed: Dictionary = parsed_v
+	if int(parsed.get("metroprofile", 0)) != 1:
+		reader.close()
+		return {"error": "Unsupported profile schema version."}
+	if not (parsed.get("name") is String):
+		reader.close()
+		return {"error": "Profile missing name."}
+	if not (parsed.get("enabled") is Dictionary):
+		reader.close()
+		return {"error": "Profile missing enabled data."}
+
+	# Pull MCM tree out of the zip into a {relative_path: bytes} map. Reject
+	# any entry whose path tries to escape the MCM/ subtree.
+	var mcm_data: Dictionary = {}
+	for f in files:
+		if not f.begins_with("MCM/") or f.ends_with("/"):
+			continue
+		var rel: String = f.substr(4)
+		if rel.contains("..") or rel.begins_with("/") or rel.is_empty():
+			continue
+		mcm_data[rel] = reader.read_file(f)
+	reader.close()
+
+	_import_profile_from_parsed(parsed, mcm_data)
+	return {"ok": true, "name": str(parsed["name"])}
+
+# Write an MCM data map (relative_path -> bytes) into a profile's snapshot
+# slot. Replaces any existing snapshot. Used by the zip-import path before
+# the profile swap restores from this slot. Always creates the destination
+# directory even when mcm_data is empty -- otherwise _has_mcm_snapshot
+# returns false for the modpack profile and _switch_profile falls through
+# to seeding MCM from the previous profile's user://MCM/ contents (wrong,
+# the modpack should override with its own EMPTY MCM).
+func _write_mcm_snapshot_from_data(profile_name: String, mcm_data: Dictionary) -> void:
+	var dst_base := _mcm_snapshot_dir(profile_name)
+	_remove_dir_recursive(dst_base)
+	DirAccess.make_dir_recursive_absolute(dst_base)
+	if mcm_data.is_empty():
+		return
+	for rel_v in mcm_data.keys():
+		var rel: String = str(rel_v)
+		var bytes: PackedByteArray = mcm_data[rel]
+		var dst := dst_base.path_join(rel)
+		DirAccess.make_dir_recursive_absolute(dst.get_base_dir())
+		var f := FileAccess.open(dst, FileAccess.WRITE)
+		if f == null:
+			continue
+		f.store_buffer(bytes)
+		f.close()
+
 
 # Parse a shared payload back into the fields needed to reconstruct a profile.
 # Returns either {"error": "..."} on failure or the parsed metroprofile dict
@@ -379,11 +840,19 @@ func _parse_profile_payload(raw: String) -> Dictionary:
 
 # Apply a parsed payload as a profile. Overwrites any existing profile with
 # the same name (caller is expected to have confirmed), switches to it, and
-# syncs in-memory entries.
-func _import_profile_from_parsed(parsed: Dictionary) -> void:
+# syncs in-memory entries. incoming_mcm_data is the optional MCM tree from a
+# zip import (relative_path -> bytes); empty for clipboard-string imports.
+func _import_profile_from_parsed(parsed: Dictionary, incoming_mcm_data: Dictionary = {}) -> void:
 	var name := _sanitize_profile_name(parsed["name"])
 	if name == "" or name.to_lower() == "vanilla" or name == VANILLA_PROFILE:
 		return
+	# Snapshot the OUTGOING profile's MCM before any of the import logic
+	# touches state. Capturing before reassign means coming back to the
+	# previous profile later restores its MCM intact.
+	var old_profile := _active_profile
+	if old_profile != VANILLA_PROFILE and old_profile != name:
+		_snapshot_mcm_to(old_profile)
+
 	var cfg := ConfigFile.new()
 	cfg.load(UI_CONFIG_PATH)
 	var en_sec := "profile." + name + ".enabled"
@@ -428,6 +897,21 @@ func _import_profile_from_parsed(parsed: Dictionary) -> void:
 	cfg.set_value("settings", "active_profile", _active_profile)
 	cfg.save(UI_CONFIG_PATH)
 	_apply_profile_to_entries(cfg, _active_profile)
+
+	# Place INCOMING MCM into this profile's snapshot slot. Two cases:
+	#   1. Zip import with MCM/ tree -- write the bytes from the zip.
+	#   2. Clipboard import (no MCM data) -- if no slot exists yet, seed
+	#      from current user://MCM/ so the new profile starts at "whatever
+	#      MCM was active when imported" rather than empty.
+	if not incoming_mcm_data.is_empty():
+		_write_mcm_snapshot_from_data(name, incoming_mcm_data)
+	elif not _has_mcm_snapshot(name):
+		_snapshot_mcm_to(name)
+	# Now restore: copy the slot we just established (or already had) into
+	# user://MCM/ so the live state matches the new profile.
+	if _has_mcm_snapshot(name):
+		_restore_mcm_from(name)
+
 	if _boot_complete:
 		_dirty_since_boot = true
 
@@ -456,7 +940,7 @@ func _profile_to_payload(profile_name: String) -> String:
 # Serialize the named profile to a JSON string. Used as the inner layer of
 # _profile_to_payload; exposed separately in case we need it for debugging
 # or tests. Empty string if the profile has no stored sections.
-func _profile_to_json_string(profile_name: String) -> String:
+func _profile_to_json_string(profile_name: String, description: String = "", author: String = "") -> String:
 	var src := ConfigFile.new()
 	if src.load(UI_CONFIG_PATH) != OK:
 		return ""
@@ -471,14 +955,28 @@ func _profile_to_json_string(profile_name: String) -> String:
 	if src.has_section(pr_sec):
 		for key: String in src.get_section_keys(pr_sec):
 			priority[key] = int(str(src.get_value(pr_sec, key)))
-	return JSON.stringify({
+	var payload := {
 		"metroprofile":      1,
 		"name":              profile_name,
 		"modloader_version": MODLOADER_VERSION,
 		"exported_at":       Time.get_datetime_string_from_system(),
 		"enabled":           enabled,
 		"priority":          priority,
-	}, "  ")
+	}
+	var desc_clean := description.strip_edges()
+	if not desc_clean.is_empty():
+		payload["description"] = desc_clean
+	var author_clean := author.strip_edges()
+	if not author_clean.is_empty():
+		payload["author"] = author_clean
+	# Auto-derived MWS source URLs for any installed mod with [updates]
+	# modworkshop= in mod.txt. Optional v1 metroprofile field; old parsers
+	# ignore it per the forward-compat rule. Lets a future import fetch
+	# missing mods automatically.
+	var sources := _build_profile_sources()
+	if not sources.is_empty():
+		payload["sources"] = sources
+	return JSON.stringify(payload, "  ")
 
 # Profile keys that the active profile references but whose mod isn't in
 # _ui_mod_entries (archives deleted, or renamed ZIPs for mods without a
@@ -515,6 +1013,41 @@ func _missing_mods_in_active_profile() -> Array[String]:
 		missing.append(key)
 	missing.sort()
 	return missing
+
+# Combined source map for missing-mod stubs. Layered:
+#   1. Persisted [mod_sources] cache (every mod we've ever scanned with
+#      [updates] modworkshop=) -- works for any profile, even after the
+#      mod file is deleted.
+#   2. Active modpack's profile.json sources -- overlays the cache, since
+#      the modpack zip is canonical for the currently-active modpack.
+# Returns Dictionary{profile_key -> {modworkshop_id, version}}.
+func _missing_mod_sources_combined() -> Dictionary:
+	var out: Dictionary = _get_persisted_mod_sources()
+	var active := get_active_modpack()
+	if active.is_empty():
+		return out
+	for entry in _modpack_entries:
+		if str(entry.get("sanitized_name", "")) != active:
+			continue
+		var file_path: String = str(entry.get("file_path", ""))
+		if file_path.is_empty() or not FileAccess.file_exists(file_path):
+			return out
+		var reader := ZIPReader.new()
+		if reader.open(file_path) != OK:
+			return out
+		var bytes := reader.read_file("profile.json")
+		reader.close()
+		if bytes.is_empty():
+			return out
+		var parsed_v: Variant = JSON.parse_string(bytes.get_string_from_utf8())
+		if not (parsed_v is Dictionary):
+			return out
+		var sources_v: Variant = (parsed_v as Dictionary).get("sources", {})
+		if sources_v is Dictionary:
+			for k in (sources_v as Dictionary).keys():
+				out[str(k)] = (sources_v as Dictionary)[k]
+		return out
+	return out
 
 # Strip an orphaned stored key from the active profile's sections. Called
 # from the "Remove" button on a missing-mod stub row.
@@ -562,24 +1095,30 @@ func _sanitize_profile_name(raw: String) -> String:
 			out += c
 	return out
 
-# Reset to Vanilla: switch the active profile to VANILLA_PROFILE, wipe the
-# hook pack + override.cfg, and restart the game clean. The active profile
-# pointer is the ONLY thing we touch in the config -- stored profiles survive
-# so the user can switch back and restore their selection.
+# Launch Vanilla: one-shot vanilla boot. Writes DISABLED_ONCE_FILE to the
+# game directory so the next launch skips the modloader entirely (no UI, no
+# mod loading) and lets the game start clean. lifecycle.gd clears the
+# sentinel during _ready so subsequent launches resume normal modded flow.
+# Active profile is untouched -- the user comes back to their last loadout
+# next time they boot.
 #
 # Important: we do NOT call _save_ui_config here. That would rewrite the
 # currently-active profile's sections from the in-memory _ui_mod_entries
-# state, which callers often set to all-disabled before invoking us.
+# state.
 
-func _reset_to_vanilla_and_restart(win: Window) -> void:
-	_log_info("[Reset] User triggered Reset to Vanilla")
-	var cfg := ConfigFile.new()
-	cfg.load(UI_CONFIG_PATH)
-	cfg.set_value("settings", "active_profile", VANILLA_PROFILE)
-	cfg.set_value("settings", "developer_mode", _developer_mode)
-	cfg.save(UI_CONFIG_PATH)
+func _launch_vanilla_once(win: Window) -> void:
+	_log_info("[LaunchVanilla] User triggered one-shot vanilla launch")
+	var exe_dir := OS.get_executable_path().get_base_dir()
+	var sentinel := exe_dir.path_join(DISABLED_ONCE_FILE)
+	var f := FileAccess.open(sentinel, FileAccess.WRITE)
+	if f != null:
+		f.store_string("Launch Vanilla -- this file is auto-cleared on next launch")
+		f.close()
+	else:
+		_log_warning("[LaunchVanilla] Could not write sentinel at %s -- aborting" % sentinel)
+		return
 	var log_lines := PackedStringArray()
-	_static_force_vanilla_state("UI reset button", log_lines)
+	_static_force_vanilla_state("UI Launch Vanilla button", log_lines)
 	for line in log_lines:
 		_log_info(line)
 	if is_instance_valid(win):
@@ -591,6 +1130,8 @@ func _reset_to_vanilla_and_restart(win: Window) -> void:
 # Tear down and rebuild the Mods tab in place. Called whenever profile state
 # changes (switch, create, delete) or Developer Mode toggles, so rows and the
 # profile bar reflect fresh _ui_mod_entries + _active_profile state.
+# Preserves the user's current tab so a Browse-row enable toggle doesn't
+# yank them onto the Mods tab mid-flow.
 func _rebuild_mods_tab(tabs: TabContainer) -> void:
 	var old := tabs.get_node_or_null("Mods")
 	if old == null:
@@ -601,13 +1142,24 @@ func _rebuild_mods_tab(tabs: TabContainer) -> void:
 	if is_instance_valid(_ui_mods_scroll):
 		saved_scroll = _ui_mods_scroll.scroll_vertical
 	var idx := old.get_index()
+	# Capture which tab the user was on by NAME, since remove_child below
+	# shifts sibling indices and tabs.current_tab can drift in the meantime.
+	var current_tab_node := tabs.get_tab_control(tabs.current_tab) if tabs.get_tab_count() > 0 else null
+	var current_tab_name := str(current_tab_node.name) if current_tab_node != null else ""
 	tabs.remove_child(old)
 	old.queue_free()
 	var new_tab := build_mods_tab(tabs)
 	new_tab.name = "Mods"
 	tabs.add_child(new_tab)
 	tabs.move_child(new_tab, idx)
-	tabs.current_tab = idx
+	# Restore by name. If the previous tab was Mods itself, we land back on
+	# the rebuilt one. If it was Browse/Modpacks/Updates, the user stays
+	# where they were.
+	for i in range(tabs.get_tab_count()):
+		var ctrl := tabs.get_tab_control(i)
+		if ctrl != null and ctrl.name == current_tab_name:
+			tabs.current_tab = i
+			break
 	# Profile switches / dev-mode toggles change enable state without
 	# hitting the per-row checkbox handler.
 	refresh_launch_button_label()
@@ -625,11 +1177,265 @@ func _restore_mods_scroll(saved_scroll: int) -> void:
 # Parent a dialog on the launcher window (fallback: tree root) so it layers
 # over our always_on_top Window, and copy our dark theme onto it since theme
 # lookup doesn't cross Window boundaries reliably.
+# Modpack-apply failure summary with per-mod rows. Each failure shows the
+# profile_key + reason + an "Open MWS page" button (when an mws_id is
+# known, which is every case except sourceless legacy modpacks). The
+# bottom bar has a "Retry failed" button that re-runs only the failed
+# downloads, plus the auto-OK Close. Replaces the simple text dialog
+# that handled this before -- a flat string can't fit 30+ lines and
+# offers no recovery action.
+func _show_modpack_failure_dialog(downloaded: int, failures: Array, tabs: TabContainer) -> void:
+	var d := AcceptDialog.new()
+	d.title = "Modpack Applied with Issues"
+	d.ok_button_text = "Close"
+	d.min_size = Vector2i(540, 420)
+
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 8)
+	d.add_child(box)
+
+	var hdr := Label.new()
+	hdr.text = "Downloaded %d mod(s), %d failed." % [downloaded, failures.size()]
+	box.add_child(hdr)
+
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(520, 280)
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	box.add_child(scroll)
+
+	var list_wrap := MarginContainer.new()
+	list_wrap.add_theme_constant_override("margin_right", 16)
+	list_wrap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(list_wrap)
+
+	var list := VBoxContainer.new()
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	list.add_theme_constant_override("separation", 6)
+	list_wrap.add_child(list)
+
+	for f_v in failures:
+		if not (f_v is Dictionary):
+			continue
+		var f: Dictionary = f_v
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 8)
+		list.add_child(row)
+
+		var info_col := VBoxContainer.new()
+		info_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(info_col)
+
+		var name_lbl := Label.new()
+		name_lbl.text = str(f.get("profile_key", "?"))
+		info_col.add_child(name_lbl)
+
+		var err_lbl := Label.new()
+		err_lbl.text = str(f.get("error", "unknown"))
+		err_lbl.add_theme_font_size_override("font_size", 11)
+		err_lbl.modulate = Color(0.85, 0.55, 0.55)
+		err_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		info_col.add_child(err_lbl)
+
+		var mws_id: int = int(f.get("mws_id", 0))
+		if mws_id > 0:
+			var open_btn := Button.new()
+			open_btn.text = "Open MWS page"
+			open_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+			row.add_child(open_btn)
+			open_btn.pressed.connect(func():
+				OS.shell_open(MODWORKSHOP_PAGE_URL_TEMPLATE % str(mws_id))
+			)
+
+	# Footer: Retry button via add_button so it sits in the dialog's native
+	# button bar alongside the Close button. Disabled if there's no failure
+	# with a known mws_id (nothing to retry).
+	var retry_btn: Button = null
+	var any_retryable := false
+	for f_v in failures:
+		if f_v is Dictionary and int((f_v as Dictionary).get("mws_id", 0)) > 0:
+			any_retryable = true
+			break
+	if any_retryable:
+		retry_btn = d.add_button("Retry failed", false, "")
+		var captured_failures := failures
+		retry_btn.pressed.connect(func():
+			d.queue_free()
+			_run_modpack_retry(captured_failures, tabs)
+		)
+
+	_attach_ui_dialog(d)
+	d.confirmed.connect(func(): d.queue_free())
+	d.close_requested.connect(func(): d.queue_free())
+	d.popup_centered()
+
+
+# Run a retry pass on previously-failed modpack downloads. Shows a progress
+# dialog during, then re-shows the failure dialog if anything still failed
+# (with one fewer entry typically -- successfully retried mods drop off).
+func _run_modpack_retry(failures: Array, tabs: TabContainer) -> void:
+	var pd := AcceptDialog.new()
+	pd.title = "Retrying failed downloads"
+	pd.min_size = Vector2i(440, 120)
+	# Build content BEFORE _attach so the helper reparents it into the
+	# root VBox with the injected title -- adding after _attach would
+	# leave the status label outside the layout.
+	var status_lbl := Label.new()
+	status_lbl.text = "Preparing..."
+	status_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	status_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	status_lbl.custom_minimum_size.x = 400
+	pd.add_child(status_lbl)
+	_attach_ui_dialog(pd)
+	var pd_ok := pd.get_ok_button()
+	if pd_ok != null:
+		pd_ok.visible = false
+	pd.popup_centered()
+
+	var progress_cb := func(p: Dictionary):
+		if not is_instance_valid(status_lbl):
+			return
+		var cur := int(p.get("current", 0))
+		var tot := int(p.get("total", 0))
+		var nm := str(p.get("mod_name", ""))
+		if nm != "":
+			status_lbl.text = "Retrying %d of %d:\n%s" % [cur, tot, nm]
+		else:
+			status_lbl.text = "Retrying..."
+
+	var result := await retry_failed_downloads(failures, progress_cb)
+
+	if is_instance_valid(pd):
+		pd.queue_free()
+
+	# Refresh Mods tab so newly-downloaded mods aren't stuck in the
+	# missing-mod stub list.
+	if is_instance_valid(tabs):
+		_rebuild_mods_tab(tabs)
+
+	var still_failed: Array = result.get("failures", [])
+	var dl: int = int(result.get("downloaded", 0))
+	if still_failed.is_empty():
+		# Everything recovered -- short success dialog instead of the
+		# error-styled failure one.
+		var ok_d := AcceptDialog.new()
+		ok_d.title = "Retry Complete"
+		ok_d.dialog_text = "Successfully downloaded %d mod(s) on retry." % dl
+		ok_d.ok_button_text = "Close"
+		_attach_ui_dialog(ok_d)
+		ok_d.confirmed.connect(func(): ok_d.queue_free())
+		ok_d.close_requested.connect(func(): ok_d.queue_free())
+		ok_d.popup_centered()
+	else:
+		_show_modpack_failure_dialog(dl, still_failed, tabs)
+
+
+# Show a simple error dialog. Replaces ad-hoc push_warning calls in user-
+# facing flows so failures actually surface in the UI instead of just the
+# log. Used by modpack apply/unload, profile import, etc.
+func _show_error_dialog(title: String, message: String) -> void:
+	var d := AcceptDialog.new()
+	d.title = title
+	d.dialog_text = message
+	d.ok_button_text = "Close"
+	d.min_size = Vector2i(400, 0)
+	_attach_ui_dialog(d)
+	d.confirmed.connect(func(): d.queue_free())
+	d.close_requested.connect(func(): d.queue_free())
+	d.popup_centered()
+
+
+# Neutral one-line info dialog. Same shape as _show_error_dialog but framed
+# without the "error" connotation -- used for benign confirmations like
+# "all mods up to date" after a check.
+func _show_info_toast(message: String) -> void:
+	var d := AcceptDialog.new()
+	d.title = "Modloader"
+	d.dialog_text = message
+	d.ok_button_text = "OK"
+	d.min_size = Vector2i(360, 0)
+	_attach_ui_dialog(d)
+	d.confirmed.connect(func(): d.queue_free())
+	d.close_requested.connect(func(): d.queue_free())
+	d.popup_centered()
+
+
+# All launcher dialogs flow through this. Renders as a borderless dark
+# card: theme applied, OS chrome dropped, title + dialog_text consumed
+# into a labeled header, and every caller-added child reparented into a
+# single root VBox so layout flows unambiguously regardless of size_flags
+# quirks in AcceptDialog's content area.
 func _attach_ui_dialog(d: Window) -> void:
 	var parent: Node = _ui_window if _ui_window != null else get_tree().root
-	parent.add_child(d)
+	# Theme before add_child so the first draw is styled (set-after-add
+	# sometimes lands the first frame with default chrome).
 	if _ui_window != null and _ui_window.theme != null:
 		d.theme = _ui_window.theme
+	d.transparent = false
+	d.transparent_bg = false
+	d.always_on_top = true
+	d.transient = true
+	d.exclusive = true
+	d.borderless = true
+	d.add_theme_stylebox_override("panel", _make_dialog_panel_stylebox())
+
+	# Consume title + dialog_text into a single header VBox. AcceptDialog's
+	# internal dialog_text label is absolutely positioned -- leaving it
+	# active and adding sibling Labels at "child index 0" makes them
+	# render at the same y. So we clear both and re-emit them in a
+	# regular VBox where flow layout is honored.
+	var title_text := str(d.title)
+	var body_text := ""
+	if d is AcceptDialog:
+		body_text = str((d as AcceptDialog).dialog_text)
+		(d as AcceptDialog).dialog_text = ""
+	d.title = ""
+
+	if title_text != "" or body_text != "":
+		var existing := d.get_children()
+		for c in existing:
+			d.remove_child(c)
+		var root := VBoxContainer.new()
+		root.add_theme_constant_override("separation", 8)
+		root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		root.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		if title_text != "":
+			var title_lbl := Label.new()
+			title_lbl.text = title_text
+			title_lbl.add_theme_font_size_override("font_size", 14)
+			title_lbl.modulate = Color(0.92, 0.92, 0.92)
+			title_lbl.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+			root.add_child(title_lbl)
+		if body_text != "":
+			var body_lbl := Label.new()
+			body_lbl.text = body_text
+			body_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			body_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			body_lbl.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+			body_lbl.custom_minimum_size.x = 400
+			root.add_child(body_lbl)
+		for c in existing:
+			root.add_child(c)
+		d.add_child(root)
+
+	parent.add_child(d)
+
+
+# Dialog panel background. Centralized so _attach_ui_dialog and any future
+# place that needs a matching look (e.g. inline cards) use the same style.
+func _make_dialog_panel_stylebox() -> StyleBoxFlat:
+	var s := StyleBoxFlat.new()
+	s.bg_color = Color(0.06, 0.06, 0.06)
+	s.border_color = Color(0.28, 0.28, 0.28)
+	s.border_width_top = 1
+	s.border_width_bottom = 1
+	s.border_width_left = 1
+	s.border_width_right = 1
+	s.content_margin_left = 14
+	s.content_margin_right = 14
+	s.content_margin_top = 12
+	s.content_margin_bottom = 12
+	return s
 
 # Connect the same handler to both signals and a shared free-and-forget exit
 # path. ConfirmationDialog fires `canceled` on Cancel and `close_requested` on
@@ -773,7 +1579,8 @@ func _confirm_red_launch(red_mods: Array) -> bool:
 	d.exclusive = true
 	d.always_on_top = true
 	# Red text on the destructive button so "Launch anyway" reads as the
-	# risky option. Same modulate trick as _show_vanilla_confirm.
+	# risky option. Modulate (not theme_color_override) because the latter
+	# didn't take effect for reasons I haven't chased.
 	d.get_ok_button().modulate = Color(1.0, 0.55, 0.55)
 
 	# Single-result polling: lambdas mark done + capture the choice.
@@ -790,30 +1597,6 @@ func _confirm_red_launch(red_mods: Array) -> bool:
 		await get_tree().process_frame
 	d.queue_free()
 	return state[1]
-
-# Vanilla dropdown entry: confirm, then run the full reset-and-restart flow.
-# Cancel rebuilds the Mods tab so the dropdown reverts from "Vanilla" back to
-# the currently-active profile.
-func _show_vanilla_confirm(tabs: TabContainer) -> void:
-	var d := ConfirmationDialog.new()
-	d.title = "Reset to Vanilla"
-	d.dialog_text = "This will disable all mods, wipe the hook cache and override.cfg, and restart the game clean.\n\nYour saved profiles are kept -- switch back to any of them later to re-enable those mods.\n\nContinue?"
-	d.ok_button_text = "Reset and Restart"
-	_attach_ui_dialog(d)
-	# Red text on the destructive button. theme_color_override on the OK
-	# button didn't take effect for reasons I haven't chased; modulate works
-	# because dark bg (~0.06) tints imperceptibly while light text (~0.84)
-	# multiplies into a clear red.
-	d.get_ok_button().modulate = Color(1.0, 0.55, 0.55)
-	var win_ref := _ui_window
-	_connect_dialog_exits(d,
-		func():
-			d.queue_free()
-			_reset_to_vanilla_and_restart(win_ref),
-		func():
-			d.queue_free()
-			_rebuild_mods_tab(tabs))
-	d.popup_centered()
 
 # New Profile dialog: prompt for a name + initial state, validate, write the
 # chosen state into the new profile, switch to it. Cancel leaves everything
@@ -955,107 +1738,618 @@ func _show_rename_profile_dialog(tabs: TabContainer) -> void:
 	name_edit.select_all()
 	name_edit.grab_focus()
 
-# Combined Import / Export dialog. Top half shows the active profile's
-# checksummed payload with a Copy button; bottom half is a paste area +
-# Import button. Name collisions prompt for an overwrite confirm.
-func _show_share_profile_dialog(tabs: TabContainer) -> void:
-	var current := _active_profile
-	var payload := _profile_to_payload(current)
+# Modpacks tab. Lists modpack zips discovered in <game>/mods/, each with an
+# Apply / Unload button. A modpack is a curated profile + MCM bundle in zip
+# form (profile.json at root, MCM/ tree). Drop the file in /mods/ and it
+# shows up here. Apply runs the modpack's profile + MCM and backs up the
+# user's previous state; Unload restores the backup. Edits while a modpack
+# is active save into the modpack's profile slot and persist across applies.
+func build_profile_tab(tabs: TabContainer) -> Control:
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 8)
+	margin.add_theme_constant_override("margin_right", 8)
+	margin.add_theme_constant_override("margin_top", 6)
+	margin.add_theme_constant_override("margin_bottom", 6)
 
-	var d := AcceptDialog.new()
-	d.title = "Import / Export Profile"
-	d.ok_button_text = "Close"
+	var container := VBoxContainer.new()
+	container.add_theme_constant_override("separation", 6)
+	margin.add_child(container)
+
+	# Refresh discovery up-front so the toolbar header (which queries
+	# active_modpack to decide whether Save is enabled) has fresh state.
+	# Cheap -- one DirAccess scan + one ZIPReader open per zip.
+	_modpack_entries = collect_modpack_metadata()
+	var active_modpack := get_active_modpack()
+
+	var hdr_row := HBoxContainer.new()
+	hdr_row.add_theme_constant_override("separation", 8)
+	container.add_child(hdr_row)
+
+	var hdr := Label.new()
+	hdr.text = "Modpacks in your mods folder"
+	hdr.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hdr_row.add_child(hdr)
+
+	# Export current profile as a modpack zip in <game>/mods/. Filename is
+	# the sanitized profile name. Disabled when a modpack is active (the
+	# active profile is "modpack__X" -- saving it would write a confusingly-
+	# named zip; user should unload first).
+	var save_modpack_btn := Button.new()
+	save_modpack_btn.text = "Save current profile as modpack"
+	save_modpack_btn.tooltip_text = "Write a modpack zip into /mods/ with profile.json + MCM snapshot"
+	var save_disabled_reason := ""
+	if active_modpack != "":
+		save_disabled_reason = "Unload the active modpack first"
+	save_modpack_btn.disabled = save_disabled_reason != ""
+	if save_disabled_reason != "":
+		save_modpack_btn.tooltip_text = save_disabled_reason
+	hdr_row.add_child(save_modpack_btn)
+	save_modpack_btn.pressed.connect(func():
+		var profile_to_save := _active_profile
+		var orphans := _enabled_mods_without_modworkshop_id()
+		_show_save_modpack_dialog(profile_to_save, orphans, tabs)
+	)
+
+	var open_folder_btn := Button.new()
+	open_folder_btn.text = "Open Mods Folder"
+	open_folder_btn.tooltip_text = "Drop modpack zips here. They appear automatically on next launcher open."
+	hdr_row.add_child(open_folder_btn)
+	open_folder_btn.pressed.connect(func():
+		OS.shell_open(ProjectSettings.globalize_path(_mods_dir))
+	)
+
+	container.add_child(HSeparator.new())
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	container.add_child(scroll)
+
+	var list_wrap := MarginContainer.new()
+	list_wrap.add_theme_constant_override("margin_right", 16)
+	list_wrap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(list_wrap)
+
+	var list := VBoxContainer.new()
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	list.add_theme_constant_override("separation", 4)
+	list_wrap.add_child(list)
+
+	if _modpack_entries.is_empty():
+		var empty := Label.new()
+		empty.text = "No modpacks found.\n\nDrop a modpack .zip into your mods folder to install it."
+		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		empty.modulate = Color(0.5, 0.5, 0.5)
+		list.add_child(empty)
+		return margin
+
+	for entry in _modpack_entries:
+		list.add_child(_modpacks_render_row(entry, active_modpack, tabs))
+		list.add_child(HSeparator.new())
+
+	return margin
+
+
+# Render one modpack row: name + filename/mod-count meta + Apply or
+# Active+Unload button. Apply is disabled when ANOTHER modpack is active
+# (single-slot constraint -- user has to unload first).
+func _modpacks_render_row(entry: Dictionary, active_modpack: String, tabs: TabContainer) -> Control:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 12)
+
+	var info_col := VBoxContainer.new()
+	info_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	info_col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(info_col)
+
+	# Name is a heading. Author (if any) appears next to it as "by X" in a
+	# dimmer tone. The Details button in the action area is the canonical
+	# way to open the modal -- a chevron on the name didn't read as
+	# interactive in testing.
+	var name_row := HBoxContainer.new()
+	name_row.add_theme_constant_override("separation", 8)
+	info_col.add_child(name_row)
+
+	var name_lbl := Label.new()
+	name_lbl.text = str(entry.get("raw_name", "?"))
+	name_lbl.add_theme_font_size_override("font_size", 14)
+	name_row.add_child(name_lbl)
+
+	var author: String = str(entry.get("author", "")).strip_edges()
+	if not author.is_empty():
+		var author_lbl := Label.new()
+		author_lbl.text = "by " + author
+		author_lbl.add_theme_font_size_override("font_size", 11)
+		author_lbl.modulate = Color(0.6, 0.6, 0.6)
+		author_lbl.size_flags_vertical = Control.SIZE_SHRINK_END
+		name_row.add_child(author_lbl)
+
+	# Description, if set at save time. Wraps to fit the available row
+	# width. Empty when modpack pre-dates the description field or the
+	# author left it blank.
+	var description: String = str(entry.get("description", "")).strip_edges()
+	if not description.is_empty():
+		var desc_lbl := Label.new()
+		desc_lbl.text = description
+		desc_lbl.add_theme_font_size_override("font_size", 11)
+		desc_lbl.modulate = Color(0.72, 0.72, 0.72)
+		desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		info_col.add_child(desc_lbl)
+
+	# Surface dedupe results so the user knows other same-name zips exist
+	# in /mods/ but aren't shown. Without this they'd wonder where the
+	# other file went and we'd risk both rows tagging as ACTIVE.
+	var dups: Array = entry.get("duplicates_hidden", [])
+	if not dups.is_empty():
+		var dup_names := PackedStringArray()
+		for d_v in dups:
+			if d_v is Dictionary:
+				dup_names.append(str((d_v as Dictionary).get("file_name", "?")))
+		var dup_lbl := Label.new()
+		dup_lbl.text = "Duplicate file(s) hidden: " + ", ".join(dup_names)
+		dup_lbl.modulate = Color(1.0, 0.6, 0.2)
+		dup_lbl.add_theme_font_size_override("font_size", 11)
+		dup_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		info_col.add_child(dup_lbl)
+
+	var enabled_count: int = int(entry.get("enabled_count", 0))
+	var total_count: int = int(entry.get("total_count", 0))
+	var meta_lbl := Label.new()
+	if total_count > 0:
+		meta_lbl.text = "%d of %d mods enabled - %s" % [enabled_count, total_count, str(entry.get("file_name", ""))]
+	else:
+		meta_lbl.text = str(entry.get("file_name", ""))
+	meta_lbl.add_theme_font_size_override("font_size", 11)
+	meta_lbl.modulate = Color(0.6, 0.6, 0.6)
+	meta_lbl.clip_text = true
+	info_col.add_child(meta_lbl)
+
+	var sanitized: String = str(entry.get("sanitized_name", ""))
+	var is_active: bool = active_modpack != "" and active_modpack == sanitized
+	var another_active: bool = active_modpack != "" and active_modpack != sanitized
+
+	# Details button always visible, before the Apply/Unload action so it
+	# reads as the discoverable "tell me more" affordance.
+	var details_btn := Button.new()
+	details_btn.text = "Details"
+	details_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(details_btn)
+	var captured_entry_for_detail := entry
+	var captured_active := active_modpack
+	details_btn.pressed.connect(func():
+		_show_modpack_detail_dialog(captured_entry_for_detail, captured_active, tabs)
+	)
+	_wire_hint(details_btn, "Open the modpack's full mod list and description.")
+
+	if is_active:
+		var active_lbl := Label.new()
+		active_lbl.text = "ACTIVE"
+		active_lbl.add_theme_font_size_override("font_size", 11)
+		active_lbl.modulate = Color(0.6, 0.85, 0.6)
+		active_lbl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(active_lbl)
+
+		var unload_btn := Button.new()
+		unload_btn.text = "Unload"
+		unload_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(unload_btn)
+		unload_btn.pressed.connect(func():
+			var result := unload_modpack(tabs)
+			if not bool(result.get("ok", false)):
+				_show_error_dialog("Unload Failed", str(result.get("error", "unknown")))
+			# Always rebuild -- success removes the ACTIVE row, error
+			# corrects the stale view that displayed an Unload button when
+			# state had already drifted to "no modpack active".
+			_rebuild_profile_tab(tabs)
+		)
+	else:
+		var apply_btn := Button.new()
+		apply_btn.text = "Apply"
+		apply_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		apply_btn.disabled = another_active
+		if another_active:
+			apply_btn.tooltip_text = "Unload \"" + active_modpack + "\" before applying another modpack"
+		row.add_child(apply_btn)
+		var captured_entry := entry
+		apply_btn.pressed.connect(func():
+			_apply_modpack_with_ui_flow(captured_entry, tabs)
+		)
+
+	return row
+
+
+# Run the full modpack-apply UX: validate -> preview-confirm -> progress
+# dialog -> apply -> rebuild tab -> failure dialog if any download failed.
+# Extracted from the row's apply lambda so the detail modal can reuse the
+# same flow without duplicating the logic.
+func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
+	# Validate the zip up front so the confirmation dialog can show a real
+	# preview ("Apply 38-mod modpack?") and bail early if the zip is
+	# malformed -- before the user commits.
+	var validation := _validate_modpack(entry)
+	if not bool(validation.get("ok", false)):
+		_show_error_dialog("Cannot Apply Modpack", str(validation.get("error", "unknown")))
+		return
+	var apply_enabled := int(validation.get("enabled_count", 0))
+	var apply_total := int(validation.get("total_count", 0))
+	var name_str := str(entry.get("raw_name", "?"))
+	# Preview download count so the user knows up-front whether this is a
+	# "click and go" (everything already installed) or a long download op.
+	var missing_preview := _get_missing_mods_for_modpack(entry)
+	var dl_count := missing_preview.size()
+	var msg := "Apply \"%s\"?\n\nActivates %d of %d mods and replaces MCM settings." % [name_str, apply_enabled, apply_total]
+	if dl_count > 0:
+		msg += "\nWill download %d mod(s) from ModWorkshop." % dl_count
+	msg += "\n\nYour current state is backed up -- click Unload to restore."
+	var cd := ConfirmationDialog.new()
+	cd.title = "Apply Modpack"
+	cd.dialog_text = msg
+	cd.ok_button_text = "Apply"
+	_attach_ui_dialog(cd)
+	_connect_dialog_exits(cd,
+		func():
+			cd.queue_free()
+			# Skip the progress dialog entirely when there's nothing to
+			# download -- the apply is a near-instant cfg flip and a
+			# pop-and-vanish dialog looks broken. Failure dialog still
+			# opens at the end if anything fails.
+			var needs_progress := dl_count > 0
+			var pd: AcceptDialog = null
+			var pd_bar: ProgressBar = null
+			var pd_status: Label = null
+			var pd_cancel: Button = null
+			if needs_progress:
+				var progress_ui := _build_modpack_progress_dialog(name_str)
+				pd = progress_ui["dialog"]
+				pd_bar = progress_ui["bar"]
+				pd_status = progress_ui["status"]
+				pd_cancel = progress_ui["cancel"]
+				pd_cancel.pressed.connect(func():
+					if is_instance_valid(pd_status):
+						pd_status.text = "Cancelling after current download..."
+					if is_instance_valid(pd_cancel):
+						pd_cancel.disabled = true
+						pd_cancel.text = "Cancelling..."
+					_modpack_apply_cancelled = true
+				)
+				pd.popup_centered()
+
+			var progress_cb := func(p: Dictionary):
+				if pd_status == null or not is_instance_valid(pd_status):
+					return
+				var cur := int(p.get("current", 0))
+				var tot := int(p.get("total", 0))
+				var nm := str(p.get("mod_name", ""))
+				var act := str(p.get("action", ""))
+				if is_instance_valid(pd_bar) and tot > 0:
+					pd_bar.value = float(cur) / float(tot) * 100.0
+				var prefix := "Downloading"
+				if act == "skipped": prefix = "Skipping (no source)"
+				elif act == "applying": prefix = "Applying modpack"
+				elif act == "retrying": prefix = "Retrying"
+				if nm != "":
+					pd_status.text = "%s %d of %d:\n%s" % [prefix, cur, tot, nm]
+				else:
+					pd_status.text = "%s..." % prefix
+
+			var result := await apply_modpack(entry, tabs, progress_cb)
+			var was_cancelled: bool = bool(result.get("cancelled", false))
+			var dl: int = int(result.get("downloaded", 0))
+			var dl_failed: int = int(result.get("failed_downloads", 0))
+			var failures: Array = result.get("failures", [])
+
+			# Cancelled / partial: tear down progress, route to failure
+			# dialog which has its own dismiss-on-OK flow.
+			if was_cancelled or dl_failed > 0:
+				if pd != null and is_instance_valid(pd):
+					pd.queue_free()
+				_rebuild_profile_tab(tabs)
+				_show_modpack_failure_dialog(dl, failures, tabs)
+				return
+			if not bool(result.get("ok", false)):
+				if pd != null and is_instance_valid(pd):
+					pd.queue_free()
+				_show_error_dialog("Apply Failed", str(result.get("error", "unknown")))
+				return
+			_rebuild_profile_tab(tabs)
+			# Full success. If a progress dialog was shown, switch it to
+			# completion state (filled bar, summary line, OK button) so
+			# the user dismisses on their own time. With no downloads
+			# there was no dialog to begin with -- silent apply.
+			if pd != null and is_instance_valid(pd):
+				if is_instance_valid(pd_bar):
+					pd_bar.value = 100
+				if is_instance_valid(pd_status):
+					pd_status.text = "Done. Downloaded %d mod(s)." % dl
+				if is_instance_valid(pd_cancel):
+					pd_cancel.visible = false
+				var pd_ok := pd.get_ok_button()
+				if pd_ok != null:
+					pd_ok.visible = true
+				pd.confirmed.connect(func():
+					if is_instance_valid(pd):
+						pd.queue_free()
+				)
+				pd.close_requested.connect(func():
+					if is_instance_valid(pd):
+						pd.queue_free()
+				),
+		func(): cd.queue_free())
+	cd.popup_centered()
+
+
+# Construct the modpack-apply progress dialog: ProgressBar + status label +
+# Cancel button. Returns the dialog plus references to the controls so
+# callers can wire signals + update them. Build content BEFORE _attach_ui_dialog
+# so the helper's reparent-children step folds them into the root VBox.
+func _build_modpack_progress_dialog(raw_name: String) -> Dictionary:
+	var pd := AcceptDialog.new()
+	pd.title = "Applying \"" + raw_name + "\""
+	pd.min_size = Vector2i(520, 200)
+	pd.ok_button_text = "OK"
 
 	var box := VBoxContainer.new()
-	box.custom_minimum_size = Vector2(560, 500)
+	box.add_theme_constant_override("separation", 10)
+	pd.add_child(box)
+
+	var status := Label.new()
+	status.text = "Preparing..."
+	status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_child(status)
+
+	var bar := ProgressBar.new()
+	bar.min_value = 0
+	bar.max_value = 100
+	bar.value = 0
+	bar.custom_minimum_size = Vector2(500, 18)
+	bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_child(bar)
+
+	var btn_row := HBoxContainer.new()
+	btn_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_child(btn_row)
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	btn_row.add_child(spacer)
+	var cancel_btn := Button.new()
+	cancel_btn.text = "Cancel"
+	btn_row.add_child(cancel_btn)
+
+	# Attach AFTER content so _attach_ui_dialog's reparent step picks up
+	# the box and folds it into the root VBox with the injected title.
+	# Progress is non-dismissible while running; hide the native OK until
+	# the caller flips it on at completion.
+	_attach_ui_dialog(pd)
+	var pd_ok := pd.get_ok_button()
+	if pd_ok != null:
+		pd_ok.visible = false
+
+	return {"dialog": pd, "bar": bar, "status": status, "cancel": cancel_btn}
+
+
+# Read the modpack zip's profile.json into a parsed Dictionary. Empty dict
+# on any failure (missing zip, corrupt zip, missing profile.json, bad JSON).
+func _read_modpack_profile_json(entry: Dictionary) -> Dictionary:
+	var file_path: String = str(entry.get("file_path", ""))
+	if file_path.is_empty() or not FileAccess.file_exists(file_path):
+		return {}
+	var reader := ZIPReader.new()
+	if reader.open(file_path) != OK:
+		return {}
+	var bytes := reader.read_file("profile.json")
+	reader.close()
+	if bytes.is_empty():
+		return {}
+	var parsed: Variant = JSON.parse_string(bytes.get_string_from_utf8())
+	return parsed if parsed is Dictionary else {}
+
+
+# Detail modal for a Modpacks-tab row. Shows zip size, mod counts, and the
+# full mod list with installed/missing/downloadable indicators. The Apply
+# (or Unload) button mirrors the row's inline button via the shared apply
+# flow helper so behavior stays in sync.
+func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs: TabContainer) -> void:
+	var d := AcceptDialog.new()
+	d.title = str(entry.get("raw_name", "?"))
+	d.ok_button_text = "Close"
+	d.min_size = Vector2i(660, 540)
+
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(640, 480)
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	d.add_child(scroll)
+
+	var inner_wrap := MarginContainer.new()
+	inner_wrap.add_theme_constant_override("margin_right", 16)
+	inner_wrap.add_theme_constant_override("margin_left", 4)
+	inner_wrap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(inner_wrap)
+
+	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 8)
-	d.add_child(box)
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	inner_wrap.add_child(box)
 
-	# -- Export half -----------------------------------------------------------
-	var export_lbl := Label.new()
-	if payload != "":
-		export_lbl.text = "Profile \"" + current + "\" -- copy and share this payload:"
-	else:
-		export_lbl.text = "Nothing to export (active profile has no saved data yet)."
-		export_lbl.modulate = Color(0.55, 0.55, 0.55)
-	box.add_child(export_lbl)
+	# Meta header
+	var file_path: String = str(entry.get("file_path", ""))
+	var author: String = str(entry.get("author", "")).strip_edges()
+	var file_lbl := Label.new()
+	var file_text := str(entry.get("file_name", "?"))
+	if not author.is_empty():
+		file_text = "by " + author + "  -  " + file_text
+	file_lbl.text = file_text
+	file_lbl.modulate = Color(0.6, 0.6, 0.6)
+	file_lbl.add_theme_font_size_override("font_size", 11)
+	box.add_child(file_lbl)
 
-	var export_text := TextEdit.new()
-	export_text.text = payload
-	export_text.editable = false
-	export_text.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
-	export_text.custom_minimum_size.y = 120
-	box.add_child(export_text)
+	# Description -- prominent if present, omitted otherwise to keep the
+	# modal compact for modpacks that pre-date the field.
+	var description: String = str(entry.get("description", "")).strip_edges()
+	if not description.is_empty():
+		var desc_lbl := Label.new()
+		desc_lbl.text = description
+		desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		desc_lbl.add_theme_font_size_override("font_size", 12)
+		desc_lbl.modulate = Color(0.85, 0.85, 0.85)
+		box.add_child(desc_lbl)
 
-	var copy_btn := Button.new()
-	copy_btn.text = "Copy to Clipboard"
-	copy_btn.disabled = payload == ""
-	box.add_child(copy_btn)
-	copy_btn.pressed.connect(func():
-		DisplayServer.clipboard_set(payload)
-		copy_btn.text = "Copied!"
-	)
+	var zip_size := 0
+	if FileAccess.file_exists(file_path):
+		var f := FileAccess.open(file_path, FileAccess.READ)
+		if f != null:
+			zip_size = f.get_length()
+			f.close()
+
+	var sanitized: String = str(entry.get("sanitized_name", ""))
+	var is_active: bool = active_modpack != "" and active_modpack == sanitized
+	var another_active: bool = active_modpack != "" and active_modpack != sanitized
+
+	var parsed := _read_modpack_profile_json(entry)
+	var enabled_map: Dictionary = parsed.get("enabled", {}) if parsed.get("enabled") is Dictionary else {}
+	var sources_map: Dictionary = parsed.get("sources", {}) if parsed.get("sources") is Dictionary else {}
+	var total := enabled_map.size()
+	var enabled_count := 0
+	var installed_count := 0
+	var missing_count := 0
+
+	var installed_keys: Dictionary = {}
+	for ient in _ui_mod_entries:
+		installed_keys[str(ient.get("profile_key", ""))] = true
+
+	for k_v in enabled_map.keys():
+		if bool(enabled_map[k_v]):
+			enabled_count += 1
+		if installed_keys.has(str(k_v)):
+			installed_count += 1
+		else:
+			missing_count += 1
+
+	var counts_lbl := Label.new()
+	var counts_parts := PackedStringArray()
+	counts_parts.append("%d mods" % total)
+	counts_parts.append("%d enabled" % enabled_count)
+	counts_parts.append("%d installed" % installed_count)
+	if missing_count > 0:
+		counts_parts.append("%d missing" % missing_count)
+	if zip_size > 0:
+		counts_parts.append(_format_size(zip_size))
+	if is_active:
+		counts_parts.append("ACTIVE")
+	counts_lbl.text = " - ".join(counts_parts)
+	counts_lbl.modulate = Color(0.78, 0.78, 0.78) if not is_active else Color(0.65, 0.85, 0.65)
+	counts_lbl.add_theme_font_size_override("font_size", 12)
+	box.add_child(counts_lbl)
 
 	box.add_child(HSeparator.new())
 
-	# -- Import half -----------------------------------------------------------
-	var import_lbl := Label.new()
-	import_lbl.text = "Or paste someone else's payload to import their profile:"
-	box.add_child(import_lbl)
+	var list_hdr := Label.new()
+	list_hdr.text = "Mods"
+	list_hdr.add_theme_font_size_override("font_size", 13)
+	list_hdr.modulate = Color(0.78, 0.78, 0.78)
+	box.add_child(list_hdr)
 
-	var import_text := TextEdit.new()
-	import_text.editable = true
-	import_text.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
-	import_text.custom_minimum_size.y = 100
-	box.add_child(import_text)
+	if enabled_map.is_empty():
+		var empty := Label.new()
+		empty.text = "Modpack has no mods listed."
+		empty.modulate = Color(0.55, 0.55, 0.55)
+		empty.add_theme_font_size_override("font_size", 11)
+		box.add_child(empty)
+	else:
+		var sorted_keys: Array = enabled_map.keys()
+		sorted_keys.sort()
+		for k_v in sorted_keys:
+			var k: String = str(k_v)
+			var en: bool = bool(enabled_map[k_v])
+			var installed: bool = installed_keys.has(k)
+			var src_data: Dictionary = sources_map.get(k_v, {}) if sources_map.get(k_v) is Dictionary else {}
+			var has_source: bool = int(src_data.get("modworkshop_id", 0)) > 0
 
-	var err_lbl := Label.new()
-	err_lbl.modulate = Color(1.0, 0.5, 0.5)
-	err_lbl.add_theme_font_size_override("font_size", 11)
-	box.add_child(err_lbl)
+			var mod_row := HBoxContainer.new()
+			mod_row.add_theme_constant_override("separation", 8)
+			box.add_child(mod_row)
 
-	var import_btn := Button.new()
-	import_btn.text = "Import"
-	box.add_child(import_btn)
+			var en_lbl := Label.new()
+			en_lbl.text = "[on] " if en else "[off]"
+			en_lbl.add_theme_font_size_override("font_size", 11)
+			en_lbl.modulate = Color(0.58, 0.82, 0.38) if en else Color(0.5, 0.5, 0.5)
+			en_lbl.custom_minimum_size.x = 40
+			mod_row.add_child(en_lbl)
+
+			var key_lbl := Label.new()
+			key_lbl.text = k
+			key_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			key_lbl.clip_text = true
+			mod_row.add_child(key_lbl)
+
+			var status_lbl := Label.new()
+			if installed:
+				status_lbl.text = "installed"
+				status_lbl.modulate = Color(0.55, 0.75, 0.55)
+			elif has_source:
+				status_lbl.text = "will download"
+				status_lbl.modulate = Color(0.95, 0.75, 0.45)
+			else:
+				status_lbl.text = "no source"
+				status_lbl.modulate = Color(1.0, 0.45, 0.45)
+			status_lbl.add_theme_font_size_override("font_size", 11)
+			status_lbl.custom_minimum_size.x = 110
+			mod_row.add_child(status_lbl)
+
+	# Action button on the dialog's native button bar.
+	if is_active:
+		var unload_btn := d.add_button("Unload", true, "")
+		unload_btn.pressed.connect(func():
+			d.queue_free()
+			var result := unload_modpack(tabs)
+			if not bool(result.get("ok", false)):
+				_show_error_dialog("Unload Failed", str(result.get("error", "unknown")))
+			_rebuild_profile_tab(tabs)
+		)
+	else:
+		var apply_btn_d := d.add_button("Apply", true, "")
+		apply_btn_d.disabled = another_active
+		if another_active:
+			apply_btn_d.tooltip_text = "Unload \"" + active_modpack + "\" first"
+		var captured_entry := entry
+		apply_btn_d.pressed.connect(func():
+			d.queue_free()
+			_apply_modpack_with_ui_flow(captured_entry, tabs)
+		)
 
 	_attach_ui_dialog(d)
-
-	# Import flow: parse, validate, prompt-to-overwrite if name collides,
-	# otherwise apply + switch + rebuild in one step.
-	var do_import := func():
-		var parsed := _parse_profile_payload(import_text.text)
-		if parsed.has("error"):
-			err_lbl.text = parsed["error"]
-			return
-		var name := _sanitize_profile_name(parsed["name"])
-		if name == "" or name.to_lower() == "vanilla" or name == VANILLA_PROFILE:
-			err_lbl.text = "Payload contains an invalid profile name."
-			return
-		var apply := func():
-			_import_profile_from_parsed(parsed)
-			d.queue_free()
-			_rebuild_mods_tab(tabs)
-		if name in _list_profiles():
-			var cd := ConfirmationDialog.new()
-			cd.title = "Overwrite Profile"
-			cd.dialog_text = "Profile \"" + name + "\" already exists. Overwrite it with the pasted payload?"
-			cd.ok_button_text = "Overwrite"
-			_attach_ui_dialog(cd)
-			_connect_dialog_exits(cd,
-				func():
-					cd.queue_free()
-					apply.call(),
-				func(): cd.queue_free())
-			cd.popup_centered()
-		else:
-			apply.call()
-
-	import_btn.pressed.connect(do_import)
-
-	var dismiss := func(): d.queue_free()
-	d.confirmed.connect(dismiss)
-	d.close_requested.connect(dismiss)
+	d.confirmed.connect(func(): d.queue_free())
+	d.close_requested.connect(func(): d.queue_free())
 	d.popup_centered()
+
+
+# Mirror of _rebuild_mods_tab. Replaces the Modpacks tab control in place
+# preserving current_tab so the user doesn't get yanked to a different tab
+# during the swap. _rebuilding_profile_tab guards against recursion: the
+# remove_child shifts current_tab to a sibling which fires tab_changed,
+# whose listener calls back here -- the flag short-circuits the second
+# call. Also breaks recursion when we explicitly restore current_tab at
+# the end (fires another tab_changed).
+func _rebuild_profile_tab(tabs: TabContainer) -> void:
+	if _rebuilding_profile_tab:
+		return
+	_rebuilding_profile_tab = true
+	var old := tabs.get_node_or_null("Modpacks")
+	if old == null:
+		_rebuilding_profile_tab = false
+		return
+	var idx := old.get_index()
+	var was_current := tabs.current_tab == idx
+	tabs.remove_child(old)
+	old.queue_free()
+	var new_tab := build_profile_tab(tabs)
+	new_tab.name = "Modpacks"
+	tabs.add_child(new_tab)
+	tabs.move_child(new_tab, idx)
+	if was_current:
+		tabs.current_tab = idx
+	_rebuilding_profile_tab = false
 
 # Delete-profile confirmation. The trash button is already disabled when the
 # active profile is Vanilla or the last remaining user profile; the guard in
@@ -1067,6 +2361,7 @@ func _show_delete_confirm(tabs: TabContainer) -> void:
 	d.dialog_text = "Delete profile \"" + target + "\"?\n\nThe mod selection stored in this profile will be discarded. Your other profiles are not affected."
 	d.ok_button_text = "Delete"
 	_attach_ui_dialog(d)
+	d.get_ok_button().modulate = Color(1.0, 0.55, 0.55)
 	_connect_dialog_exits(d,
 		func():
 			d.queue_free()
@@ -1074,6 +2369,67 @@ func _show_delete_confirm(tabs: TabContainer) -> void:
 			_rebuild_mods_tab(tabs),
 		func(): d.queue_free())
 	d.popup_centered()
+
+
+# Remove a mod file from disk and strip its profile entries from every
+# profile in mod_config.cfg. profile_key (not file_name) drives the cleanup
+# so a renamed archive's profile state still gets cleaned up correctly.
+# Returns true on a successful file delete, false otherwise -- caller decides
+# whether to surface the failure or carry on.
+func _delete_mod_file_and_cleanup(entry: Dictionary) -> bool:
+	var path: String = str(entry["full_path"])
+	if FileAccess.file_exists(path):
+		if DirAccess.remove_absolute(path) != OK:
+			return false
+	var profile_key: String = str(entry["profile_key"])
+	var cfg := ConfigFile.new()
+	if cfg.load(UI_CONFIG_PATH) == OK:
+		for section in cfg.get_sections():
+			if not section.begins_with("profile."):
+				continue
+			if not (section.ends_with(".enabled") or section.ends_with(".priority")):
+				continue
+			if cfg.has_section_key(section, profile_key):
+				cfg.erase_section_key(section, profile_key)
+		cfg.save(UI_CONFIG_PATH)
+	return true
+
+
+# Per-row Remove confirmation. Shows mod name + filename + size so the user
+# can sanity-check before committing. On Delete: deletes the file, strips
+# profile state across all profiles, re-runs discovery, and rebuilds the
+# Mods tab in place so the row vanishes immediately.
+func _show_remove_mod_confirm(entry: Dictionary, tabs: TabContainer) -> void:
+	var d := ConfirmationDialog.new()
+	d.title = "Remove Mod"
+	var size_line := ""
+	var path: String = str(entry.get("full_path", ""))
+	if FileAccess.file_exists(path):
+		var f := FileAccess.open(path, FileAccess.READ)
+		if f != null:
+			size_line = "\nSize: " + _format_size(f.get_length())
+			f.close()
+	d.dialog_text = "Permanently delete \"%s\"?\n\nFile: %s%s\n\nThis will:\n  - Delete the file from disk\n  - Remove the mod from EVERY profile, not just \"%s\"\n\nThis cannot be undone." % [
+		str(entry.get("mod_name", "?")),
+		str(entry.get("file_name", "?")),
+		size_line,
+		_active_profile,
+	]
+	d.ok_button_text = "Delete"
+	d.get_ok_button().modulate = Color(1.0, 0.55, 0.55)
+	_attach_ui_dialog(d)
+	_connect_dialog_exits(d,
+		func():
+			d.queue_free()
+			if _delete_mod_file_and_cleanup(entry):
+				_ui_mod_entries = collect_mod_metadata()
+				var cfg := ConfigFile.new()
+				cfg.load(UI_CONFIG_PATH)
+				_apply_profile_to_entries(cfg, _active_profile)
+				_rebuild_mods_tab(tabs),
+		func(): d.queue_free())
+	d.popup_centered()
+
 
 # UI
 
@@ -1155,8 +2511,11 @@ func show_mod_ui() -> void:
 	_ui_hint_label = hint
 
 	var launch_btn := Button.new()
-	launch_btn.text = "  Launch Game  "
-	launch_btn.custom_minimum_size = Vector2(130, 36)
+	# Text is set by refresh_launch_button_label below (called after tabs
+	# build), which picks "Launch with Mods" or "Launch" based on enabled
+	# state. Starting empty avoids a one-frame "Launch Game" placeholder.
+	launch_btn.text = ""
+	launch_btn.custom_minimum_size = Vector2(160, 36)
 	var ls_n := StyleBoxFlat.new()
 	ls_n.bg_color = Color(0.05, 0.05, 0.05)
 	ls_n.border_color = Color(0.28, 0.28, 0.28)
@@ -1191,8 +2550,36 @@ func show_mod_ui() -> void:
 	bottom.add_child(alert)
 	_ui_update_alert_btn = alert
 
+	# Visual separator between informational left cluster (hint + version)
+	# and action right cluster (Vanilla + Launch). Without this, the version
+	# link reads as adjacent to Vanilla -- the eye loses the grouping.
+	var bar_gap := Control.new()
+	bar_gap.custom_minimum_size.x = 24
+	bottom.add_child(bar_gap)
+
+	# Vanilla: one-shot bypass via sentinel + restart. Sized smaller than
+	# the primary Launch button so the visual hierarchy reads correctly --
+	# Launch is the common action, Vanilla is the diagnostic one. Hover
+	# hint communicates the restart, so we don't crowd the label.
+	var vanilla_btn := Button.new()
+	vanilla_btn.text = "  Vanilla  "
+	vanilla_btn.custom_minimum_size = Vector2(90, 36)
+	var vs_n := ls_n.duplicate()
+	vanilla_btn.add_theme_stylebox_override("normal", vs_n)
+	var vs_h := ls_h.duplicate()
+	vanilla_btn.add_theme_stylebox_override("hover", vs_h)
+	var vs_p := ls_p.duplicate()
+	vanilla_btn.add_theme_stylebox_override("pressed", vs_p)
+	vanilla_btn.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
+	vanilla_btn.add_theme_color_override("font_hover_color", Color(0.9, 0.9, 0.9))
+	var win_for_vanilla := win
+	vanilla_btn.pressed.connect(func(): _launch_vanilla_once(win_for_vanilla))
+	bottom.add_child(vanilla_btn)
+	_wire_hint(vanilla_btn, "Launch without mods for this session. Restarts the game.")
+
 	bottom.add_child(launch_btn)
 	_ui_launch_btn = launch_btn
+	_wire_hint(launch_btn, "Launch the game with the active profile's mods. Restarts the game.")
 
 	# Closing the window with X should behave the same as clicking Launch.
 	win.close_requested.connect(func(): launch_btn.pressed.emit())
@@ -1206,9 +2593,30 @@ func show_mod_ui() -> void:
 	mods_tab.name = "Mods"
 	tabs.add_child(mods_tab)
 
+	var browse_tab := build_browse_tab(tabs)
+	browse_tab.name = "Browse"
+	tabs.add_child(browse_tab)
+
+	var profile_tab := build_profile_tab(tabs)
+	profile_tab.name = "Modpacks"
+	tabs.add_child(profile_tab)
+
 	var updates_tab := build_updates_tab()
 	updates_tab.name = "Updates"
 	tabs.add_child(updates_tab)
+
+	# Refresh the Modpacks tab whenever the user switches to it. State can
+	# change behind the tab's back -- e.g. banner Unload from Mods tab --
+	# and without this listener the Modpacks tab keeps showing stale
+	# ACTIVE/Apply state until UI close/reopen. _rebuild_profile_tab now
+	# preserves current_tab and short-circuits recursion via the
+	# _rebuilding_profile_tab flag, so the rebuild-during-tab-show that
+	# broke things in the earlier revision no longer applies.
+	tabs.tab_changed.connect(func(idx: int):
+		var ctrl := tabs.get_tab_control(idx)
+		if ctrl != null and ctrl.name == "Modpacks":
+			_rebuild_profile_tab(tabs)
+	)
 
 	refresh_launch_button_label()
 
@@ -1230,11 +2638,19 @@ func show_mod_ui() -> void:
 	_ui_launch_btn = null
 	_ui_update_alert_btn = null
 	_ui_mods_scroll = null
+	# Drop the Browse-tab API response cache. It's a session optimization,
+	# not durable state -- the modloader autoload survives across launcher
+	# open/close (rare in practice) and we don't want the dict to accumulate
+	# across sessions. Disk-cached thumbnails stay (immutable storage keys
+	# are valid indefinitely; they're how we make repeat browsing snappy).
+	# In-flight HTTPRequests (list + thumbnail fetches) are parented to self
+	# and self-queue_free on completion, so no node-leak cleanup is needed.
+	_mws_cache.clear()
 	win.queue_free()
 
-# Pessimistic label: any enabled mod -> "(Restart)". Over-warn beats a
-# surprise close/reopen; the rare hash-match no-restart case just launches
-# faster than promised.
+# Launch button label reflects whether anything will load. Both this and
+# the bottom-bar Launch Vanilla button restart the game, so the "(Restart)"
+# suffix added no signal -- dropped to avoid noise.
 func refresh_launch_button_label() -> void:
 	if not is_instance_valid(_ui_launch_btn):
 		return
@@ -1245,11 +2661,11 @@ func refresh_launch_button_label() -> void:
 	var loadable_count: int = (pick["loadable"] as Array).size()
 	var enabled_count := int(pick["enabled_count"])
 	if loadable_count > 0:
-		_ui_launch_btn.text = "  Launch with Mods (Restart)  "
+		_ui_launch_btn.text = "  Launch with Mods  "
 	elif enabled_count > 0:
 		_ui_launch_btn.text = "  Launch Unmodded (%d blocked)  " % enabled_count
 	else:
-		_ui_launch_btn.text = "  Launch Unmodded  "
+		_ui_launch_btn.text = "  Launch  "
 
 # -- Sub-label / row-action factories -----------------------------------------
 # The launcher's small-print conventions, encoded once: font 11, ellipsis
@@ -1497,8 +2913,48 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	var outer := VBoxContainer.new()
 	outer.size_flags_vertical = Control.SIZE_EXPAND_FILL
 
+	# Active-modpack banner. When a modpack is applied, surface it loudly so
+	# the user knows their mod selection isn't their own configuration -- and
+	# can unload back to it with one click. Hidden when no modpack is active.
+	var active_modpack := get_active_modpack()
+	if active_modpack != "":
+		var banner := PanelContainer.new()
+		var banner_style := StyleBoxFlat.new()
+		banner_style.bg_color = Color(0.30, 0.18, 0.10)
+		banner_style.border_color = Color(0.55, 0.35, 0.15)
+		banner_style.border_width_top = 1
+		banner_style.border_width_bottom = 1
+		banner_style.border_width_left = 1
+		banner_style.border_width_right = 1
+		banner_style.content_margin_left = 10
+		banner_style.content_margin_right = 10
+		banner_style.content_margin_top = 6
+		banner_style.content_margin_bottom = 6
+		banner.add_theme_stylebox_override("panel", banner_style)
+		var banner_row := HBoxContainer.new()
+		banner_row.add_theme_constant_override("separation", 12)
+		banner.add_child(banner_row)
+		var banner_lbl := Label.new()
+		banner_lbl.text = "Modpack \"" + active_modpack + "\" is active. Edits save to this modpack's slot."
+		banner_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		banner_lbl.modulate = Color(1.0, 0.85, 0.65)
+		banner_row.add_child(banner_lbl)
+		var unload_btn := Button.new()
+		unload_btn.text = "Unload"
+		banner_row.add_child(unload_btn)
+		unload_btn.pressed.connect(func():
+			var result := unload_modpack(tabs)
+			if not bool(result.get("ok", false)):
+				_show_error_dialog("Unload Failed", str(result.get("error", "unknown")))
+			# Always rebuild the Modpacks tab -- on success to remove the
+			# ACTIVE row state, on error to clear stale view that's likely
+			# what triggered the click in the first place.
+			_rebuild_profile_tab(tabs)
+		)
+		outer.add_child(banner)
+
 	# -- Toolbar (profile selector + folder shortcut + dev toggle) ------------
-	# Single row: Open Mods Folder | Profile: [dropdown] [+] [pencil] [trash] [Share] | ... | Developer Mode
+	# Single row: Open Mods Folder | Profile: [dropdown] [+] [pencil] [trash] | ... | Developer Mode
 
 	var toolbar := HBoxContainer.new()
 	toolbar.add_theme_constant_override("separation", 8)
@@ -1535,18 +2991,15 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	if _ui_window != null and _ui_window.theme != null:
 		profile_popup.theme = _ui_window.theme
 
-	# Item 0 is Vanilla; selecting it shows the reset-and-restart confirm.
-	# Godot 4 PopupMenu has no per-item text color, so the danger cue lives
-	# in the confirmation dialog's red OK button rather than on this entry.
-	profile_opt.add_item("Vanilla")
-	profile_opt.set_item_metadata(0, VANILLA_PROFILE)
-
 	# Fresh install has no profile sections yet -- show Default as a placeholder
 	# that gets materialized on the first _save_ui_config (Launch or any toggle).
-	var profiles := _list_profiles()
+	# Filter modpack-managed profiles ("modpack__*", "_before_modpack_*") so
+	# they don't appear in the user-facing dropdown -- those are handled by
+	# the Modpacks tab and are not user-named profiles.
+	var profiles := _list_profiles().filter(func(n: String): return not _is_modpack_managed_profile(n))
 	if profiles.is_empty():
 		profiles = ["Default"]
-	var active_idx := 0  # fall back to Vanilla if no user profile matches
+	var active_idx := 0  # fall back to first user profile if no match
 	for name: String in profiles:
 		profile_opt.add_item(name)
 		var idx := profile_opt.item_count - 1
@@ -1555,43 +3008,49 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			active_idx = idx
 	profile_opt.selected = active_idx
 
-	# Profile-mutation buttons. Rename/Delete guard against Vanilla (sentinel
-	# has no underlying profile); Delete additionally needs at least one
-	# other profile to switch to.
-	var on_vanilla := _active_profile == VANILLA_PROFILE
+	# When a modpack is active, the active profile is "modpack__X" which the
+	# filter above hides -- so the dropdown's selection defaults back to
+	# Vanilla which is misleading. Disable the dropdown (and replace its
+	# label) so it's clear the user has to Unload the modpack via the banner
+	# to interact with regular profiles.
+	if active_modpack != "":
+		profile_opt.clear()
+		profile_opt.add_item("[Modpack: " + active_modpack + "]")
+		profile_opt.selected = 0
+		profile_opt.disabled = true
+
+	# Profile-mutation buttons. Delete needs at least one other profile to
+	# switch to. ALL profile mutations are disabled while a modpack is
+	# active -- the active profile slot is modpack-managed (modpack__X) and
+	# shouldn't be renamed/deleted/created-from.
+	var modpack_locked := active_modpack != ""
 
 	var new_profile_btn := Button.new()
 	new_profile_btn.text = "+"
-	new_profile_btn.tooltip_text = "New profile from current mod selection"
+	new_profile_btn.tooltip_text = "New profile from current mod selection" if not modpack_locked else "Unload the active modpack first"
+	new_profile_btn.disabled = modpack_locked
 	new_profile_btn.custom_minimum_size.x = 28
 	toolbar.add_child(new_profile_btn)
 	_wire_hint(new_profile_btn, "New profile from current mod selection.")
 
 	var rename_btn := Button.new()
 	rename_btn.icon = _make_pencil_icon()
-	rename_btn.tooltip_text = "Rename the active profile"
-	rename_btn.disabled = on_vanilla
+	rename_btn.tooltip_text = "Rename the active profile" if not modpack_locked else "Unload the active modpack first"
+	rename_btn.disabled = modpack_locked
 	rename_btn.custom_minimum_size.x = 28
 	toolbar.add_child(rename_btn)
 	_wire_hint(rename_btn, "Rename the active profile.")
 
-	# Delete is disabled on Vanilla (nothing concrete to delete) and when only
-	# one user profile exists (we always need at least one to switch to).
+	# Delete needs at least one other profile to switch to.
 	var del_profile_btn := Button.new()
 	del_profile_btn.icon = _make_trashcan_icon()
-	del_profile_btn.tooltip_text = "Delete the active profile"
-	del_profile_btn.disabled = on_vanilla or profiles.size() <= 1
+	del_profile_btn.tooltip_text = "Delete the active profile" if not modpack_locked else "Unload the active modpack first"
+	del_profile_btn.disabled = profiles.size() <= 1 or modpack_locked
 	del_profile_btn.custom_minimum_size.x = 28
 	toolbar.add_child(del_profile_btn)
 	_wire_hint(del_profile_btn, "Delete the active profile.")
 
-	# Always enabled: even on Vanilla or an empty profile, users may want to
-	# paste in someone else's shared payload.
-	var share_btn := Button.new()
-	share_btn.text = "Share"
-	share_btn.tooltip_text = "Copy this profile to share, or paste one from someone else"
-	toolbar.add_child(share_btn)
-	_wire_hint(share_btn, "Copy this profile to share, or paste one from someone else.")
+	# Share/save/load lives in the Modpacks tab.
 
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -1608,16 +3067,12 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 
 	profile_opt.item_selected.connect(func(idx: int):
 		var meta = profile_opt.get_item_metadata(idx)
-		if meta == VANILLA_PROFILE:
-			_show_vanilla_confirm(tabs)
-		else:
-			_switch_profile(str(meta))
-			_rebuild_mods_tab(tabs)
+		_switch_profile(str(meta))
+		_rebuild_mods_tab(tabs)
 	)
 	new_profile_btn.pressed.connect(func(): _show_new_profile_dialog(tabs))
 	rename_btn.pressed.connect(func(): _show_rename_profile_dialog(tabs))
 	del_profile_btn.pressed.connect(func(): _show_delete_confirm(tabs))
-	share_btn.pressed.connect(func(): _show_share_profile_dialog(tabs))
 
 	dev_check.toggled.connect(func(on: bool):
 		_developer_mode = on
@@ -1659,14 +3114,12 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	var all_btn := Button.new()
 	all_btn.text = "All"
 	all_btn.tooltip_text = "Enable every visible mod"
-	all_btn.disabled = on_vanilla
 	filter_bar.add_child(all_btn)
 	_wire_hint(all_btn, "Enable every visible mod (respects the search filter).")
 
 	var none_btn := Button.new()
 	none_btn.text = "None"
 	none_btn.tooltip_text = "Disable every visible mod"
-	none_btn.disabled = on_vanilla
 	filter_bar.add_child(none_btn)
 	_wire_hint(none_btn, "Disable every visible mod (respects the search filter).")
 
@@ -1675,9 +3128,46 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	hide_check.tooltip_text = "Hide rows for mods that are disabled in this profile"
 	hide_check.button_pressed = _mods_hide_disabled
 	hide_check.add_theme_font_size_override("font_size", 11)
-	hide_check.disabled = on_vanilla
 	filter_bar.add_child(hide_check)
 	_wire_hint(hide_check, "Hide rows for mods that are disabled in this profile.")
+
+	# Check Updates: queries ModWorkshop for every installed mod with valid
+	# [updates] modworkshop= + version. Populates _mod_updates_state so the
+	# rows below show per-mod "update available" badges without users having
+	# to switch to the Updates tab. The Updates tab stays around for the
+	# bulk-status view.
+	var check_btn := Button.new()
+	check_btn.text = "Check Updates"
+	if _mod_updates_check_in_progress:
+		check_btn.disabled = true
+		check_btn.text = "Checking..."
+	filter_bar.add_child(check_btn)
+	_wire_hint(check_btn, "Query ModWorkshop for newer versions of every installed mod with update info.")
+	check_btn.pressed.connect(func():
+		if _mod_updates_check_in_progress:
+			return
+		check_btn.disabled = true
+		check_btn.text = "Checking..."
+		var summary := await _run_updates_check_for_mods()
+		if not is_instance_valid(check_btn):
+			return
+		check_btn.disabled = false
+		check_btn.text = "Check Updates"
+		if is_instance_valid(tabs):
+			_rebuild_mods_tab(tabs)
+		# Surface a one-liner so the user knows something happened even when
+		# nothing is out of date.
+		var n := int(summary.get("with_updates", 0))
+		var ck := int(summary.get("checked", 0))
+		var msg := ""
+		if ck == 0:
+			msg = "No mods have [updates] modworkshop= + version set."
+		elif n == 0:
+			msg = "All %d checked mod(s) up to date." % ck
+		else:
+			msg = "%d update(s) available." % n
+		_show_info_toast(msg)
+	)
 
 	filter_edit.text_changed.connect(func(t: String):
 		_mods_filter_text = t
@@ -1797,6 +3287,77 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			order_list.add_child(_make_sub_label("%d blocked (deps)" % blocked_count, UI_COL_WARN,
 					"Blocked mods stay checked but don't load.\nSee the orange row warnings for fixes."))
 
+	# -- Updates available ----------------------------------------------------
+	# Compact triage list of mods with newer versions on ModWorkshop. Source
+	# is _mod_updates_state which is populated by Check Updates in this tab
+	# or in the Updates tab. Compact rows here so a long list (20+) stays
+	# scannable; the regular mod rows below are unchanged (no bubbling, no
+	# extra subsection) so this view doesn't compete with mod management.
+	var update_keys: Array = []
+	for entry_v in _ui_mod_entries:
+		var pk_check: String = str(entry_v.get("profile_key", ""))
+		if _mod_updates_state.has(pk_check):
+			update_keys.append(pk_check)
+	if not update_keys.is_empty():
+		var u_hdr_row := HBoxContainer.new()
+		list.add_child(u_hdr_row)
+		var u_hdr := Label.new()
+		u_hdr.text = "Updates available  (%d)" % update_keys.size()
+		u_hdr.modulate = Color(0.95, 0.65, 0.25)
+		u_hdr.add_theme_font_size_override("font_size", 12)
+		u_hdr.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		u_hdr_row.add_child(u_hdr)
+		list.add_child(HSeparator.new())
+
+		for pk: String in update_keys:
+			var upd: Dictionary = _mod_updates_state[pk]
+			var upd_row := HBoxContainer.new()
+			upd_row.add_theme_constant_override("separation", 12)
+			list.add_child(upd_row)
+
+			var u_name := Label.new()
+			u_name.text = str(upd.get("mod_name", "?"))
+			u_name.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			u_name.clip_text = true
+			upd_row.add_child(u_name)
+
+			var u_ver := Label.new()
+			u_ver.text = "v%s  ->  v%s" % [str(upd.get("current_version", "?")), str(upd.get("latest_version", "?"))]
+			u_ver.modulate = Color(0.78, 0.78, 0.78)
+			u_ver.add_theme_font_size_override("font_size", 11)
+			u_ver.custom_minimum_size.x = 160
+			upd_row.add_child(u_ver)
+
+			var u_btn := Button.new()
+			u_btn.text = "Update"
+			upd_row.add_child(u_btn)
+			_wire_hint(u_btn, "Download the latest version and replace the file in place.")
+			var captured_pk := pk
+			var captured_upd := upd
+			u_btn.pressed.connect(func():
+				if not is_instance_valid(u_btn):
+					return
+				u_btn.disabled = true
+				u_btn.text = "Updating..."
+				var full_path: String = str(captured_upd.get("full_path", ""))
+				var mw_id: int = int(captured_upd.get("mw_id", 0))
+				var result: Dictionary = await download_and_replace_mod(full_path, mw_id)
+				if bool(result.get("ok", false)):
+					_mod_updates_state.erase(captured_pk)
+					_ui_mod_entries = collect_mod_metadata()
+					var cfg := ConfigFile.new()
+					cfg.load(UI_CONFIG_PATH)
+					_apply_profile_to_entries(cfg, _active_profile)
+					if is_instance_valid(tabs):
+						_rebuild_mods_tab(tabs)
+				else:
+					if is_instance_valid(u_btn):
+						u_btn.disabled = false
+						u_btn.text = "Update"
+					_show_error_dialog("Update Failed", str(result.get("error", "unknown")))
+			)
+			list.add_child(HSeparator.new())
+
 	# -- Missing from this profile --------------------------------------------
 	# Mods the active profile references but that aren't on disk. Shown at the
 	# top of the list so they get attention before the regular mod rows; each
@@ -1821,10 +3382,27 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		missing_hdr_row.add_child(remove_all_btn)
 		_wire_hint(remove_all_btn, "Strip every missing-mod entry from the active profile.")
 		remove_all_btn.pressed.connect(func():
-			_remove_all_missing_entries_from_profile()
-			_rebuild_mods_tab(tabs)
+			var n := missing_files.size()
+			var d := ConfirmationDialog.new()
+			d.title = "Remove missing-mod entries"
+			d.dialog_text = "Strip %d missing-mod entr%s from \"%s\"?\n\nOnly the active profile is affected. Other profiles keep their references." % [
+				n, ("y" if n == 1 else "ies"), _active_profile,
+			]
+			d.ok_button_text = "Remove"
+			_attach_ui_dialog(d)
+			d.get_ok_button().modulate = Color(1.0, 0.55, 0.55)
+			_connect_dialog_exits(d,
+				func():
+					d.queue_free()
+					_remove_all_missing_entries_from_profile()
+					_rebuild_mods_tab(tabs),
+				func(): d.queue_free())
+			d.popup_centered()
 		)
 		list.add_child(HSeparator.new())
+		# Compute sources once per Mods-tab build, not per row. Covers
+		# persisted cache (any profile) + active modpack zip overlay.
+		var missing_sources := _missing_mod_sources_combined()
 		for fn: String in missing_files:
 			var miss_row := HBoxContainer.new()
 			list.add_child(miss_row)
@@ -1834,10 +3412,67 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			miss_lbl.modulate = Color(1.0, 0.45, 0.45)
 			miss_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			miss_row.add_child(miss_lbl)
+
+			# Download button when the active modpack carries source info for
+			# this entry. Falls back to just Remove when no source is known --
+			# e.g. user manually disabled a mod then deleted the file, or the
+			# modpack zip is gone.
+			var src_v: Variant = missing_sources.get(fn) if missing_sources.has(fn) else null
+			var src_mws_id: int = 0
+			var src_version: String = ""
+			if src_v is Dictionary:
+				var src: Dictionary = src_v
+				src_mws_id = int(src.get("modworkshop_id", 0))
+				src_version = str(src.get("version", ""))
+			if src_mws_id > 0:
+				var dl_btn := Button.new()
+				dl_btn.text = "Download"
+				dl_btn.tooltip_text = "Download this mod from ModWorkshop"
+				miss_row.add_child(dl_btn)
+				_wire_hint(dl_btn, "Download this mod from ModWorkshop.")
+				var captured_mws_id := src_mws_id
+				var captured_version := src_version
+				dl_btn.pressed.connect(func():
+					if not is_instance_valid(dl_btn):
+						return
+					dl_btn.disabled = true
+					dl_btn.text = "Downloading..."
+					# allow_rename_on_collision=true: a different version may
+					# already exist under the same filename. Dedup at scan time.
+					var r: Dictionary = await download_new_mod(captured_mws_id, captured_version, true)
+					if bool(r.get("ok", false)):
+						_ui_mod_entries = collect_mod_metadata()
+						var cfg := ConfigFile.new()
+						cfg.load(UI_CONFIG_PATH)
+						_apply_profile_to_entries(cfg, _active_profile)
+						if is_instance_valid(tabs):
+							_rebuild_mods_tab(tabs)
+					else:
+						if is_instance_valid(dl_btn):
+							dl_btn.disabled = false
+							dl_btn.text = "Download"
+						_show_error_dialog("Download Failed", str(r.get("error", "unknown")))
+				)
+			else:
+				# No source info -- name what's unavailable, not the data we
+				# lack. Matches r2modman/Vortex pattern of action-clear
+				# state strings. Label defaults to MOUSE_FILTER_IGNORE in
+				# Godot 4, so explicit STOP is required for hover signals.
+				var no_src_lbl := Label.new()
+				no_src_lbl.text = "Download unavailable"
+				no_src_lbl.modulate = Color(0.55, 0.55, 0.55)
+				no_src_lbl.add_theme_font_size_override("font_size", 11)
+				no_src_lbl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+				no_src_lbl.mouse_filter = Control.MOUSE_FILTER_STOP
+				miss_row.add_child(no_src_lbl)
+				_wire_hint(no_src_lbl,
+					"This mod has no recorded ModWorkshop source. Reinstall it manually, or set [updates] modworkshop=N in its mod.txt if you have a local copy.")
+
 			var remove_btn := Button.new()
 			remove_btn.text = "Remove"
 			remove_btn.tooltip_text = "Strip this entry from the active profile"
 			miss_row.add_child(remove_btn)
+			_wire_hint(remove_btn, "Strip this entry from the active profile.")
 			var captured := fn
 			remove_btn.pressed.connect(func():
 				_remove_missing_entry_from_profile(captured)
@@ -1869,16 +3504,6 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	list.add_child(HSeparator.new())
 
 	# -- One row per mod -------------------------------------------------------
-
-	# Vanilla has no editable state; hint users to pick a profile before they
-	# try to toggle anything. Controls below are disabled alongside this note.
-	if on_vanilla and not _ui_mod_entries.is_empty():
-		var vanilla_note := Label.new()
-		vanilla_note.text = "Vanilla active -- switch to a profile to edit mods."
-		vanilla_note.modulate = Color(1.0, 0.55, 0.55)
-		vanilla_note.add_theme_font_size_override("font_size", 11)
-		list.add_child(vanilla_note)
-		list.add_child(HSeparator.new())
 
 	if _ui_mod_entries.is_empty():
 		var empty := Label.new()
@@ -2074,19 +3699,31 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			var captured_entry := entry
 			sec_btn.pressed.connect(func(): _show_security_findings_dialog(captured_entry))
 
-		# Vanilla has no stored profile; disable editing so auto-save can't
-		# create a ghost `profile.__vanilla__.*` section.
-		if on_vanilla:
-			check.disabled = true
-
 		var spin := SpinBox.new()
 		spin.min_value = PRIORITY_MIN
 		spin.max_value = PRIORITY_MAX
 		spin.value = entry["priority"]
 		spin.custom_minimum_size.x = 100
-		if on_vanilla:
-			spin.editable = false
 		row.add_child(spin)
+
+		# Per-row Remove. Folder mods (dev) skip the file delete because
+		# DirAccess.remove_absolute is for files only and recursive deletion
+		# of a working directory is too risky to do casually -- the user
+		# can use Open Mods Folder for those.
+		var remove_btn := Button.new()
+		remove_btn.icon = _make_trashcan_icon()
+		remove_btn.flat = true
+		remove_btn.custom_minimum_size.x = 28
+		remove_btn.disabled = entry["ext"] == "folder"
+		if entry["ext"] == "folder":
+			remove_btn.tooltip_text = "Use Open Mods Folder to remove dev folders"
+		else:
+			remove_btn.tooltip_text = "Permanently delete this mod"
+		row.add_child(remove_btn)
+		var captured_remove_entry := entry
+		remove_btn.pressed.connect(func():
+			_show_remove_mod_confirm(captured_remove_entry, tabs)
+		)
 
 		list.add_child(HSeparator.new())
 
@@ -2129,6 +3766,841 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 
 	refresh_order.call()
 	return outer
+
+func build_browse_tab(tabs: TabContainer) -> Control:
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 8)
+	margin.add_theme_constant_override("margin_right", 8)
+	margin.add_theme_constant_override("margin_top", 6)
+	margin.add_theme_constant_override("margin_bottom", 6)
+
+	var container := VBoxContainer.new()
+	container.add_theme_constant_override("separation", 6)
+	margin.add_child(container)
+
+	# Shared mutable state. Lambdas capture primitives by VALUE in GDScript;
+	# routing through a Dictionary lets all the closures (search/sort/category
+	# handlers, load-more, do_get) read and mutate the same fields. "discover"
+	# mode hits popular-and-latest; any user input flips to "filter" mode which
+	# uses the paginated list_mods endpoint.
+	var state := {
+		"mode": "discover",
+		"query": "",
+		"sort": "bumped_at",
+		"category_id": 0,
+		"next_page": 1,
+		"has_more": false,
+		# fetch_seq: monotonic counter incremented at the START of every list
+		# fetch (discover or filter). Each fetch captures its own seq, then
+		# checks it after await; if state["fetch_seq"] has advanced, a newer
+		# fetch is in flight and this one's result must NOT render. Without
+		# this guard, rapid sort/category clicks let the slowest response win
+		# whichever finishes last -- so the UI shows results that don't match
+		# the dropdown's current value.
+		"fetch_seq": 0,
+		# downloading_id: mws_id currently being downloaded. -1 = idle.
+		# Singletons (not concurrent) because the temp-file + collect rebuild
+		# would race; additional Get clicks land in download_queue and run
+		# sequentially after the current one finishes.
+		"downloading_id": -1,
+		# download_queue: Array of {mod_data, get_btn} dicts awaiting their
+		# turn. on_get drains this FIFO once the current download completes.
+		"download_queue": [],
+	}
+
+	# -- Toolbar: search + sort + category --
+	var toolbar := HBoxContainer.new()
+	toolbar.add_theme_constant_override("separation", 8)
+	container.add_child(toolbar)
+
+	var search_input := LineEdit.new()
+	search_input.placeholder_text = "Search mods..."
+	search_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	search_input.custom_minimum_size.x = 200
+	toolbar.add_child(search_input)
+
+	var sort_dropdown := OptionButton.new()
+	# Index -> API sort enum. best_match auto-selects when query is non-empty;
+	# user can still pick a different sort to override.
+	sort_dropdown.add_item("Recently bumped")
+	sort_dropdown.add_item("Most downloaded")
+	sort_dropdown.add_item("Most liked")
+	sort_dropdown.add_item("Most viewed")
+	sort_dropdown.add_item("Newest")
+	var sort_keys := ["bumped_at", "downloads", "likes", "views", "published_at"]
+	toolbar.add_child(sort_dropdown)
+
+	var category_dropdown := OptionButton.new()
+	category_dropdown.add_item("All categories")
+	category_dropdown.set_item_metadata(0, 0)  # category_id 0 = no filter
+	toolbar.add_child(category_dropdown)
+
+	# OptionButton popups are sub-Windows; the launcher's always_on_top leaves
+	# them stranded behind the main window unless we explicitly raise them.
+	# Theme assignment is also explicit because theme inheritance does not
+	# always cross Window boundaries in Godot 4. Same fix the profile_opt
+	# dropdown applies in build_mods_tab. Unfolded rather than looped because
+	# iterating over an Array literal makes the loop variable untyped Variant
+	# and `var popup := dd.get_popup()` then fails type inference at parse time.
+	var sort_popup := sort_dropdown.get_popup()
+	sort_popup.always_on_top = true
+	sort_popup.transient = true
+	if _ui_window != null and _ui_window.theme != null:
+		sort_popup.theme = _ui_window.theme
+
+	var cat_popup := category_dropdown.get_popup()
+	cat_popup.always_on_top = true
+	cat_popup.transient = true
+	if _ui_window != null and _ui_window.theme != null:
+		cat_popup.theme = _ui_window.theme
+
+	container.add_child(HSeparator.new())
+
+	var status_lbl := Label.new()
+	status_lbl.add_theme_font_size_override("font_size", 11)
+	status_lbl.modulate = Color(0.55, 0.55, 0.55)
+	container.add_child(status_lbl)
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	container.add_child(scroll)
+
+	# Right margin clears the vertical scrollbar so the Get button on each row
+	# doesn't sit underneath it. ScrollContainer in Godot 4 lays content out
+	# at full width and OVERLAYS the scrollbar -- without this margin the
+	# rightmost pixels of every row hide behind it.
+	var list_wrap := MarginContainer.new()
+	list_wrap.add_theme_constant_override("margin_right", 16)
+	list_wrap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(list_wrap)
+
+	var list := VBoxContainer.new()
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	list_wrap.add_child(list)
+
+	var load_more_btn := Button.new()
+	load_more_btn.text = "Load more"
+	load_more_btn.visible = false
+	container.add_child(load_more_btn)
+
+	# Map mws_id -> entry (or absent if not installed). Recomputed every
+	# render because re-discovery after a successful Get rewrites
+	# _ui_mod_entries; rows flip from Get -> enable-toggle next render
+	# without a UI close/reopen.
+	var compute_install_map := func() -> Dictionary:
+		var out: Dictionary = {}
+		for entry in _ui_mod_entries:
+			var cfg: ConfigFile = entry.get("cfg")
+			if cfg == null:
+				continue
+			if not cfg.has_section_key("updates", "modworkshop"):
+				continue
+			var mws_id := int(str(cfg.get_value("updates", "modworkshop", "0")))
+			if mws_id > 0:
+				out[mws_id] = entry
+		return out
+
+	# Forward declarations: on_get's success branch + queue processor re-
+	# render the current view to flip duplicate Get buttons, so the fetch
+	# callables must be in scope. Bodies are assigned below.
+	var do_discover_fetch: Callable
+	var do_filter_fetch: Callable
+
+	# Enable/disable toggle from the Browse row. Mutates the entry in
+	# _ui_mod_entries (Dictionary references), saves via _save_ui_config,
+	# rebuilds the Mods tab so its row reflects the change.
+	var on_toggle := func(mws_id: int, enabled: bool):
+		for entry in _ui_mod_entries:
+			var cfg: ConfigFile = entry.get("cfg")
+			if cfg == null:
+				continue
+			if not cfg.has_section_key("updates", "modworkshop"):
+				continue
+			var entry_mws := int(str(cfg.get_value("updates", "modworkshop", "0")))
+			if entry_mws != mws_id:
+				continue
+			entry["enabled"] = enabled
+			_save_ui_config()
+			if is_instance_valid(tabs):
+				_rebuild_mods_tab(tabs)
+			status_lbl.text = ("Enabled " if enabled else "Disabled ") + str(entry.get("mod_name", "?")) + " in profile " + _active_profile
+			return
+
+	# Forward decl so on_get + queue processor can reference each other.
+	var perform_download_for_item: Callable
+
+	perform_download_for_item = func(item: Dictionary):
+		var mod_data: Dictionary = item["mod_data"]
+		var get_btn = item.get("get_btn")
+		var mws_id := int(mod_data.get("id", 0))
+		state["downloading_id"] = mws_id
+		if is_instance_valid(get_btn):
+			get_btn.disabled = true
+			get_btn.text = "Downloading..."
+		var queue: Array = state["download_queue"]
+		var qsuffix := (" (" + str(queue.size()) + " queued)") if not queue.is_empty() else ""
+		status_lbl.text = "Downloading " + str(mod_data.get("name", "?")) + qsuffix + "..."
+
+		var result: Dictionary = await download_new_mod(mws_id)
+		state["downloading_id"] = -1
+
+		if bool(result.get("ok", false)):
+			_ui_mod_entries = collect_mod_metadata()
+			var cfg := ConfigFile.new()
+			cfg.load(UI_CONFIG_PATH)
+			_apply_profile_to_entries(cfg, _active_profile)
+			if is_instance_valid(tabs):
+				_rebuild_mods_tab(tabs)
+			if is_instance_valid(get_btn):
+				get_btn.text = "Installed"
+				get_btn.disabled = true
+			status_lbl.text = "Installed " + str(result.get("file_name", ""))
+		else:
+			if is_instance_valid(get_btn):
+				get_btn.disabled = false
+				get_btn.text = "Download"
+			status_lbl.text = "Download failed: " + str(result.get("error", "unknown"))
+
+		# Drain queue or re-render. Re-rendering frees button refs in the
+		# queue, so we only re-render once the queue is empty -- otherwise
+		# subsequent items lose their "Queued" button state mid-flight.
+		var remaining: Array = state["download_queue"]
+		if not remaining.is_empty():
+			var next_item: Dictionary = remaining.pop_front()
+			perform_download_for_item.call(next_item)
+		else:
+			if str(state["mode"]) == "discover":
+				do_discover_fetch.call()
+			else:
+				do_filter_fetch.call(false)
+
+	var on_get: Callable
+	on_get = func(mod_data: Dictionary, get_btn: Button):
+		var mws_id := int(mod_data.get("id", 0))
+		if int(state["downloading_id"]) != -1:
+			# Another download is in flight. Queue this one (unless it's the
+			# same mod already in-flight or already queued -- silent dedup).
+			if int(state["downloading_id"]) == mws_id:
+				status_lbl.text = "Already downloading"
+				return
+			var queue: Array = state["download_queue"]
+			for q_v in queue:
+				if int((q_v as Dictionary).get("mod_data", {}).get("id", 0)) == mws_id:
+					status_lbl.text = "Already queued"
+					return
+			queue.append({"mod_data": mod_data, "get_btn": get_btn})
+			if is_instance_valid(get_btn):
+				get_btn.disabled = true
+				get_btn.text = "Queued"
+			status_lbl.text = "Queued " + str(mod_data.get("name", "?")) + " (" + str(queue.size()) + " in queue)"
+			return
+		perform_download_for_item.call({"mod_data": mod_data, "get_btn": get_btn})
+
+	var render_mod_rows := func(mods: Array, append: bool):
+		if not append:
+			for child in list.get_children():
+				child.queue_free()
+		var install_map: Dictionary = compute_install_map.call()
+		for mod_data in mods:
+			if not (mod_data is Dictionary):
+				continue
+			var mws_id := int((mod_data as Dictionary).get("id", 0))
+			var entry_or_null: Variant = install_map.get(mws_id)
+			list.add_child(_browse_render_mod_row(mod_data, entry_or_null, on_get, on_toggle))
+			list.add_child(HSeparator.new())
+
+	do_discover_fetch = func():
+		# Stamp this fetch with a fresh seq so any earlier in-flight fetch's
+		# completion handler sees the mismatch and bails. Snapshot into a
+		# local `my_seq` because state["fetch_seq"] will keep advancing if
+		# the user clicks again before our await returns.
+		state["fetch_seq"] = int(state["fetch_seq"]) + 1
+		var my_seq := int(state["fetch_seq"])
+		state["mode"] = "discover"
+		state["next_page"] = 1
+		state["has_more"] = false
+		load_more_btn.visible = false
+		load_more_btn.disabled = true
+		status_lbl.text = "Loading..."
+		var data: Variant = await mws_get_popular_and_latest()
+		# Stale completion: another fetch was started while we awaited.
+		# Newer fetch's render owns the UI; drop ours.
+		if int(state["fetch_seq"]) != my_seq:
+			return
+		if not is_instance_valid(status_lbl):
+			return
+		if not (data is Dictionary):
+			status_lbl.text = "Failed to load. Check connection."
+			return
+		var popular: Array = (data as Dictionary).get("popular", [])
+		var latest: Array = (data as Dictionary).get("latest", [])
+		for child in list.get_children():
+			child.queue_free()
+		var install_map: Dictionary = compute_install_map.call()
+		if not popular.is_empty():
+			var pop_hdr := Label.new()
+			pop_hdr.text = "Popular"
+			pop_hdr.add_theme_font_size_override("font_size", 13)
+			pop_hdr.modulate = Color(0.78, 0.78, 0.78)
+			list.add_child(pop_hdr)
+			list.add_child(HSeparator.new())
+			for mod_data in popular:
+				if not (mod_data is Dictionary):
+					continue
+				var mws_id := int((mod_data as Dictionary).get("id", 0))
+				list.add_child(_browse_render_mod_row(mod_data, install_map.get(mws_id), on_get, on_toggle))
+				list.add_child(HSeparator.new())
+		if not latest.is_empty():
+			var spacer := Control.new()
+			spacer.custom_minimum_size.y = 8
+			list.add_child(spacer)
+			var lat_hdr := Label.new()
+			lat_hdr.text = "Latest"
+			lat_hdr.add_theme_font_size_override("font_size", 13)
+			lat_hdr.modulate = Color(0.78, 0.78, 0.78)
+			list.add_child(lat_hdr)
+			list.add_child(HSeparator.new())
+			for mod_data in latest:
+				if not (mod_data is Dictionary):
+					continue
+				var mws_id := int((mod_data as Dictionary).get("id", 0))
+				list.add_child(_browse_render_mod_row(mod_data, install_map.get(mws_id), on_get, on_toggle))
+				list.add_child(HSeparator.new())
+		status_lbl.text = "%d popular, %d latest" % [popular.size(), latest.size()]
+
+	do_filter_fetch = func(append: bool):
+		state["fetch_seq"] = int(state["fetch_seq"]) + 1
+		var my_seq := int(state["fetch_seq"])
+		state["mode"] = "filter"
+		var page: int = int(state["next_page"]) if append else 1
+		if not append:
+			state["next_page"] = 1
+			state["has_more"] = false
+			load_more_btn.visible = false
+		# Disable Load more for the duration of the fetch so a rapid second
+		# click can't enqueue a redundant page request. The completion path
+		# re-derives visible/disabled from has_more.
+		load_more_btn.disabled = true
+		status_lbl.text = "Loading..." if not append else "Loading more..."
+		var sort: String = str(state["sort"])
+		# Auto-pick best_match when there's a query and the user hasn't picked
+		# a non-default sort. They can override by selecting a sort explicitly.
+		if str(state["query"]) != "" and sort == "bumped_at":
+			sort = "best_match"
+		var data: Variant = await mws_list_mods(str(state["query"]), sort, int(state["category_id"]), page)
+		if int(state["fetch_seq"]) != my_seq:
+			return
+		if not is_instance_valid(status_lbl):
+			return
+		if not (data is Dictionary):
+			status_lbl.text = "Search failed. Check connection."
+			load_more_btn.disabled = not bool(state["has_more"])
+			return
+		var rows: Array = (data as Dictionary).get("data", [])
+		var meta: Dictionary = (data as Dictionary).get("meta", {})
+		var current_page: int = int(meta.get("current_page", page))
+		var last_page: int = int(meta.get("last_page", current_page))
+		var total: int = int(meta.get("total", rows.size()))
+		state["next_page"] = current_page + 1
+		state["has_more"] = current_page < last_page
+		render_mod_rows.call(rows, append)
+		var shown_so_far := list.get_child_count() / 2  # rows + separators
+		status_lbl.text = "%d of %d mods" % [shown_so_far, total]
+		load_more_btn.visible = bool(state["has_more"])
+		load_more_btn.disabled = not bool(state["has_more"])
+
+	# Debounce: Godot 4 LineEdit's text_changed fires per keystroke. A timer
+	# armed on each keystroke and only the timeout actually queries the API
+	# means a 300ms typing pause before the network kicks in -- well within
+	# the 90 req/min/IP rate budget even when the user types fast.
+	var search_debounce := Timer.new()
+	search_debounce.one_shot = true
+	search_debounce.wait_time = 0.3
+	container.add_child(search_debounce)
+	search_debounce.timeout.connect(func():
+		if str(state["query"]) == "" and int(state["category_id"]) == 0 and str(state["sort"]) == "bumped_at":
+			do_discover_fetch.call()
+		else:
+			do_filter_fetch.call(false)
+	)
+
+	search_input.text_changed.connect(func(new_text: String):
+		state["query"] = new_text.strip_edges()
+		search_debounce.stop()
+		search_debounce.start()
+	)
+	search_input.text_submitted.connect(func(_t: String):
+		search_debounce.stop()
+		do_filter_fetch.call(false)
+	)
+
+	sort_dropdown.item_selected.connect(func(idx: int):
+		state["sort"] = sort_keys[idx] if idx >= 0 and idx < sort_keys.size() else "bumped_at"
+		# A non-default sort means we're in filter mode now even with empty
+		# query; routes through list_mods with the chosen sort.
+		if str(state["query"]) == "" and int(state["category_id"]) == 0 and str(state["sort"]) == "bumped_at":
+			do_discover_fetch.call()
+		else:
+			do_filter_fetch.call(false)
+	)
+
+	category_dropdown.item_selected.connect(func(idx: int):
+		var cid_var = category_dropdown.get_item_metadata(idx)
+		state["category_id"] = int(cid_var) if cid_var != null else 0
+		if str(state["query"]) == "" and int(state["category_id"]) == 0 and str(state["sort"]) == "bumped_at":
+			do_discover_fetch.call()
+		else:
+			do_filter_fetch.call(false)
+	)
+
+	load_more_btn.pressed.connect(func():
+		do_filter_fetch.call(true)
+	)
+
+	# Populate categories asynchronously after the tab is visible. Each entry's
+	# metadata holds the API category_id; the visible label is just the name.
+	# Skip child categories for the first pass -- a flat list of 40 items in a
+	# dropdown is already a stretch UX-wise, so we surface only top-level
+	# (parent_id == null) and rely on search to find sub-category mods.
+	var populate_categories := func():
+		var data: Variant = await mws_get_categories()
+		if not is_instance_valid(category_dropdown):
+			return
+		if not (data is Dictionary):
+			return
+		var rows: Array = (data as Dictionary).get("data", [])
+		for cat in rows:
+			if not (cat is Dictionary):
+				continue
+			var cd: Dictionary = cat
+			# Only top-level for now.
+			if cd.get("parent_id") != null:
+				continue
+			var cat_name := str(cd.get("name", ""))
+			var cat_id := int(cd.get("id", 0))
+			if cat_name.is_empty() or cat_id == 0:
+				continue
+			category_dropdown.add_item(cat_name)
+			var idx := category_dropdown.item_count - 1
+			category_dropdown.set_item_metadata(idx, cat_id)
+	populate_categories.call()
+
+	# Initial fetch is the curated landing page.
+	do_discover_fetch.call()
+
+	return margin
+
+
+# Render one row in the Browse tab list. Pulls from a ModSummary dict (live
+# response shape from /games/{id}/mods or /games/{id}/popular-and-latest).
+# Thumbnail loads asynchronously via _browse_load_thumbnail_async; the row
+# returns immediately with a gray placeholder. installed=true swaps the Get
+# button for a disabled "Installed" indicator -- update detection (delta vs
+# MWS' current version) lives in the Updates tab for now and isn't surfaced
+# here in this iteration.
+func _browse_render_mod_row(mod_data: Dictionary, install_entry: Variant, on_get: Callable, on_toggle: Callable) -> Control:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 12)
+
+	# Thumbnail wrapper. PanelContainer gives us a solid background so the
+	# placeholder looks intentional rather than "missing image" before the
+	# texture loads. ColorRect would also work but PanelContainer composes
+	# better with the dark theme's stylebox conventions.
+	var thumb_wrap := PanelContainer.new()
+	thumb_wrap.custom_minimum_size = Vector2(96, 54)
+	var thumb_style := StyleBoxFlat.new()
+	thumb_style.bg_color = Color(0.10, 0.10, 0.10)
+	thumb_wrap.add_theme_stylebox_override("panel", thumb_style)
+	row.add_child(thumb_wrap)
+
+	var thumb_rect := TextureRect.new()
+	thumb_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	thumb_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	thumb_rect.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	thumb_rect.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	thumb_wrap.add_child(thumb_rect)
+
+	var thumb_record = mod_data.get("thumbnail")
+	if thumb_record is Dictionary:
+		_browse_load_thumbnail_async(thumb_rect, thumb_record)
+
+	var info_col := VBoxContainer.new()
+	info_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	info_col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(info_col)
+
+	# Mod name doubles as the click target for the detail modal. LinkButton
+	# matches the bottom-bar self-update affordance: text by default, underlines
+	# on hover. Discoverable without crowding the row with a separate "Details"
+	# button next to Get.
+	var name_lnk := LinkButton.new()
+	name_lnk.text = str(mod_data.get("name", "?"))
+	name_lnk.underline = LinkButton.UNDERLINE_MODE_ON_HOVER
+	name_lnk.add_theme_color_override("font_color", Color(0.84, 0.84, 0.84))
+	name_lnk.add_theme_color_override("font_hover_color", Color(1.0, 1.0, 1.0))
+	var captured_data_for_detail := mod_data
+	name_lnk.pressed.connect(func():
+		_show_browse_mod_detail_dialog(captured_data_for_detail, on_get)
+	)
+	info_col.add_child(name_lnk)
+
+	var user_dict: Dictionary = mod_data.get("user", {}) if mod_data.get("user") is Dictionary else {}
+	var category_dict: Dictionary = mod_data.get("category", {}) if mod_data.get("category") is Dictionary else {}
+	var author: String = str(user_dict.get("username", ""))
+	var version: String = str(mod_data.get("version", "")).strip_edges()
+	var downloads: int = int(mod_data.get("downloads", 0))
+	var likes: int = int(mod_data.get("likes", 0))
+	var category: String = str(category_dict.get("name", ""))
+	var bumped_raw: String = str(mod_data.get("bumped_at", ""))
+	var bumped_short: String = _format_iso_datetime(bumped_raw)
+
+	var meta_parts := PackedStringArray()
+	if author != "":
+		meta_parts.append("by " + author)
+	if version != "":
+		meta_parts.append("v" + version)
+	meta_parts.append(str(downloads) + " downloads")
+	if likes > 0:
+		meta_parts.append(str(likes) + " likes")
+	if category != "":
+		meta_parts.append(category)
+	if bumped_short != "":
+		meta_parts.append("updated " + bumped_short)
+
+	var meta_lbl := Label.new()
+	meta_lbl.text = " - ".join(meta_parts)
+	meta_lbl.add_theme_font_size_override("font_size", 11)
+	meta_lbl.modulate = Color(0.6, 0.6, 0.6)
+	meta_lbl.clip_text = true
+	info_col.add_child(meta_lbl)
+
+	# Installed mods get an enable toggle bound to the active profile. The
+	# checkbox's existence implies install (un-installed mods show a Download
+	# button instead, never both), and the label embeds the profile name so
+	# users know what they're toggling.
+	var installed := install_entry is Dictionary
+	if installed:
+		var entry: Dictionary = install_entry as Dictionary
+		var enable_check := CheckBox.new()
+		enable_check.text = "Enabled in " + _active_profile
+		enable_check.button_pressed = bool(entry.get("enabled", false))
+		enable_check.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		var captured_mws_id := int(mod_data.get("id", 0))
+		enable_check.toggled.connect(func(on: bool):
+			on_toggle.call(captured_mws_id, on)
+		)
+		row.add_child(enable_check)
+		_wire_hint(enable_check, "Toggle this mod in profile: " + _active_profile + ".")
+	else:
+		var get_btn := Button.new()
+		get_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		get_btn.text = "Download"
+		var captured := mod_data
+		var captured_btn := get_btn
+		get_btn.pressed.connect(func():
+			on_get.call(captured, captured_btn)
+		)
+		row.add_child(get_btn)
+		_wire_hint(get_btn, "Download this mod from ModWorkshop.")
+
+	return row
+
+
+# Async thumbnail loader. Cache layout: user://mws_cache/thumbs/<storage_filename>.
+# Filenames from MWS are opaque/immutable per upload, so the storage filename
+# IS the cache key -- a thumbnail replaced by the author gets a different file
+# name and we naturally fetch fresh. No TTL needed, no manual cache busting.
+# Failures are silent: the row's gray placeholder stays visible. 500KB hard
+# cap defends against malformed responses without limiting real thumbnails
+# (typical MWS thumbs are 10-80KB).
+func _browse_load_thumbnail_async(rect: TextureRect, image_record: Dictionary) -> void:
+	var fn: String = str(image_record.get("file", ""))
+	if fn.is_empty():
+		return
+
+	var cache_dir := "user://mws_cache/thumbs"
+	DirAccess.make_dir_recursive_absolute(cache_dir)
+	var cache_path := cache_dir.path_join(fn)
+
+	# Cache hit: try to deserialize bytes. load_*_from_buffer returns OK on
+	# match, so fall through to refetch on any decode error rather than
+	# trusting the on-disk file unconditionally.
+	if FileAccess.file_exists(cache_path):
+		var f := FileAccess.open(cache_path, FileAccess.READ)
+		if f != null:
+			var bytes := f.get_buffer(f.get_length())
+			f.close()
+			if bytes.size() > 0:
+				var img := Image.new()
+				if img.load_webp_from_buffer(bytes) == OK \
+						or img.load_jpg_from_buffer(bytes) == OK \
+						or img.load_png_from_buffer(bytes) == OK:
+					if is_instance_valid(rect):
+						rect.texture = ImageTexture.create_from_image(img)
+					return
+
+	# Cache miss: fetch from CDN. The /mods/images/thumbs/ path returns 404
+	# in practice even when the record claims has_thumb=true, so use the
+	# full-size image URL. Mod thumbnails are typically 100-300KB; 1MB cap
+	# gives margin for higher-res covers without letting a malformed response
+	# eat memory.
+	var url := mws_image_url(image_record, false)
+	if url.is_empty():
+		return
+
+	var req := HTTPRequest.new()
+	req.timeout = API_CHECK_TIMEOUT
+	req.download_body_size_limit = 1024 * 1024
+	add_child(req)
+	var headers := PackedStringArray([
+		"User-Agent: " + (MWS_USER_AGENT_TEMPLATE % MODLOADER_VERSION),
+	])
+	var err := req.request(url, headers)
+	if err != OK:
+		req.queue_free()
+		return
+
+	var res: Array = await req.request_completed
+	req.queue_free()
+	if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] < 200 or res[1] >= 300:
+		return
+	var body: PackedByteArray = res[3]
+	if body.is_empty():
+		return
+
+	var img := Image.new()
+	var ok := img.load_webp_from_buffer(body) == OK \
+			or img.load_jpg_from_buffer(body) == OK \
+			or img.load_png_from_buffer(body) == OK
+	if not ok:
+		return
+
+	# Stash for next launch. Failure to write is non-fatal -- we still display
+	# the texture this session, just refetch next time.
+	var out := FileAccess.open(cache_path, FileAccess.WRITE)
+	if out != null:
+		out.store_buffer(body)
+		out.close()
+
+	if is_instance_valid(rect):
+		rect.texture = ImageTexture.create_from_image(img)
+
+
+# Format a byte count as a compact human-readable string. Used by the mod
+# detail modal's file list and the Remove confirmation dialog.
+func _format_size(bytes: int) -> String:
+	if bytes < 1024:
+		return str(bytes) + " B"
+	if bytes < 1024 * 1024:
+		return "%.1f KB" % (bytes / 1024.0)
+	return "%.1f MB" % (bytes / (1024.0 * 1024.0))
+
+
+# Format a MWS ISO-8601 string ("2026-04-12T17:42:11.000000Z") as a compact
+# "2026-04-12 17:42" -- date plus HH:MM, dropping seconds + microsecond noise
+# and the Z suffix. UTC; the dropdown labels in the UI don't claim a timezone.
+# Returns the input unchanged if it doesn't look like an ISO timestamp.
+func _format_iso_datetime(iso: String) -> String:
+	if iso.is_empty():
+		return ""
+	if not iso.contains("T"):
+		return iso
+	var parts := iso.split("T")
+	var date_part: String = parts[0]
+	if parts.size() < 2:
+		return date_part
+	var time_part: String = parts[1]
+	# "17:42:11.000000Z" -> "17:42"; safe even if the seconds segment is short.
+	var hm: String = time_part.substr(0, 5) if time_part.length() >= 5 else time_part
+	return date_part + " " + hm
+
+
+# Detail modal for a Browse-tab row. Opens with whatever ModSummary fields the
+# list endpoint returned (name, desc, image, downloads, etc.) and async-loads
+# the file history (/mods/{id}/files) into a separate section once available.
+# The Get button forwards to the same on_get callback the list rows use, so
+# install state stays consistent between the row and the modal.
+func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> void:
+	var d := AcceptDialog.new()
+	d.title = str(mod_data.get("name", "?"))
+	d.ok_button_text = "Close"
+	d.min_size = Vector2i(660, 540)
+
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(640, 480)
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	d.add_child(scroll)
+
+	# Right-margin wrap so content doesn't sit under the scrollbar -- same
+	# trick the Browse tab's main list uses.
+	var inner_wrap := MarginContainer.new()
+	inner_wrap.add_theme_constant_override("margin_right", 16)
+	inner_wrap.add_theme_constant_override("margin_left", 4)
+	inner_wrap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(inner_wrap)
+
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 10)
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	inner_wrap.add_child(box)
+
+	# Banner first if available, fall back to thumbnail. Both are Image
+	# records at /mods/images/{file}; the loader caches by filename so a
+	# thumbnail viewed here shares cache with the row's smaller render.
+	var banner_record = mod_data.get("banner")
+	var thumb_record = mod_data.get("thumbnail")
+	var img_record = banner_record if banner_record is Dictionary else thumb_record
+	if img_record is Dictionary:
+		var banner_wrap := PanelContainer.new()
+		banner_wrap.custom_minimum_size = Vector2(0, 220)
+		var banner_style := StyleBoxFlat.new()
+		banner_style.bg_color = Color(0.10, 0.10, 0.10)
+		banner_wrap.add_theme_stylebox_override("panel", banner_style)
+		box.add_child(banner_wrap)
+		var banner_rect := TextureRect.new()
+		banner_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		banner_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+		banner_rect.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		banner_rect.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		banner_wrap.add_child(banner_rect)
+		_browse_load_thumbnail_async(banner_rect, img_record)
+
+	var user_dict: Dictionary = mod_data.get("user", {}) if mod_data.get("user") is Dictionary else {}
+	var category_dict: Dictionary = mod_data.get("category", {}) if mod_data.get("category") is Dictionary else {}
+	var meta := Label.new()
+	var parts := PackedStringArray()
+	var author := str(user_dict.get("username", ""))
+	if author != "":
+		parts.append("by " + author)
+	var version := str(mod_data.get("version", "")).strip_edges()
+	if version != "":
+		parts.append("v" + version)
+	parts.append(str(int(mod_data.get("downloads", 0))) + " downloads")
+	parts.append(str(int(mod_data.get("likes", 0))) + " likes")
+	if category_dict.has("name"):
+		parts.append(str(category_dict["name"]))
+	var bumped := _format_iso_datetime(str(mod_data.get("bumped_at", "")))
+	if bumped != "":
+		parts.append("updated " + bumped)
+	meta.text = " - ".join(parts)
+	meta.modulate = Color(0.65, 0.65, 0.65)
+	meta.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box.add_child(meta)
+
+	# Description: prefer the long-form `desc`, fall back to `short_desc`.
+	# Rendered as plain text -- markdown -> BBCode pass is a future polish.
+	var desc_str := str(mod_data.get("desc", "")).strip_edges()
+	if desc_str.is_empty():
+		desc_str = str(mod_data.get("short_desc", "")).strip_edges()
+	if desc_str != "":
+		box.add_child(HSeparator.new())
+		var desc_hdr := Label.new()
+		desc_hdr.text = "Description"
+		desc_hdr.add_theme_font_size_override("font_size", 13)
+		desc_hdr.modulate = Color(0.78, 0.78, 0.78)
+		box.add_child(desc_hdr)
+		var desc_lbl := Label.new()
+		desc_lbl.text = desc_str
+		desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		desc_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		box.add_child(desc_lbl)
+
+	box.add_child(HSeparator.new())
+	var files_hdr := Label.new()
+	files_hdr.text = "Files"
+	files_hdr.add_theme_font_size_override("font_size", 13)
+	files_hdr.modulate = Color(0.78, 0.78, 0.78)
+	box.add_child(files_hdr)
+	var files_status := Label.new()
+	files_status.text = "Loading file list..."
+	files_status.add_theme_font_size_override("font_size", 11)
+	files_status.modulate = Color(0.55, 0.55, 0.55)
+	box.add_child(files_status)
+	var files_list := VBoxContainer.new()
+	files_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_child(files_list)
+
+	var mod_id := int(mod_data.get("id", 0))
+	# Pin Get + Open-page to the dialog's native button bar (alongside Close)
+	# so they stay visible regardless of scroll position. add_button returns
+	# the actual Button so we can update its text/disabled during the install
+	# flow. right=false puts a button to the LEFT of the OK/Close button;
+	# right=true puts it on the right.
+	var page_btn := d.add_button("Open mod page in browser", false, "")
+	page_btn.pressed.connect(func():
+		OS.shell_open(MODWORKSHOP_PAGE_URL_TEMPLATE % str(mod_id))
+	)
+	# Check install state inline (no access to the build_browse_tab closures
+	# from here). If installed, render Get as disabled "Installed" so the
+	# button reflects reality -- enable toggling lives on the list row.
+	var already_installed := false
+	for entry in _ui_mod_entries:
+		var cfg_e: ConfigFile = entry.get("cfg")
+		if cfg_e == null or not cfg_e.has_section_key("updates", "modworkshop"):
+			continue
+		if int(str(cfg_e.get_value("updates", "modworkshop", "0"))) == mod_id:
+			already_installed = true
+			break
+	var get_btn := d.add_button("Installed" if already_installed else "Download", true, "")
+	if already_installed:
+		get_btn.disabled = true
+	else:
+		var captured_data := mod_data
+		get_btn.pressed.connect(func():
+			on_get.call(captured_data, get_btn)
+		)
+
+	var primary_file_id := int(mod_data.get("download_id", 0))
+	var load_files := func():
+		var files_resp: Variant = await mws_list_files(mod_id)
+		if not is_instance_valid(files_status):
+			return
+		if not (files_resp is Dictionary):
+			files_status.text = "Failed to load file history."
+			return
+		var files: Array = (files_resp as Dictionary).get("data", [])
+		if files.is_empty():
+			files_status.text = "No files."
+			return
+		files_status.queue_free()
+		for file_v in files:
+			if not (file_v is Dictionary):
+				continue
+			var fd: Dictionary = file_v
+			var f_row := HBoxContainer.new()
+			f_row.add_theme_constant_override("separation", 12)
+			files_list.add_child(f_row)
+
+			var v_lbl := Label.new()
+			var v_str: String = "v" + str(fd.get("version", ""))
+			if int(fd.get("id", 0)) == primary_file_id and primary_file_id > 0:
+				v_str += " (primary)"
+			v_lbl.text = v_str
+			v_lbl.custom_minimum_size.x = 140
+			f_row.add_child(v_lbl)
+
+			var size_lbl := Label.new()
+			size_lbl.text = _format_size(int(fd.get("size", 0)))
+			size_lbl.custom_minimum_size.x = 80
+			size_lbl.modulate = Color(0.6, 0.6, 0.6)
+			f_row.add_child(size_lbl)
+
+			var date_str := str(fd.get("created_at", ""))
+			if date_str.contains("T"):
+				date_str = date_str.split("T")[0]
+			var date_lbl := Label.new()
+			date_lbl.text = date_str
+			date_lbl.modulate = Color(0.55, 0.55, 0.55)
+			f_row.add_child(date_lbl)
+	load_files.call()
+
+	_attach_ui_dialog(d)
+	d.confirmed.connect(func(): d.queue_free())
+	d.close_requested.connect(func(): d.queue_free())
+	d.popup_centered()
+
 
 func build_updates_tab() -> Control:
 	var margin := MarginContainer.new()
@@ -2321,6 +4793,72 @@ func build_updates_tab() -> Control:
 
 	return margin
 
+# Run an update check against every installed mod with valid [updates]
+# modworkshop=N + version=. Populates the module-scope _mod_updates_state
+# with entries for mods that have a newer version available. Returns a
+# summary dict {checked, with_updates, errors}. Safe to call from any tab.
+func _run_updates_check_for_mods() -> Dictionary:
+	if _mod_updates_check_in_progress:
+		return {"checked": 0, "with_updates": 0, "errors": 0}
+	_mod_updates_check_in_progress = true
+	var summary := {"checked": 0, "with_updates": 0, "errors": 0}
+	# Build a list of mods worth checking: must have both modworkshop= and version=.
+	var pending: Array = []
+	for entry in _ui_mod_entries:
+		var cfg: ConfigFile = entry.get("cfg")
+		if cfg == null:
+			continue
+		if not cfg.has_section_key("updates", "modworkshop"):
+			continue
+		var mw_id := int(str(cfg.get_value("updates", "modworkshop", "0")))
+		if mw_id <= 0:
+			continue
+		var version := str(cfg.get_value("mod", "version", "")).strip_edges()
+		if version == "":
+			continue
+		pending.append({
+			"profile_key": str(entry.get("profile_key", "")),
+			"mw_id": mw_id,
+			"version": version,
+			"full_path": str(entry.get("full_path", "")),
+			"mod_name": str(entry.get("mod_name", "?")),
+		})
+	if pending.is_empty():
+		_mod_updates_check_in_progress = false
+		return summary
+	# Batched fetch through the existing helper (handles batching, retry,
+	# user-agent, etc.).
+	var ids: Array[int] = []
+	for p in pending:
+		ids.append(int((p as Dictionary)["mw_id"]))
+	var latest := await fetch_latest_modworkshop_versions(ids)
+	for p in pending:
+		summary["checked"] += 1
+		var info: Dictionary = p
+		var raw = latest.get(str(info["mw_id"]), null)
+		if raw == null:
+			summary["errors"] += 1
+			continue
+		var latest_v := str(raw)
+		if latest_v.is_empty():
+			continue
+		var cmp := compare_versions(str(info["version"]), latest_v)
+		if cmp >= 0:
+			# Up to date -- drop any stale entry from a prior check.
+			_mod_updates_state.erase(info["profile_key"])
+			continue
+		summary["with_updates"] += 1
+		_mod_updates_state[info["profile_key"]] = {
+			"latest_version": latest_v,
+			"current_version": info["version"],
+			"mw_id": info["mw_id"],
+			"full_path": info["full_path"],
+			"mod_name": info["mod_name"],
+		}
+	_mod_updates_check_in_progress = false
+	return summary
+
+
 func check_updates_for_ui(status_info: Dictionary, add_log: Callable, check_btn: Button) -> void:
 	var ids: Array[int] = []
 	for fn in status_info:
@@ -2343,11 +4881,17 @@ func check_updates_for_ui(status_info: Dictionary, add_log: Callable, check_btn:
 			lbl.modulate = Color(1.0, 1.0, 1.0)
 			continue
 
+		# Also surface state via _mod_updates_state so the Mods tab can show
+		# the per-row badge without re-querying.
+		var pre_entry: Dictionary = info.get("entry", {})
+		var pk: String = str(pre_entry.get("profile_key", "")) if not pre_entry.is_empty() else ""
 		var cmp := compare_versions(info["version"], str(latest_v))
 		if cmp >= 0:
 			# Local is same version or newer than what's on the server.
 			lbl.text = "up to date"
 			lbl.modulate = Color(0.6, 0.6, 0.6)
+			if pk != "":
+				_mod_updates_state.erase(pk)
 		else:
 			# Server has a newer version.
 			lbl.text = "update: v" + str(latest_v)
@@ -2355,6 +4899,14 @@ func check_updates_for_ui(status_info: Dictionary, add_log: Callable, check_btn:
 			dl_btn.modulate.a = 1.0
 			dl_btn.disabled = false
 			dl_btn.mouse_filter = Control.MOUSE_FILTER_STOP
+			if pk != "":
+				_mod_updates_state[pk] = {
+					"latest_version": str(latest_v),
+					"current_version": str(info["version"]),
+					"mw_id": int(info["mw_id"]),
+					"full_path": str(info["full_path"]),
+					"mod_name": str(info["mod_name"]),
+				}
 			var full_path: String = info["full_path"]
 			var mw_id: int = info["mw_id"]
 			var mod_name: String = info["mod_name"]

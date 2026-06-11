@@ -6,12 +6,20 @@
 ## class_name scripts.
 
 static func _is_modloader_disabled() -> bool:
-	# Check for sentinel file in the game exe directory. When present, ModLoader
-	# skips all work: no archives mount, no UI shows, no autoloads instantiate.
-	# Use this as a nuclear escape hatch when modloader itself is broken or the
-	# user wants guaranteed vanilla behavior without navigating the UI.
+	# Check for sentinel files in the game exe directory. When either is
+	# present, ModLoader skips all work: no archives mount, no UI shows, no
+	# autoloads instantiate.
+	#
+	# DISABLED_FILE: persistent escape hatch; user removes it manually.
+	# DISABLED_ONCE_FILE: written by the UI's "Launch Vanilla" button. The
+	# modloader's _ready clears it after detection so subsequent launches go
+	# through the normal flow. If the game crashes before _ready runs, the
+	# file persists and the next launch is also vanilla -- intentional
+	# fail-safe.
 	var exe_dir := OS.get_executable_path().get_base_dir()
-	return FileAccess.file_exists(exe_dir.path_join(DISABLED_FILE))
+	if FileAccess.file_exists(exe_dir.path_join(DISABLED_FILE)):
+		return true
+	return FileAccess.file_exists(exe_dir.path_join(DISABLED_ONCE_FILE))
 
 # Force all persistent state back to a vanilla baseline: clean override.cfg,
 # delete pass state, wipe the hook pack directory. Safe to call when any of
