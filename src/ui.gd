@@ -252,6 +252,18 @@ func _list_user_profiles_in_cfg(cfg: ConfigFile) -> Array[String]:
 	return _list_profiles_in_cfg(cfg).filter(
 			func(n: String): return not _is_modpack_managed_profile(n))
 
+# Coalesce rapid priority edits into at most one save per ~0.4s window. The
+# in-memory e["priority"] is already current; whenever the timer fires it
+# persists the latest state. A burst of 200 arrow-ticks collapses to a couple
+# of saves instead of 200 ConfigFile rewrites.
+func _schedule_priority_save() -> void:
+	if _priority_save_pending:
+		return
+	_priority_save_pending = true
+	await get_tree().create_timer(0.4).timeout
+	_priority_save_pending = false
+	_save_ui_config()
+
 func _save_ui_config() -> void:
 	var cfg := ConfigFile.new()
 	cfg.load(UI_CONFIG_PATH)
@@ -3785,7 +3797,12 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			# order panel; per-row order warnings catch up on the next
 			# rebuild (toggle, filter, profile switch, tab re-entry).
 			refresh_order.call()
-			_save_ui_config()
+			# Debounce the disk save: holding/scrolling the arrow fires
+			# value_changed per step (200+ over one drag), and each
+			# _save_ui_config is a full ConfigFile load+rewrite. Coalesce to a
+			# save shortly after activity settles; the launch-time save in
+			# lifecycle catches the final value regardless.
+			_schedule_priority_save()
 		)
 
 	# Filter narrowed every row out -- distinguish from "no mods installed"

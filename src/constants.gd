@@ -153,6 +153,8 @@ var _ui_launch_btn: Button = null
 # scroll position across teardown -- without this, toggling a mod halfway
 # down a long list snapped the view back to the top.
 var _ui_mods_scroll: ScrollContainer = null
+# Debounce guard for priority-spinbox saves (see _schedule_priority_save).
+var _priority_save_pending: bool = false
 # Self-update check state. _modloader_latest_version is populated by
 # _check_modloader_update_async once the API responds; empty until then or
 # when the check fails. _ui_update_alert_btn is the inline LinkButton in the

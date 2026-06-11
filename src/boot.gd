@@ -542,6 +542,41 @@ func _write_pass_state(archive_paths: PackedStringArray, state_hash: String = ""
 		_log_critical("Failed to save pass state (error %d)" % err)
 	return err
 
+# mtime to fold into the state hash for one archive path. A folder mod is
+# re-zipped to <TMP_DIR>/<folder>_dev.zip on every launch, so the zip's own
+# mtime changes every time even when the dev edited nothing -- which made the
+# hash flap and forced a full two-pass restart EVERY launch with any folder
+# mod enabled. For those temp zips, use the SOURCE folder's newest-file mtime
+# instead, which only moves when the dev actually changes something.
+func _stable_path_mtime(p: String) -> int:
+	var tmp_dir := ProjectSettings.globalize_path(TMP_DIR)
+	if p.begins_with(tmp_dir) and p.ends_with("_dev.zip"):
+		var folder_name := p.get_file().trim_suffix("_dev.zip")
+		var folder := _mods_dir.path_join(folder_name)
+		if DirAccess.dir_exists_absolute(folder):
+			return _folder_recursive_mtime(folder)
+	return FileAccess.get_modified_time(p)
+
+# Newest file mtime anywhere under a folder (recursive). Folder mods are small
+# dev trees, so the walk is cheap.
+func _folder_recursive_mtime(folder: String) -> int:
+	var newest := 0
+	var dir := DirAccess.open(folder)
+	if dir == null:
+		return newest
+	dir.list_dir_begin()
+	var name := dir.get_next()
+	while name != "":
+		if name != "." and name != "..":
+			var child := folder.path_join(name)
+			if dir.current_is_dir():
+				newest = maxi(newest, _folder_recursive_mtime(child))
+			else:
+				newest = maxi(newest, FileAccess.get_modified_time(child))
+		name = dir.get_next()
+	dir.list_dir_end()
+	return newest
+
 func _compute_state_hash(archive_paths: PackedStringArray, prepend_autoloads: Array[Dictionary]) -> String:
 	if archive_paths.is_empty() and prepend_autoloads.is_empty():
 		return ""
@@ -550,7 +585,7 @@ func _compute_state_hash(archive_paths: PackedStringArray, prepend_autoloads: Ar
 	sorted_paths.sort()
 	for p in sorted_paths:
 		# Include mtime so replacing a file with the same name triggers a restart.
-		parts.append("a:%s@%d" % [p, FileAccess.get_modified_time(p)])
+		parts.append("a:%s@%d" % [p, _stable_path_mtime(p)])
 	for entry in prepend_autoloads:
 		parts.append("p:%s=%s" % [entry["name"], entry["path"]])
 	for entry in _ui_mod_entries:
