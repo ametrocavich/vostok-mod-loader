@@ -127,6 +127,10 @@ var _ui_hint_label: Label = null
 # Launch button kept on self so refresh_launch_button_label can reach it
 # from the mod-enable toggle handler.
 var _ui_launch_btn: Button = null
+# Mods-tab list scroller, kept on self so _rebuild_mods_tab can carry the
+# scroll position across teardown -- without this, toggling a mod halfway
+# down a long list snapped the view back to the top.
+var _ui_mods_scroll: ScrollContainer = null
 # Self-update check state. _modloader_latest_version is populated by
 # _check_modloader_update_async once the API responds; empty until then or
 # when the check fails. _ui_update_alert_btn is the inline LinkButton in the

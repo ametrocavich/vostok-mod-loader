@@ -595,6 +595,11 @@ func _rebuild_mods_tab(tabs: TabContainer) -> void:
 	var old := tabs.get_node_or_null("Mods")
 	if old == null:
 		return
+	# Carry the list scroll position across the teardown -- a rebuild from a
+	# checkbox halfway down a long list must not snap the view to the top.
+	var saved_scroll := 0
+	if is_instance_valid(_ui_mods_scroll):
+		saved_scroll = _ui_mods_scroll.scroll_vertical
 	var idx := old.get_index()
 	tabs.remove_child(old)
 	old.queue_free()
@@ -606,6 +611,16 @@ func _rebuild_mods_tab(tabs: TabContainer) -> void:
 	# Profile switches / dev-mode toggles change enable state without
 	# hitting the per-row checkbox handler.
 	refresh_launch_button_label()
+	if saved_scroll > 0:
+		_restore_mods_scroll(saved_scroll)
+
+# Restore one frame later: the fresh rows haven't been laid out yet when
+# _rebuild_mods_tab returns, so setting scroll_vertical immediately clamps
+# against a zero-height list and lands back at the top.
+func _restore_mods_scroll(saved_scroll: int) -> void:
+	await get_tree().process_frame
+	if is_instance_valid(_ui_mods_scroll):
+		_ui_mods_scroll.scroll_vertical = saved_scroll
 
 # Parent a dialog on the launcher window (fallback: tree root) so it layers
 # over our always_on_top Window, and copy our dark theme onto it since theme
@@ -1214,6 +1229,7 @@ func show_mod_ui() -> void:
 	_ui_hint_label = null
 	_ui_launch_btn = null
 	_ui_update_alert_btn = null
+	_ui_mods_scroll = null
 	win.queue_free()
 
 # Pessimistic label: any enabled mod -> "(Restart)". Over-warn beats a
@@ -1694,6 +1710,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	left_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	left_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	left_col.add_child(left_scroll)
+	_ui_mods_scroll = left_scroll
 
 	# Right padding keeps the load-order SpinBox arrows from sitting flush
 	# against the vertical scrollbar -- users were hitting the spin arrows
