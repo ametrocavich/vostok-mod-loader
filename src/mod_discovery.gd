@@ -943,26 +943,48 @@ func download_new_mod(modworkshop_id: int, version: String = "", allow_rename_on
 	out.store_buffer(body)
 	out.close()
 
-	# Validate before adopting -- read_mod_config returns null on a missing or
-	# unparseable mod.txt. A "valid mod" is one we'd have happily picked up
-	# during a normal collect_mod_metadata pass.
-	var new_cfg = read_mod_config(temp_path)
-	if new_cfg == null:
-		DirAccess.remove_absolute(temp_path)
-		failure["error"] = "Downloaded archive is not a valid mod"
-		return failure
+	# Validate before adopting. Mirror what collect_mod_metadata accepts:
+	# zip/vmz mods must parse a root mod.txt (read_mod_config returns null
+	# otherwise), but .pck mods carry no readable root mod.txt -- discovery
+	# accepts them with cfg==null (see _build_archive_entry's `ext != "pck"`
+	# guard), so validate a .pck by its container magic instead of demanding
+	# a mod.txt that can never be there.
+	var dl_ext := derived_name.get_extension().to_lower()
+	if dl_ext == "pck":
+		if not _looks_like_pck(temp_path):
+			DirAccess.remove_absolute(temp_path)
+			failure["error"] = "Downloaded file is not a valid .pck"
+			return failure
+	else:
+		var new_cfg = read_mod_config(temp_path)
+		if new_cfg == null:
+			DirAccess.remove_absolute(temp_path)
+			failure["error"] = "Downloaded archive is not a valid mod"
+			return failure
 
 	var dir_access := DirAccess.open(_mods_dir)
 	if dir_access == null:
 		DirAccess.remove_absolute(temp_path)
 		failure["error"] = "Cannot access mods directory"
 		return failure
+
 	if dir_access.rename(temp_path.get_file(), derived_name) != OK:
 		DirAccess.remove_absolute(temp_path)
 		failure["error"] = "Failed to finalize download"
 		return failure
 
 	return {"ok": true, "file_name": derived_name, "error": ""}
+
+# Godot .pck archives begin with the 4-byte magic "GDPC". A cheap shape check
+# so a CDN error page or HTML saved under a .pck name isn't adopted as a mod
+# (we can't read a mod.txt from a .pck to validate it the zip way).
+func _looks_like_pck(path: String) -> bool:
+	var f := FileAccess.open(path, FileAccess.READ)
+	if f == null:
+		return false
+	var magic := f.get_buffer(4)
+	f.close()
+	return magic == PackedByteArray([0x47, 0x44, 0x50, 0x43])
 
 
 # Persist source info ([updates] modworkshop= + version) for any scanned mod

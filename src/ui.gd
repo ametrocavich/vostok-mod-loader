@@ -3024,6 +3024,13 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	# active -- the active profile slot is modpack-managed (modpack__X) and
 	# shouldn't be renamed/deleted/created-from.
 	var modpack_locked := active_modpack != ""
+	# Whether mod state in the active profile can be edited at all. Vanilla is
+	# the all-off sentinel (no stored profile to write to) and a modpack-locked
+	# slot is managed by the pack -- in both, the per-row dependency quick
+	# actions (Enable dependency / Load anyway / Re-check) would mutate state
+	# that _save_ui_config won't persist, so they're hidden. (Restores the
+	# on_vanilla gate the Modpacks merge dropped, now also covering the lock.)
+	var profile_editable := _active_profile != VANILLA_PROFILE and not modpack_locked
 
 	var new_profile_btn := Button.new()
 	new_profile_btn.text = "+"
@@ -3611,7 +3618,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 				if bool(b.get("fixable", false)):
 					fixable_count += 1
 			var e_dep := entry
-			if fixable_count > 0 and not on_vanilla:
+			if fixable_count > 0 and profile_editable:
 				var fix_btn := _make_row_action(
 						"Enable " + ("%d dependencies" % fixable_count \
 								if fixable_count > 1 else "dependency"),
@@ -3622,7 +3629,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 					_enable_required_deps(e_dep)
 					_after_dep_action(tabs)
 				)
-			if not on_vanilla:
+			if profile_editable:
 				var anyway_btn := _make_row_action("Load anyway", UI_COL_MUTED,
 						"Skip the dependency check for this mod in this profile.\nFor when a requirement is declared wrong or you know better.")
 				block_row.add_child(anyway_btn)
@@ -3644,7 +3651,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 					"This mod loads even though requirements are unmet\n(per-profile override). Re-check restores the normal rule.")
 			ov.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			ov_row.add_child(ov)
-			if not on_vanilla:
+			if profile_editable:
 				var e_dep2 := entry
 				var recheck_btn := _make_row_action("Re-check", UI_COL_MUTED)
 				ov_row.add_child(recheck_btn)
@@ -3944,6 +3951,13 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 
 		var result: Dictionary = await download_new_mod(mws_id)
 		state["downloading_id"] = -1
+
+		# The launcher window can be closed (Launch / X) during the multi-second
+		# download -- Browse downloads pop no modal. Everything below touches
+		# freed nodes (status_lbl, the Browse list, the tab). The file already
+		# landed on disk inside download_new_mod, so just stop cleanly.
+		if not is_instance_valid(status_lbl):
+			return
 
 		if bool(result.get("ok", false)):
 			_ui_mod_entries = collect_mod_metadata()
