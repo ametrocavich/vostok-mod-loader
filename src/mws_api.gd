@@ -95,10 +95,26 @@ const _MWS_TTL_PRIMARY_MS := 60 * 1000
 
 # RTV-scoped landing page for the Browse tab. Returns
 # {popular: [ModSummary], latest: [ModSummary]} -- NOT wrapped in {data}.
-# Suitable for a default no-search view; popular is daily_score sorted, latest
-# is bumped_at sorted.
+#
+# The dedicated /games/{id}/popular-and-latest route is DEAD upstream: the
+# route is commented out in ModWorkshop's routes/api.php and the handler
+# body literally returns `[] //NOT USED` (verified against the site source
+# + a live 404, 2026-06-10). Compose the same payload from two working
+# list queries instead -- weekly popularity score for Popular, bump date
+# for Latest -- trimmed to 10 rows each so the landing stays light. Each
+# underlying query goes through mws_list_mods' own cache; null only when
+# BOTH queries fail (offline), matching the old single-endpoint contract.
 func mws_get_popular_and_latest() -> Variant:
-	return await _mws_get_json(MWS_API_BASE + "/games/" + str(MWS_RTV_GAME_ID) + "/popular-and-latest", _MWS_TTL_LIST_MS)
+	var popular: Variant = await mws_list_mods("", "weekly_score", 0, 1)
+	var latest: Variant = await mws_list_mods("", "bumped_at", 0, 1)
+	if not (popular is Dictionary) and not (latest is Dictionary):
+		return null
+	var out := {"popular": [], "latest": []}
+	if popular is Dictionary:
+		out["popular"] = ((popular as Dictionary).get("data", []) as Array).slice(0, 10)
+	if latest is Dictionary:
+		out["latest"] = ((latest as Dictionary).get("data", []) as Array).slice(0, 10)
+	return out
 
 # Search / sort / filter the RTV catalog. Returns {data: [ModSummary], meta: {...}}.
 # Search param is `query` (max 150); the API silently ignores `search`/`q`/`name`,
