@@ -393,18 +393,29 @@ func _apply_dependency_ordering(candidates: Array) -> Dictionary:
 	for i in n:
 		var entry: Dictionary = candidates[i]
 		var entry_key := _entry_mod_key(entry)
-		for raw_dep in entry.get("required_dependencies", []):
-			var dep_key := str(raw_dep).strip_edges().to_lower()
-			if dep_key == "" or dep_key == entry_key or not key_to_index.has(dep_key):
-				continue
-			var di: int = key_to_index[dep_key]
-			if di == i:
-				continue
-			if not dependents.has(di):
-				dependents[di] = []
-			(dependents[di] as Array).append(i)
-			indegree[i] += 1
-			has_edges = true
+		# Required deps are hard ordering edges; optional deps are soft edges
+		# that only apply when the optional dep is actually present in the set
+		# (key_to_index.has). Both want "dep loads before me" -- a compat mod
+		# that optionally integrates with a framework should load after it when
+		# it's installed (matches SMAPI / godot-mod-loader). Optional deps never
+		# block (that's _filter_dependency_ready_candidates' job, required-only);
+		# here they only influence order, and a missing optional adds no edge.
+		var dep_lists := [entry.get("required_dependencies", []), entry.get("optional_dependencies", [])]
+		for dep_list in dep_lists:
+			for raw_dep in dep_list:
+				var dep_key := str(raw_dep).strip_edges().to_lower()
+				if dep_key == "" or dep_key == entry_key or not key_to_index.has(dep_key):
+					continue
+				var di: int = key_to_index[dep_key]
+				if di == i:
+					continue
+				if (dependents.get(di, []) as Array).has(i):
+					continue  # required+optional both name it -- one edge only
+				if not dependents.has(di):
+					dependents[di] = []
+				(dependents[di] as Array).append(i)
+				indegree[i] += 1
+				has_edges = true
 	var ordered: Array[Dictionary] = []
 	if not has_edges:
 		for c in candidates:
@@ -425,13 +436,21 @@ func _apply_dependency_ordering(candidates: Array) -> Dictionary:
 				indegree[j] -= 1
 			progress = true
 			break
-	# Leftovers sit in (or depend through) a cycle: emit at priority
-	# positions and report.
+	# Leftovers couldn't emit: they're either IN a cycle or merely downstream
+	# of one. Emit all at priority positions, but only report nodes that are
+	# genuinely in a cycle -- a node downstream of a cycle (its dep is stuck,
+	# but it isn't itself looped) would otherwise be mislabeled "cycle in
+	# chain" when its real problem is just an unresolvable required dep, which
+	# the per-row blocker already explains.
 	var cycle_keys: Array[String] = []
 	if remaining > 0:
+		var leftover: Array[int] = []
 		for i in n:
 			if not emitted.has(i):
+				leftover.append(i)
 				ordered.append(candidates[i])
+		for i in leftover:
+			if _node_reaches_self(i, dependents, emitted):
 				var ck := _entry_mod_key(candidates[i])
 				if ck != "":
 					cycle_keys.append(ck)
@@ -441,6 +460,27 @@ func _apply_dependency_ordering(candidates: Array) -> Dictionary:
 			adjusted = true
 			break
 	return {"ordered": ordered, "adjusted": adjusted, "cycle_keys": cycle_keys}
+
+# True iff node `start` can reach itself by following dependency edges within
+# the still-unemitted subgraph -- i.e. it is genuinely part of a cycle, not
+# merely stuck behind one. `dependents[x]` lists nodes that depend on x (the
+# forward "x loads before them" edges); we only traverse unemitted targets.
+func _node_reaches_self(start: int, dependents: Dictionary, emitted: Dictionary) -> bool:
+	var seen: Dictionary = {}
+	var stack: Array[int] = (dependents.get(start, []) as Array).duplicate()
+	while not stack.is_empty():
+		var x: int = stack.pop_back()
+		if emitted.has(x):
+			continue
+		if x == start:
+			return true
+		if seen.has(x):
+			continue
+		seen[x] = true
+		for y in dependents.get(x, []):
+			if not emitted.has(y):
+				stack.append(y)
+	return false
 
 # Single source of truth for "what actually loads, in what order".
 # load_all_mods, boot's archive collection, the order panel, and the
@@ -685,8 +725,14 @@ func _filename_from_content_disposition(headers: PackedStringArray) -> String:
 			if _is_safe_mod_filename(star_val):
 				return star_val.get_file()
 		var plain_val := _extract_disposition_param(value, "filename")
-		if plain_val != "" and _is_safe_mod_filename(plain_val):
-			return plain_val.get_file()
+		if plain_val != "":
+			# The plain filename= form is commonly percent-encoded by CDNs
+			# (filename="My%20Mod.zip"); decode so the mod doesn't install with
+			# a literal %20 in its name. Validate AFTER decoding.
+			if plain_val.contains("%"):
+				plain_val = plain_val.uri_decode()
+			if _is_safe_mod_filename(plain_val):
+				return plain_val.get_file()
 		return ""
 	return ""
 

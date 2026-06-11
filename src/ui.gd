@@ -63,6 +63,31 @@ func _load_ui_config() -> void:
 	else:
 		_active_profile = "Default"
 
+	# Reconcile modpack state. A managed slot (modpack__X) is a legitimate
+	# active profile ONLY while that pack is genuinely applied (active_modpack
+	# names it). Resolving into a managed slot with no matching active_modpack
+	# means we were stranded -- a crash mid-apply, a quit during unload, or a
+	# delete that fell into a managed slot. And a lingering active_modpack flag
+	# whose slot we're no longer in is just stale. Either way, recover to a
+	# real user profile / clear the flag instead of letting the user edit a
+	# pack-managed slot invisibly.
+	var active_mp := str(cfg.get_value("settings", "active_modpack", ""))
+	var mp_dirty := false
+	if _is_modpack_managed_profile(_active_profile) \
+			and _active_profile != MODPACK_PROFILE_PREFIX + active_mp:
+		var users := _list_user_profiles_in_cfg(cfg)
+		_active_profile = users[0] if not users.is_empty() else "Default"
+		cfg.set_value("settings", "active_profile", _active_profile)
+		active_mp = ""
+		mp_dirty = true
+		_log_warning("[Modpack] Recovered from a stranded managed slot -> profile '%s'" % _active_profile)
+	elif active_mp != "" and _active_profile != MODPACK_PROFILE_PREFIX + active_mp:
+		active_mp = ""
+		mp_dirty = true
+	if mp_dirty:
+		cfg.set_value("settings", "active_modpack", active_mp)
+		cfg.save(UI_CONFIG_PATH)
+
 	_apply_profile_to_entries(cfg, _active_profile)
 
 	# Materialize the placeholder Default profile when it's the resolved
@@ -219,6 +244,14 @@ func _list_profiles() -> Array[String]:
 		return []
 	return _list_profiles_in_cfg(cfg)
 
+# User-selectable profiles only -- excludes modpack-managed slots (modpack__X
+# active slots and _before_modpack_X backups). Any code that picks a profile
+# for the user to LAND ON (delete-fallback, etc.) must use this, never the raw
+# list, or the user can be switched into a pack-managed slot and corrupt it.
+func _list_user_profiles_in_cfg(cfg: ConfigFile) -> Array[String]:
+	return _list_profiles_in_cfg(cfg).filter(
+			func(n: String): return not _is_modpack_managed_profile(n))
+
 func _save_ui_config() -> void:
 	var cfg := ConfigFile.new()
 	cfg.load(UI_CONFIG_PATH)
@@ -301,12 +334,14 @@ func _delete_active_profile() -> void:
 	if cfg.load(UI_CONFIG_PATH) != OK:
 		return
 	var target := _active_profile
-	for suffix: String in [".enabled", ".priority", ".settings"]:
+	for suffix: String in [".enabled", ".priority", ".settings", ".dep_ignore"]:
 		var sec := "profile." + target + suffix
 		if cfg.has_section(sec):
 			cfg.erase_section(sec)
 	_delete_mcm_snapshot(target)
-	var remaining := _list_profiles_in_cfg(cfg)
+	# Land on a real user profile only -- never a modpack-managed slot, which
+	# would silently switch the user into pack-owned state and corrupt its MCM.
+	var remaining := _list_user_profiles_in_cfg(cfg)
 	if remaining.is_empty():
 		_active_profile = "Default"
 	else:
@@ -374,7 +409,7 @@ func _rename_profile(new_name: String) -> void:
 	if cfg.has_section(old_settings):
 		for key: String in cfg.get_section_keys(old_settings):
 			cfg.set_value(new_settings, key, cfg.get_value(old_settings, key))
-	for suffix: String in [".enabled", ".priority", ".settings"]:
+	for suffix: String in [".enabled", ".priority", ".settings", ".dep_ignore"]:
 		var sec := "profile." + old + suffix
 		if cfg.has_section(sec):
 			cfg.erase_section(sec)

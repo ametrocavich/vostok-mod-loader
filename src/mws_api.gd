@@ -110,11 +110,19 @@ func mws_get_popular_and_latest() -> Variant:
 	if not (popular is Dictionary) and not (latest is Dictionary):
 		return null
 	var out := {"popular": [], "latest": []}
-	if popular is Dictionary:
-		out["popular"] = ((popular as Dictionary).get("data", []) as Array).slice(0, 10)
-	if latest is Dictionary:
-		out["latest"] = ((latest as Dictionary).get("data", []) as Array).slice(0, 10)
+	out["popular"] = _mws_data_rows(popular).slice(0, 10)
+	out["latest"] = _mws_data_rows(latest).slice(0, 10)
 	return out
+
+# Safely pull the "data" array out of a list response. The `as Array` cast
+# would crash if the API returns data:null or a non-array (contract change,
+# partial outage, error page served 2xx) -- the .get() default only covers an
+# ABSENT key, not a present-but-wrong-typed one.
+func _mws_data_rows(resp: Variant) -> Array:
+	if not (resp is Dictionary):
+		return []
+	var d: Variant = (resp as Dictionary).get("data", [])
+	return d if d is Array else []
 
 # Search / sort / filter the RTV catalog. Returns {data: [ModSummary], meta: {...}}.
 # Search param is `query` (max 150); the API silently ignores `search`/`q`/`name`,
