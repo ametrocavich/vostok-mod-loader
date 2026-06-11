@@ -16,6 +16,15 @@ const MODLOADER_VERSION := "3.2.1"
 const MODLOADER_RES_PATH := "res://modloader.gd"
 const MOD_DIR := "mods"
 
+# Semantic sub-label palette for the launcher UI. make_dark_theme owns the
+# theme-level colors; these are the recurring tints that rows and panels
+# share so a state always looks the same everywhere it appears.
+const UI_COL_WARN := Color(1.0, 0.6, 0.2)        # orange: actionable problem
+const UI_COL_GOOD := Color(0.58, 0.82, 0.38)     # green: enabled / fixes things
+const UI_COL_INFO := Color(0.45, 0.55, 0.70)     # blue-grey: passive info
+const UI_COL_MUTED := Color(0.55, 0.55, 0.55)    # grey: secondary action
+const UI_COL_OVERRIDE := Color(0.65, 0.60, 0.40) # olive: user override active
+
 # Dependency ids satisfied by the mod loader itself. Mod authors copy
 # "requires Metro Mod Loader" from their ModWorkshop page into
 # [dependencies]; blocking a mod because the loader "isn't installed"

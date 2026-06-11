@@ -1235,6 +1235,46 @@ func refresh_launch_button_label() -> void:
 	else:
 		_ui_launch_btn.text = "  Launch Unmodded  "
 
+# -- Sub-label / row-action factories -----------------------------------------
+# The launcher's small-print conventions, encoded once: font 11, ellipsis
+# trim instead of a mid-word cut, and working tooltips (Labels default to
+# MOUSE_FILTER_IGNORE, which silently suppresses them). Hand-built labels
+# kept forgetting one of these -- that's how the order-panel overflow and
+# the never-firing tooltips shipped. New sub-labels go through here.
+func _make_sub_label(text: String, color: Color, tip := "") -> Label:
+	var lbl := Label.new()
+	lbl.text = text
+	lbl.modulate = color
+	lbl.add_theme_font_size_override("font_size", 11)
+	lbl.clip_text = true
+	lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	if tip != "":
+		lbl.tooltip_text = tip
+		lbl.mouse_filter = Control.MOUSE_FILTER_PASS
+	return lbl
+
+# Flat inline action button for row sub-lines (Enable dependency, Load
+# anyway, Re-check). Same shape as the suspicious-code tag button.
+func _make_row_action(text: String, color: Color, tip := "") -> Button:
+	var btn := Button.new()
+	btn.text = text
+	btn.flat = true
+	btn.modulate = color
+	btn.add_theme_font_size_override("font_size", 11)
+	btn.size_flags_horizontal = Control.SIZE_SHRINK_END
+	if tip != "":
+		btn.tooltip_text = tip
+	return btn
+
+# Shared tail for every dependency quick action: recompute status, persist,
+# retruth the launch button, rebuild the tab -- deferred, so the control
+# that's mid-signal isn't torn down under the cursor.
+func _after_dep_action(tabs: TabContainer) -> void:
+	_refresh_dependency_status()
+	_save_ui_config()
+	refresh_launch_button_label()
+	(func(): _rebuild_mods_tab(tabs)).call_deferred()
+
 # Runtime-generated 16x16 pencil icon. Monochrome outline in button-text
 # gray so it matches the rest of the UI -- a colored pencil looks like an
 # emoji in this context.
@@ -1717,17 +1757,12 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			order_list.add_child(lbl)
 			return
 		if loadable.is_empty():
-			var lbl := Label.new()
 			# This panel is narrow: short lines with a MANUAL break
-			# (deterministic -- never autowrap here) and ellipsis trimming
-			# so a tight window can't hard-cut the text mid-word.
-			lbl.text = "%d enabled, none will load\n(missing dependencies)" % enabled_count
-			lbl.tooltip_text = "Every enabled mod is missing a required dependency.\nFix it from the orange row warnings, or use Load anyway."
-			lbl.mouse_filter = Control.MOUSE_FILTER_PASS
-			lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-			lbl.add_theme_font_size_override("font_size", 11)
-			lbl.modulate = Color(1.0, 0.6, 0.2)
-			order_list.add_child(lbl)
+			# (deterministic -- never autowrap here, see the oscillation fix).
+			order_list.add_child(_make_sub_label(
+					"%d enabled, none will load\n(missing dependencies)" % enabled_count,
+					UI_COL_WARN,
+					"Every enabled mod is missing a required dependency.\nFix it from the orange row warnings, or use Load anyway."))
 			return
 		for i in loadable.size():
 			var e: Dictionary = loadable[i]
@@ -1738,24 +1773,12 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 			order_list.add_child(lbl)
 		if bool(pick["adjusted"]):
-			var adj_lbl := Label.new()
-			adj_lbl.text = "reordered for dependencies"
-			adj_lbl.tooltip_text = "A required dependency sat below its dependent in priority\norder, so it was hoisted. Priorities otherwise unchanged."
-			adj_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
-			adj_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-			adj_lbl.modulate = Color(0.45, 0.55, 0.70)
-			adj_lbl.add_theme_font_size_override("font_size", 11)
-			order_list.add_child(adj_lbl)
+			order_list.add_child(_make_sub_label("reordered for dependencies", UI_COL_INFO,
+					"A required dependency sat below its dependent in priority\norder, so it was hoisted. Priorities otherwise unchanged."))
 		var blocked_count := enabled_count - loadable.size()
 		if blocked_count > 0:
-			var blocked_lbl := Label.new()
-			blocked_lbl.text = "%d blocked (deps)" % blocked_count
-			blocked_lbl.tooltip_text = "Blocked mods stay checked but don't load.\nSee the orange row warnings for fixes."
-			blocked_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
-			blocked_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-			blocked_lbl.modulate = Color(1.0, 0.6, 0.2)
-			blocked_lbl.add_theme_font_size_override("font_size", 11)
-			order_list.add_child(blocked_lbl)
+			order_list.add_child(_make_sub_label("%d blocked (deps)" % blocked_count, UI_COL_WARN,
+					"Blocked mods stay checked but don't load.\nSee the orange row warnings for fixes."))
 
 	# -- Missing from this profile --------------------------------------------
 	# Mods the active profile references but that aren't on disk. Shown at the
@@ -1893,7 +1916,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 				and not (entry.get("dependency_blockers", []) as Array).is_empty()
 		if dep_blocked:
 			# The green "enabled" tint would lie -- this mod won't load.
-			name_lbl.modulate = Color(1.0, 0.6, 0.2)
+			name_lbl.modulate = UI_COL_WARN
 		if required_deps.size() > 0 or optional_deps.size() > 0:
 			var named := PackedStringArray()
 			for d in required_deps:
@@ -1911,16 +1934,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 				tip.append("requires %s (%s)" % [_dependency_display_for_id(str(d)), str(d)])
 			for d in optional_deps:
 				tip.append("optional: %s (%s)" % [_dependency_display_for_id(str(d)), str(d)])
-			var dep_lbl := Label.new()
-			dep_lbl.text = dep_line
-			dep_lbl.tooltip_text = "\n".join(tip)
-			# Labels default to MOUSE_FILTER_IGNORE, which suppresses tooltips.
-			dep_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
-			dep_lbl.clip_text = true
-			dep_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-			dep_lbl.modulate = Color(0.45, 0.55, 0.70)
-			dep_lbl.add_theme_font_size_override("font_size", 11)
-			name_col.add_child(dep_lbl)
+			name_col.add_child(_make_sub_label(dep_line, UI_COL_INFO, "\n".join(tip)))
 		for warn_text: String in entry.get("warnings", []):
 			var warn := Label.new()
 			warn.text = warn_text
@@ -1928,15 +1942,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			warn.add_theme_font_size_override("font_size", 11)
 			name_col.add_child(warn)
 		for warn_text: String in entry.get("dependency_warnings", []):
-			var warn := Label.new()
-			warn.text = warn_text
-			warn.tooltip_text = warn_text
-			warn.mouse_filter = Control.MOUSE_FILTER_PASS
-			warn.clip_text = true
-			warn.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-			warn.modulate = Color(1.0, 0.6, 0.2)
-			warn.add_theme_font_size_override("font_size", 11)
-			name_col.add_child(warn)
+			name_col.add_child(_make_sub_label(warn_text, UI_COL_WARN, warn_text))
 
 		# Blocked: one orange line that says WHY + buttons that FIX it.
 		# A warning the user can't act on is just decoration.
@@ -1955,15 +1961,8 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 						_dependency_status_label(str(b.get("status", "")))])
 				if str(b.get("status", "")) == "hidden_folder":
 					btip.append("  (turn on Developer Mode to load folder mods)")
-			var bl := Label.new()
-			bl.text = "won't load -- needs " + why
-			bl.tooltip_text = "\n".join(btip)
-			bl.mouse_filter = Control.MOUSE_FILTER_PASS
-			bl.clip_text = true
-			bl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+			var bl := _make_sub_label("won't load -- needs " + why, UI_COL_WARN, "\n".join(btip))
 			bl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			bl.modulate = Color(1.0, 0.6, 0.2)
-			bl.add_theme_font_size_override("font_size", 11)
 			block_row.add_child(bl)
 			var fixable_count := 0
 			for b in blockers_info:
@@ -1971,36 +1970,23 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 					fixable_count += 1
 			var e_dep := entry
 			if fixable_count > 0 and not on_vanilla:
-				var fix_btn := Button.new()
-				fix_btn.text = "Enable " + ("%d dependencies" % fixable_count \
-						if fixable_count > 1 else "dependency")
-				fix_btn.tooltip_text = "Turn on the required mod(s) -- installed, just disabled."
-				fix_btn.flat = true
-				fix_btn.modulate = Color(0.58, 0.82, 0.38)
-				fix_btn.add_theme_font_size_override("font_size", 11)
-				fix_btn.size_flags_horizontal = Control.SIZE_SHRINK_END
+				var fix_btn := _make_row_action(
+						"Enable " + ("%d dependencies" % fixable_count \
+								if fixable_count > 1 else "dependency"),
+						UI_COL_GOOD,
+						"Turn on the required mod(s) -- installed, just disabled.")
 				block_row.add_child(fix_btn)
 				fix_btn.pressed.connect(func():
 					_enable_required_deps(e_dep)
-					_save_ui_config()
-					refresh_launch_button_label()
-					(func(): _rebuild_mods_tab(tabs)).call_deferred()
+					_after_dep_action(tabs)
 				)
 			if not on_vanilla:
-				var anyway_btn := Button.new()
-				anyway_btn.text = "Load anyway"
-				anyway_btn.tooltip_text = "Skip the dependency check for this mod in this profile.\nFor when a requirement is declared wrong or you know better."
-				anyway_btn.flat = true
-				anyway_btn.modulate = Color(0.55, 0.55, 0.55)
-				anyway_btn.add_theme_font_size_override("font_size", 11)
-				anyway_btn.size_flags_horizontal = Control.SIZE_SHRINK_END
+				var anyway_btn := _make_row_action("Load anyway", UI_COL_MUTED,
+						"Skip the dependency check for this mod in this profile.\nFor when a requirement is declared wrong or you know better.")
 				block_row.add_child(anyway_btn)
 				anyway_btn.pressed.connect(func():
 					e_dep["dependency_ignored"] = true
-					_refresh_dependency_status()
-					_save_ui_config()
-					refresh_launch_button_label()
-					(func(): _rebuild_mods_tab(tabs)).call_deferred()
+					_after_dep_action(tabs)
 				)
 		elif dep_ignored and not blockers_info.is_empty():
 			# Override active while requirements are still unmet: show what's
@@ -2011,31 +1997,18 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			var missing_names := PackedStringArray()
 			for b in blockers_info:
 				missing_names.append(str(b.get("display", "")))
-			var ov := Label.new()
-			ov.text = "dependency check off -- missing: " + ", ".join(missing_names)
-			ov.tooltip_text = "This mod loads even though requirements are unmet\n(per-profile override). Re-check restores the normal rule."
-			ov.mouse_filter = Control.MOUSE_FILTER_PASS
-			ov.clip_text = true
-			ov.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+			var ov := _make_sub_label("dependency check off -- missing: " + ", ".join(missing_names),
+					UI_COL_OVERRIDE,
+					"This mod loads even though requirements are unmet\n(per-profile override). Re-check restores the normal rule.")
 			ov.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			ov.modulate = Color(0.65, 0.60, 0.40)
-			ov.add_theme_font_size_override("font_size", 11)
 			ov_row.add_child(ov)
 			if not on_vanilla:
 				var e_dep2 := entry
-				var recheck_btn := Button.new()
-				recheck_btn.text = "Re-check"
-				recheck_btn.flat = true
-				recheck_btn.modulate = Color(0.55, 0.55, 0.55)
-				recheck_btn.add_theme_font_size_override("font_size", 11)
-				recheck_btn.size_flags_horizontal = Control.SIZE_SHRINK_END
+				var recheck_btn := _make_row_action("Re-check", UI_COL_MUTED)
 				ov_row.add_child(recheck_btn)
 				recheck_btn.pressed.connect(func():
 					e_dep2["dependency_ignored"] = false
-					_refresh_dependency_status()
-					_save_ui_config()
-					refresh_launch_button_label()
-					(func(): _rebuild_mods_tab(tabs)).call_deferred()
+					_after_dep_action(tabs)
 				)
 
 		# Older same-id archives the dedup pass hid. Surface the filename
@@ -2104,12 +2077,9 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		var e := entry
 		check.toggled.connect(func(on: bool):
 			e["enabled"] = on
-			_save_ui_config()
-			refresh_launch_button_label()
-			# Full rebuild so dependency warnings on OTHER rows update with
-			# the new enabled set -- but deferred, so the emitting CheckBox
-			# isn't torn down mid-signal.
-			(func(): _rebuild_mods_tab(tabs)).call_deferred()
+			# Full rebuild via the shared tail: dependency state on OTHER
+			# rows changes with the new enabled set.
+			_after_dep_action(tabs)
 		)
 		spin.value_changed.connect(func(val: float):
 			e["priority"] = int(val)

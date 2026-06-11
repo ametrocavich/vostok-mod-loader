@@ -277,12 +277,6 @@ func _dependency_display(entry: Dictionary) -> String:
 		return mod_id
 	return name
 
-func _join_string_items(items: Array, sep: String = ", ") -> String:
-	var out := PackedStringArray()
-	for item in items:
-		out.append(str(item))
-	return sep.join(out)
-
 func _filter_dependency_ready_candidates(candidates: Array,
 		log_skips: bool = false) -> Array[Dictionary]:
 	var active_by_id := _entries_by_mod_id(candidates)
