@@ -26,6 +26,10 @@ const HEARTBEAT_PATH := "user://modloader_heartbeat.txt"
 const PASS2_DIRTY_PATH := "user://modloader_pass2_dirty"
 const SAFE_MODE_FILE := "modloader_safe_mode"
 const DISABLED_FILE := "modloader_disabled"
+# Same effect as DISABLED_FILE but auto-cleared by the modloader on the
+# next launch -- written by the launcher's "Launch Vanilla" button so the
+# game runs vanilla once and reverts to normal modded flow afterward.
+const DISABLED_ONCE_FILE := "modloader_disabled_once"
 const MAX_RESTART_COUNT := 2
 
 const HOOK_PACK_DIR := "user://modloader_hooks"
@@ -49,6 +53,24 @@ const MODLOADER_MODWORKSHOP_ID := 55623
 const MODWORKSHOP_BATCH_SIZE := 100
 const API_CHECK_TIMEOUT := 15.0
 const API_DOWNLOAD_TIMEOUT := 30.0
+
+# Browse-tab API client. Lives in mws_api.gd; constants here so the rest of
+# the codebase can build URLs without re-importing the module's namespace.
+# Empty/default User-Agent gets a 403 from api.modworkshop.net -- the template
+# is non-optional. Game ID 864 = Road to Vostok (resolved via /games once,
+# baked here to avoid an extra round-trip on every UI open).
+const MWS_API_BASE := "https://api.modworkshop.net"
+const MWS_STORAGE_BASE := "https://storage.modworkshop.net"
+const MWS_RTV_GAME_ID := 864
+const MWS_PAGE_LIMIT := 50
+const MWS_USER_AGENT_TEMPLATE := "vostok-mod-loader/%s (+https://github.com/ametrocavich/vostok-mod-loader)"
+
+# Per-profile MCM snapshot storage. Switching profiles rotates the contents of
+# user://MCM/ in and out of these per-profile slots, so MCM settings stay
+# bound to the profile that authored them. Vanilla is exempt -- switching to
+# Vanilla snapshots the OUTGOING profile's MCM but leaves user://MCM/ alone.
+const MCM_SOURCE_DIR := "user://MCM"
+const MCM_SNAPSHOT_BASE := "user://.profile_snapshots"
 
 const PRIORITY_MIN := -999
 const PRIORITY_MAX := 999
@@ -242,3 +264,44 @@ var _rtv_re_var: RegEx
 # by _process_mod_candidate to skip redundant re-mounts that would clobber our
 # own overlay overrides applied at static init (e.g. hook pack for mod scripts).
 var _filescope_mounted: Dictionary = _mount_previous_session()
+
+# Browse-tab API response cache. Keyed by full URL (query params included so
+# different searches / pages / categories are distinct entries). Per-session
+# memory only -- thumbnails persist to user://mws_cache/thumbs/, but JSON
+# responses don't because the install state computed on top of them is
+# session-scoped (rebuilds across launches anyway). Each entry is
+# {data: Variant, expires_at: int (msec)}; expired entries get evicted on
+# read in _mws_cache_get.
+var _mws_cache: Dictionary = {}
+
+# Discovered modpacks. Populated lazily by collect_modpack_metadata when
+# the Modpacks tab is built. Each entry: {file_path, file_name, raw_name,
+# sanitized_name, enabled_count, total_count}. See modpacks.gd.
+var _modpack_entries: Array[Dictionary] = []
+
+# Mutex flag for the modpack apply flow. Set true at the START of any apply,
+# cleared in a deferred at completion. Prevents two concurrent applies (e.g.
+# user clicks Apply on Modpack B while Modpack A is mid-download) from
+# racing on cfg writes + the backup slot. UI also gates Apply buttons on
+# this so the second click never fires the lambda in the first place.
+var _modpack_apply_in_progress: bool = false
+# Set true by the apply progress dialog's Cancel button. apply_modpack
+# checks between downloads and bails with a "cancelled" error if set.
+# Cleared at the start of every apply.
+var _modpack_apply_cancelled: bool = false
+
+# Update-check results. Keyed by profile_key, value = {latest_version,
+# mw_id, full_path, mod_name}. Populated by the Updates tab's check or the
+# Mods tab's check-updates affordance. Mods tab rows read this to show
+# inline "update available" badges + per-row Update button without having
+# to switch tabs. Survives across rebuilds (module-scope) but resets on
+# launcher close. mw_id == 0 entries are not stored (nothing to fetch).
+var _mod_updates_state: Dictionary = {}
+var _mod_updates_check_in_progress: bool = false
+
+# Recursion guard for _rebuild_profile_tab. The rebuild does
+# remove_child + add_child + move_child, all of which can fire tab_changed
+# (when current_tab shifts to a sibling during remove, or when we restore
+# it at the end). The tab_changed listener calls _rebuild_profile_tab; this
+# flag breaks the cycle so a single rebuild request doesn't recurse forever.
+var _rebuilding_profile_tab: bool = false

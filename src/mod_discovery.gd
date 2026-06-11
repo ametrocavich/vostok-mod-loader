@@ -43,6 +43,12 @@ func collect_mod_metadata() -> Array[Dictionary]:
 		if seen.has(entry_name):
 			continue
 		seen[entry_name] = true
+		# Modpack zips co-locate with regular mods in this folder. They have
+		# profile.json at root instead of mod.txt. Skip them here so they
+		# don't show up as malformed mods in the Mods tab; the Modpacks tab
+		# scan picks them up via collect_modpack_metadata.
+		if ext == "zip" and _is_modpack_zip(_mods_dir.path_join(entry_name)):
+			continue
 		entries.append(_build_archive_entry(_mods_dir, entry_name, ext))
 	dir.list_dir_end()
 	if skipped_files.size() > 0:
@@ -50,13 +56,22 @@ func collect_mod_metadata() -> Array[Dictionary]:
 		for sf in skipped_files:
 			_log_debug("  " + sf + "  (not .vmz/.pck)")
 	entries = _dedupe_by_mod_id(entries)
+	# Persist any mws ids we just scanned so missing-mod stubs can offer
+	# Download for mods that were once installed but have since been
+	# removed. The cache survives mod deletion (we want to remember the
+	# source, the file is gone but the profile may still reference it).
+	_persist_mod_sources_for_entries(entries)
 	if entries.size() == 0:
 		_log_warning("No mods found in: " + _mods_dir)
 	else:
-		_log_info("Found " + str(entries.size()) + " mod(s):")
+		_log_info("Found " + str(entries.size()) + " mod(s)")
+		# Per-mod listing is useful for first-launch diagnostics but spams
+		# the log on re-scans (modpack apply, mod install, mod delete each
+		# trigger one). Debug-level keeps it available in dev mode without
+		# the noise.
 		for e in entries:
 			var tag := " [folder]" if e["ext"] == "folder" else ""
-			_log_info("  " + e["file_name"] + " (" + e["mod_name"] + ")" + tag)
+			_log_debug("  " + e["file_name"] + " (" + e["mod_name"] + ")" + tag)
 	return entries
 
 func _build_archive_entry(mods_dir: String, file_name: String, ext: String) -> Dictionary:
@@ -64,8 +79,9 @@ func _build_archive_entry(mods_dir: String, file_name: String, ext: String) -> D
 	# unconditionally for non-UTF8 bytes in mod.txt / .gd / pck paths) is
 	# about to complain about. Without this the user sees "Unicode parsing
 	# error, some characters were replaced with ..." and can't tell which
-	# mod tripped it.
-	_log_info("[ModScan] inspecting " + file_name)
+	# mod tripped it. Debug-level so re-scans (after install/delete/apply)
+	# don't spam the log -- promotes to info only in dev mode.
+	_log_debug("[ModScan] inspecting " + file_name)
 	var full_path := mods_dir.path_join(file_name)
 	if ext == "pck":
 		_last_mod_txt_status = "pck"
@@ -79,7 +95,7 @@ func _build_archive_entry(mods_dir: String, file_name: String, ext: String) -> D
 
 func _build_folder_entry(mods_dir: String, dir_name: String) -> Dictionary:
 	# See _build_archive_entry for rationale.
-	_log_info("[ModScan] inspecting " + dir_name + " [folder]")
+	_log_debug("[ModScan] inspecting " + dir_name + " [folder]")
 	var folder_path := mods_dir.path_join(dir_name)
 	var cfg: ConfigFile = read_mod_config_folder(folder_path)
 	var entry := _entry_from_config(cfg, dir_name, folder_path, "folder")
@@ -469,3 +485,216 @@ func _chunk_int_array(arr: Array[int], chunk_size: int) -> Array:
 	for i in range(0, arr.size(), chunk_size):
 		result.append(arr.slice(i, i + chunk_size))
 	return result
+
+# Browse-tab "Get" action. Differs from download_and_replace_mod: there's no
+# existing file to back up + roll back, and we hit storage.modworkshop.net
+# directly via the file record's download_url (skips the api.modworkshop.net
+# 302 hop, which is just `return redirect($file->downloadUrl)` server-side).
+# When `version` is empty we use /files/primary (author's default download).
+# When `version` is set, we fetch that exact version's File record -- this
+# is how version-pinned modpacks honor their pin instead of silently getting
+# whatever's primary on apply day.
+# Filename derivation falls through Content-Disposition -> ?filename= query
+# param on the CDN URL -> a synthesized "mws_<id>.zip" last resort.
+# Returns { ok: bool, file_name: String, error: String }. On failure the temp
+# file is cleaned up and the mods/ folder is untouched.
+func download_new_mod(modworkshop_id: int, version: String = "", allow_rename_on_collision: bool = false) -> Dictionary:
+	var failure := {"ok": false, "file_name": "", "error": "unknown"}
+
+	var file_meta: Variant
+	if version.is_empty():
+		# Try primary first (author's designated default download). If that
+		# 404s, the author either hasn't set a primary or this is a link-
+		# type mod with no MWS-hosted files. Fall back to /files/latest
+		# which surfaces the most-recent uploaded file regardless of the
+		# primary marker. Genuine "no downloadable file" mods will fail
+		# at the latest step too -- caller surfaces the clear error.
+		file_meta = await mws_get_primary_file(modworkshop_id)
+		if not (file_meta is Dictionary):
+			file_meta = await mws_get_latest_file(modworkshop_id)
+	else:
+		file_meta = await mws_get_file_by_version(modworkshop_id, version)
+		if not (file_meta is Dictionary):
+			# Don't fall back to primary: silent substitution defeats the point
+			# of version pinning. Surface the gap so the caller can decide.
+			failure["error"] = "Version " + version + " not available on ModWorkshop"
+			return failure
+	if not (file_meta is Dictionary):
+		failure["error"] = "Mod has no downloadable file on ModWorkshop (off-site link or not uploaded)"
+		return failure
+	var download_url: String = str((file_meta as Dictionary).get("download_url", ""))
+	if download_url.is_empty():
+		failure["error"] = "No download URL returned"
+		return failure
+
+	if _mods_dir.is_empty():
+		_mods_dir = OS.get_executable_path().get_base_dir().path_join(MOD_DIR)
+	DirAccess.make_dir_recursive_absolute(_mods_dir)
+
+	var req := HTTPRequest.new()
+	req.timeout = API_DOWNLOAD_TIMEOUT
+	req.download_body_size_limit = 256 * 1024 * 1024
+	add_child(req)
+	var headers := PackedStringArray([
+		"User-Agent: " + (MWS_USER_AGENT_TEMPLATE % MODLOADER_VERSION),
+	])
+	var err := req.request(download_url, headers)
+	if err != OK:
+		req.queue_free()
+		failure["error"] = "Failed to start download"
+		return failure
+	var res: Array = await req.request_completed
+	req.queue_free()
+	if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] < 200 or res[1] >= 300:
+		failure["error"] = "Download failed (HTTP " + str(res[1]) + ")"
+		return failure
+	var resp_headers: PackedStringArray = res[2]
+	var body: PackedByteArray = res[3]
+	if body.is_empty():
+		failure["error"] = "Empty response body"
+		return failure
+
+	# Filename derivation. Same _is_safe_mod_filename gate the update path uses
+	# -- never trust a server name that isn't a basename with one of our
+	# accepted extensions.
+	var derived_name := _filename_from_content_disposition(resp_headers)
+	if derived_name.is_empty():
+		var q := download_url.find("?filename=")
+		if q >= 0:
+			var raw := download_url.substr(q + 10).uri_decode()
+			# Strip any subsequent query params (& delimits). Storage URLs rarely
+			# have more than the filename param, but defensive.
+			var amp := raw.find("&")
+			if amp >= 0:
+				raw = raw.substr(0, amp)
+			if _is_safe_mod_filename(raw):
+				derived_name = raw
+	if derived_name.is_empty():
+		derived_name = "mws_mod_" + str(modworkshop_id) + ".zip"
+
+	var temp_path := _mods_dir.path_join(derived_name + ".download")
+	var final_path := _mods_dir.path_join(derived_name)
+
+	# Filename collision handling. By default we refuse to clobber existing
+	# files (Browse "Get" semantics: "you already have this"). For modpack
+	# apply (allow_rename_on_collision=true) we rename with the file's
+	# version as a suffix instead, so a modpack pinning v3.0.3 of a mod
+	# the user already has at v2.5.0 ends up with both files in /mods/
+	# (dedup picks the higher version, modpack's enable list id-prefix
+	# matches whichever one wins).
+	if FileAccess.file_exists(final_path):
+		if not allow_rename_on_collision:
+			failure["error"] = "Already have a file named " + derived_name
+			return failure
+		var meta_version := str((file_meta as Dictionary).get("version", "")).strip_edges().lstrip("vV")
+		if meta_version.is_empty():
+			# Last-ditch: append the mod ID so we can at least install
+			# something distinguishable. Better than dropping the apply.
+			meta_version = str(modworkshop_id)
+		var ext := derived_name.get_extension()
+		var stem := derived_name.get_basename()
+		derived_name = stem + "-v" + meta_version + ("." + ext if ext != "" else "")
+		final_path = _mods_dir.path_join(derived_name)
+		temp_path = _mods_dir.path_join(derived_name + ".download")
+		if FileAccess.file_exists(final_path):
+			failure["error"] = "Already have a file named " + derived_name + " (and the renamed variant)"
+			return failure
+	if FileAccess.file_exists(temp_path):
+		DirAccess.remove_absolute(temp_path)
+
+	var out := FileAccess.open(temp_path, FileAccess.WRITE)
+	if out == null:
+		failure["error"] = "Cannot write to mods directory"
+		return failure
+	out.store_buffer(body)
+	out.close()
+
+	# Validate before adopting -- read_mod_config returns null on a missing or
+	# unparseable mod.txt. A "valid mod" is one we'd have happily picked up
+	# during a normal collect_mod_metadata pass.
+	var new_cfg = read_mod_config(temp_path)
+	if new_cfg == null:
+		DirAccess.remove_absolute(temp_path)
+		failure["error"] = "Downloaded archive is not a valid mod"
+		return failure
+
+	var dir_access := DirAccess.open(_mods_dir)
+	if dir_access == null:
+		DirAccess.remove_absolute(temp_path)
+		failure["error"] = "Cannot access mods directory"
+		return failure
+	if dir_access.rename(temp_path.get_file(), derived_name) != OK:
+		DirAccess.remove_absolute(temp_path)
+		failure["error"] = "Failed to finalize download"
+		return failure
+
+	return {"ok": true, "file_name": derived_name, "error": ""}
+
+
+# Persist source info ([updates] modworkshop= + version) for any scanned mod
+# into mod_config.cfg's [mod_sources] section. Lets missing-mod stubs offer
+# Download for mods that were once installed but have since been removed --
+# the file is gone, the cache remembers the source.
+func _persist_mod_sources_for_entries(entries: Array[Dictionary]) -> void:
+	var cfg := ConfigFile.new()
+	cfg.load(UI_CONFIG_PATH)
+	var changed := false
+	for entry in entries:
+		var cfg2: ConfigFile = entry.get("cfg")
+		if cfg2 == null or not cfg2.has_section_key("updates", "modworkshop"):
+			continue
+		var mws_id := int(str(cfg2.get_value("updates", "modworkshop", "0")))
+		if mws_id <= 0:
+			continue
+		var pk: String = str(entry.get("profile_key", ""))
+		if pk == "":
+			continue
+		var version_str := str(cfg2.get_value("mod", "version", "")).strip_edges()
+		var payload: Dictionary = {"modworkshop_id": mws_id}
+		if not version_str.is_empty():
+			payload["version"] = version_str
+		var serialized := JSON.stringify(payload)
+		var current := str(cfg.get_value("mod_sources", pk, ""))
+		if current != serialized:
+			cfg.set_value("mod_sources", pk, serialized)
+			changed = true
+	if changed:
+		cfg.save(UI_CONFIG_PATH)
+
+
+# Read the persisted [mod_sources] cache as {profile_key -> {modworkshop_id,
+# version}}. Empty when no cache exists. Caller can layer active-modpack
+# zip sources on top if they want modpack data to take precedence.
+func _get_persisted_mod_sources() -> Dictionary:
+	var out: Dictionary = {}
+	var cfg := ConfigFile.new()
+	if cfg.load(UI_CONFIG_PATH) != OK:
+		return out
+	if not cfg.has_section("mod_sources"):
+		return out
+	for key in cfg.get_section_keys("mod_sources"):
+		var raw := str(cfg.get_value("mod_sources", key, ""))
+		if raw == "":
+			continue
+		var parsed: Variant = JSON.parse_string(raw)
+		if parsed is Dictionary:
+			out[key] = parsed
+	return out
+
+
+# Add a single source entry to the cache. Used by modpack apply to record
+# sources for mods the modpack references but doesn't have installed yet
+# (so a download failure or skip still leaves the source recoverable later).
+func _persist_single_mod_source(profile_key: String, mws_id: int, version: String) -> void:
+	if profile_key.is_empty() or mws_id <= 0:
+		return
+	var cfg := ConfigFile.new()
+	cfg.load(UI_CONFIG_PATH)
+	var payload: Dictionary = {"modworkshop_id": mws_id}
+	if not version.is_empty():
+		payload["version"] = version
+	var serialized := JSON.stringify(payload)
+	var current := str(cfg.get_value("mod_sources", profile_key, ""))
+	if current != serialized:
+		cfg.set_value("mod_sources", profile_key, serialized)
+		cfg.save(UI_CONFIG_PATH)

@@ -9,9 +9,17 @@ func _ready() -> void:
 		return
 	_has_loaded = true
 	# Honor disabled sentinel. Static init already cleaned persistent state,
-	# so we just sit idle for this session. User removes the file to re-enable.
+	# so we just sit idle for this session. User removes the persistent file
+	# to re-enable; the one-shot variant is auto-cleared here so the next
+	# launch goes through the normal flow.
 	if _is_modloader_disabled():
-		print("[ModLoader] disabled via sentinel file -- sitting idle")
+		var exe_dir := OS.get_executable_path().get_base_dir()
+		var once_path := exe_dir.path_join(DISABLED_ONCE_FILE)
+		if FileAccess.file_exists(once_path):
+			DirAccess.remove_absolute(once_path)
+			print("[ModLoader] one-shot vanilla launch -- sentinel cleared, next launch is normal")
+		else:
+			print("[ModLoader] disabled via sentinel file -- sitting idle")
 		return
 	await get_tree().process_frame
 	_compile_regex()
