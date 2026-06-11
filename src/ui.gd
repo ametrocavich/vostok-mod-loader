@@ -1718,10 +1718,14 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			return
 		if loadable.is_empty():
 			var lbl := Label.new()
-			lbl.text = "(%d enabled, all blocked by dependencies)" % enabled_count
+			# This panel is narrow: short lines with a MANUAL break
+			# (deterministic -- never autowrap here) and ellipsis trimming
+			# so a tight window can't hard-cut the text mid-word.
+			lbl.text = "%d enabled, none will load\n(missing dependencies)" % enabled_count
 			lbl.tooltip_text = "Every enabled mod is missing a required dependency.\nFix it from the orange row warnings, or use Load anyway."
 			lbl.mouse_filter = Control.MOUSE_FILTER_PASS
-			lbl.clip_text = true
+			lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+			lbl.add_theme_font_size_override("font_size", 11)
 			lbl.modulate = Color(1.0, 0.6, 0.2)
 			order_list.add_child(lbl)
 			return
@@ -1735,20 +1739,20 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			order_list.add_child(lbl)
 		if bool(pick["adjusted"]):
 			var adj_lbl := Label.new()
-			adj_lbl.text = "order adjusted: dependencies load first"
+			adj_lbl.text = "reordered for dependencies"
 			adj_lbl.tooltip_text = "A required dependency sat below its dependent in priority\norder, so it was hoisted. Priorities otherwise unchanged."
 			adj_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
-			adj_lbl.clip_text = true
+			adj_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 			adj_lbl.modulate = Color(0.45, 0.55, 0.70)
 			adj_lbl.add_theme_font_size_override("font_size", 11)
 			order_list.add_child(adj_lbl)
 		var blocked_count := enabled_count - loadable.size()
 		if blocked_count > 0:
 			var blocked_lbl := Label.new()
-			blocked_lbl.text = "%d blocked by dependencies" % blocked_count
+			blocked_lbl.text = "%d blocked (deps)" % blocked_count
 			blocked_lbl.tooltip_text = "Blocked mods stay checked but don't load.\nSee the orange row warnings for fixes."
 			blocked_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
-			blocked_lbl.clip_text = true
+			blocked_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 			blocked_lbl.modulate = Color(1.0, 0.6, 0.2)
 			blocked_lbl.add_theme_font_size_override("font_size", 11)
 			order_list.add_child(blocked_lbl)
@@ -1913,6 +1917,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			# Labels default to MOUSE_FILTER_IGNORE, which suppresses tooltips.
 			dep_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
 			dep_lbl.clip_text = true
+			dep_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 			dep_lbl.modulate = Color(0.45, 0.55, 0.70)
 			dep_lbl.add_theme_font_size_override("font_size", 11)
 			name_col.add_child(dep_lbl)
@@ -1928,6 +1933,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			warn.tooltip_text = warn_text
 			warn.mouse_filter = Control.MOUSE_FILTER_PASS
 			warn.clip_text = true
+			warn.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 			warn.modulate = Color(1.0, 0.6, 0.2)
 			warn.add_theme_font_size_override("font_size", 11)
 			name_col.add_child(warn)
@@ -1954,6 +1960,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			bl.tooltip_text = "\n".join(btip)
 			bl.mouse_filter = Control.MOUSE_FILTER_PASS
 			bl.clip_text = true
+			bl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 			bl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			bl.modulate = Color(1.0, 0.6, 0.2)
 			bl.add_theme_font_size_override("font_size", 11)
@@ -2009,6 +2016,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			ov.tooltip_text = "This mod loads even though requirements are unmet\n(per-profile override). Re-check restores the normal rule."
 			ov.mouse_filter = Control.MOUSE_FILTER_PASS
 			ov.clip_text = true
+			ov.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 			ov.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			ov.modulate = Color(0.65, 0.60, 0.40)
 			ov.add_theme_font_size_override("font_size", 11)
