@@ -15,6 +15,15 @@ const MODLOADER_VERSION := "3.2.1"
 
 const MODLOADER_RES_PATH := "res://modloader.gd"
 const MOD_DIR := "mods"
+
+# Dependency ids satisfied by the mod loader itself. Mod authors copy
+# "requires Metro Mod Loader" from their ModWorkshop page into
+# [dependencies]; blocking a mod because the loader "isn't installed"
+# would be absurd, so these ids always count as present.
+const LOADER_ID_ALIASES: Array[String] = [
+	"metro_mod_loader", "metromodloader", "vostok_mod_loader",
+	"mod_loader", "modloader", "mml", "rtvmodlib",
+]
 const TMP_DIR := "user://vmz_mount_cache"
 const UI_CONFIG_PATH := "user://mod_config.cfg"
 # Sentinel value for `[settings] active_profile` written by Reset to Vanilla.

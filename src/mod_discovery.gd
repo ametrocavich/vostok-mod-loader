@@ -176,6 +176,7 @@ func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, e
 		"required_dependencies": required_dependencies,
 		"optional_dependencies": optional_dependencies,
 		"dependency_warnings": [], "dependency_blockers": [],
+		"dependency_blockers_info": [], "dependency_ignored": false,
 		"dependencies_satisfied": true,
 		"cfg": cfg, "mod_txt_status": _last_mod_txt_status,
 		"mod_txt_error": _last_mod_txt_error,
@@ -294,15 +295,25 @@ func _filter_dependency_ready_candidates(candidates: Array,
 			var entry_key := _entry_mod_key(entry)
 			if entry_key == "" or blocked.has(entry_key):
 				continue
+			# Per-profile user override ("Load anyway"): loads regardless of
+			# dependency state, and stays "active" for mods that depend on IT,
+			# since it really will be in the running set.
+			if bool(entry.get("dependency_ignored", false)):
+				continue
 			for raw_dep in entry.get("required_dependencies", []):
 				var dep_id := str(raw_dep).strip_edges()
 				if dep_id == "":
 					continue
 				var dep_key := dep_id.to_lower()
+				# Self-dependency is an authoring typo, not an unmet need --
+				# the mod satisfies it by loading. Warned in
+				# _refresh_dependency_status, never blocked.
 				if dep_key == entry_key:
-					blocked[entry_key] = {"dependency": dep_id, "status": "self"}
-					changed = true
-					break
+					continue
+				# "Requires Metro Mod Loader" copied from a ModWorkshop page.
+				# We ARE the loader; always satisfied.
+				if LOADER_ID_ALIASES.has(dep_key):
+					continue
 				if active_by_id.has(dep_key) and not blocked.has(dep_key):
 					continue
 				var status := "not_installed"
@@ -311,6 +322,8 @@ func _filter_dependency_ready_candidates(candidates: Array,
 				elif installed_by_id.has(dep_key):
 					var installed: Dictionary = installed_by_id[dep_key]
 					status = "disabled" if not bool(installed.get("enabled", false)) else "not_loaded"
+				elif _dep_is_hidden_folder(dep_key):
+					status = "hidden_folder"
 				blocked[entry_key] = {"dependency": dep_id, "status": status}
 				changed = true
 				break
@@ -330,67 +343,210 @@ func _filter_dependency_ready_candidates(candidates: Array,
 
 func _dependency_status_label(status: String) -> String:
 	match status:
-		"self":
-			return "declared as itself"
 		"disabled":
 			return "installed but disabled"
 		"not_loaded":
-			return "not loadable"
+			return "blocked by its own missing dependency"
+		"hidden_folder":
+			return "a dev folder hidden while Developer Mode is off"
 		_:
 			return "not installed"
 
+# A required dep that exists only as a dev folder while Developer Mode is
+# off: the mod IS on disk but won't be in the running set. Distinct status
+# so the row can say how to fix it (turn Developer Mode on).
+func _dep_is_hidden_folder(dep_key: String) -> bool:
+	for hid in _hidden_folder_ids.keys():
+		if str(hid).strip_edges().to_lower() == dep_key:
+			return true
+	return false
+
+# Stable topological pass over priority-sorted candidates: a required
+# dependency is hoisted above its dependent ONLY when the priority order
+# violates the edge; everything else keeps its exact priority position
+# (lowest-original-index-first Kahn walk). This is what SMAPI, NeoForge,
+# and godot-mod-loader all do -- warn-only ordering pushes the fix onto
+# users. Mods in an unresolvable chain (dependency cycle) keep their
+# priority positions and are reported instead of "solved": any forced
+# order would be wrong for someone.
+func _apply_dependency_ordering(candidates: Array) -> Dictionary:
+	var n := candidates.size()
+	var key_to_index: Dictionary = {}
+	for i in n:
+		var k := _entry_mod_key(candidates[i])
+		if k != "" and not key_to_index.has(k):
+			key_to_index[k] = i
+	var indegree := PackedInt32Array()
+	indegree.resize(n)
+	var dependents: Dictionary = {}
+	var has_edges := false
+	for i in n:
+		var entry: Dictionary = candidates[i]
+		var entry_key := _entry_mod_key(entry)
+		for raw_dep in entry.get("required_dependencies", []):
+			var dep_key := str(raw_dep).strip_edges().to_lower()
+			if dep_key == "" or dep_key == entry_key or not key_to_index.has(dep_key):
+				continue
+			var di: int = key_to_index[dep_key]
+			if di == i:
+				continue
+			if not dependents.has(di):
+				dependents[di] = []
+			(dependents[di] as Array).append(i)
+			indegree[i] += 1
+			has_edges = true
+	var ordered: Array[Dictionary] = []
+	if not has_edges:
+		for c in candidates:
+			ordered.append(c)
+		return {"ordered": ordered, "adjusted": false, "cycle_keys": []}
+	var emitted: Dictionary = {}
+	var remaining := n
+	var progress := true
+	while remaining > 0 and progress:
+		progress = false
+		for i in n:
+			if emitted.has(i) or indegree[i] > 0:
+				continue
+			emitted[i] = true
+			ordered.append(candidates[i])
+			remaining -= 1
+			for j in dependents.get(i, []):
+				indegree[j] -= 1
+			progress = true
+			break
+	# Leftovers sit in (or depend through) a cycle: emit at priority
+	# positions and report.
+	var cycle_keys: Array[String] = []
+	if remaining > 0:
+		for i in n:
+			if not emitted.has(i):
+				ordered.append(candidates[i])
+				var ck := _entry_mod_key(candidates[i])
+				if ck != "":
+					cycle_keys.append(ck)
+	var adjusted := false
+	for i in n:
+		if ordered[i] != candidates[i]:
+			adjusted = true
+			break
+	return {"ordered": ordered, "adjusted": adjusted, "cycle_keys": cycle_keys}
+
+# Single source of truth for "what actually loads, in what order".
+# load_all_mods, boot's archive collection, the order panel, and the
+# launch button all read this so they can never disagree (the launch
+# button once promised mods while every enabled mod was blocked).
+# duplicate_entries=true hands back copies (loading mutates candidates);
+# the UI passes false so panels observe the live entry dicts.
+func _loadable_enabled_entries(log_skips := false, duplicate_entries := false) -> Dictionary:
+	var enabled: Array[Dictionary] = []
+	for entry in _ui_mod_entries:
+		if bool(entry.get("enabled", false)):
+			enabled.append(entry.duplicate() if duplicate_entries else entry)
+	enabled.sort_custom(_compare_load_order)
+	var ordering := _apply_dependency_ordering(enabled)
+	var loadable := _filter_dependency_ready_candidates(ordering["ordered"], log_skips)
+	return {
+		"loadable": loadable,
+		"enabled_count": enabled.size(),
+		"adjusted": ordering["adjusted"],
+		"cycle_keys": ordering["cycle_keys"],
+	}
+
+# One click to satisfy "installed but disabled" blockers: enable every
+# required dependency (transitively) that is installed and merely turned
+# off. Returns what was enabled and which ids this couldn't fix.
+func _enable_required_deps(entry: Dictionary) -> Dictionary:
+	var installed_by_id := _entries_by_mod_id(_ui_mod_entries)
+	var enabled_names: Array[String] = []
+	var unfixed: Array[String] = []
+	var queue: Array[String] = []
+	var seen: Dictionary = {}
+	for raw_dep in entry.get("required_dependencies", []):
+		queue.append(str(raw_dep).strip_edges().to_lower())
+	while not queue.is_empty():
+		var dep_key: String = queue.pop_front()
+		if dep_key == "" or seen.has(dep_key) or LOADER_ID_ALIASES.has(dep_key):
+			continue
+		seen[dep_key] = true
+		if not installed_by_id.has(dep_key):
+			unfixed.append(dep_key)
+			continue
+		var dep_entry: Dictionary = installed_by_id[dep_key]
+		if not bool(dep_entry.get("enabled", false)):
+			dep_entry["enabled"] = true
+			enabled_names.append(str(dep_entry.get("mod_name", dep_key)))
+		for raw in dep_entry.get("required_dependencies", []):
+			queue.append(str(raw).strip_edges().to_lower())
+	return {"enabled_names": enabled_names, "unfixed": unfixed}
+
+# Display name for a dependency id: the installed mod's name when we have
+# it, the raw id otherwise.
+func _dependency_display_for_id(dep_id: String) -> String:
+	var dep_key := dep_id.strip_edges().to_lower()
+	var installed_by_id := _entries_by_mod_id(_ui_mod_entries)
+	if installed_by_id.has(dep_key):
+		return str((installed_by_id[dep_key] as Dictionary).get("mod_name", dep_id))
+	return dep_id
+
 func _refresh_dependency_status() -> void:
 	var installed_by_id := _entries_by_mod_id(_ui_mod_entries)
-	var enabled_candidates: Array[Dictionary] = []
 	for entry in _ui_mod_entries:
 		entry["dependency_warnings"] = []
 		entry["dependency_blockers"] = []
+		entry["dependency_blockers_info"] = []
 		entry["dependencies_satisfied"] = true
-		if bool(entry.get("enabled", false)):
-			enabled_candidates.append(entry)
 
-	enabled_candidates.sort_custom(_compare_load_order)
-	var loadable := _filter_dependency_ready_candidates(enabled_candidates, false)
-	var loadable_by_id := _entries_by_mod_id(loadable)
-	var order_index: Dictionary = {}
-	for i in loadable.size():
-		order_index[_entry_mod_key(loadable[i])] = i
+	var pick := _loadable_enabled_entries()
+	var loadable_by_id := _entries_by_mod_id(pick["loadable"])
+	var cycle_keys: Array = pick["cycle_keys"]
 
 	for entry in _ui_mod_entries:
 		if not bool(entry.get("enabled", false)):
 			continue
 		var warnings: Array[String] = []
 		var blockers: Array[String] = []
+		var info: Array[Dictionary] = []
 		var entry_key := _entry_mod_key(entry)
+		if cycle_keys.has(entry_key):
+			warnings.append("load order could not be fully resolved (dependency cycle in chain)")
 		for raw_dep in entry.get("required_dependencies", []):
 			var dep_id := str(raw_dep).strip_edges()
 			if dep_id == "":
 				continue
 			var dep_key := dep_id.to_lower()
 			if dep_key == entry_key:
-				warnings.append("invalid required dependency: " + dep_id)
-				blockers.append(dep_id)
+				warnings.append("lists itself as a dependency (ignored)")
 				continue
-			if not installed_by_id.has(dep_key):
-				warnings.append("missing required dependency: " + dep_id)
-				blockers.append(dep_id)
+			if LOADER_ID_ALIASES.has(dep_key):
 				continue
-			var dep_entry: Dictionary = installed_by_id[dep_key]
-			if not bool(dep_entry.get("enabled", false)):
-				warnings.append("required dependency disabled: " + _dependency_display(dep_entry))
-				blockers.append(dep_id)
+			if loadable_by_id.has(dep_key):
 				continue
-			if not loadable_by_id.has(dep_key):
-				warnings.append("required dependency not loadable: " + _dependency_display(dep_entry))
-				blockers.append(dep_id)
-				continue
-			if order_index.has(dep_key) and order_index.has(entry_key) \
-					and int(order_index[dep_key]) > int(order_index[entry_key]):
-				warnings.append("load order: " + _dependency_display(dep_entry)
-						+ " must load before this mod")
+			var status := "not_installed"
+			var display := dep_id
+			var fixable := false
+			if installed_by_id.has(dep_key):
+				var dep_entry: Dictionary = installed_by_id[dep_key]
+				display = _dependency_display(dep_entry)
+				if not bool(dep_entry.get("enabled", false)):
+					status = "disabled"
+					fixable = true
+				else:
+					status = "not_loaded"
+			elif _dep_is_hidden_folder(dep_key):
+				status = "hidden_folder"
+			blockers.append(dep_id)
+			info.append({"id": dep_id, "status": status, "display": display, "fixable": fixable})
 		entry["dependency_warnings"] = warnings
-		entry["dependency_blockers"] = blockers
-		entry["dependencies_satisfied"] = blockers.is_empty()
+		entry["dependency_blockers_info"] = info
+		if bool(entry.get("dependency_ignored", false)):
+			# "Load anyway" override: nothing blocks the mod (it loads), but
+			# keep the info list so the row can show what's being ignored.
+			entry["dependency_blockers"] = []
+			entry["dependencies_satisfied"] = true
+		else:
+			entry["dependency_blockers"] = blockers
+			entry["dependencies_satisfied"] = blockers.is_empty()
 
 # Returns -1/0/1 for version comparison (a < b, equal, a > b).
 func compare_versions(a: String, b: String) -> int:

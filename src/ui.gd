@@ -85,6 +85,7 @@ func _apply_profile_to_entries(cfg: ConfigFile, profile: String) -> void:
 	_load_per_profile_settings(cfg, profile)
 	var en_sec := "profile." + profile + ".enabled"
 	var pr_sec := "profile." + profile + ".priority"
+	var ig_sec := "profile." + profile + ".dep_ignore"
 	for entry in _ui_mod_entries:
 		var pk: String = entry["profile_key"]
 		entry.erase("profile_version_mismatch")
@@ -116,6 +117,14 @@ func _apply_profile_to_entries(cfg: ConfigFile, profile: String) -> void:
 			entry["enabled"] = profile == "Default"
 		if resolved_key != "" and cfg.has_section_key(pr_sec, resolved_key):
 			entry["priority"] = int(str(cfg.get_value(pr_sec, resolved_key)))
+		# "Load anyway" dependency override -- sparse per-profile section,
+		# only ever written for keys the user explicitly overrode.
+		if is_vanilla:
+			entry["dependency_ignored"] = false
+		else:
+			var ig_key := pk if cfg.has_section_key(ig_sec, pk) else resolved_key
+			entry["dependency_ignored"] = ig_key != "" \
+					and bool(cfg.get_value(ig_sec, ig_key, false))
 	_refresh_dependency_status()
 
 # Per-profile UI settings live in profile.<name>.settings, separate from the
@@ -220,6 +229,7 @@ func _save_ui_config() -> void:
 		# Rewrite the active profile's sections fresh so removed mods don't linger.
 		var en_sec := "profile." + _active_profile + ".enabled"
 		var pr_sec := "profile." + _active_profile + ".priority"
+		var ig_sec := "profile." + _active_profile + ".dep_ignore"
 		# Snapshot stored state for folder mods that dev-mode-off filtered out
 		# of _ui_mod_entries -- otherwise the erase+rewrite below would drop
 		# their enabled/priority entries and the user loses those settings the
@@ -234,18 +244,31 @@ func _save_ui_config() -> void:
 			for key: String in cfg.get_section_keys(pr_sec):
 				if _hidden_folder_profile_keys.has(key):
 					preserved_priority[key] = cfg.get_value(pr_sec, key)
+		var preserved_ignored: Dictionary = {}
+		if not _hidden_folder_profile_keys.is_empty() and cfg.has_section(ig_sec):
+			for key: String in cfg.get_section_keys(ig_sec):
+				if _hidden_folder_profile_keys.has(key):
+					preserved_ignored[key] = cfg.get_value(ig_sec, key)
 		if cfg.has_section(en_sec):
 			cfg.erase_section(en_sec)
 		if cfg.has_section(pr_sec):
 			cfg.erase_section(pr_sec)
+		if cfg.has_section(ig_sec):
+			cfg.erase_section(ig_sec)
 		for entry in _ui_mod_entries:
 			var pk: String = entry["profile_key"]
 			cfg.set_value(en_sec, pk, entry["enabled"])
 			cfg.set_value(pr_sec, pk, entry["priority"])
+			# Sparse on purpose: a row of dep_ignore=false for every mod is
+			# config noise; only overrides the user actually set are stored.
+			if bool(entry.get("dependency_ignored", false)):
+				cfg.set_value(ig_sec, pk, true)
 		for k in preserved_enabled.keys():
 			cfg.set_value(en_sec, k, preserved_enabled[k])
 		for k in preserved_priority.keys():
 			cfg.set_value(pr_sec, k, preserved_priority[k])
+		for k in preserved_ignored.keys():
+			cfg.set_value(ig_sec, k, preserved_ignored[k])
 
 	cfg.set_value("settings", "developer_mode", _developer_mode)
 	cfg.set_value("settings", "active_profile", _active_profile)
@@ -1199,13 +1222,16 @@ func show_mod_ui() -> void:
 func refresh_launch_button_label() -> void:
 	if not is_instance_valid(_ui_launch_btn):
 		return
-	var any_enabled := false
-	for entry in _ui_mod_entries:
-		if entry.get("enabled", false):
-			any_enabled = true
-			break
-	if any_enabled:
+	# Count what will actually LOAD, not what's checked -- with every enabled
+	# mod dependency-blocked, "Launch with Mods" would promise a modded
+	# session and deliver vanilla.
+	var pick := _loadable_enabled_entries()
+	var loadable_count: int = (pick["loadable"] as Array).size()
+	var enabled_count := int(pick["enabled_count"])
+	if loadable_count > 0:
 		_ui_launch_btn.text = "  Launch with Mods (Restart)  "
+	elif enabled_count > 0:
+		_ui_launch_btn.text = "  Launch Unmodded (%d blocked)  " % enabled_count
 	else:
 		_ui_launch_btn.text = "  Launch Unmodded  "
 
@@ -1678,10 +1704,13 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		_refresh_dependency_status()
 		for child in order_list.get_children():
 			child.queue_free()
-		var sorted := _ui_mod_entries.filter(func(e): return e["enabled"])
-		sorted.sort_custom(_compare_load_order)
-		var loadable := _filter_dependency_ready_candidates(sorted, false)
-		if sorted.is_empty():
+		# Same pick the loader itself uses -- the panel shows the EFFECTIVE
+		# order (priority sort + dependency hoist), so what you see is what
+		# mounts.
+		var pick := _loadable_enabled_entries()
+		var loadable: Array = pick["loadable"]
+		var enabled_count := int(pick["enabled_count"])
+		if enabled_count == 0:
 			var lbl := Label.new()
 			lbl.text = "(none enabled)"
 			lbl.modulate = Color(0.5, 0.5, 0.5)
@@ -1689,9 +1718,11 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			return
 		if loadable.is_empty():
 			var lbl := Label.new()
-			lbl.text = "(enabled mods blocked by dependencies)"
+			lbl.text = "(%d enabled, all blocked by dependencies)" % enabled_count
+			lbl.tooltip_text = "Every enabled mod is missing a required dependency.\nFix it from the orange row warnings, or use Load anyway."
+			lbl.mouse_filter = Control.MOUSE_FILTER_PASS
+			lbl.clip_text = true
 			lbl.modulate = Color(1.0, 0.6, 0.2)
-			lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 			order_list.add_child(lbl)
 			return
 		for i in loadable.size():
@@ -1702,13 +1733,24 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			lbl.modulate = Color(0.80, 0.80, 0.80)
 			lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 			order_list.add_child(lbl)
-		var blocked_count := sorted.size() - loadable.size()
+		if bool(pick["adjusted"]):
+			var adj_lbl := Label.new()
+			adj_lbl.text = "order adjusted: dependencies load first"
+			adj_lbl.tooltip_text = "A required dependency sat below its dependent in priority\norder, so it was hoisted. Priorities otherwise unchanged."
+			adj_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
+			adj_lbl.clip_text = true
+			adj_lbl.modulate = Color(0.45, 0.55, 0.70)
+			adj_lbl.add_theme_font_size_override("font_size", 11)
+			order_list.add_child(adj_lbl)
+		var blocked_count := enabled_count - loadable.size()
 		if blocked_count > 0:
 			var blocked_lbl := Label.new()
-			blocked_lbl.text = str(blocked_count) + " enabled mod(s) blocked by required dependencies"
+			blocked_lbl.text = "%d blocked by dependencies" % blocked_count
+			blocked_lbl.tooltip_text = "Blocked mods stay checked but don't load.\nSee the orange row warnings for fixes."
+			blocked_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
+			blocked_lbl.clip_text = true
 			blocked_lbl.modulate = Color(1.0, 0.6, 0.2)
 			blocked_lbl.add_theme_font_size_override("font_size", 11)
-			blocked_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 			order_list.add_child(blocked_lbl)
 
 	# -- Missing from this profile --------------------------------------------
@@ -1834,19 +1876,45 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			dev_lbl.modulate = Color(0.9, 0.3, 0.3)
 			dev_lbl.add_theme_font_size_override("font_size", 11)
 			name_col.add_child(dev_lbl)
-		var dep_summary := PackedStringArray()
+		# -- Dependencies ------------------------------------------------------
+		# One compact clipped line when the mod declares dependencies (names
+		# over raw ids, full detail in the tooltip); the actionable blocked
+		# row renders further down, after the generic warnings. No autowrap
+		# anywhere in rows -- see the order-panel oscillation fix.
 		var required_deps: Array = entry.get("required_dependencies", [])
 		var optional_deps: Array = entry.get("optional_dependencies", [])
-		if required_deps.size() > 0:
-			dep_summary.append("requires: " + _join_string_items(required_deps))
-		if optional_deps.size() > 0:
-			dep_summary.append("optional: " + _join_string_items(optional_deps))
-		if dep_summary.size() > 0:
+		var blockers_info: Array = entry.get("dependency_blockers_info", [])
+		var dep_ignored := bool(entry.get("dependency_ignored", false))
+		var dep_blocked: bool = entry["enabled"] \
+				and not (entry.get("dependency_blockers", []) as Array).is_empty()
+		if dep_blocked:
+			# The green "enabled" tint would lie -- this mod won't load.
+			name_lbl.modulate = Color(1.0, 0.6, 0.2)
+		if required_deps.size() > 0 or optional_deps.size() > 0:
+			var named := PackedStringArray()
+			for d in required_deps:
+				named.append(_dependency_display_for_id(str(d)))
+			var dep_line := ""
+			if named.size() > 0:
+				dep_line = "needs: " + ", ".join(named)
+			if optional_deps.size() > 0:
+				if dep_line != "":
+					dep_line += "  (+%d optional)" % optional_deps.size()
+				else:
+					dep_line = "%d optional integration(s)" % optional_deps.size()
+			var tip := PackedStringArray()
+			for d in required_deps:
+				tip.append("requires %s (%s)" % [_dependency_display_for_id(str(d)), str(d)])
+			for d in optional_deps:
+				tip.append("optional: %s (%s)" % [_dependency_display_for_id(str(d)), str(d)])
 			var dep_lbl := Label.new()
-			dep_lbl.text = "; ".join(dep_summary)
+			dep_lbl.text = dep_line
+			dep_lbl.tooltip_text = "\n".join(tip)
+			# Labels default to MOUSE_FILTER_IGNORE, which suppresses tooltips.
+			dep_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
+			dep_lbl.clip_text = true
 			dep_lbl.modulate = Color(0.45, 0.55, 0.70)
 			dep_lbl.add_theme_font_size_override("font_size", 11)
-			dep_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 			name_col.add_child(dep_lbl)
 		for warn_text: String in entry.get("warnings", []):
 			var warn := Label.new()
@@ -1857,10 +1925,110 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		for warn_text: String in entry.get("dependency_warnings", []):
 			var warn := Label.new()
 			warn.text = warn_text
+			warn.tooltip_text = warn_text
+			warn.mouse_filter = Control.MOUSE_FILTER_PASS
+			warn.clip_text = true
 			warn.modulate = Color(1.0, 0.6, 0.2)
 			warn.add_theme_font_size_override("font_size", 11)
-			warn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 			name_col.add_child(warn)
+
+		# Blocked: one orange line that says WHY + buttons that FIX it.
+		# A warning the user can't act on is just decoration.
+		if dep_blocked and not blockers_info.is_empty():
+			var block_row := HBoxContainer.new()
+			block_row.add_theme_constant_override("separation", 10)
+			name_col.add_child(block_row)
+			var first: Dictionary = blockers_info[0]
+			var why := "%s (%s)" % [str(first.get("display", "")),
+					_dependency_status_label(str(first.get("status", "")))]
+			if blockers_info.size() > 1:
+				why += "  +%d more" % (blockers_info.size() - 1)
+			var btip := PackedStringArray()
+			for b in blockers_info:
+				btip.append("%s -- %s" % [str(b.get("display", "")),
+						_dependency_status_label(str(b.get("status", "")))])
+				if str(b.get("status", "")) == "hidden_folder":
+					btip.append("  (turn on Developer Mode to load folder mods)")
+			var bl := Label.new()
+			bl.text = "won't load -- needs " + why
+			bl.tooltip_text = "\n".join(btip)
+			bl.mouse_filter = Control.MOUSE_FILTER_PASS
+			bl.clip_text = true
+			bl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			bl.modulate = Color(1.0, 0.6, 0.2)
+			bl.add_theme_font_size_override("font_size", 11)
+			block_row.add_child(bl)
+			var fixable_count := 0
+			for b in blockers_info:
+				if bool(b.get("fixable", false)):
+					fixable_count += 1
+			var e_dep := entry
+			if fixable_count > 0 and not on_vanilla:
+				var fix_btn := Button.new()
+				fix_btn.text = "Enable " + ("%d dependencies" % fixable_count \
+						if fixable_count > 1 else "dependency")
+				fix_btn.tooltip_text = "Turn on the required mod(s) -- installed, just disabled."
+				fix_btn.flat = true
+				fix_btn.modulate = Color(0.58, 0.82, 0.38)
+				fix_btn.add_theme_font_size_override("font_size", 11)
+				fix_btn.size_flags_horizontal = Control.SIZE_SHRINK_END
+				block_row.add_child(fix_btn)
+				fix_btn.pressed.connect(func():
+					_enable_required_deps(e_dep)
+					_save_ui_config()
+					refresh_launch_button_label()
+					(func(): _rebuild_mods_tab(tabs)).call_deferred()
+				)
+			if not on_vanilla:
+				var anyway_btn := Button.new()
+				anyway_btn.text = "Load anyway"
+				anyway_btn.tooltip_text = "Skip the dependency check for this mod in this profile.\nFor when a requirement is declared wrong or you know better."
+				anyway_btn.flat = true
+				anyway_btn.modulate = Color(0.55, 0.55, 0.55)
+				anyway_btn.add_theme_font_size_override("font_size", 11)
+				anyway_btn.size_flags_horizontal = Control.SIZE_SHRINK_END
+				block_row.add_child(anyway_btn)
+				anyway_btn.pressed.connect(func():
+					e_dep["dependency_ignored"] = true
+					_refresh_dependency_status()
+					_save_ui_config()
+					refresh_launch_button_label()
+					(func(): _rebuild_mods_tab(tabs)).call_deferred()
+				)
+		elif dep_ignored and not blockers_info.is_empty():
+			# Override active while requirements are still unmet: show what's
+			# being ignored and the way back.
+			var ov_row := HBoxContainer.new()
+			ov_row.add_theme_constant_override("separation", 10)
+			name_col.add_child(ov_row)
+			var missing_names := PackedStringArray()
+			for b in blockers_info:
+				missing_names.append(str(b.get("display", "")))
+			var ov := Label.new()
+			ov.text = "dependency check off -- missing: " + ", ".join(missing_names)
+			ov.tooltip_text = "This mod loads even though requirements are unmet\n(per-profile override). Re-check restores the normal rule."
+			ov.mouse_filter = Control.MOUSE_FILTER_PASS
+			ov.clip_text = true
+			ov.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			ov.modulate = Color(0.65, 0.60, 0.40)
+			ov.add_theme_font_size_override("font_size", 11)
+			ov_row.add_child(ov)
+			if not on_vanilla:
+				var e_dep2 := entry
+				var recheck_btn := Button.new()
+				recheck_btn.text = "Re-check"
+				recheck_btn.flat = true
+				recheck_btn.modulate = Color(0.55, 0.55, 0.55)
+				recheck_btn.add_theme_font_size_override("font_size", 11)
+				recheck_btn.size_flags_horizontal = Control.SIZE_SHRINK_END
+				ov_row.add_child(recheck_btn)
+				recheck_btn.pressed.connect(func():
+					e_dep2["dependency_ignored"] = false
+					_refresh_dependency_status()
+					_save_ui_config()
+					refresh_launch_button_label()
+					(func(): _rebuild_mods_tab(tabs)).call_deferred()
+				)
 
 		# Older same-id archives the dedup pass hid. Surface the filename
 		# so the user knows which one to delete from the mods/ folder.

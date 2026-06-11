@@ -438,13 +438,9 @@ func _ensure_early_autoload_on_disk(res_path: String, mod_name: String) -> Strin
 
 func _collect_enabled_archive_paths() -> PackedStringArray:
 	var paths := PackedStringArray()
-	var candidates: Array[Dictionary] = []
-	for entry in _ui_mod_entries:
-		if not entry["enabled"]:
-			continue
-		candidates.append(entry.duplicate())
-	candidates.sort_custom(_compare_load_order)
-	candidates = _filter_dependency_ready_candidates(candidates, false)
+	# Same pick as load_all_mods (order + dependency filter) so the file-scope
+	# mount order can never disagree with the runtime load order.
+	var candidates: Array[Dictionary] = _loadable_enabled_entries(false, true)["loadable"]
 	for c in candidates:
 		if c["ext"] == "folder":
 			# Folder mods are zipped to a temp cache during load_all_mods().
