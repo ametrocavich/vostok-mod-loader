@@ -21,7 +21,7 @@ func load_all_mods(pass_label: String = "") -> void:
 
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(TMP_DIR))
 
-	var candidates: Array = []
+	var candidates: Array[Dictionary] = []
 	for entry in _ui_mod_entries:
 		if not entry["enabled"]:
 			continue

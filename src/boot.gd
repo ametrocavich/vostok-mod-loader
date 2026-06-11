@@ -438,7 +438,7 @@ func _ensure_early_autoload_on_disk(res_path: String, mod_name: String) -> Strin
 
 func _collect_enabled_archive_paths() -> PackedStringArray:
 	var paths := PackedStringArray()
-	var candidates: Array = []
+	var candidates: Array[Dictionary] = []
 	for entry in _ui_mod_entries:
 		if not entry["enabled"]:
 			continue

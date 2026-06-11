@@ -85,7 +85,7 @@ func reopen_mod_ui() -> void:
 		_modloader_restart(true)
 
 func _run_pass_1() -> void:
-	_log_info("Metro Mod Loader v" + MODLOADER_VERSION + " -- " + MODLOADER_BUILD_TAG)
+	_log_info("Metro Mod Loader v" + MODLOADER_VERSION)
 	_check_crash_recovery()
 	_check_safe_mode()
 	_compile_regex()

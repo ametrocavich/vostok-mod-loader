@@ -283,7 +283,7 @@ func _join_string_items(items: Array, sep: String = ", ") -> String:
 	return sep.join(out)
 
 func _filter_dependency_ready_candidates(candidates: Array,
-		log_skips: bool = false) -> Array:
+		log_skips: bool = false) -> Array[Dictionary]:
 	var active_by_id := _entries_by_mod_id(candidates)
 	var installed_by_id := _entries_by_mod_id(_ui_mod_entries)
 	var blocked: Dictionary = {}
@@ -315,7 +315,7 @@ func _filter_dependency_ready_candidates(candidates: Array,
 				changed = true
 				break
 
-	var ready: Array = []
+	var ready: Array[Dictionary] = []
 	for entry in candidates:
 		var entry_key := _entry_mod_key(entry)
 		if entry_key != "" and blocked.has(entry_key):

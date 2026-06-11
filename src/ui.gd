@@ -1041,7 +1041,7 @@ func _show_delete_confirm(tabs: TabContainer) -> void:
 
 func show_mod_ui() -> void:
 	var win := Window.new()
-	win.title = "Road to Vostok -- MML " + MODLOADER_BUILD_TAG
+	win.title = "Road to Vostok -- Mod Loader"
 	win.size = Vector2i(960, 640)
 	win.min_size = Vector2i(640, 420)
 	win.wrap_controls = false
@@ -1142,7 +1142,7 @@ func show_mod_ui() -> void:
 	# the text when ModWorkshop reports a newer release. Click opens the mod
 	# page in the system browser regardless of state.
 	var alert := LinkButton.new()
-	alert.text = "MML v" + MODLOADER_VERSION + " -- " + MODLOADER_BUILD_TAG
+	alert.text = "Mod Loader v" + MODLOADER_VERSION
 	alert.underline = LinkButton.UNDERLINE_MODE_ON_HOVER
 	alert.add_theme_font_size_override("font_size", 11)
 	alert.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
@@ -1928,15 +1928,22 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		var e := entry
 		check.toggled.connect(func(on: bool):
 			e["enabled"] = on
-			_refresh_dependency_status()
 			_save_ui_config()
-			_rebuild_mods_tab(tabs)
+			refresh_launch_button_label()
+			# Full rebuild so dependency warnings on OTHER rows update with
+			# the new enabled set -- but deferred, so the emitting CheckBox
+			# isn't torn down mid-signal.
+			(func(): _rebuild_mods_tab(tabs)).call_deferred()
 		)
 		spin.value_changed.connect(func(val: float):
 			e["priority"] = int(val)
-			_refresh_dependency_status()
+			# No rebuild here: value_changed fires per step while the arrows
+			# are held, and rebuilding would destroy the SpinBox under the
+			# cursor. refresh_order recomputes dependency status for the
+			# order panel; per-row order warnings catch up on the next
+			# rebuild (toggle, filter, profile switch, tab re-entry).
+			refresh_order.call()
 			_save_ui_config()
-			_rebuild_mods_tab(tabs)
 		)
 
 	# Filter narrowed every row out -- distinguish from "no mods installed"
@@ -2258,7 +2265,7 @@ func _check_modloader_update_async() -> void:
 		return  # installed is current or newer
 
 	if is_instance_valid(_ui_update_alert_btn):
-		_ui_update_alert_btn.text = "MML v%s -- %s -- v%s available, click to update" % [MODLOADER_VERSION, MODLOADER_BUILD_TAG, latest]
+		_ui_update_alert_btn.text = "Mod Loader v%s -- v%s available, click to update" % [MODLOADER_VERSION, latest]
 		_ui_update_alert_btn.add_theme_color_override("font_color", Color(1.0, 0.55, 0.45))
 		_ui_update_alert_btn.add_theme_color_override("font_hover_color", Color(1.0, 0.78, 0.65))
 

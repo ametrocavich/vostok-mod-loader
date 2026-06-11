@@ -12,7 +12,6 @@
 # x-release-please-start-version
 const MODLOADER_VERSION := "3.2.1"
 # x-release-please-end
-const MODLOADER_BUILD_TAG := "Joao feat/mod-dependencies"
 
 const MODLOADER_RES_PATH := "res://modloader.gd"
 const MOD_DIR := "mods"
