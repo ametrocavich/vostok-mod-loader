@@ -1002,11 +1002,21 @@ func download_new_mod(modworkshop_id: int, version: String = "", allow_rename_on
 			failure["error"] = "Downloaded file is not a valid .pck"
 			return failure
 	else:
-		var new_cfg = read_mod_config(temp_path)
-		if new_cfg == null:
+		# Reject only when the CONTAINER is invalid (HTML error page,
+		# truncated body) -- that's what ZIPReader.open failing means.
+		# mod.txt itself is optional, same as discovery: a valid zip
+		# without one still mounts as a plain resource pack, so blocking
+		# the download would reject mods the loader happily runs.
+		var zr := ZIPReader.new()
+		var zip_ok := zr.open(temp_path) == OK
+		if zip_ok:
+			zr.close()
+		if not zip_ok:
 			DirAccess.remove_absolute(temp_path)
-			failure["error"] = "Downloaded archive is not a valid mod"
+			failure["error"] = "Downloaded file is not a valid archive"
 			return failure
+		if read_mod_config(temp_path) == null:
+			_log_warning("Downloaded '%s' has no parseable root mod.txt -- installing as a plain resource pack" % derived_name)
 
 	var dir_access := DirAccess.open(_mods_dir)
 	if dir_access == null:

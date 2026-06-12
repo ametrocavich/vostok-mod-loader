@@ -733,6 +733,15 @@ func unload_modpack(tabs: TabContainer) -> Dictionary:
 	var dst_en := "profile." + pre_active + ".enabled"
 	var dst_pr := "profile." + pre_active + ".priority"
 
+	# Backup gone entirely (corrupt state, hand-edited cfg)? Then there is
+	# nothing to restore FROM -- erasing the destination first would wipe the
+	# user's pre-apply profile and replace it with nothing. Abort and leave
+	# every profile untouched; the orange state stays visible instead of
+	# silently destroying data.
+	if not cfg.has_section(bk_en) and not cfg.has_section(bk_pr):
+		return {"ok": false,
+				"error": "Backup state for this modpack is missing -- unload aborted, profiles untouched. Delete settings.active_modpack in mod_config.cfg to clear the flag manually."}
+
 	if cfg.has_section(dst_en):
 		cfg.erase_section(dst_en)
 	if cfg.has_section(dst_pr):

@@ -4163,7 +4163,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			status_lbl.text = "Search failed. Check connection."
 			load_more_btn.disabled = not bool(state["has_more"])
 			return
-		var rows: Array = (data as Dictionary).get("data", [])
+		var rows: Array = _mws_data_rows(data)
 		var meta: Dictionary = (data as Dictionary).get("meta", {})
 		var current_page: int = int(meta.get("current_page", page))
 		var last_page: int = int(meta.get("last_page", current_page))
@@ -4235,7 +4235,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			return
 		if not (data is Dictionary):
 			return
-		var rows: Array = (data as Dictionary).get("data", [])
+		var rows: Array = _mws_data_rows(data)
 		for cat in rows:
 			if not (cat is Dictionary):
 				continue
@@ -4626,7 +4626,7 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 		if not (files_resp is Dictionary):
 			files_status.text = "Failed to load file history."
 			return
-		var files: Array = (files_resp as Dictionary).get("data", [])
+		var files: Array = _mws_data_rows(files_resp)
 		if files.is_empty():
 			files_status.text = "No files."
 			return
