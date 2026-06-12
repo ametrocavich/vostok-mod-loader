@@ -2434,7 +2434,8 @@ func _delete_mod_file_and_cleanup(entry: Dictionary) -> bool:
 		for section in cfg.get_sections():
 			if not section.begins_with("profile."):
 				continue
-			if not (section.ends_with(".enabled") or section.ends_with(".priority")):
+			if not (section.ends_with(".enabled") or section.ends_with(".priority") \
+					or section.ends_with(".dep_ignore")):
 				continue
 			if cfg.has_section_key(section, profile_key):
 				cfg.erase_section_key(section, profile_key)
@@ -3647,7 +3648,9 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			block_row.add_theme_constant_override("separation", 10)
 			name_col.add_child(block_row)
 			var first: Dictionary = blockers_info[0]
-			var why := "%s (%s)" % [str(first.get("display", "")),
+			# display already reads "Name (id)" for installed deps; a dash, not
+			# another paren, so it doesn't render "...(id) (installed but...)".
+			var why := "%s -- %s" % [str(first.get("display", "")),
 					_dependency_status_label(str(first.get("status", "")))]
 			if blockers_info.size() > 1:
 				why += "  +%d more" % (blockers_info.size() - 1)
@@ -3822,6 +3825,11 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	if _mods_filter_focus_pending:
 		_mods_filter_focus_pending = false
 		filter_edit.call_deferred("grab_focus")
+		# Setting LineEdit.text resets the caret to column 0 (Godot 4.6
+		# LineEdit::_set_text), and FOCUS_ENTER doesn't move it -- so without
+		# this every keystroke after the first inserts at the FRONT ("dep"
+		# typed -> "ped"). Restore the caret to end-of-text after focus lands.
+		filter_edit.call_deferred("set_caret_column", filter_edit.text.length())
 
 	refresh_order.call()
 	return outer
@@ -4031,15 +4039,22 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		# Drain queue or re-render. Re-rendering frees button refs in the
 		# queue, so we only re-render once the queue is empty -- otherwise
 		# subsequent items lose their "Queued" button state mid-flight.
+		#
+		# Call through `state`, NOT the captured locals. GDScript lambdas
+		# capture locals BY VALUE at creation time; this lambda was created
+		# (line ~4015) before perform_download_for_item / do_discover_fetch /
+		# do_filter_fetch were assigned, so the captured copies are empty
+		# Callables. `state` is a Dictionary (reference type), so the bindings
+		# stored on it at the end of build_browse_tab are visible here.
 		var remaining: Array = state["download_queue"]
 		if not remaining.is_empty():
 			var next_item: Dictionary = remaining.pop_front()
-			perform_download_for_item.call(next_item)
+			(state["fn_perform_download"] as Callable).call(next_item)
 		else:
 			if str(state["mode"]) == "discover":
-				do_discover_fetch.call()
+				(state["fn_discover_fetch"] as Callable).call()
 			else:
-				do_filter_fetch.call(false)
+				(state["fn_filter_fetch"] as Callable).call(false)
 
 	var on_get: Callable
 	on_get = func(mod_data: Dictionary, get_btn: Button):
@@ -4252,6 +4267,14 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			category_dropdown.set_item_metadata(idx, cat_id)
 	populate_categories.call()
 
+	# Bind the forward-referenced lambdas onto `state` so the
+	# perform_download lambda (created before these were assigned) can reach
+	# their real values by reference at call time. See the capture note in
+	# perform_download_for_item's queue-drain block.
+	state["fn_perform_download"] = perform_download_for_item
+	state["fn_discover_fetch"] = do_discover_fetch
+	state["fn_filter_fetch"] = do_filter_fetch
+
 	# Initial fetch is the curated landing page.
 	do_discover_fetch.call()
 
@@ -4313,7 +4336,7 @@ func _browse_render_mod_row(mod_data: Dictionary, install_entry: Variant, on_get
 
 	var user_dict: Dictionary = mod_data.get("user", {}) if mod_data.get("user") is Dictionary else {}
 	var category_dict: Dictionary = mod_data.get("category", {}) if mod_data.get("category") is Dictionary else {}
-	var author: String = str(user_dict.get("username", ""))
+	var author: String = str(user_dict.get("name", ""))
 	var version: String = str(mod_data.get("version", "")).strip_edges()
 	var downloads: int = int(mod_data.get("downloads", 0))
 	var likes: int = int(mod_data.get("likes", 0))
@@ -4537,7 +4560,7 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 	var category_dict: Dictionary = mod_data.get("category", {}) if mod_data.get("category") is Dictionary else {}
 	var meta := Label.new()
 	var parts := PackedStringArray()
-	var author := str(user_dict.get("username", ""))
+	var author := str(user_dict.get("name", ""))
 	if author != "":
 		parts.append("by " + author)
 	var version := str(mod_data.get("version", "")).strip_edges()
