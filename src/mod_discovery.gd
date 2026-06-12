@@ -467,7 +467,10 @@ func _apply_dependency_ordering(candidates: Array) -> Dictionary:
 # forward "x loads before them" edges); we only traverse unemitted targets.
 func _node_reaches_self(start: int, dependents: Dictionary, emitted: Dictionary) -> bool:
 	var seen: Dictionary = {}
-	var stack: Array[int] = (dependents.get(start, []) as Array).duplicate()
+	# Plain Array on purpose: dependents holds untyped arrays, and assigning
+	# an untyped Array to an Array[int] var is a RUNTIME error in Godot 4
+	# (typed arrays never convert implicitly). Elements are ints regardless.
+	var stack: Array = (dependents.get(start, []) as Array).duplicate()
 	while not stack.is_empty():
 		var x: int = stack.pop_back()
 		if emitted.has(x):
