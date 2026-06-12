@@ -70,7 +70,11 @@ const MODWORKSHOP_PAGE_URL_TEMPLATE := "https://modworkshop.net/mod/%s"
 const MODLOADER_MODWORKSHOP_ID := 55623
 const MODWORKSHOP_BATCH_SIZE := 100
 const API_CHECK_TIMEOUT := 15.0
-const API_DOWNLOAD_TIMEOUT := 30.0
+# HTTPRequest.timeout covers the WHOLE transfer, not just connect/stall, and
+# mod bodies run to ~256MB -- 30s failed any large mod on a normal connection.
+# 5 minutes is generous enough for big packs on slow links while still
+# bounding a truly dead connection.
+const API_DOWNLOAD_TIMEOUT := 300.0
 
 # Browse-tab API client. Lives in mws_api.gd; constants here so the rest of
 # the codebase can build URLs without re-importing the module's namespace.

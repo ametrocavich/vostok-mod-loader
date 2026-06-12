@@ -88,6 +88,13 @@ func reopen_mod_ui() -> void:
 		return
 	_dirty_since_boot = false
 	await show_mod_ui()
+	# Flush a pending debounced priority save before deciding to restart --
+	# a priority edit made <0.4s before closing the reopened UI hasn't set
+	# _dirty_since_boot yet, so the restart (and the value taking effect this
+	# session) would otherwise be silently skipped.
+	if _priority_save_pending:
+		_priority_save_pending = false
+		_save_ui_config()
 	if _dirty_since_boot:
 		_log_info("[ModLoader] Post-boot mod changes detected -- restarting")
 		_modloader_restart(true)

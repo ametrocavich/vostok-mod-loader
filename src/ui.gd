@@ -179,8 +179,10 @@ func _save_per_profile_setting(key: String, value: Variant) -> void:
 	var sec := "profile." + _active_profile + ".settings"
 	cfg.set_value(sec, key, value)
 	cfg.save(UI_CONFIG_PATH)
-	if _boot_complete:
-		_dirty_since_boot = true
+	# Deliberately does NOT set _dirty_since_boot: the per-profile settings
+	# here are pure VIEW filters (hide_disabled, read only by
+	# _mods_entry_visible). Marking dirty would restart the game on the
+	# post-boot reopen path just because the user toggled a list filter.
 
 # True when the entry passes the active mods-tab filters (W2/W3). Used by
 # row rendering, the All/None toggle handlers, and the empty-state message
@@ -3133,6 +3135,11 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		_developer_mode = on
 		_ui_mod_entries = collect_mod_metadata()
 		_load_ui_config()
+		# Persist the new developer_mode (load-affecting: it changes which
+		# mods are eligible). The boot launcher is rescued by the Launch-time
+		# save, but the post-boot reopen path has no closing save, so without
+		# this the toggle silently reverts next launch.
+		_save_ui_config()
 		_rebuild_mods_tab(tabs)
 	)
 
