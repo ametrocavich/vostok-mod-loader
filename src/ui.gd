@@ -893,7 +893,8 @@ func _parse_profile_payload(raw: String) -> Dictionary:
 # zip import (relative_path -> bytes); empty for clipboard-string imports.
 func _import_profile_from_parsed(parsed: Dictionary, incoming_mcm_data: Dictionary = {}) -> void:
 	var name := _sanitize_profile_name(parsed["name"])
-	if name == "" or name.to_lower() == "vanilla" or name == VANILLA_PROFILE:
+	if name == "" or name.to_lower() == "vanilla" or name == VANILLA_PROFILE \
+			or _is_modpack_managed_profile(name):
 		return
 	# Snapshot the OUTGOING profile's MCM before any of the import logic
 	# touches state. Capturing before reassign means coming back to the
@@ -921,6 +922,16 @@ func _import_profile_from_parsed(parsed: Dictionary, incoming_mcm_data: Dictiona
 		# that range couldn't have been authored through the UI anyway).
 		var pv := int(priority_dict[key])
 		cfg.set_value(pr_sec, str(key), clampi(pv, PRIORITY_MIN, PRIORITY_MAX))
+	# Materialize dep_ignore ("Load anyway") overrides from the payload. Sparse
+	# (true-only), optional field -- a payload from an older exporter simply has
+	# none, so the imported profile starts with no overrides rather than failing.
+	var ig_sec := "profile." + name + ".dep_ignore"
+	if cfg.has_section(ig_sec):
+		cfg.erase_section(ig_sec)
+	var dep_ignore_dict: Dictionary = parsed.get("dep_ignore", {})
+	for key in dep_ignore_dict.keys():
+		if bool(dep_ignore_dict[key]):
+			cfg.set_value(ig_sec, str(key), true)
 	# Explicit manifest: any local mod NOT in the imported payload is written
 	# as disabled. Without this, _apply_profile_to_entries falls through to
 	# its default-true branch for unknown keys (ergonomic for "newly-dropped
@@ -1004,6 +1015,17 @@ func _profile_to_json_string(profile_name: String, description: String = "", aut
 	if src.has_section(pr_sec):
 		for key: String in src.get_section_keys(pr_sec):
 			priority[key] = int(str(src.get_value(pr_sec, key)))
+	# dep_ignore ("Load anyway") overrides, sparse -- only the true entries are
+	# stored. Optional v1 field; old parsers ignore it (forward-compat rule), so
+	# round-tripping through an older import just drops the overrides, never
+	# rejects. Without this the share string silently loses a deliberate
+	# Load-anyway and the mod re-renders blocked on the other end.
+	var dep_ignore: Dictionary = {}
+	var ig_sec := "profile." + profile_name + ".dep_ignore"
+	if src.has_section(ig_sec):
+		for key: String in src.get_section_keys(ig_sec):
+			if bool(src.get_value(ig_sec, key)):
+				dep_ignore[key] = true
 	var payload := {
 		"metroprofile":      1,
 		"name":              profile_name,
@@ -1025,6 +1047,8 @@ func _profile_to_json_string(profile_name: String, description: String = "", aut
 	var sources := _build_profile_sources()
 	if not sources.is_empty():
 		payload["sources"] = sources
+	if not dep_ignore.is_empty():
+		payload["dep_ignore"] = dep_ignore
 	return JSON.stringify(payload, "  ")
 
 # Profile keys that the active profile references but whose mod isn't in
@@ -1708,7 +1732,8 @@ func _show_new_profile_dialog(tabs: TabContainer) -> void:
 		var name := _sanitize_profile_name(name_edit.text)
 		if name == "":
 			err_lbl.text = "Name cannot be empty or all invalid characters."
-		elif name.to_lower() == "vanilla" or name == VANILLA_PROFILE:
+		elif name.to_lower() == "vanilla" or name == VANILLA_PROFILE \
+				or _is_modpack_managed_profile(name):
 			err_lbl.text = "That name is reserved."
 		elif name in existing:
 			err_lbl.text = "Profile \"" + name + "\" already exists."
@@ -1770,7 +1795,8 @@ func _show_rename_profile_dialog(tabs: TabContainer) -> void:
 		var name := _sanitize_profile_name(name_edit.text)
 		if name == "":
 			err_lbl.text = "Name cannot be empty or all invalid characters."
-		elif name.to_lower() == "vanilla" or name == VANILLA_PROFILE:
+		elif name.to_lower() == "vanilla" or name == VANILLA_PROFILE \
+				or _is_modpack_managed_profile(name):
 			err_lbl.text = "That name is reserved."
 		elif name == current:
 			d.queue_free()  # no-op
