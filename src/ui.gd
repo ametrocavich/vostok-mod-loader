@@ -3302,6 +3302,12 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 
 	var order_scroll := ScrollContainer.new()
 	order_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	# Belt-and-suspenders against the autowrap/scrollbar layout-oscillation bug
+	# guarded below: pin the scrollbar to always-visible so it can't flip on/off
+	# at the bistable height threshold. With this set, even if a future change
+	# reintroduces autowrap on the order labels, the inner width stays constant
+	# (no width oscillation -> no reshape feedback loop). See refresh_order.
+	order_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_SHOW_ALWAYS
 	order_panel.add_child(order_scroll)
 
 	var order_list := VBoxContainer.new()
@@ -3339,7 +3345,19 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			lbl.text = str(i + 1) + ".  " + e["mod_name"]
 			lbl.add_theme_font_size_override("font_size", 12)
 			lbl.modulate = Color(0.80, 0.80, 0.80)
-			lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			# Previously AUTOWRAP_WORD_SMART. That combo (autowrap label inside
+			# a fixed-width ScrollContainer) hits a Godot 4.6 layout-oscillation
+			# bug: at certain (label count, text width) combinations the vertical
+			# scrollbar's appearance shrinks the inner width by ~16px, which
+			# triggers re-wrap, which changes total height, which flips scrollbar
+			# visibility, etc. The oscillation floods the message queue with
+			# deferred resize notifications and crashes with "Message queue out
+			# of memory" + "Object was deleted while awaiting a callback" --
+			# reproducible at 9 enabled mods with long names like
+			# "RTVModLib Compatibility Layer". clip_text + tooltip preserves the
+			# visual intent without engaging autowrap.
+			lbl.clip_text = true
+			lbl.tooltip_text = e["mod_name"]
 			order_list.add_child(lbl)
 		if bool(pick["adjusted"]):
 			order_list.add_child(_make_sub_label("reordered for dependencies", UI_COL_INFO,
