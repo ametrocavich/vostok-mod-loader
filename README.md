@@ -21,11 +21,14 @@ Mod loader for Road to Vostok (Godot 4.6). Adds a pre-game UI for managing mods,
 
 ## Launcher UI
 
-Two tabs:
+Four tabs:
 
-- **Mods** -- detected mods with checkboxes and a priority spinbox. Higher priority loads later and wins file conflicts. Load-order preview on the right updates in real time.
+- **Mods** -- detected mods with checkboxes and a priority spinbox. Higher priority loads later and wins file conflicts. Load-order preview on the right updates in real time. Profiles, the Developer Mode toggle, and dependency handling live here too.
+- **Browse** -- search and install mods straight from ModWorkshop. Discover popular/latest, filter by search/sort/category, and download into your `mods/` folder; installs queue and run one at a time. See the [Browse wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Browse).
+- **Modpacks** -- apply curated loadouts (a profile + MCM settings + download sources) shipped as a `.zip`, or save your current profile as one. Apply downloads any missing mods and switches you to the author's exact setup; Unload restores your prior state. See the [Modpacks wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Modpacks).
 - **Updates** -- for mods with `[updates] modworkshop=<id>` in `mod.txt`, check for and download updates from ModWorkshop.
-- **Dependencies** -- for mods with `[dependencies] required=[...]` in `mod.txt`, identify missing/disabled requirements and skip mods whose required dependencies are not loadable.
+
+**Dependencies** are handled inline on the Mods tab, not as a separate tab: mods with `[dependencies] required=[...]` in `mod.txt` show a blocked row when a requirement is missing or disabled, with inline **Enable dependency** / **Load anyway** actions, and the loader skips mods whose required dependencies are not loadable.
 
 Click **Launch Game** or close the window to start.
 

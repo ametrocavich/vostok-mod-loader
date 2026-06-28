@@ -61,9 +61,10 @@ Godot's `ConfigFile` writes a blank line after every section header, quotes Stri
 
 | Section | Meaning |
 |---|---|
-| `[settings]` | `active_profile` -- currently-selected profile. `developer_mode` -- enables dev-only UI (folder mods, conflict report, extra diagnostics). |
+| `[settings]` | `active_profile` -- currently-selected profile. `developer_mode` -- enables dev-only UI (folder mods, conflict report, extra diagnostics). `active_modpack` / `modpack_backup_profile` -- modpack state, see below. `preferred_author` -- remembered author handle for the Save-as-modpack dialog. |
 | `[profile.<name>.enabled]` | `profile_key -> true\|false`. The list you see checked in the UI under that profile. One section per named profile. |
 | `[profile.<name>.priority]` | `profile_key -> int` in `[-999, 999]`. Higher number loads later -> wins file conflicts. |
+| `[profile.<name>.dep_ignore]` | `profile_key -> true`. The "Load anyway" dependency overrides for that profile. **Sparse** -- only mods you explicitly told to load past a missing/disabled requirement appear, always as `=true`; a mod that respects its dependencies is simply absent. New in 3.3. |
 
 ### Profile keys
 
@@ -78,6 +79,26 @@ See [Mod-Format](Mod-Format) for mod.txt schema. See [Profile-Format](Profile-Fo
 
 - `"Default"` -- the profile materialized on first launch. Persistent like every other profile.
 - `"__vanilla__"` -- the **Reset to Vanilla** sentinel. Loads with every mod off, without touching your stored profiles. Clicking any non-Vanilla profile in the dropdown switches back.
+
+### Modpack keys and managed profiles (3.3)
+
+Applying a modpack (see [Modpacks](Modpacks)) reuses the ordinary profile machinery, so an active modpack appears in `mod_config.cfg` as a couple of `[settings]` keys plus profile sections under reserved name prefixes.
+
+`[settings]` keys:
+
+| Key | Meaning |
+|---|---|
+| `active_modpack` | Sanitized name of the modpack currently applied, or empty/absent if none. While set, the launcher locks the active profile to that pack's managed slot. Clearing this by hand is the manual escape hatch if unload ever refuses. |
+| `modpack_backup_profile` | The profile you were on when you applied the pack -- where **Unload** restores your pre-pack `enabled`/`priority` to. Empty/absent when no pack is active. |
+
+Managed profile sections -- the launcher creates these and the Mods-tab profile dropdown **hides** them, so you normally never see them:
+
+| Section prefix | Meaning |
+|---|---|
+| `[profile.modpack__<name>.enabled]` / `.priority` / `.dep_ignore` | Live state of the applied modpack `<name>`. Edits you make while it's active save here. Kept (not deleted) on unload so a re-apply resumes your edits. |
+| `[profile._before_modpack_<name>.enabled]` / `.priority` | Backup snapshot of your profile taken at apply time. Unload restores from here, then wipes it. If these are gone, unload aborts rather than destroy your real profile. |
+
+`<name>` is the modpack's sanitized name (ASCII letters / digits / space / hyphen / underscore). Don't create profiles of your own named `modpack__*` or `_before_modpack_*` -- the launcher treats those prefixes as reserved and filters them out of the dropdown.
 
 ### Common tasks
 
@@ -194,6 +215,8 @@ Everything under `user://modloader_hooks/` is regenerated on demand:
 | `user://modloader_heartbeat.txt` | Crash-detection sentinel. Written each launch, deleted at clean boot. Presence on next launch = previous session crashed. |
 | `user://modloader_pass2_dirty` | Pass-2-in-progress marker. Presence on next launch = Pass 2 was interrupted mid-execution (crash, force-quit). Next launch wipes state and retries. |
 | `user://modloader_conflicts.txt` | Developer-mode only. Dumps the conflict report (which mods claim the same `res://` paths). |
+| `user://.profile_snapshots/<profile>/` | Per-profile MCM snapshot (`MCM/` tree), restored when you switch into that profile. Modpack slots also store override snapshots + an `overrides_manifest.json` here (see [Modpacks](Modpacks)). New in 3.3. |
+| `user://mws_cache/thumbs/` | Browse-tab thumbnail / banner image cache from ModWorkshop. API JSON responses are cached in memory only, not here. New in 3.3. |
 
 **Deleting any of these is safe.** Next launch regenerates whatever it needs. The "cost" is a slower cold boot because the hook pack has to rebuild.
 
@@ -230,5 +253,7 @@ A: `user://` is per-user state (your profiles, generated caches) -- preserved ac
 
 - [Mod-Format](Mod-Format) -- `mod.txt` schema (what each mod declares)
 - [Profile-Format](Profile-Format) -- the shareable `MTRPRF1....` export payload
+- [Browse](Browse) -- installing mods from ModWorkshop (`user://mws_cache/`)
+- [Modpacks](Modpacks) -- `active_modpack`, the managed profile slots, and `.profile_snapshots`
 - [Architecture](Architecture) -- two-pass boot flow, `override.cfg` lifecycle
 - [Stability-Canaries](Stability-Canaries) -- crash recovery, safe mode, sentinel files

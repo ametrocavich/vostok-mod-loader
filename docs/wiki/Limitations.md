@@ -169,6 +169,18 @@ When a previous session's hook pack is mounted via `ProjectSettings.load_resourc
 
 Workaround ([hook_pack.gd:56-64](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L56)): the regen path doesn't delete the old pack file first (deletion would invalidate the handle immediately) -- `ZIPPacker.open` replaces atomically on save. Also: mod sibling reads happen BEFORE `ZIPPacker.open` is called on the new pack.
 
+## Disabling a content mod can break saves that use it
+
+Mods that register game content -- items, recipes, loot, and similar -- add that content through the [registry](Registry) at launch. Mod-registered items live only in the registry's own table, keyed by the item's `file` id; they are **not** merged into the game's built-in master item list (`LT_Master.items`). The table is rebuilt from the enabled mod every launch.
+
+That means: if you create a save while a content mod is enabled, then **disable or remove that mod**, loading the save (Continue) can fail or crash -- the content it refers to is no longer registered, so the game can't resolve it.
+
+The save file itself is **not corrupted**. Re-enabling the mod brings the content back and the save loads fully again.
+
+**Guidance**: keep a content mod enabled for any save that was created with it. If a save won't load after you change your mod list, re-enable the mod you removed and try again.
+
+(Mechanism: `src/registry/items.gd` keeps mod items in the registry dict by `file` id and never adds them to vanilla's authoritative list, so a save that references a mod item has nothing to resolve against once the mod is gone.)
+
 ## What's NOT supported
 
 - Scripts that call `take_over_path` on themselves to replace a non-class_name vanilla script generally work, but `class_name` vanillas are risky even after the engine bug #83542 warnings.

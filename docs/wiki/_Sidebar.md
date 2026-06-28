@@ -7,6 +7,8 @@
 - [Hooks](Hooks)
 - [Registry](Registry)
 - [Setup](Setup)
+- [Browse](Browse)
+- [Modpacks](Modpacks)
 - [Mod-Format](Mod-Format)
 - [Profile-Format](Profile-Format)
 - [Config-Files](Config-Files)
