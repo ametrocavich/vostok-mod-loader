@@ -134,9 +134,9 @@ func _apply_profile_to_entries(cfg: ConfigFile, profile: String) -> void:
 	# lets Reset to Vanilla avoid touching the user's other profiles.
 	var is_vanilla := profile == VANILLA_PROFILE
 	_load_per_profile_settings(cfg, profile)
-	var en_sec := "profile." + profile + ".enabled"
-	var pr_sec := "profile." + profile + ".priority"
-	var ig_sec := "profile." + profile + ".dep_ignore"
+	var en_sec := _profile_sec(profile, ".enabled")
+	var pr_sec := _profile_sec(profile, ".priority")
+	var ig_sec := _profile_sec(profile, ".dep_ignore")
 	for entry in _ui_mod_entries:
 		var pk: String = entry["profile_key"]
 		entry.erase("profile_version_mismatch")
@@ -186,18 +186,14 @@ func _load_per_profile_settings(cfg: ConfigFile, profile: String) -> void:
 	if profile == VANILLA_PROFILE:
 		_mods_hide_disabled = false
 		return
-	var sec := "profile." + profile + ".settings"
+	var sec := _profile_sec(profile, ".settings")
 	_mods_hide_disabled = bool(cfg.get_value(sec, "hide_disabled", false))
 
 func _save_per_profile_setting(key: String, value: Variant) -> void:
 	# Vanilla is a sentinel -- never materialize a profile.__vanilla__.* section.
 	if _active_profile == VANILLA_PROFILE:
 		return
-	var cfg := ConfigFile.new()
-	cfg.load(UI_CONFIG_PATH)
-	var sec := "profile." + _active_profile + ".settings"
-	cfg.set_value(sec, key, value)
-	_persist_ui_cfg(cfg)
+	_set_ui_cfg_value(_profile_sec(_active_profile, ".settings"), key, value)
 	# Deliberately does NOT set _dirty_since_boot: the per-profile settings
 	# here are pure VIEW filters (hide_disabled, read only by
 	# _mods_entry_visible). Marking dirty would restart the game on the
@@ -223,7 +219,7 @@ func _mods_entry_visible(entry: Dictionary) -> bool:
 func _find_stored_key_for_mod_id(cfg: ConfigFile, profile: String, mod_id: String) -> String:
 	var prefix := mod_id + "@"
 	for suffix: String in [".enabled", ".priority"]:
-		var sec := "profile." + profile + suffix
+		var sec := _profile_sec(profile, suffix)
 		if cfg.has_section(sec):
 			for key: String in cfg.get_section_keys(sec):
 				if key.begins_with(prefix):
@@ -300,9 +296,9 @@ func _save_ui_config() -> void:
 	# the Launch-time save in lifecycle.gd.
 	if _active_profile != VANILLA_PROFILE:
 		# Rewrite the active profile's sections fresh so removed mods don't linger.
-		var en_sec := "profile." + _active_profile + ".enabled"
-		var pr_sec := "profile." + _active_profile + ".priority"
-		var ig_sec := "profile." + _active_profile + ".dep_ignore"
+		var en_sec := _profile_sec(_active_profile, ".enabled")
+		var pr_sec := _profile_sec(_active_profile, ".priority")
+		var ig_sec := _profile_sec(_active_profile, ".dep_ignore")
 		# Snapshot stored state for folder mods that dev-mode-off filtered out
 		# of _ui_mod_entries -- otherwise the erase+rewrite below would drop
 		# their enabled/priority entries and the user loses those settings the
@@ -360,6 +356,27 @@ func _persist_ui_cfg(cfg: ConfigFile) -> int:
 		DirAccess.copy_absolute(UI_CONFIG_PATH, UI_CONFIG_PATH + ".bak")
 	return cfg.save(UI_CONFIG_PATH)
 
+func _profile_sec(name: String, suffix: String) -> String:
+	return "profile." + name + suffix
+
+# Read a single value from mod_config.cfg. Returns `default` when the file is
+# missing or unparseable, matching the early-return the hand-rolled accessors
+# used before this was centralized.
+func _get_ui_cfg_value(section: String, key: String, default: Variant) -> Variant:
+	var cfg := ConfigFile.new()
+	if cfg.load(UI_CONFIG_PATH) != OK:
+		return default
+	return cfg.get_value(section, key, default)
+
+# Write a single value into mod_config.cfg via the backup-then-save path.
+# Mirrors the load (result ignored) / set / _persist_ui_cfg dance the accessors
+# shared; a missing file loads empty and is created on save.
+func _set_ui_cfg_value(section: String, key: String, value: Variant) -> void:
+	var cfg := ConfigFile.new()
+	cfg.load(UI_CONFIG_PATH)
+	cfg.set_value(section, key, value)
+	_persist_ui_cfg(cfg)
+
 # Resolve a mod's CURRENT on-disk path from the live entry list by profile key.
 # _ui_mod_entries is reassigned (collect_mod_metadata) whenever any surface
 # updates a mod, which orphans a full_path captured when a row/button was built;
@@ -372,6 +389,16 @@ func _live_full_path(profile_key: String, fallback: String) -> String:
 		if str(cur.get("profile_key", "")) == profile_key:
 			return str(cur.get("full_path", fallback))
 	return fallback
+
+# Re-scan mods from disk and re-apply the active profile's enable/priority state
+# onto the fresh entry list. Called after any surface adds/removes/updates a mod
+# file so _ui_mod_entries reflects on-disk reality before the Mods tab rebuilds.
+# Callers keep their own (divergent) _rebuild_mods_tab guard after this returns.
+func _reload_entries_for_active_profile() -> void:
+	_ui_mod_entries = collect_mod_metadata()
+	var cfg := ConfigFile.new()
+	cfg.load(UI_CONFIG_PATH)
+	_apply_profile_to_entries(cfg, _active_profile)
 
 # Profile management: snapshot the current in-memory state to a new profile
 # and switch to it. Caller is responsible for validating `name` (unique,
@@ -392,7 +419,7 @@ func _delete_active_profile() -> void:
 		return
 	var target := _active_profile
 	for suffix: String in [".enabled", ".priority", ".settings", ".dep_ignore"]:
-		var sec := "profile." + target + suffix
+		var sec := _profile_sec(target, suffix)
 		if cfg.has_section(sec):
 			cfg.erase_section(sec)
 	_delete_mcm_snapshot(target)
@@ -461,13 +488,13 @@ func _rename_profile(new_name: String) -> void:
 	# Carry over per-profile UI settings (e.g. hide_disabled). The .enabled /
 	# .priority sections were already materialized under new_name by the save
 	# above; .settings has no in-memory backing, so we copy it explicitly.
-	var old_settings := "profile." + old + ".settings"
-	var new_settings := "profile." + new_name + ".settings"
+	var old_settings := _profile_sec(old, ".settings")
+	var new_settings := _profile_sec(new_name, ".settings")
 	if cfg.has_section(old_settings):
 		for key: String in cfg.get_section_keys(old_settings):
 			cfg.set_value(new_settings, key, cfg.get_value(old_settings, key))
 	for suffix: String in [".enabled", ".priority", ".settings", ".dep_ignore"]:
-		var sec := "profile." + old + suffix
+		var sec := _profile_sec(old, suffix)
 		if cfg.has_section(sec):
 			cfg.erase_section(sec)
 	_persist_ui_cfg(cfg)
@@ -620,18 +647,12 @@ func _build_profile_sources() -> Dictionary:
 # auto-fill the author field in the save-as-modpack dialog so users don't
 # retype their handle every time. Empty string when not yet set.
 func _load_preferred_author() -> String:
-	var cfg := ConfigFile.new()
-	if cfg.load(UI_CONFIG_PATH) != OK:
-		return ""
-	return str(cfg.get_value("settings", "preferred_author", ""))
+	return str(_get_ui_cfg_value("settings", "preferred_author", ""))
 
 # Persist the preferred author for future modpack saves. Pass empty to
 # clear -- the next save dialog will open with an empty field.
 func _save_preferred_author(author: String) -> void:
-	var cfg := ConfigFile.new()
-	cfg.load(UI_CONFIG_PATH)
-	cfg.set_value("settings", "preferred_author", author)
-	_persist_ui_cfg(cfg)
+	_set_ui_cfg_value("settings", "preferred_author", author)
 
 
 # Mods that are enabled in the active profile but whose mod.txt doesn't
@@ -948,8 +969,8 @@ func _import_profile_from_parsed(parsed: Dictionary, incoming_mcm_data: Dictiona
 
 	var cfg := ConfigFile.new()
 	cfg.load(UI_CONFIG_PATH)
-	var en_sec := "profile." + name + ".enabled"
-	var pr_sec := "profile." + name + ".priority"
+	var en_sec := _profile_sec(name, ".enabled")
+	var pr_sec := _profile_sec(name, ".priority")
 	if cfg.has_section(en_sec):
 		cfg.erase_section(en_sec)
 	if cfg.has_section(pr_sec):
@@ -968,7 +989,7 @@ func _import_profile_from_parsed(parsed: Dictionary, incoming_mcm_data: Dictiona
 	# Materialize dep_ignore ("Load anyway") overrides from the payload. Sparse
 	# (true-only), optional field -- a payload from an older exporter simply has
 	# none, so the imported profile starts with no overrides rather than failing.
-	var ig_sec := "profile." + name + ".dep_ignore"
+	var ig_sec := _profile_sec(name, ".dep_ignore")
 	if cfg.has_section(ig_sec):
 		cfg.erase_section(ig_sec)
 	var dep_ignore_dict: Dictionary = parsed.get("dep_ignore", {})
@@ -1047,8 +1068,8 @@ func _profile_to_json_string(profile_name: String, description: String = "", aut
 	var src := ConfigFile.new()
 	if src.load(UI_CONFIG_PATH) != OK:
 		return ""
-	var en_sec := "profile." + profile_name + ".enabled"
-	var pr_sec := "profile." + profile_name + ".priority"
+	var en_sec := _profile_sec(profile_name, ".enabled")
+	var pr_sec := _profile_sec(profile_name, ".priority")
 	if not src.has_section(en_sec):
 		return ""
 	var enabled: Dictionary = {}
@@ -1064,7 +1085,7 @@ func _profile_to_json_string(profile_name: String, description: String = "", aut
 	# rejects. Without this the share string silently loses a deliberate
 	# Load-anyway and the mod re-renders blocked on the other end.
 	var dep_ignore: Dictionary = {}
-	var ig_sec := "profile." + profile_name + ".dep_ignore"
+	var ig_sec := _profile_sec(profile_name, ".dep_ignore")
 	if src.has_section(ig_sec):
 		for key: String in src.get_section_keys(ig_sec):
 			if bool(src.get_value(ig_sec, key)):
@@ -1103,7 +1124,7 @@ func _missing_mods_in_active_profile() -> Array[String]:
 	var cfg := ConfigFile.new()
 	if cfg.load(UI_CONFIG_PATH) != OK:
 		return []
-	var en_sec := "profile." + _active_profile + ".enabled"
+	var en_sec := _profile_sec(_active_profile, ".enabled")
 	if not cfg.has_section(en_sec):
 		return []
 	var present: Dictionary = {}
@@ -1172,7 +1193,7 @@ func _remove_missing_entry_from_profile(stored_key: String) -> void:
 	if cfg.load(UI_CONFIG_PATH) != OK:
 		return
 	for suffix: String in [".enabled", ".priority"]:
-		var sec := "profile." + _active_profile + suffix
+		var sec := _profile_sec(_active_profile, suffix)
 		if cfg.has_section(sec) and cfg.has_section_key(sec, stored_key):
 			cfg.erase_section_key(sec, stored_key)
 	_persist_ui_cfg(cfg)
@@ -1189,7 +1210,7 @@ func _remove_all_missing_entries_from_profile() -> void:
 	if cfg.load(UI_CONFIG_PATH) != OK:
 		return
 	for suffix: String in [".enabled", ".priority"]:
-		var sec := "profile." + _active_profile + suffix
+		var sec := _profile_sec(_active_profile, suffix)
 		if not cfg.has_section(sec):
 			continue
 		for key: String in missing:
@@ -1381,8 +1402,7 @@ func _show_modpack_failure_dialog(downloaded: int, failures: Array, tabs: TabCon
 		)
 
 	_attach_ui_dialog(d)
-	d.confirmed.connect(func(): d.queue_free())
-	d.close_requested.connect(func(): d.queue_free())
+	_wire_accept_dismiss(d)
 	d.popup_centered()
 
 
@@ -1439,41 +1459,44 @@ func _run_modpack_retry(failures: Array, tabs: TabContainer) -> void:
 		ok_d.dialog_text = "Successfully downloaded %d mod(s) on retry." % dl
 		ok_d.ok_button_text = "Close"
 		_attach_ui_dialog(ok_d)
-		ok_d.confirmed.connect(func(): ok_d.queue_free())
-		ok_d.close_requested.connect(func(): ok_d.queue_free())
+		_wire_accept_dismiss(ok_d)
 		ok_d.popup_centered()
 	else:
 		_show_modpack_failure_dialog(dl, still_failed, tabs)
 
 
+# Build and show a borderless accept dialog with a single dismiss button.
+# Backs _show_error_dialog / _show_info_toast, which differ only in title,
+# button text, and minimum width.
+func _show_accept_dialog(title: String, message: String, ok_text := "OK", min_w := 360) -> void:
+	var d := AcceptDialog.new()
+	d.title = title
+	d.dialog_text = message
+	d.ok_button_text = ok_text
+	d.min_size = Vector2i(min_w, 0)
+	_attach_ui_dialog(d)
+	_wire_accept_dismiss(d)
+	d.popup_centered()
+
+# Free an AcceptDialog on both OK (confirmed) and the window close button
+# (close_requested). The AcceptDialog analog of _connect_dialog_exits; the
+# connect order matches the hand-rolled dismiss sites it replaces.
+func _wire_accept_dismiss(d: AcceptDialog) -> void:
+	d.confirmed.connect(func(): d.queue_free())
+	d.close_requested.connect(func(): d.queue_free())
+
 # Show a simple error dialog. Replaces ad-hoc push_warning calls in user-
 # facing flows so failures actually surface in the UI instead of just the
 # log. Used by modpack apply/unload, profile import, etc.
 func _show_error_dialog(title: String, message: String) -> void:
-	var d := AcceptDialog.new()
-	d.title = title
-	d.dialog_text = message
-	d.ok_button_text = "Close"
-	d.min_size = Vector2i(400, 0)
-	_attach_ui_dialog(d)
-	d.confirmed.connect(func(): d.queue_free())
-	d.close_requested.connect(func(): d.queue_free())
-	d.popup_centered()
+	_show_accept_dialog(title, message, "Close", 400)
 
 
 # Neutral one-line info dialog. Same shape as _show_error_dialog but framed
 # without the "error" connotation -- used for benign confirmations like
 # "all mods up to date" after a check.
 func _show_info_toast(message: String) -> void:
-	var d := AcceptDialog.new()
-	d.title = "Modloader"
-	d.dialog_text = message
-	d.ok_button_text = "OK"
-	d.min_size = Vector2i(360, 0)
-	_attach_ui_dialog(d)
-	d.confirmed.connect(func(): d.queue_free())
-	d.close_requested.connect(func(): d.queue_free())
-	d.popup_centered()
+	_show_accept_dialog("Modloader", message)
 
 
 # All launcher dialogs flow through this. Renders as a borderless dark
@@ -1537,16 +1560,22 @@ func _attach_ui_dialog(d: Window) -> void:
 	parent.add_child(d)
 
 
+# Set all four border widths of a freshly-built StyleBoxFlat to `w`. Covers the
+# uniform 1px-border idiom repeated across the theme styleboxes; non-uniform
+# borders (e.g. the TabContainer's bottom=0) stay inline.
+func _sb_border(s: StyleBoxFlat, w := 1) -> void:
+	s.border_width_top = w
+	s.border_width_bottom = w
+	s.border_width_left = w
+	s.border_width_right = w
+
 # Dialog panel background. Centralized so _attach_ui_dialog and any future
 # place that needs a matching look (e.g. inline cards) use the same style.
 func _make_dialog_panel_stylebox() -> StyleBoxFlat:
 	var s := StyleBoxFlat.new()
 	s.bg_color = Color(0.06, 0.06, 0.06)
 	s.border_color = Color(0.28, 0.28, 0.28)
-	s.border_width_top = 1
-	s.border_width_bottom = 1
-	s.border_width_left = 1
-	s.border_width_right = 1
+	_sb_border(s)
 	s.content_margin_left = 14
 	s.content_margin_right = 14
 	s.content_margin_top = 12
@@ -1742,6 +1771,22 @@ func _confirm_disable_content_mod(mod_name: String) -> bool:
 	d.queue_free()
 	return state[1]
 
+# Validate a candidate profile name against the rules shared by the New and
+# Rename dialogs. Returns the user-facing error string, or "" when the name is
+# acceptable. `current` lets Rename treat renaming to its own name as valid here
+# (the caller turns that into a silent no-op rather than a commit).
+func _validate_profile_name(name: String, existing: Array, current := "") -> String:
+	if name == "":
+		return "Name cannot be empty or all invalid characters."
+	if name.to_lower() == "vanilla" or name == VANILLA_PROFILE \
+			or _is_modpack_managed_profile(name):
+		return "That name is reserved."
+	if name == current:
+		return ""
+	if name in existing:
+		return "Profile \"" + name + "\" already exists."
+	return ""
+
 # New Profile dialog: prompt for a name + initial state, validate, write the
 # chosen state into the new profile, switch to it. Cancel leaves everything
 # unchanged. Initial state radio defaults to Empty -- "fresh profile = nothing
@@ -1801,13 +1846,9 @@ func _show_new_profile_dialog(tabs: TabContainer) -> void:
 	var existing := _list_profiles()
 	var try_create := func():
 		var name := _sanitize_profile_name(name_edit.text)
-		if name == "":
-			err_lbl.text = "Name cannot be empty or all invalid characters."
-		elif name.to_lower() == "vanilla" or name == VANILLA_PROFILE \
-				or _is_modpack_managed_profile(name):
-			err_lbl.text = "That name is reserved."
-		elif name in existing:
-			err_lbl.text = "Profile \"" + name + "\" already exists."
+		var err := _validate_profile_name(name, existing)
+		if err != "":
+			err_lbl.text = err
 		else:
 			d.queue_free()
 			# Mutate in-memory entries to match the chosen initial state, then
@@ -1864,15 +1905,11 @@ func _show_rename_profile_dialog(tabs: TabContainer) -> void:
 	var existing := _list_profiles()
 	var try_rename := func():
 		var name := _sanitize_profile_name(name_edit.text)
-		if name == "":
-			err_lbl.text = "Name cannot be empty or all invalid characters."
-		elif name.to_lower() == "vanilla" or name == VANILLA_PROFILE \
-				or _is_modpack_managed_profile(name):
-			err_lbl.text = "That name is reserved."
+		var err := _validate_profile_name(name, existing, current)
+		if err != "":
+			err_lbl.text = err
 		elif name == current:
 			d.queue_free()  # no-op
-		elif name in existing:
-			err_lbl.text = "Profile \"" + name + "\" already exists."
 		else:
 			d.queue_free()
 			_rename_profile(name)
@@ -1890,12 +1927,19 @@ func _show_rename_profile_dialog(tabs: TabContainer) -> void:
 # shows up here. Apply runs the modpack's profile + MCM and backs up the
 # user's previous state; Unload restores the backup. Edits while a modpack
 # is active save into the modpack's profile slot and persist across applies.
+# The standard 8/8/6/6 outer margin shared by the top-level tab builders
+# (Profile, Browse, Updates). Divergent margins (e.g. the Mods tab's 10/10/8/10)
+# stay inline on purpose.
+func _make_tab_margin() -> MarginContainer:
+	var m := MarginContainer.new()
+	m.add_theme_constant_override("margin_left", 8)
+	m.add_theme_constant_override("margin_right", 8)
+	m.add_theme_constant_override("margin_top", 6)
+	m.add_theme_constant_override("margin_bottom", 6)
+	return m
+
 func build_profile_tab(tabs: TabContainer) -> Control:
-	var margin := MarginContainer.new()
-	margin.add_theme_constant_override("margin_left", 8)
-	margin.add_theme_constant_override("margin_right", 8)
-	margin.add_theme_constant_override("margin_top", 6)
-	margin.add_theme_constant_override("margin_bottom", 6)
+	var margin := _make_tab_margin()
 
 	var container := VBoxContainer.new()
 	container.add_theme_constant_override("separation", 6)
@@ -2465,8 +2509,7 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 		)
 
 	_attach_ui_dialog(d)
-	d.confirmed.connect(func(): d.queue_free())
-	d.close_requested.connect(func(): d.queue_free())
+	_wire_accept_dismiss(d)
 	d.popup_centered()
 
 
@@ -2569,10 +2612,7 @@ func _show_remove_mod_confirm(entry: Dictionary, tabs: TabContainer) -> void:
 		func():
 			d.queue_free()
 			if _delete_mod_file_and_cleanup(entry):
-				_ui_mod_entries = collect_mod_metadata()
-				var cfg := ConfigFile.new()
-				cfg.load(UI_CONFIG_PATH)
-				_apply_profile_to_entries(cfg, _active_profile)
+				_reload_entries_for_active_profile()
 				_rebuild_mods_tab(tabs),
 		func(): d.queue_free())
 	d.popup_centered()
@@ -2608,10 +2648,7 @@ func show_mod_ui() -> void:
 	var bg_s := StyleBoxFlat.new()
 	bg_s.bg_color = Color(0.0, 0.0, 0.0, 0.6)
 	bg_s.border_color = Color(1.0, 1.0, 1.0)
-	bg_s.border_width_top    = 1
-	bg_s.border_width_bottom = 1
-	bg_s.border_width_left   = 1
-	bg_s.border_width_right  = 1
+	_sb_border(bg_s)
 	bg.add_theme_stylebox_override("panel", bg_s)
 	win.add_child(bg)
 
@@ -2666,8 +2703,7 @@ func show_mod_ui() -> void:
 	var ls_n := StyleBoxFlat.new()
 	ls_n.bg_color = Color(0.05, 0.05, 0.05)
 	ls_n.border_color = Color(0.28, 0.28, 0.28)
-	ls_n.border_width_top = 1; ls_n.border_width_bottom = 1
-	ls_n.border_width_left = 1; ls_n.border_width_right = 1
+	_sb_border(ls_n)
 	ls_n.content_margin_left = 10; ls_n.content_margin_right = 10
 	launch_btn.add_theme_stylebox_override("normal", ls_n)
 	var ls_h := ls_n.duplicate()
@@ -2917,10 +2953,11 @@ func make_dark_theme() -> Theme:
 	var bn := StyleBoxFlat.new()
 	bn.bg_color = C_BTN
 	bn.border_color = C_BORD
-	bn.border_width_top = 1; bn.border_width_bottom = 1
-	bn.border_width_left = 1; bn.border_width_right = 1
-	bn.content_margin_left = 8; bn.content_margin_right = 8
-	bn.content_margin_top = 3; bn.content_margin_bottom = 3
+	_sb_border(bn)
+	bn.content_margin_left = 8
+	bn.content_margin_right = 8
+	bn.content_margin_top = 3
+	bn.content_margin_bottom = 3
 	var bh := bn.duplicate()
 	bh.bg_color = Color(0.10, 0.10, 0.10); bh.border_color = C_HI
 	var bp := bn.duplicate(); bp.bg_color = Color(0.03, 0.03, 0.03)
@@ -2982,10 +3019,11 @@ func make_dark_theme() -> Theme:
 	var le := StyleBoxFlat.new()
 	le.bg_color = Color(0.04, 0.04, 0.04)
 	le.border_color = C_BORD
-	le.border_width_top = 1; le.border_width_bottom = 1
-	le.border_width_left = 1; le.border_width_right = 1
-	le.content_margin_left = 6; le.content_margin_right = 6
-	le.content_margin_top = 3; le.content_margin_bottom = 3
+	_sb_border(le)
+	le.content_margin_left = 6
+	le.content_margin_right = 6
+	le.content_margin_top = 3
+	le.content_margin_bottom = 3
 	t.set_stylebox("normal", "LineEdit", le)
 	t.set_stylebox("focus",  "LineEdit", le.duplicate())
 	t.set_color("font_color", "LineEdit", C_TEXT)
@@ -2997,10 +3035,11 @@ func make_dark_theme() -> Theme:
 	var pm_panel := StyleBoxFlat.new()
 	pm_panel.bg_color = Color(0.06, 0.06, 0.06)
 	pm_panel.border_color = C_BORD
-	pm_panel.border_width_top = 1; pm_panel.border_width_bottom = 1
-	pm_panel.border_width_left = 1; pm_panel.border_width_right = 1
-	pm_panel.content_margin_left = 4; pm_panel.content_margin_right = 4
-	pm_panel.content_margin_top = 4;  pm_panel.content_margin_bottom = 4
+	_sb_border(pm_panel)
+	pm_panel.content_margin_left = 4
+	pm_panel.content_margin_right = 4
+	pm_panel.content_margin_top = 4
+	pm_panel.content_margin_bottom = 4
 	t.set_stylebox("panel", "PopupMenu", pm_panel)
 	var pm_hover := StyleBoxFlat.new()
 	pm_hover.bg_color = Color(0.14, 0.14, 0.14)
@@ -3031,10 +3070,11 @@ func make_dark_theme() -> Theme:
 	var tt_panel := StyleBoxFlat.new()
 	tt_panel.bg_color = Color(0.10, 0.10, 0.10)
 	tt_panel.border_color = C_BORD
-	tt_panel.border_width_top = 1; tt_panel.border_width_bottom = 1
-	tt_panel.border_width_left = 1; tt_panel.border_width_right = 1
-	tt_panel.content_margin_left = 8; tt_panel.content_margin_right = 8
-	tt_panel.content_margin_top = 4;  tt_panel.content_margin_bottom = 4
+	_sb_border(tt_panel)
+	tt_panel.content_margin_left = 8
+	tt_panel.content_margin_right = 8
+	tt_panel.content_margin_top = 4
+	tt_panel.content_margin_bottom = 4
 	t.set_stylebox("panel", "TooltipPanel", tt_panel)
 	t.set_color("font_color", "TooltipLabel", C_TEXT)
 
@@ -3043,10 +3083,11 @@ func make_dark_theme() -> Theme:
 	var dlg_panel := StyleBoxFlat.new()
 	dlg_panel.bg_color = Color(0.06, 0.06, 0.06)
 	dlg_panel.border_color = C_BORD
-	dlg_panel.border_width_top = 1; dlg_panel.border_width_bottom = 1
-	dlg_panel.border_width_left = 1; dlg_panel.border_width_right = 1
-	dlg_panel.content_margin_left = 10; dlg_panel.content_margin_right = 10
-	dlg_panel.content_margin_top = 8;   dlg_panel.content_margin_bottom = 8
+	_sb_border(dlg_panel)
+	dlg_panel.content_margin_left = 10
+	dlg_panel.content_margin_right = 10
+	dlg_panel.content_margin_top = 8
+	dlg_panel.content_margin_bottom = 8
 	t.set_stylebox("panel", "AcceptDialog", dlg_panel)
 	t.set_stylebox("panel", "ConfirmationDialog", dlg_panel.duplicate())
 	t.set_stylebox("embedded_border",           "Window", dlg_panel.duplicate())
@@ -3069,10 +3110,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		var banner_style := StyleBoxFlat.new()
 		banner_style.bg_color = Color(0.30, 0.18, 0.10)
 		banner_style.border_color = Color(0.55, 0.35, 0.15)
-		banner_style.border_width_top = 1
-		banner_style.border_width_bottom = 1
-		banner_style.border_width_left = 1
-		banner_style.border_width_right = 1
+		_sb_border(banner_style)
 		banner_style.content_margin_left = 10
 		banner_style.content_margin_right = 10
 		banner_style.content_margin_top = 6
@@ -3529,10 +3567,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 				var result: Dictionary = await download_and_replace_mod(full_path, mw_id)
 				if bool(result.get("ok", false)):
 					_mod_updates_state.erase(captured_pk)
-					_ui_mod_entries = collect_mod_metadata()
-					var cfg := ConfigFile.new()
-					cfg.load(UI_CONFIG_PATH)
-					_apply_profile_to_entries(cfg, _active_profile)
+					_reload_entries_for_active_profile()
 					if is_instance_valid(tabs):
 						_rebuild_mods_tab(tabs)
 				else:
@@ -3626,10 +3661,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 					# already exist under the same filename. Dedup at scan time.
 					var r: Dictionary = await download_new_mod(captured_mws_id, captured_version, true)
 					if bool(r.get("ok", false)):
-						_ui_mod_entries = collect_mod_metadata()
-						var cfg := ConfigFile.new()
-						cfg.load(UI_CONFIG_PATH)
-						_apply_profile_to_entries(cfg, _active_profile)
+						_reload_entries_for_active_profile()
 						if is_instance_valid(tabs):
 							_rebuild_mods_tab(tabs)
 					else:
@@ -3976,11 +4008,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	return outer
 
 func build_browse_tab(tabs: TabContainer) -> Control:
-	var margin := MarginContainer.new()
-	margin.add_theme_constant_override("margin_left", 8)
-	margin.add_theme_constant_override("margin_right", 8)
-	margin.add_theme_constant_override("margin_top", 6)
-	margin.add_theme_constant_override("margin_bottom", 6)
+	var margin := _make_tab_margin()
 
 	var container := VBoxContainer.new()
 	container.add_theme_constant_override("separation", 6)
@@ -4161,10 +4189,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			return
 
 		if bool(result.get("ok", false)):
-			_ui_mod_entries = collect_mod_metadata()
-			var cfg := ConfigFile.new()
-			cfg.load(UI_CONFIG_PATH)
-			_apply_profile_to_entries(cfg, _active_profile)
+			_reload_entries_for_active_profile()
 			if is_instance_valid(tabs):
 				_rebuild_mods_tab(tabs)
 			if is_instance_valid(get_btn):
@@ -4827,17 +4852,12 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 	load_files.call()
 
 	_attach_ui_dialog(d)
-	d.confirmed.connect(func(): d.queue_free())
-	d.close_requested.connect(func(): d.queue_free())
+	_wire_accept_dismiss(d)
 	d.popup_centered()
 
 
 func build_updates_tab() -> Control:
-	var margin := MarginContainer.new()
-	margin.add_theme_constant_override("margin_left", 8)
-	margin.add_theme_constant_override("margin_right", 8)
-	margin.add_theme_constant_override("margin_top", 6)
-	margin.add_theme_constant_override("margin_bottom", 6)
+	var margin := _make_tab_margin()
 
 	var container := VBoxContainer.new()
 	container.add_theme_constant_override("separation", 6)
@@ -5225,16 +5245,10 @@ func _check_modloader_update_async() -> void:
 		_show_modloader_update_dialog(latest)
 
 func _modloader_update_last_seen_version() -> String:
-	var cfg := ConfigFile.new()
-	if cfg.load(UI_CONFIG_PATH) != OK:
-		return ""
-	return str(cfg.get_value("modloader_update", "last_seen_version", ""))
+	return str(_get_ui_cfg_value("modloader_update", "last_seen_version", ""))
 
 func _modloader_update_mark_seen(latest: String) -> void:
-	var cfg := ConfigFile.new()
-	cfg.load(UI_CONFIG_PATH)
-	cfg.set_value("modloader_update", "last_seen_version", latest)
-	_persist_ui_cfg(cfg)
+	_set_ui_cfg_value("modloader_update", "last_seen_version", latest)
 
 # One-shot popup the first session each new modloader version is detected.
 # "Open Page" launches the ModWorkshop browser tab; either action writes the

@@ -54,7 +54,7 @@ func collect_mod_metadata() -> Array[Dictionary]:
 	if skipped_files.size() > 0:
 		_log_debug("Skipped " + str(skipped_files.size()) + " non-mod file(s) in mods dir:")
 		for sf in skipped_files:
-			_log_debug("  " + sf + "  (not .vmz/.pck)")
+			_log_debug("  " + sf + "  (not .vmz/.zip/.pck)")
 	entries = _dedupe_by_mod_id(entries)
 	# Persist any mws ids we just scanned so missing-mod stubs can offer
 	# Download for mods that were once installed but have since been
@@ -1050,6 +1050,16 @@ func _looks_like_pck(path: String) -> bool:
 	return magic == PackedByteArray([0x47, 0x44, 0x50, 0x43])
 
 
+# Serialize a [mod_sources] cache value: {modworkshop_id, version} as JSON,
+# omitting version when empty. Dictionary insertion order is stable, so the
+# output string is identical for identical inputs.
+func _serialize_mod_source(mws_id: int, version: String) -> String:
+	var payload: Dictionary = {"modworkshop_id": mws_id}
+	if not version.is_empty():
+		payload["version"] = version
+	return JSON.stringify(payload)
+
+
 # Persist source info ([updates] modworkshop= + version) for any scanned mod
 # into mod_config.cfg's [mod_sources] section. Lets missing-mod stubs offer
 # Download for mods that were once installed but have since been removed --
@@ -1069,10 +1079,7 @@ func _persist_mod_sources_for_entries(entries: Array[Dictionary]) -> void:
 		if pk == "":
 			continue
 		var version_str := str(cfg2.get_value("mod", "version", "")).strip_edges()
-		var payload: Dictionary = {"modworkshop_id": mws_id}
-		if not version_str.is_empty():
-			payload["version"] = version_str
-		var serialized := JSON.stringify(payload)
+		var serialized := _serialize_mod_source(mws_id, version_str)
 		var current := str(cfg.get_value("mod_sources", pk, ""))
 		if current != serialized:
 			cfg.set_value("mod_sources", pk, serialized)
@@ -1109,10 +1116,7 @@ func _persist_single_mod_source(profile_key: String, mws_id: int, version: Strin
 		return
 	var cfg := ConfigFile.new()
 	cfg.load(UI_CONFIG_PATH)
-	var payload: Dictionary = {"modworkshop_id": mws_id}
-	if not version.is_empty():
-		payload["version"] = version
-	var serialized := JSON.stringify(payload)
+	var serialized := _serialize_mod_source(mws_id, version)
 	var current := str(cfg.get_value("mod_sources", profile_key, ""))
 	if current != serialized:
 		cfg.set_value("mod_sources", profile_key, serialized)

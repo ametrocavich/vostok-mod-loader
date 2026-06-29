@@ -82,6 +82,35 @@ const _SPACE_AFTER := {
 	71: 1, 72: 1,                                   # void yield
 }
 
+# Named token-type indices used by _gdsc_reconstruct. Each equals the raw
+# integer it replaces (see the _TOKEN_TEXT table + the index map above), so
+# substituting them is a pure value-rename with no runtime change.
+const TK_ANNOTATION := 1
+const TK_IDENTIFIER := 2
+const TK_LITERAL := 3
+const TK_NOT := 12
+const TK_BANG := 15
+const TK_TILDE := 18
+const TK_KW_FIRST := 40   # "if" -- first keyword
+const TK_KW_WHEN := 50    # "when" -- last control-flow keyword (if..when)
+const TK_KW_LAST := 72    # "yield" -- last keyword
+const TK_BRACKET_OPEN := 73
+const TK_BRACKET_CLOSE := 74
+const TK_BRACE_CLOSE := 76
+const TK_PAREN_OPEN := 77
+const TK_PAREN_CLOSE := 78
+const TK_DOT := 81
+const TK_DOLLAR := 85
+const TK_UNDERSCORE := 87
+const TK_NEWLINE := 88
+const TK_INDENT := 89
+const TK_DEDENT := 90
+const TK_PI := 91
+const TK_TAU := 92
+const TK_INF := 93
+const TK_NAN := 94
+const TK_EOF := 99
+
 func _detokenize_script(script_path: String) -> String:
 	# Zero-byte PCK entries (base game ships CasettePlayer.gd empty in RTV
 	# 4.6.1) have nothing to decode. Return empty silently so callers don't
@@ -258,10 +287,10 @@ func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Arr
 				need_space = false
 				line_started = false
 
-		if tk == 99:  # EOF
+		if tk == TK_EOF:
 			break
 
-		if tk == 88:  # NEWLINE
+		if tk == TK_NEWLINE:
 			lines.append(current_line)
 			current_line = ""
 			current_line_num += 1
@@ -270,18 +299,18 @@ func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Arr
 			prev_tk = tk
 			continue
 
-		if tk == 89 or tk == 90:  # INDENT / DEDENT -- skip, we use col_map instead
+		if tk == TK_INDENT or tk == TK_DEDENT:  # skip, we use col_map instead
 			prev_tk = tk
 			continue
 
 		# Build the text for this token.
 		var text := ""
-		if tk == 2:  # IDENTIFIER
+		if tk == TK_IDENTIFIER:
 			text = identifiers[idx] if idx < identifiers.size() else "<ident?>"
-		elif tk == 1:  # ANNOTATION
+		elif tk == TK_ANNOTATION:
 			var aname: String = identifiers[idx] if idx < identifiers.size() else "?"
 			text = aname if aname.begins_with("@") else ("@" + aname)
-		elif tk == 3:  # LITERAL
+		elif tk == TK_LITERAL:
 			text = _gdsc_variant_to_source(constants[idx] if idx < constants.size() else null)
 		elif _TOKEN_TEXT.has(tk):
 			text = _TOKEN_TEXT[tk]
@@ -303,25 +332,25 @@ func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Arr
 		if need_space and not current_line.is_empty() and not current_line.ends_with("\t"):
 			if _SPACE_BEFORE.has(tk):
 				add_space_before = true
-			elif tk == 2 or tk == 3 or tk == 1 or (tk >= 40 and tk <= 72):
+			elif tk == TK_IDENTIFIER or tk == TK_LITERAL or tk == TK_ANNOTATION or (tk >= TK_KW_FIRST and tk <= TK_KW_LAST):
 				# IDENTIFIER, LITERAL, ANNOTATION, or any keyword -- space before
 				# unless prev was an opener, dot, $, ~, !, indent, newline.
-				# Note: annotation (1) excluded only for identifiers (part of the
+				# Note: annotation excluded only for identifiers (part of the
 				# annotation name), NOT for keywords like var/func after @export.
-				var skip_anno := (prev_tk == 1 and (tk == 2 or tk == 1))  # ident/anno after anno
+				var skip_anno := (prev_tk == TK_ANNOTATION and (tk == TK_IDENTIFIER or tk == TK_ANNOTATION))  # ident/anno after anno
 				if not skip_anno \
-						and prev_tk != 77 and prev_tk != 73 \
-						and prev_tk != 81 and prev_tk != 85 \
-						and prev_tk != 18 \
-						and prev_tk != 15 and prev_tk != 89 \
-						and prev_tk != 88 and prev_tk != -1:
+						and prev_tk != TK_PAREN_OPEN and prev_tk != TK_BRACKET_OPEN \
+						and prev_tk != TK_DOT and prev_tk != TK_DOLLAR \
+						and prev_tk != TK_TILDE \
+						and prev_tk != TK_BANG and prev_tk != TK_INDENT \
+						and prev_tk != TK_NEWLINE and prev_tk != -1:
 					add_space_before = true
-			elif tk == 77:  # PAREN_OPEN
+			elif tk == TK_PAREN_OPEN:
 				# Space before ( after control-flow keywords, but NOT after
 				# function-like keywords (func, preload, super, assert, await).
-				if prev_tk >= 40 and prev_tk <= 50:  # if..when (control flow)
+				if prev_tk >= TK_KW_FIRST and prev_tk <= TK_KW_WHEN:  # if..when (control flow)
 					add_space_before = true
-			elif tk == 12 or tk == 15:  # NOT, BANG
+			elif tk == TK_NOT or tk == TK_BANG:
 				add_space_before = true
 
 		if add_space_before and not current_line.ends_with(" ") and not current_line.ends_with("\t"):
@@ -333,10 +362,10 @@ func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Arr
 		# keywords, and punctuation.  Also need space after identifiers (2),
 		# literals (3), close-parens (78), close-bracket (74), close-brace (76),
 		# constants (91-94 PI/TAU/INF/NAN), and underscore (87).
-		need_space = _SPACE_AFTER.has(tk) or tk == 2 or tk == 3 \
-				or tk == 78 or tk == 74 or tk == 76 \
-				or tk == 91 or tk == 92 or tk == 93 \
-				or tk == 94 or tk == 87
+		need_space = _SPACE_AFTER.has(tk) or tk == TK_IDENTIFIER or tk == TK_LITERAL \
+				or tk == TK_PAREN_CLOSE or tk == TK_BRACKET_CLOSE or tk == TK_BRACE_CLOSE \
+				or tk == TK_PI or tk == TK_TAU or tk == TK_INF \
+				or tk == TK_NAN or tk == TK_UNDERSCORE
 
 		prev_tk = tk
 

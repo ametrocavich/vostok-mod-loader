@@ -102,9 +102,9 @@ func _audio_event_class() -> GDScript:
 func _looks_like_audio_event(res: Resource) -> bool:
 	# AudioEvent is identified by its three canonical fields. Same heuristic
 	# shape as _looks_like_item_data for ItemData.
-	return _resource_has_property(res, "audioClips") \
-			and _resource_has_property(res, "volume") \
-			and _resource_has_property(res, "randomPitch")
+	return _object_has_property(res, "audioClips") \
+			and _object_has_property(res, "volume") \
+			and _object_has_property(res, "randomPitch")
 
 # True if the name is a declared @export property on AudioLibrary. Used to
 # distinguish "override vanilla sound" from "register new sound".
@@ -112,7 +112,7 @@ func _sound_exists_in_vanilla(id: String) -> bool:
 	var lib := _audio_library()
 	if lib == null:
 		return false
-	return _resource_has_property(lib, id)
+	return _object_has_property(lib, id)
 
 # Lookup precedence: mod overrides > mod registrations > vanilla library
 # field. Overrides on vanilla names live as set() mutations on the library
@@ -126,7 +126,7 @@ func _lookup_sound(id: String) -> Resource:
 	var lib := _audio_library()
 	if lib == null:
 		return null
-	if _resource_has_property(lib, id):
+	if _object_has_property(lib, id):
 		return lib.get(id)
 	return null
 
@@ -203,7 +203,7 @@ func _patch_sound(id: String, fields: Dictionary) -> bool:
 	var stash: Dictionary = patched.get(id, {})
 	for field in fields.keys():
 		var field_name := String(field)
-		if not _resource_has_property(target, field_name):
+		if not _object_has_property(target, field_name):
 			push_warning("[Registry] patch('sounds', '%s'): field '%s' doesn't exist on AudioEvent (valid: audioClips, volume, randomPitch)" \
 					% [id, field_name])
 			continue

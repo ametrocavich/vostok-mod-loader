@@ -295,12 +295,6 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	var script_count := 0
 	var hook_count := 0
 	var packed_filenames: Array[String] = []
-	# Empty allowlist = process ALL hookable vanilla scripts. Used for
-	# measuring the pre-compiled-vs-source-compiled split across the
-	# full game. After _activate_rewritten_scripts runs, we can count
-	# from COMPILE-PROOF log lines how many scripts fell into the
-	# GDScriptCache-pinned bucket vs the live-inline bucket.
-	var _step_b_allowlist: Array[String] = []
 	var zero_byte_skipped: int = 0
 	var surface_skipped: int = 0
 	for script_path: String in script_paths:
@@ -316,8 +310,6 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		# read content that doesn't exist. Not a modloader failure.
 		if _pck_zero_byte_paths.has(script_path):
 			zero_byte_skipped += 1
-			continue
-		if not _step_b_allowlist.is_empty() and filename not in _step_b_allowlist:
 			continue
 		# Wrap-surface filter: no mod extends, take_over_paths, or hooks
 		# this script, and it's not a pinned-at-boot class_name. Skipping
@@ -360,7 +352,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			if fe["is_static"]:
 				continue
 			# Mask keys come from .hook() calls which lowercase the method
-			# name at dispatch time (rewriter.gd:211). Vanilla fn["name"]
+			# name (see add_hook() in hooks_api.gd). Vanilla fn["name"]
 			# preserves source casing (e.g. UpdateToolTip). Compare case-
 			# insensitively so mods writing "updatetooltip" match.
 			if apply_mask and not path_mask.has(fe["name"].to_lower()):

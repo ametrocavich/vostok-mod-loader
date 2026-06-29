@@ -43,9 +43,9 @@ func _recipes_resource() -> Resource:
 # Shape check: does this Resource carry the RecipeData fields? Consistent
 # with _looks_like_item_data / _looks_like_audio_event.
 func _looks_like_recipe_data(res: Resource) -> bool:
-	return _resource_has_property(res, "name") \
-			and _resource_has_property(res, "input") \
-			and _resource_has_property(res, "output")
+	return _object_has_property(res, "name") \
+			and _object_has_property(res, "input") \
+			and _object_has_property(res, "output")
 
 func _valid_category(category: String) -> bool:
 	return category in _RECIPE_CATEGORIES
@@ -226,7 +226,7 @@ func _patch_recipe(id: Variant, fields: Dictionary) -> bool:
 	var stash: Dictionary = patched.get(key, {})
 	for field in fields.keys():
 		var fname := String(field)
-		if not _resource_has_property(target, fname):
+		if not _object_has_property(target, fname):
 			push_warning("[Registry] patch('recipes'): field '%s' doesn't exist on RecipeData" % fname)
 			continue
 		if not stash.has(fname):

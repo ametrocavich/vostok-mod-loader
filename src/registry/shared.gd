@@ -4,15 +4,17 @@
 
 # Bump a reg's rollback-registered map with a bare marker entry. Section
 # handlers that need to store per-id payload (items, loot) write the payload
-# directly instead of calling this.
+# directly instead of calling this. (Currently only scenes.gd uses this
+# bare-marker form.)
 func _track_registered(registry: String, id: String) -> void:
 	var reg: Dictionary = _registry_registered.get(registry, {})
 	reg[id] = true
 	_registry_registered[registry] = reg
 
 # True if `res` has a declared property named `prop`. Used by patch() to
-# reject typos and by shape-checks that test for a specific field.
-func _resource_has_property(res: Resource, prop: String) -> bool:
+# reject typos and by shape-checks that test for a specific field. Param is
+# Object (not Resource) so Node-backed callers (scene_nodes) can share it.
+func _object_has_property(res: Object, prop: String) -> bool:
 	for p in res.get_property_list():
 		if p.get("name") == prop:
 			return true
@@ -23,7 +25,7 @@ func _resource_has_property(res: Resource, prop: String) -> bool:
 # loader's script scope, which it isn't (ItemData is a game class). Instead
 # check for the canonical `file` field every ItemData (and subclass) defines.
 func _looks_like_item_data(res: Resource) -> bool:
-	return _resource_has_property(res, "file")
+	return _object_has_property(res, "file")
 
 # Typed-array validation. Array[ItemData] only accepts instances whose script
 # chain inherits from the ItemData script. Raw Resource + inline GDScript
@@ -64,7 +66,7 @@ func _typed_array_accepts(arr: Array, item: Variant) -> bool:
 # `allow_duplicates` only affects append/prepend; ignored on remove_from.
 # Returns false on any validation failure (and does not mutate target).
 func _array_op_on_resource(reg: String, stash_key: Variant, target: Resource, field: String, op: String, values: Array, allow_duplicates: bool = false) -> bool:
-	if not _resource_has_property(target, field):
+	if not _object_has_property(target, field):
 		push_warning("[Registry] %s('%s', %s): field '%s' doesn't exist on %s" \
 				% [op, reg, str(stash_key), field, target.get_class()])
 		return false

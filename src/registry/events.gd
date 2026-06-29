@@ -43,9 +43,9 @@ func _events_resource() -> Resource:
 # Shape check: consistent with other registries' _looks_like_* helpers.
 # EventData's canonical fields are name, type, function, possibility.
 func _looks_like_event_data(res: Resource) -> bool:
-	return _resource_has_property(res, "function") \
-			and _resource_has_property(res, "possibility") \
-			and _resource_has_property(res, "day")
+	return _object_has_property(res, "function") \
+			and _object_has_property(res, "possibility") \
+			and _object_has_property(res, "day")
 
 # Validates {event} payload. Returns [event, arr] or [null, null] on error.
 func _validate_event_data(id: String, verb: String, data: Variant) -> Array:
@@ -186,7 +186,7 @@ func _patch_event(id: Variant, fields: Dictionary) -> bool:
 	var stash: Dictionary = patched.get(key, {})
 	for field in fields.keys():
 		var fname := String(field)
-		if not _resource_has_property(target, fname):
+		if not _object_has_property(target, fname):
 			push_warning("[Registry] patch('events'): field '%s' doesn't exist on EventData" % fname)
 			continue
 		if not stash.has(fname):

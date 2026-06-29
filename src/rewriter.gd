@@ -208,7 +208,7 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask
 		if fe["is_static"]:
 			continue
 		# Mask keys are lowercased (built from .hook() calls; see
-		# rewriter.gd:211 dispatch-name lowering). Match case-insensitively
+		# add_hook() in hooks_api.gd). Match case-insensitively
 		# so "updatetooltip" matches vanilla "UpdateToolTip".
 		if apply_mask and not method_mask.has(fe["name"].to_lower()):
 			continue
@@ -517,16 +517,12 @@ func _rtv_inject_prelude(lines: PackedStringArray, func_name: String, prelude_li
 				j += 1
 				continue
 			break
-	var out: Array = []
+	var result := PackedStringArray()
 	for i in lines.size():
-		out.append(lines[i])
+		result.append(lines[i])
 		if i == insert_after:
 			for pl in prelude_lines:
-				out.append(pl)
-	var result := PackedStringArray()
-	result.resize(out.size())
-	for k in out.size():
-		result[k] = out[k]
+				result.append(pl)
 	return result
 
 # The LoadScene prelude. Checks the mod + override scene-path dicts at

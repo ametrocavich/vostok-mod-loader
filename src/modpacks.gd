@@ -40,6 +40,15 @@ func _is_modpack_managed_profile(profile_name: String) -> bool:
 	return profile_name.begins_with(MODPACK_PROFILE_PREFIX) \
 			or profile_name.begins_with(MODPACK_BACKUP_PREFIX)
 
+# Count the truthy values in a dictionary -- used to tally how many mods a
+# modpack's `enabled` map turns on.
+func _count_truthy(d: Dictionary) -> int:
+	var count := 0
+	for k in d.keys():
+		if bool(d[k]):
+			count += 1
+	return count
+
 # Pre-apply validation: open the zip, parse profile.json, sanity-check the
 # schema. Catches malformed zips, missing profile.json, wrong schema version,
 # missing required fields BEFORE apply has touched any state. Returns
@@ -72,10 +81,7 @@ func _validate_modpack(entry: Dictionary) -> Dictionary:
 	if not (pd.get("enabled") is Dictionary):
 		return {"ok": false, "error": "profile.json is missing 'enabled'"}
 	var enabled: Dictionary = pd["enabled"]
-	var enabled_count := 0
-	for k in enabled.keys():
-		if bool(enabled[k]):
-			enabled_count += 1
+	var enabled_count := _count_truthy(enabled)
 	return {
 		"ok": true,
 		"error": "",
@@ -117,10 +123,7 @@ func _build_modpack_entry(file_path: String) -> Dictionary:
 	var author := str(pd.get("author", "")).strip_edges()
 	var exported_at := str(pd.get("exported_at", ""))
 	var enabled: Dictionary = pd.get("enabled", {})
-	var enabled_count := 0
-	for k in enabled.keys():
-		if bool(enabled[k]):
-			enabled_count += 1
+	var enabled_count := _count_truthy(enabled)
 	return {
 		"file_path": file_path,
 		"file_name": file_path.get_file(),
@@ -600,10 +603,10 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 		var cfg := ConfigFile.new()
 		cfg.load(UI_CONFIG_PATH)
 
-		var src_en := "profile." + pre_active + ".enabled"
-		var src_pr := "profile." + pre_active + ".priority"
-		var bk_en := "profile." + backup_profile + ".enabled"
-		var bk_pr := "profile." + backup_profile + ".priority"
+		var src_en := _profile_sec(pre_active, ".enabled")
+		var src_pr := _profile_sec(pre_active, ".priority")
+		var bk_en := _profile_sec(backup_profile, ".enabled")
+		var bk_pr := _profile_sec(backup_profile, ".priority")
 
 		if cfg.has_section(bk_en):
 			cfg.erase_section(bk_en)
@@ -628,7 +631,7 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 		# 2. If modpack profile doesn't exist, materialize it from the zip.
 		# If it does exist, leave alone -- user's prior edits are preserved.
 		cfg.load(UI_CONFIG_PATH)
-		if not cfg.has_section("profile." + modpack_profile + ".enabled"):
+		if not cfg.has_section(_profile_sec(modpack_profile, ".enabled")):
 			var mat_result := _materialize_modpack_profile(entry, modpack_profile)
 			if not bool(mat_result.get("ok", false)):
 				return mat_result
@@ -648,7 +651,7 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 		cfg.set_value("settings", "active_modpack", sanitized)
 		_persist_ui_cfg(cfg)
 
-	# 5. Refresh the Mods tab so the modpack's selection + banner show
+	# 6. Refresh the Mods tab so the modpack's selection + banner show
 	# (or, in the re-apply path, so any newly-downloaded mods appear).
 	if tabs != null and is_instance_valid(tabs):
 		_rebuild_mods_tab(tabs)
@@ -683,8 +686,8 @@ func _materialize_modpack_profile(entry: Dictionary, profile_name: String) -> Di
 
 	var cfg := ConfigFile.new()
 	cfg.load(UI_CONFIG_PATH)
-	var en_sec := "profile." + profile_name + ".enabled"
-	var pr_sec := "profile." + profile_name + ".priority"
+	var en_sec := _profile_sec(profile_name, ".enabled")
+	var pr_sec := _profile_sec(profile_name, ".priority")
 	if cfg.has_section(en_sec):
 		cfg.erase_section(en_sec)
 	if cfg.has_section(pr_sec):
@@ -728,10 +731,10 @@ func unload_modpack(tabs: TabContainer) -> Dictionary:
 	var pre_active := str(cfg.get_value("settings", "modpack_backup_profile", "Default"))
 
 	# 1. Restore backup sections into the pre-active profile slot.
-	var bk_en := "profile." + backup_profile + ".enabled"
-	var bk_pr := "profile." + backup_profile + ".priority"
-	var dst_en := "profile." + pre_active + ".enabled"
-	var dst_pr := "profile." + pre_active + ".priority"
+	var bk_en := _profile_sec(backup_profile, ".enabled")
+	var bk_pr := _profile_sec(backup_profile, ".priority")
+	var dst_en := _profile_sec(pre_active, ".enabled")
+	var dst_pr := _profile_sec(pre_active, ".priority")
 
 	# Backup gone entirely (corrupt state, hand-edited cfg)? Then there is
 	# nothing to restore FROM -- erasing the destination first would wipe the

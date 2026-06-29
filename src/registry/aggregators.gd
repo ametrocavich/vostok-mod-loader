@@ -502,7 +502,7 @@ func _build_furniture_recipe(id: String, output_item: Resource, rd: Dictionary) 
 # the field exists. Best-effort: failures warn but don't abort the parent
 # registration -- icons are cosmetic.
 func _apply_icon(item_data: Resource, icon_path: String, owner_id: String) -> void:
-	if not _resource_has_property(item_data, "icon"):
+	if not _object_has_property(item_data, "icon"):
 		return
 	var img := Image.new()
 	if img.load(icon_path) != OK:

@@ -49,16 +49,7 @@ const Registry := {
 	MAGAZINES = "magazines",
 	ATTACHMENTS = "attachments",
 	AI_LOADOUTS = "ai_loadouts",
-	# Future sections populate the rest:
-	# TRADER_POOLS = "trader_pools",
-	# TRADER_TASKS = "trader_tasks",
-	# INPUTS = "inputs",
-	# SHELTERS = "shelters",
-	# SCENE_PATHS = "scene_paths",
-	# AI_TYPES = "ai_types",
-	# FISH_SPECIES = "fish_species",
-	# TRACKS = "tracks",
-	# RESOURCES = "resources",
+	# TRACKS = "tracks",  # not yet implemented
 }
 
 # Rollback tracking. Populated by register/override/patch, consumed by

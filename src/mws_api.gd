@@ -142,12 +142,6 @@ func mws_list_mods(query: String = "", sort: String = "bumped_at", category_id: 
 	var url := MWS_API_BASE + "/games/" + str(MWS_RTV_GAME_ID) + "/mods?" + "&".join(params)
 	return await _mws_get_json(url, _MWS_TTL_LIST_MS)
 
-# Full mod payload for the detail modal. Returns a bare Mod object (NOT wrapped
-# in {data} -- inconsistent with the list endpoints, just the API's quirk). Has
-# images[], dependencies[], breadcrumb, files_count, plus everything in ModSummary.
-func mws_get_mod(mod_id: int) -> Variant:
-	return await _mws_get_json(MWS_API_BASE + "/mods/" + str(mod_id), _MWS_TTL_DETAIL_MS)
-
 # Hierarchical category list for the Browse tab filter. Returns
 # {data: [Category], meta}. Categories are tree-shaped via parent_id; top-level
 # nodes have parent_id == null. ~40 categories for RTV at last count.
@@ -201,10 +195,3 @@ func mws_image_url(image_record: Dictionary, want_thumb: bool = false) -> String
 	if want_thumb and has_thumb:
 		return MWS_STORAGE_BASE + "/mods/images/thumbs/" + fn
 	return MWS_STORAGE_BASE + "/mods/images/" + fn
-
-# Same convention for the per-game thumbnail field on Game records and the
-# per-mod thumbnail field on Mod records (different storage path).
-func mws_thumbnail_url(thumbnail_filename: String) -> String:
-	if thumbnail_filename.is_empty():
-		return ""
-	return MWS_STORAGE_BASE + "/mods/thumbnails/" + thumbnail_filename

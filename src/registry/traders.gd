@@ -69,7 +69,7 @@ func _register_trader_pool(id: String, data: Variant) -> bool:
 		push_warning("[Registry] register('trader_pools', '%s'): unknown trader '%s' (valid: %s)" \
 				% [id, trader, _TRADER_POOL_FLAGS.keys()])
 		return false
-	if not _resource_has_property(item, flag):
+	if not _object_has_property(item, flag):
 		push_warning("[Registry] register('trader_pools', '%s'): item has no '%s' flag field (not a standard ItemData?)" % [id, flag])
 		return false
 	# Stash the original flag value so remove/revert can restore it. Most
@@ -136,9 +136,9 @@ func _resolve_trader_data(trader_ref: String) -> Resource:
 
 # Shape check for TaskData.
 func _looks_like_task_data(res: Resource) -> bool:
-	return _resource_has_property(res, "trader") \
-			and _resource_has_property(res, "deliver") \
-			and _resource_has_property(res, "receive")
+	return _object_has_property(res, "trader") \
+			and _object_has_property(res, "deliver") \
+			and _object_has_property(res, "receive")
 
 # Validates {task, trader} payload. Returns [task, tasks_arr, trader_name]
 # or [null, null, ""] on error.
@@ -283,7 +283,7 @@ func _patch_trader_task(id: Variant, fields: Dictionary) -> bool:
 	var stash: Dictionary = patched.get(key, {})
 	for field in fields.keys():
 		var fname := String(field)
-		if not _resource_has_property(target, fname):
+		if not _object_has_property(target, fname):
 			push_warning("[Registry] patch('trader_tasks'): field '%s' doesn't exist on TaskData" % fname)
 			continue
 		if not stash.has(fname):

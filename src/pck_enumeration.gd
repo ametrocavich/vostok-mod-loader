@@ -230,9 +230,3 @@ func _parse_pck_file_list(pck_path: String) -> PackedStringArray:
 
 	f.close()
 	return result
-
-# STABILITY canary B: probe the first readable vanilla script for its GDSC
-# tokenizer version. Returns 100 (Godot 4.0-4.4), 101 (Godot 4.5-4.6), or
-# -1 if the file isn't binary-tokenized / unreadable. Used to bail out
-# cleanly when Godot ships a new tokenizer format (v102+) rather than
-# cascading "Empty detokenized source" warnings through every script.

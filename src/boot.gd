@@ -323,6 +323,36 @@ static func _static_cleanup_orphan_hook_packs(keep_path: String, log_lines: Pack
 	if removed > 0:
 		log_lines.append("[FileScope] Cleaned %d orphan hook pack(s) from prior session(s)" % removed)
 
+# Delete the contents of a one-level-deep directory: every top-level file, and
+# every file one level inside each immediate subdirectory, then the subdir
+# itself. Does NOT remove dir_path. No-op if dir_path is missing/unopenable.
+# Hidden-file handling follows DirAccess defaults (matches both call sites).
+static func _wipe_shallow_tree(dir_path: String) -> void:
+	if not DirAccess.dir_exists_absolute(dir_path):
+		return
+	var dir := DirAccess.open(dir_path)
+	if dir == null:
+		return
+	dir.list_dir_begin()
+	while true:
+		var entry := dir.get_next()
+		if entry == "":
+			break
+		var full: String = dir_path.path_join(entry)
+		if dir.current_is_dir():
+			var sub := DirAccess.open(full)
+			if sub:
+				sub.list_dir_begin()
+				var sub_file := sub.get_next()
+				while sub_file != "":
+					DirAccess.remove_absolute(full.path_join(sub_file))
+					sub_file = sub.get_next()
+				sub.list_dir_end()
+			DirAccess.remove_absolute(full)
+		else:
+			DirAccess.remove_absolute(full)
+	dir.list_dir_end()
+
 static func _static_wipe_hook_cache() -> void:
 	# Wipe every Framework*.gd we previously generated (cheap to regenerate)
 	# and every framework_pack_*.zip (per-session hook packs). On Windows,
@@ -343,31 +373,9 @@ static func _static_wipe_hook_cache() -> void:
 				elif pname.begins_with(HOOK_PACK_PREFIX) and pname.ends_with(".zip"):
 					DirAccess.remove_absolute(pack_dir.path_join(pname))
 			pdir.list_dir_end()
+	# Shallow -- vanilla cache is only Scripts/*.gd (one level deep)
 	var cache_dir := ProjectSettings.globalize_path(VANILLA_CACHE_DIR)
-	if not DirAccess.dir_exists_absolute(cache_dir):
-		return
-	var dir := DirAccess.open(cache_dir)
-	if dir == null:
-		return
-	dir.list_dir_begin()
-	var file_name := dir.get_next()
-	while file_name != "":
-		var full := cache_dir.path_join(file_name)
-		if dir.current_is_dir():
-			# Shallow -- vanilla cache is only Scripts/*.gd (one level deep)
-			var sub := DirAccess.open(full)
-			if sub:
-				sub.list_dir_begin()
-				var sub_file := sub.get_next()
-				while sub_file != "":
-					DirAccess.remove_absolute(full.path_join(sub_file))
-					sub_file = sub.get_next()
-				sub.list_dir_end()
-			DirAccess.remove_absolute(full)
-		else:
-			DirAccess.remove_absolute(full)
-		file_name = dir.get_next()
-	dir.list_dir_end()
+	_wipe_shallow_tree(cache_dir)
 	DirAccess.remove_absolute(cache_dir)
 
 func _build_autoload_sections() -> Dictionary:
@@ -387,32 +395,8 @@ func _build_autoload_sections() -> Dictionary:
 const EARLY_AUTOLOAD_DIR := "user://modloader_early"
 
 func _clean_early_autoload_dir() -> void:
-	var dir_path := ProjectSettings.globalize_path(EARLY_AUTOLOAD_DIR)
-	if not DirAccess.dir_exists_absolute(dir_path):
-		return
-	var dir := DirAccess.open(dir_path)
-	if dir == null:
-		return
-	# Simple recursive wipe -- this directory is entirely modloader-managed.
-	dir.list_dir_begin()
-	while true:
-		var entry := dir.get_next()
-		if entry == "":
-			break
-		var full: String = dir_path.path_join(entry)
-		if dir.current_is_dir():
-			var sub := DirAccess.open(full)
-			if sub:
-				sub.list_dir_begin()
-				var sub_file := sub.get_next()
-				while sub_file != "":
-					DirAccess.remove_absolute(full.path_join(sub_file))
-					sub_file = sub.get_next()
-				sub.list_dir_end()
-			DirAccess.remove_absolute(full)
-		else:
-			DirAccess.remove_absolute(full)
-	dir.list_dir_end()
+	# Simple shallow wipe -- this directory is entirely modloader-managed.
+	_wipe_shallow_tree(ProjectSettings.globalize_path(EARLY_AUTOLOAD_DIR))
 
 # Extract an early autoload .gd script to disk if it only exists inside a
 # mounted archive.  Godot opens [autoload_prepend] scripts before file-scope
