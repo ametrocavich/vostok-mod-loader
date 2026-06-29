@@ -196,6 +196,10 @@ func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, e
 		"dependencies_satisfied": true,
 		"cfg": cfg, "mod_txt_status": _last_mod_txt_status,
 		"mod_txt_error": _last_mod_txt_error,
+		# Presence-signal: the mod declares a [registry] section, i.e. it adds
+		# game content (items/recipes/etc.) that an existing save can come to
+		# depend on. Drives the disable-time save-safety confirm in the UI.
+		"has_registry": cfg != null and cfg.has_section("registry"),
 	}
 	return entry
 
@@ -1074,7 +1078,7 @@ func _persist_mod_sources_for_entries(entries: Array[Dictionary]) -> void:
 			cfg.set_value("mod_sources", pk, serialized)
 			changed = true
 	if changed:
-		cfg.save(UI_CONFIG_PATH)
+		_persist_ui_cfg(cfg)
 
 
 # Read the persisted [mod_sources] cache as {profile_key -> {modworkshop_id,
@@ -1112,4 +1116,4 @@ func _persist_single_mod_source(profile_key: String, mws_id: int, version: Strin
 	var current := str(cfg.get_value("mod_sources", profile_key, ""))
 	if current != serialized:
 		cfg.set_value("mod_sources", profile_key, serialized)
-		cfg.save(UI_CONFIG_PATH)
+		_persist_ui_cfg(cfg)

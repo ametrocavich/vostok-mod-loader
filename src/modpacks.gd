@@ -618,7 +618,7 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 				cfg.set_value(bk_pr, k, cfg.get_value(src_pr, k))
 
 		cfg.set_value("settings", "modpack_backup_profile", pre_active)
-		cfg.save(UI_CONFIG_PATH)
+		_persist_ui_cfg(cfg)
 
 		# Snapshot pre-modpack MCM into the backup slot. Vanilla has no MCM
 		# state worth preserving (no mods active to consume MCM).
@@ -646,7 +646,7 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 		# active_profile in cfg too).
 		cfg.load(UI_CONFIG_PATH)
 		cfg.set_value("settings", "active_modpack", sanitized)
-		cfg.save(UI_CONFIG_PATH)
+		_persist_ui_cfg(cfg)
 
 	# 5. Refresh the Mods tab so the modpack's selection + banner show
 	# (or, in the re-apply path, so any newly-downloaded mods appear).
@@ -697,7 +697,7 @@ func _materialize_modpack_profile(entry: Dictionary, profile_name: String) -> Di
 	for k in priority_dict.keys():
 		var pv := int(priority_dict[k])
 		cfg.set_value(pr_sec, str(k), clampi(pv, PRIORITY_MIN, PRIORITY_MAX))
-	cfg.save(UI_CONFIG_PATH)
+	_persist_ui_cfg(cfg)
 
 	# Extract MCM tree into the profile's snapshot slot. _switch_profile
 	# will then restore from this slot when we switch into the profile.
@@ -760,7 +760,7 @@ func unload_modpack(tabs: TabContainer) -> Dictionary:
 		cfg.erase_section(bk_pr)
 	cfg.set_value("settings", "modpack_backup_profile", "")
 	cfg.set_value("settings", "active_modpack", "")
-	cfg.save(UI_CONFIG_PATH)
+	_persist_ui_cfg(cfg)
 
 	# 3. Restore non-MCM override files (Preferences.tres etc) from the
 	# backup slot's manifest. This must happen BEFORE _switch_profile

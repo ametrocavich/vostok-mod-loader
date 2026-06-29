@@ -27,11 +27,30 @@ func _load_ui_config() -> void:
 	_active_profile = "Default"
 	var cfg := ConfigFile.new()
 	if cfg.load(UI_CONFIG_PATH) != OK:
-		# Fresh install, no config file yet. Materialize the placeholder
-		# Default profile so it's a real on-disk profile from the first UI
-		# render (see comment at the tail of this function for rationale).
-		_save_ui_config()
-		return
+		# The live config is missing OR failed to parse (corrupt / half-written
+		# by a crash mid-save). Before falling through to a fresh Default -- which
+		# overwrites and would wipe every other stored profile -- try the rolling
+		# backup written by _persist_ui_cfg.
+		var bak := UI_CONFIG_PATH + ".bak"
+		var bak_cfg := ConfigFile.new()
+		if FileAccess.file_exists(bak) and bak_cfg.load(bak) == OK:
+			_log_warning("[Config] " + UI_CONFIG_PATH + " unreadable; recovered from .bak")
+			# Preserve the unreadable file for inspection, then write the
+			# recovered state back as the live config. Raw save (not
+			# _persist_ui_cfg) so the corrupt live file is not copied over the
+			# good backup we just read.
+			if FileAccess.file_exists(UI_CONFIG_PATH):
+				DirAccess.copy_absolute(UI_CONFIG_PATH, UI_CONFIG_PATH + ".corrupt")
+			cfg = bak_cfg
+			cfg.save(UI_CONFIG_PATH)
+			# Fall through and process the recovered cfg normally.
+		else:
+			# Genuinely fresh install (or the backup is also unreadable):
+			# materialize the placeholder Default profile so it is a real on-disk
+			# profile from the first UI render (see the comment at the tail of
+			# this function for rationale).
+			_save_ui_config()
+			return
 
 	# Migrate legacy flat [enabled]/[priority] layout into profile.Default.* on
 	# the first post-upgrade load. The next _save_ui_config writes the file back
@@ -86,7 +105,7 @@ func _load_ui_config() -> void:
 		mp_dirty = true
 	if mp_dirty:
 		cfg.set_value("settings", "active_modpack", active_mp)
-		cfg.save(UI_CONFIG_PATH)
+		_persist_ui_cfg(cfg)
 
 	_apply_profile_to_entries(cfg, _active_profile)
 
@@ -178,7 +197,7 @@ func _save_per_profile_setting(key: String, value: Variant) -> void:
 	cfg.load(UI_CONFIG_PATH)
 	var sec := "profile." + _active_profile + ".settings"
 	cfg.set_value(sec, key, value)
-	cfg.save(UI_CONFIG_PATH)
+	_persist_ui_cfg(cfg)
 	# Deliberately does NOT set _dirty_since_boot: the per-profile settings
 	# here are pure VIEW filters (hide_disabled, read only by
 	# _mods_entry_visible). Marking dirty would restart the game on the
@@ -326,9 +345,33 @@ func _save_ui_config() -> void:
 
 	cfg.set_value("settings", "developer_mode", _developer_mode)
 	cfg.set_value("settings", "active_profile", _active_profile)
-	cfg.save(UI_CONFIG_PATH)
+	_persist_ui_cfg(cfg)
 	if _boot_complete:
 		_dirty_since_boot = true
+
+# Persist the UI config with a single rolling backup. ConfigFile.save rewrites in
+# place (truncate then write), so a crash mid-write can leave a half-file; we
+# cannot do a Windows-safe atomic rename from GDScript, so instead we copy the
+# current good file to <path>.bak BEFORE each write and _load_ui_config falls
+# back to it if the live file fails to parse. The backup is best-effort -- a
+# failed copy never blocks the save. Returns the ConfigFile.save error code.
+func _persist_ui_cfg(cfg: ConfigFile) -> int:
+	if FileAccess.file_exists(UI_CONFIG_PATH):
+		DirAccess.copy_absolute(UI_CONFIG_PATH, UI_CONFIG_PATH + ".bak")
+	return cfg.save(UI_CONFIG_PATH)
+
+# Resolve a mod's CURRENT on-disk path from the live entry list by profile key.
+# _ui_mod_entries is reassigned (collect_mod_metadata) whenever any surface
+# updates a mod, which orphans a full_path captured when a row/button was built;
+# downloading to that stale or renamed path is the repeatable "Update Failed".
+# Returns `fallback` unchanged when the mod is not in the current scan.
+func _live_full_path(profile_key: String, fallback: String) -> String:
+	if profile_key == "":
+		return fallback
+	for cur in _ui_mod_entries:
+		if str(cur.get("profile_key", "")) == profile_key:
+			return str(cur.get("full_path", fallback))
+	return fallback
 
 # Profile management: snapshot the current in-memory state to a new profile
 # and switch to it. Caller is responsible for validating `name` (unique,
@@ -361,7 +404,7 @@ func _delete_active_profile() -> void:
 	else:
 		_active_profile = remaining[0]
 	cfg.set_value("settings", "active_profile", _active_profile)
-	cfg.save(UI_CONFIG_PATH)
+	_persist_ui_cfg(cfg)
 	_apply_profile_to_entries(cfg, _active_profile)
 	# Restore the new active profile's MCM if it has one. Skip for Vanilla
 	# (no slot, no swap -- user://MCM/ left alone).
@@ -388,7 +431,7 @@ func _switch_profile(name: String) -> void:
 	var cfg := ConfigFile.new()
 	cfg.load(UI_CONFIG_PATH)
 	cfg.set_value("settings", "active_profile", _active_profile)
-	cfg.save(UI_CONFIG_PATH)
+	_persist_ui_cfg(cfg)
 	_apply_profile_to_entries(cfg, _active_profile)
 	if name != VANILLA_PROFILE:
 		if _has_mcm_snapshot(name):
@@ -427,7 +470,7 @@ func _rename_profile(new_name: String) -> void:
 		var sec := "profile." + old + suffix
 		if cfg.has_section(sec):
 			cfg.erase_section(sec)
-	cfg.save(UI_CONFIG_PATH)
+	_persist_ui_cfg(cfg)
 	_rename_mcm_snapshot(old, new_name)
 
 # --- MCM snapshot mechanic ------------------------------------------------
@@ -588,7 +631,7 @@ func _save_preferred_author(author: String) -> void:
 	var cfg := ConfigFile.new()
 	cfg.load(UI_CONFIG_PATH)
 	cfg.set_value("settings", "preferred_author", author)
-	cfg.save(UI_CONFIG_PATH)
+	_persist_ui_cfg(cfg)
 
 
 # Mods that are enabled in the active profile but whose mod.txt doesn't
@@ -955,7 +998,7 @@ func _import_profile_from_parsed(parsed: Dictionary, incoming_mcm_data: Dictiona
 		cfg.set_value(en_sec, pk, false)
 	_active_profile = name
 	cfg.set_value("settings", "active_profile", _active_profile)
-	cfg.save(UI_CONFIG_PATH)
+	_persist_ui_cfg(cfg)
 	_apply_profile_to_entries(cfg, _active_profile)
 
 	# Place INCOMING MCM into this profile's snapshot slot. Two cases:
@@ -1132,7 +1175,7 @@ func _remove_missing_entry_from_profile(stored_key: String) -> void:
 		var sec := "profile." + _active_profile + suffix
 		if cfg.has_section(sec) and cfg.has_section_key(sec, stored_key):
 			cfg.erase_section_key(sec, stored_key)
-	cfg.save(UI_CONFIG_PATH)
+	_persist_ui_cfg(cfg)
 
 # Bulk variant of _remove_missing_entry_from_profile: strips every orphaned
 # key in one config write. Called by the "Remove all" button on the
@@ -1152,7 +1195,7 @@ func _remove_all_missing_entries_from_profile() -> void:
 		for key: String in missing:
 			if cfg.has_section_key(sec, key):
 				cfg.erase_section_key(sec, key)
-	cfg.save(UI_CONFIG_PATH)
+	_persist_ui_cfg(cfg)
 
 # Keep only letters, digits, space, underscore, hyphen. Strip edges. Reject
 # dots (they would collide with the `profile.<name>.enabled` section path).
@@ -1658,6 +1701,34 @@ func _confirm_red_launch(red_mods: Array) -> bool:
 
 	# Single-result polling: lambdas mark done + capture the choice.
 	# Array used because GDScript closures hold object references.
+	var state := [false, false]  # [done, confirmed]
+	d.confirmed.connect(func():
+		state[0] = true
+		state[1] = true)
+	d.canceled.connect(func(): state[0] = true)
+	d.close_requested.connect(func(): state[0] = true)
+	d.popup_centered()
+	d.grab_focus()
+	while not state[0]:
+		await get_tree().process_frame
+	d.queue_free()
+	return state[1]
+
+# Yes/no confirm shown when the user disables a mod that registers game content.
+# Returns true to proceed with the disable, false to keep it enabled. Modeled on
+# _confirm_red_launch's single-result polling (closures hold object refs, so the
+# result rides in an Array).
+func _confirm_disable_content_mod(mod_name: String) -> bool:
+	var d := ConfirmationDialog.new()
+	d.title = "Disable content mod?"
+	d.ok_button_text = "Disable anyway"
+	d.cancel_button_text = "Keep enabled"
+	d.dialog_autowrap = true
+	d.min_size = Vector2(520, 120)
+	d.dialog_text = "\"%s\" adds game content (items, recipes, and similar). Disabling or removing it can stop an existing save that uses its content from loading until you re-enable it. Your save is not deleted -- re-enabling the mod restores it.\n\nDisable anyway?" % mod_name
+	_attach_ui_dialog(d)
+	d.exclusive = true
+	d.always_on_top = true
 	var state := [false, false]  # [done, confirmed]
 	d.confirmed.connect(func():
 		state[0] = true
@@ -2467,7 +2538,7 @@ func _delete_mod_file_and_cleanup(entry: Dictionary) -> bool:
 				continue
 			if cfg.has_section_key(section, profile_key):
 				cfg.erase_section_key(section, profile_key)
-		cfg.save(UI_CONFIG_PATH)
+		_persist_ui_cfg(cfg)
 	return true
 
 
@@ -3383,7 +3454,11 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			# "RTVModLib Compatibility Layer". clip_text + tooltip preserves the
 			# visual intent without engaging autowrap.
 			lbl.clip_text = true
+			lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 			lbl.tooltip_text = e["mod_name"]
+			# Labels default to MOUSE_FILTER_IGNORE, which suppresses the tooltip;
+			# pass mouse events so the full name shows on hover (see _make_sub_label).
+			lbl.mouse_filter = Control.MOUSE_FILTER_PASS
 			order_list.add_child(lbl)
 		if bool(pick["adjusted"]):
 			order_list.add_child(_make_sub_label("reordered for dependencies", UI_COL_INFO,
@@ -3445,8 +3520,12 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 					return
 				u_btn.disabled = true
 				u_btn.text = "Updating..."
-				var full_path: String = str(captured_upd.get("full_path", ""))
 				var mw_id: int = int(captured_upd.get("mw_id", 0))
+				# Re-resolve the path live: another surface (Updates tab) may have
+				# updated/renamed this file since the badge row was built, which
+				# would leave the captured path pointing at a file that no longer
+				# exists (the repeatable "Update Failed").
+				var full_path: String = _live_full_path(captured_pk, str(captured_upd.get("full_path", "")))
 				var result: Dictionary = await download_and_replace_mod(full_path, mw_id)
 				if bool(result.get("ok", false)):
 					_mod_updates_state.erase(captured_pk)
@@ -3838,6 +3917,17 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		# Capture entry by reference (Dictionaries are reference types in GDScript)
 		var e := entry
 		check.toggled.connect(func(on: bool):
+			# Disabling a mod that registers game content can stop an existing
+			# save that uses it from loading (the content lives only in the
+			# per-launch registry -- see Limitations). Confirm first; if the user
+			# backs out, revert the checkbox without re-firing toggled.
+			if not on and bool(e.get("has_registry", false)):
+				var ok: bool = await _confirm_disable_content_mod(str(e.get("mod_name", "this mod")))
+				if not is_instance_valid(check):
+					return
+				if not ok:
+					check.set_pressed_no_signal(true)
+					return
 			e["enabled"] = on
 			# Full rebuild via the shared tail: dependency state on OTHER
 			# rows changes with the new enabled set.
@@ -5059,7 +5149,10 @@ func check_updates_for_ui(status_info: Dictionary, add_log: Callable, check_btn:
 				dl_btn.text = "Downloading..."
 				lbl.text = "downloading..."
 				check_btn.disabled = true
-				var result: Dictionary = await download_and_replace_mod(full_path, mw_id)
+				# Re-resolve live: the Mods-tab badge may have updated/renamed this
+				# file since the Updates tab was built, orphaning the captured path.
+				var live_path: String = _live_full_path(pk, full_path)
+				var result: Dictionary = await download_and_replace_mod(live_path, mw_id)
 				if not is_instance_valid(check_btn):
 					return
 				if not is_instance_valid(dl_btn):
@@ -5141,7 +5234,7 @@ func _modloader_update_mark_seen(latest: String) -> void:
 	var cfg := ConfigFile.new()
 	cfg.load(UI_CONFIG_PATH)
 	cfg.set_value("modloader_update", "last_seen_version", latest)
-	cfg.save(UI_CONFIG_PATH)
+	_persist_ui_cfg(cfg)
 
 # One-shot popup the first session each new modloader version is detected.
 # "Open Page" launches the ModWorkshop browser tab; either action writes the
