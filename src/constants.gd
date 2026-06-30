@@ -94,6 +94,14 @@ const MWS_USER_AGENT_TEMPLATE := "vostok-mod-loader/%s (+https://github.com/amet
 const MCM_SOURCE_DIR := "user://MCM"
 const MCM_SNAPSHOT_BASE := "user://.profile_snapshots"
 
+# Independent, write-once restore points taken right before a modpack apply.
+# Distinct from MCM_SNAPSHOT_BASE (which the apply/unload state machine reads
+# and rewrites): nothing but the snapshot/restore code touches these, so they
+# survive any crash-window bug as a guaranteed recovery point. Only the most
+# recent MODPACK_SNAPSHOT_KEEP are retained; older ones are pruned on apply.
+const MODPACK_SNAPSHOT_DIR := "user://.modpack_backups"
+const MODPACK_SNAPSHOT_KEEP := 5
+
 const PRIORITY_MIN := -999
 const PRIORITY_MAX := 999
 const TRACKED_EXTENSIONS: Array[String] = ["gd", "tscn", "tres", "gdns", "gdnlib", "scn"]

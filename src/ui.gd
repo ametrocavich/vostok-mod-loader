@@ -94,6 +94,19 @@ func _load_ui_config() -> void:
 	var mp_dirty := false
 	if _is_modpack_managed_profile(_active_profile) \
 			and _active_profile != MODPACK_PROFILE_PREFIX + active_mp:
+		# Stranded in a managed slot whose pack isn't active (crash mid-apply,
+		# or a quit during unload). Restore override files AND roll live MCM back
+		# to the pre-apply snapshot -- keyed off the slot name, since active_mp
+		# may be blank here -- then recover to a real user profile. Without the
+		# MCM rollback, a crash mid-unload leaves the modpack's MCM live, and the
+		# next profile switch would capture it into a user slot and corrupt it.
+		# Both restores no-op when their backup is absent, so this is safe even
+		# when nothing was applied.
+		if _active_profile.begins_with(MODPACK_PROFILE_PREFIX):
+			var bslot := MODPACK_BACKUP_PREFIX + _active_profile.trim_prefix(MODPACK_PROFILE_PREFIX)
+			_restore_modpack_overrides(bslot)
+			if _has_mcm_snapshot(bslot):
+				_restore_mcm_from(bslot)
 		var users := _list_user_profiles_in_cfg(cfg)
 		_active_profile = users[0] if not users.is_empty() else "Default"
 		cfg.set_value("settings", "active_profile", _active_profile)
@@ -101,6 +114,13 @@ func _load_ui_config() -> void:
 		mp_dirty = true
 		_log_warning("[Modpack] Recovered from a stranded managed slot -> profile '%s'" % _active_profile)
 	elif active_mp != "" and _active_profile != MODPACK_PROFILE_PREFIX + active_mp:
+		# Revert trigger set but we never reached the pack's slot: a crash after
+		# the apply set active_modpack but before _switch_profile. Best-effort
+		# restore of override files via the manifest, then clear the stale flag.
+		# (A crash mid-apply, before _apply_modpack_overrides writes its manifest,
+		# is covered instead by the independent pre-apply snapshot + Restore
+		# button -- the manifest-driven path is a no-op in that narrow window.)
+		_restore_modpack_overrides(MODPACK_BACKUP_PREFIX + active_mp)
 		active_mp = ""
 		mp_dirty = true
 	if mp_dirty:
@@ -1938,6 +1958,68 @@ func _make_tab_margin() -> MarginContainer:
 	m.add_theme_constant_override("margin_bottom", 6)
 	return m
 
+# Restore-point picker: lists the automatic pre-apply snapshots (newest first)
+# and, after a confirm, restores the chosen one over live state -- a full revert
+# of mod_config.cfg + MCM + saved override files to how things were before that
+# apply. Re-reads state from the restored cfg and rebuilds the tabs.
+func _show_restore_snapshot_dialog(tabs: TabContainer) -> void:
+	var snaps := _list_apply_snapshots()
+	if snaps.is_empty():
+		_show_error_dialog("No Restore Points",
+				"No automatic restore points have been saved yet. One is created before each modpack apply.")
+		return
+
+	var d := ConfirmationDialog.new()
+	d.title = "Restore Pre-Modpack Backup"
+	d.ok_button_text = "Restore Selected"
+	d.dialog_hide_on_ok = false
+
+	var form := VBoxContainer.new()
+	form.custom_minimum_size = Vector2(440, 0)
+	form.add_theme_constant_override("separation", 6)
+	d.add_child(form)
+
+	var prompt := Label.new()
+	prompt.text = "Restore your mod state to a point saved automatically before a modpack was applied. This overwrites your current profiles, mod settings (MCM), and any files a modpack replaced."
+	prompt.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	form.add_child(prompt)
+
+	var picker := OptionButton.new()
+	for s: Dictionary in snaps:
+		var created: String = str(s.get("created", ""))
+		var label: String = str(s.get("pack", "modpack"))
+		if created != "":
+			label += "   (" + created + ")"
+		picker.add_item(label)
+	if picker.item_count > 0:
+		picker.select(0)
+	form.add_child(picker)
+
+	_attach_ui_dialog(d)
+	_connect_dialog_exits(d,
+		func():
+			var idx := picker.selected
+			if idx < 0 or idx >= snaps.size():
+				d.queue_free()
+				return
+			var chosen: Dictionary = snaps[idx]
+			var result := _restore_apply_snapshot(str(chosen["path"]))
+			d.queue_free()
+			if not bool(result.get("ok", false)):
+				_show_error_dialog("Restore Failed", str(result.get("error", "unknown")))
+				return
+			# Re-read state from the restored cfg and rebuild the UI.
+			var rcfg := ConfigFile.new()
+			rcfg.load(UI_CONFIG_PATH)
+			_active_profile = str(rcfg.get_value("settings", "active_profile", _active_profile))
+			_reload_entries_for_active_profile()
+			_rebuild_mods_tab(tabs)
+			_rebuild_profile_tab(tabs)
+			_show_accept_dialog("Restored", "Your mod state was restored from the selected backup."),
+		func():
+			d.queue_free())
+	d.popup_centered()
+
 func build_profile_tab(tabs: TabContainer) -> Control:
 	var margin := _make_tab_margin()
 
@@ -1986,6 +2068,20 @@ func build_profile_tab(tabs: TabContainer) -> Control:
 	hdr_row.add_child(open_folder_btn)
 	open_folder_btn.pressed.connect(func():
 		OS.shell_open(ProjectSettings.globalize_path(_mods_dir))
+	)
+
+	# Restore from an automatic pre-apply snapshot. Disabled until at least one
+	# exists (one is written before every modpack apply).
+	var restore_btn := Button.new()
+	restore_btn.text = "Restore backup"
+	var apply_snaps := _list_apply_snapshots()
+	restore_btn.disabled = apply_snaps.is_empty()
+	restore_btn.tooltip_text = ("No restore points yet -- one is saved automatically before each modpack apply" \
+			if apply_snaps.is_empty() \
+			else "Roll back profiles, mod settings, and overwritten files to a point saved before a modpack was applied")
+	hdr_row.add_child(restore_btn)
+	restore_btn.pressed.connect(func():
+		_show_restore_snapshot_dialog(tabs)
 	)
 
 	container.add_child(HSeparator.new())
@@ -2171,6 +2267,7 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 	if dl_count > 0:
 		msg += "\nWill download %d mod(s) from ModWorkshop." % dl_count
 	msg += "\n\nYour current state is backed up -- click Unload to restore."
+	msg += "\nA restore point is also saved automatically (Restore backup) in case anything goes wrong."
 	var cd := ConfirmationDialog.new()
 	cd.title = "Apply Modpack"
 	cd.dialog_text = msg
