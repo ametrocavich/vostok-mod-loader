@@ -29,6 +29,7 @@ const MODPACK_BACKUP_PREFIX := "_before_modpack_"
 const MODPACK_OVERRIDE_DENY_PREFIXES: Array[String] = [
 	"mod_config.cfg",          # the launcher's config -- modpack profile is its own slot
 	".profile_snapshots/",     # backup snapshots
+	".modpack_backups/",       # pre-apply restore points -- packs must not poison them
 	"mws_cache/",              # Browse-tab thumbnail / API cache
 	"vmz_mount_cache/",        # archive mount tmpdir
 	"modloader_",              # heartbeat, safe-mode, pass-state, etc.
@@ -364,7 +365,10 @@ func _snapshot_state_before_apply(entry: Dictionary) -> String:
 	# Filesystem-safe sortable timestamp: 2026-06-30T14-22-08
 	var stamp := Time.get_datetime_string_from_system().replace(":", "-")
 	var snap_root := MODPACK_SNAPSHOT_DIR.path_join(sanitized + "_" + stamp)
-	DirAccess.make_dir_recursive_absolute(snap_root)
+	if DirAccess.make_dir_recursive_absolute(snap_root) != OK:
+		_log_warning("[Modpack] could NOT create restore point dir " + snap_root
+				+ " -- apply will proceed WITHOUT a restore point")
+		return ""
 
 	var captured := 0
 
@@ -372,6 +376,8 @@ func _snapshot_state_before_apply(entry: Dictionary) -> String:
 	if FileAccess.file_exists(UI_CONFIG_PATH):
 		if DirAccess.copy_absolute(UI_CONFIG_PATH, snap_root.path_join("mod_config.cfg")) == OK:
 			captured += 1
+		else:
+			_log_warning("[Modpack] restore point: failed to copy mod_config.cfg into " + snap_root)
 
 	# 2. Live mod-config-menu settings tree.
 	if _copy_dir_recursive(MCM_SOURCE_DIR, snap_root.path_join("MCM")):
@@ -412,6 +418,16 @@ func _snapshot_state_before_apply(entry: Dictionary) -> String:
 	if mf != null:
 		mf.store_string(JSON.stringify(meta, "  "))
 		mf.close()
+	else:
+		_log_warning("[Modpack] restore point: failed to write snapshot.json in " + snap_root)
+
+	# If literally nothing was captured (disk full, IO errors), don't leave an
+	# empty dir masquerading as a restore point in the Restore picker.
+	if captured == 0 and FileAccess.file_exists(UI_CONFIG_PATH):
+		_log_warning("[Modpack] restore point captured NOTHING -- removing " + snap_root
+				+ "; apply will proceed WITHOUT a restore point")
+		_remove_dir_recursive(snap_root)
+		return ""
 
 	_log_info("[Modpack] pre-apply restore point saved: " + snap_root + " (" + str(captured) + " item(s))")
 	_prune_apply_snapshots()
@@ -447,15 +463,21 @@ func _list_apply_snapshots() -> Array:
 					created = str((parsed_v as Dictionary).get("created", ""))
 		out.append({"name": name, "path": path, "pack": pack, "created": created})
 	dir.list_dir_end()
-	# Sort by the ISO 'created' timestamp, newest first. A folder-name sort would
-	# group by pack name first (the name is the leading token), which could let
-	# prune delete a genuinely newer snapshot of an alphabetically-early pack.
-	# Fall back to the name (which still carries the stamp) when created is blank.
+	# Sort by timestamp, newest first. A folder-name sort would group by pack
+	# name first (the name is the leading token), which could let prune delete
+	# a genuinely newer snapshot of an alphabetically-early pack. Each entry
+	# gets ONE key: 'created' (normalized to the dash form) when present, else
+	# the trailing stamp of the folder name -- a per-entry key keeps the
+	# comparator total even when some snapshots lost their snapshot.json.
+	for s_v in out:
+		var s: Dictionary = s_v
+		var key := str(s["created"]).replace(":", "-")
+		if key == "":
+			var nm := str(s["name"])
+			key = nm.substr(maxi(0, nm.length() - 19))
+		s["sort_key"] = key
 	out.sort_custom(func(a, b):
-		var ca := str(a["created"]); var cb := str(b["created"])
-		if ca == "" or cb == "":
-			return str(a["name"]) > str(b["name"])
-		return ca > cb)
+		return str(a["sort_key"]) > str(b["sort_key"]))
 	return out
 
 # Keep the most recent MODPACK_SNAPSHOT_KEEP restore points; delete older ones.
@@ -761,6 +783,22 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 		if progress.is_valid():
 			progress.call({"current": missing.size(), "total": missing.size(), "mod_name": "", "action": "applying"})
 
+	# Re-check the cancel flag AFTER the download loop: a cancel clicked during
+	# the FINAL (or only) download is otherwise never seen -- the loop-top check
+	# has no next iteration -- and the pack would fully apply while the UI says
+	# "Cancelling...". Downloads that already landed stay on disk (same contract
+	# as the loop-top cancel); no state below has been mutated yet.
+	if _modpack_apply_cancelled:
+		_log_info("[Modpack] cancelled by user after the download phase; apply aborted before any state change")
+		return {
+			"ok": false,
+			"error": "Cancelled by user after downloading %d mod(s)" % done_dl,
+			"downloaded": done_dl,
+			"failed_downloads": failed_dl,
+			"failures": failures,
+			"cancelled": true,
+		}
+
 	if not is_reapply:
 		# Independent, write-once restore point BEFORE any state mutation. This
 		# is the user-facing safety net (Restore button in the Modpacks tab);
@@ -876,6 +914,17 @@ func _materialize_modpack_profile(entry: Dictionary, profile_name: String) -> Di
 	for k in priority_dict.keys():
 		var pv := int(priority_dict[k])
 		cfg.set_value(pr_sec, str(k), clampi(pv, PRIORITY_MIN, PRIORITY_MAX))
+	# dep_ignore ("Load anyway") overrides travel with the pack (the export
+	# writes them into profile.json); materialize them like the profile-import
+	# path does, sparse true-only, so the applied pack loads the same mods the
+	# author's install did.
+	var ig_sec := _profile_sec(profile_name, ".dep_ignore")
+	if cfg.has_section(ig_sec):
+		cfg.erase_section(ig_sec)
+	var dep_ignore_dict: Dictionary = pd.get("dep_ignore", {}) if pd.get("dep_ignore") is Dictionary else {}
+	for k in dep_ignore_dict.keys():
+		if bool(dep_ignore_dict[k]):
+			cfg.set_value(ig_sec, str(k), true)
 	_persist_ui_cfg(cfg)
 
 	# Extract MCM tree into the profile's snapshot slot. _switch_profile
@@ -919,7 +968,7 @@ func unload_modpack(tabs: TabContainer) -> Dictionary:
 	# silently destroying data.
 	if not cfg.has_section(bk_en) and not cfg.has_section(bk_pr):
 		return {"ok": false,
-				"error": "Backup state for this modpack is missing -- unload aborted, profiles untouched. Delete settings.active_modpack in mod_config.cfg to clear the flag manually."}
+				"error": "Backup state for this modpack is missing -- unload aborted, profiles untouched. Use the Restore backup button (Modpacks tab) to roll back to a pre-apply restore point, or delete settings.active_modpack in mod_config.cfg to clear the flag manually."}
 
 	if cfg.has_section(dst_en):
 		cfg.erase_section(dst_en)

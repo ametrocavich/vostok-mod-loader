@@ -795,7 +795,9 @@ func _derive_updated_filename(old_file_name: String, headers: PackedStringArray,
 # CoolMod_v1.1.zip). On failure the temp + backup are cleaned up and the
 # original file is left intact; new_path / new_file_name echo target_path.
 func download_and_replace_mod(target_path: String, modworkshop_id: int) -> Dictionary:
-	var failure := {"ok": false, "new_path": target_path, "new_file_name": target_path.get_file()}
+	# Every failure return carries an "error" string -- the badge/Updates
+	# dialogs surface it verbatim, so "unknown" must never be the answer.
+	var failure := {"ok": false, "new_path": target_path, "new_file_name": target_path.get_file(), "error": ""}
 
 	var req := HTTPRequest.new()
 	req.timeout = API_DOWNLOAD_TIMEOUT
@@ -804,16 +806,22 @@ func download_and_replace_mod(target_path: String, modworkshop_id: int) -> Dicti
 	var err := req.request(MODWORKSHOP_DOWNLOAD_URL_TEMPLATE % str(modworkshop_id))
 	if err != OK:
 		req.queue_free()
+		failure["error"] = "Could not start the download request (error %d)" % err
 		return failure
 	# request_completed -> [result, http_code, headers, body]
 	var res: Array = await req.request_completed
 	req.queue_free()
 
 	if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] < 200 or res[1] >= 300:
+		if res[0] != HTTPRequest.RESULT_SUCCESS:
+			failure["error"] = "Download failed (connection error or timeout) -- check your network and retry"
+		else:
+			failure["error"] = "Download failed (HTTP %d)" % int(res[1])
 		return failure
 	var headers: PackedStringArray = res[2]
 	var response_body: PackedByteArray = res[3]
 	if response_body.is_empty():
+		failure["error"] = "Server returned an empty file"
 		return failure
 
 	var temp_path   := target_path + ".download"
@@ -823,6 +831,7 @@ func download_and_replace_mod(target_path: String, modworkshop_id: int) -> Dicti
 
 	var out := FileAccess.open(temp_path, FileAccess.WRITE)
 	if out == null:
+		failure["error"] = "Could not write to the mods folder (permissions or disk full)"
 		return failure
 	out.store_buffer(response_body)
 	out.close()
@@ -830,11 +839,13 @@ func download_and_replace_mod(target_path: String, modworkshop_id: int) -> Dicti
 	var new_cfg: ConfigFile = read_mod_config(temp_path)
 	if new_cfg == null:
 		DirAccess.remove_absolute(temp_path)
+		failure["error"] = "Downloaded file is not a valid mod archive (no readable mod.txt)"
 		return failure
 
 	var dir_access := DirAccess.open(target_path.get_base_dir())
 	if dir_access == null:
 		DirAccess.remove_absolute(temp_path)
+		failure["error"] = "Could not open the mods folder"
 		return failure
 
 	# Decide where the validated download should land.
@@ -848,18 +859,21 @@ func download_and_replace_mod(target_path: String, modworkshop_id: int) -> Dicti
 	# mod that happens to share the new versioned name.
 	if new_file_name != old_file_name and FileAccess.file_exists(new_path):
 		DirAccess.remove_absolute(temp_path)
+		failure["error"] = "A different file named \"%s\" is already in the mods folder -- move or delete it and retry" % new_file_name
 		return failure
 
 	# Stash the old archive under .bak so a failed rename can roll back.
 	if FileAccess.file_exists(target_path):
 		if dir_access.rename(target_path.get_file(), backup_path.get_file()) != OK:
 			DirAccess.remove_absolute(temp_path)
+			failure["error"] = "Could not back up the current archive (file in use?) -- close anything using it and retry"
 			return failure
 
 	if dir_access.rename(temp_path.get_file(), new_file_name) != OK:
 		if FileAccess.file_exists(backup_path):
 			dir_access.rename(backup_path.get_file(), target_path.get_file())
 		DirAccess.remove_absolute(temp_path)
+		failure["error"] = "Could not finalize the update (file may be locked) -- the old version was kept"
 		return failure
 
 	# New file is in place; the .bak (which is the old archive) can go.

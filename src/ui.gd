@@ -1963,6 +1963,16 @@ func _make_tab_margin() -> MarginContainer:
 # of mod_config.cfg + MCM + saved override files to how things were before that
 # apply. Re-reads state from the restored cfg and rebuilds the tabs.
 func _show_restore_snapshot_dialog(tabs: TabContainer) -> void:
+	# Restore points are always captured while NO pack is active, so restoring
+	# one while a pack IS active would rewrite cfg to a no-pack state and leave
+	# the active pack's override files live with nothing tracking them (and the
+	# user's originals stranded in the backup slot). Require a clean unload
+	# first -- its manifest-driven revert is the correct path out.
+	var active_pack := get_active_modpack()
+	if active_pack != "":
+		_show_error_dialog("Modpack Active",
+				"Unload the active modpack (\"" + active_pack + "\") before restoring a backup. Unload reverts the pack's files first; restoring on top of an active pack would leave its files behind.")
+		return
 	var snaps := _list_apply_snapshots()
 	if snaps.is_empty():
 		_show_error_dialog("No Restore Points",
@@ -2015,6 +2025,11 @@ func _show_restore_snapshot_dialog(tabs: TabContainer) -> void:
 			_reload_entries_for_active_profile()
 			_rebuild_mods_tab(tabs)
 			_rebuild_profile_tab(tabs)
+			# The restore rewrote cfg + MCM on disk; a post-boot session must
+			# restart into it or the running game keeps the old mods live
+			# against the restored config (same convention as _switch_profile).
+			if _boot_complete:
+				_dirty_since_boot = true
 			_show_accept_dialog("Restored", "Your mod state was restored from the selected backup."),
 		func():
 			d.queue_free())
@@ -2325,12 +2340,28 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 			var dl_failed: int = int(result.get("failed_downloads", 0))
 			var failures: Array = result.get("failures", [])
 
-			# Cancelled / partial: tear down progress, route to failure
-			# dialog which has its own dismiss-on-OK flow.
-			if was_cancelled or dl_failed > 0:
+			# Cancelled: the apply aborted BEFORE any state mutation -- the pack
+			# was NOT applied. Say exactly that instead of routing to the
+			# "Applied with Issues" dialog, which would claim the opposite.
+			if was_cancelled:
 				if pd != null and is_instance_valid(pd):
 					pd.queue_free()
-				_rebuild_profile_tab(tabs)
+				if is_instance_valid(tabs):
+					_rebuild_profile_tab(tabs)
+				var cancel_msg := "Apply cancelled -- the modpack was NOT applied and your profiles are unchanged."
+				if dl > 0:
+					cancel_msg += "\n%d downloaded mod(s) remain in your mods folder." % dl
+				if dl_failed > 0:
+					cancel_msg += "\n%d download(s) had already failed before the cancel." % dl_failed
+				_show_accept_dialog("Apply Cancelled", cancel_msg)
+				return
+			# Partial: tear down progress, route to failure dialog which has
+			# its own dismiss-on-OK flow.
+			if dl_failed > 0:
+				if pd != null and is_instance_valid(pd):
+					pd.queue_free()
+				if is_instance_valid(tabs):
+					_rebuild_profile_tab(tabs)
 				_show_modpack_failure_dialog(dl, failures, tabs)
 				return
 			if not bool(result.get("ok", false)):
@@ -2338,7 +2369,8 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 					pd.queue_free()
 				_show_error_dialog("Apply Failed", str(result.get("error", "unknown")))
 				return
-			_rebuild_profile_tab(tabs)
+			if is_instance_valid(tabs):
+				_rebuild_profile_tab(tabs)
 			# Full success. If a progress dialog was shown, switch it to
 			# completion state (filled bar, summary line, OK button) so
 			# the user dismisses on their own time. With no downloads
@@ -2350,6 +2382,7 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 					pd_status.text = "Done. Downloaded %d mod(s)." % dl
 				if is_instance_valid(pd_cancel):
 					pd_cancel.visible = false
+				pd.dialog_close_on_escape = true
 				var pd_ok := pd.get_ok_button()
 				if pd_ok != null:
 					pd_ok.visible = true
@@ -2406,8 +2439,11 @@ func _build_modpack_progress_dialog(raw_name: String) -> Dictionary:
 	# Attach AFTER content so _attach_ui_dialog's reparent step picks up
 	# the box and folds it into the root VBox with the injected title.
 	# Progress is non-dismissible while running; hide the native OK until
-	# the caller flips it on at completion.
+	# the caller flips it on at completion, and swallow ESC too -- a hidden
+	# (not cancelled) dialog would lift the exclusive input block and let the
+	# user Launch / switch profiles mid-apply. Cancel is the only way out.
 	_attach_ui_dialog(pd)
+	pd.dialog_close_on_escape = false
 	var pd_ok := pd.get_ok_button()
 	if pd_ok != null:
 		pd_ok.visible = false
@@ -3443,23 +3479,35 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		check_btn.disabled = true
 		check_btn.text = "Checking..."
 		var summary := await _run_updates_check_for_mods()
-		if not is_instance_valid(check_btn):
-			return
-		check_btn.disabled = false
-		check_btn.text = "Check Updates"
+		# A mid-check rebuild (filter keystroke, toggle) frees the original
+		# button -- only skip the direct button touches then; the rebuild and
+		# the toast must still run or the completed check's results are
+		# silently dropped and the NEW button (created disabled while the
+		# flag was up) strands at "Checking...".
+		if is_instance_valid(check_btn):
+			check_btn.disabled = false
+			check_btn.text = "Check Updates"
 		if is_instance_valid(tabs):
 			_rebuild_mods_tab(tabs)
 		# Surface a one-liner so the user knows something happened even when
-		# nothing is out of date.
+		# nothing is out of date -- and be honest when checks ERRORED rather
+		# than counting unreachable mods as "up to date".
 		var n := int(summary.get("with_updates", 0))
 		var ck := int(summary.get("checked", 0))
+		var er := int(summary.get("errors", 0))
 		var msg := ""
 		if ck == 0:
 			msg = "No mods have [updates] modworkshop= + version set."
+		elif er >= ck:
+			msg = "Could not reach ModWorkshop -- 0 of %d mod(s) checked." % ck
 		elif n == 0:
-			msg = "All %d checked mod(s) up to date." % ck
+			msg = "All %d checked mod(s) up to date." % (ck - er)
+			if er > 0:
+				msg += " (%d could not be checked)" % er
 		else:
 			msg = "%d update(s) available." % n
+			if er > 0:
+				msg += " (%d could not be checked)" % er
 		_show_info_toast(msg)
 	)
 
@@ -5326,8 +5374,18 @@ func _check_modloader_update_async() -> void:
 	if latest.is_empty():
 		return
 	_modloader_latest_version = latest
-	if compare_versions(latest, MODLOADER_VERSION) <= 0:
-		return  # installed is current or newer
+	# Prerelease-aware gate: "3.3.0-beta.1" numerically parses as 3.3.0.1,
+	# which would compare GREATER than the eventual "3.3.0" stable and mute
+	# the update prompt forever. Semver rule: a prerelease precedes its
+	# release, so compare on the base version and treat equal-base as
+	# update-available when the installed build carries a "-suffix". Dormant
+	# on stable builds (no "-" in MODLOADER_VERSION -> identical behavior).
+	var installed_base := MODLOADER_VERSION.split("-")[0]
+	var cmp := compare_versions(latest, installed_base)
+	if cmp < 0:
+		return  # installed is newer
+	if cmp == 0 and not MODLOADER_VERSION.contains("-"):
+		return  # installed is current
 
 	if is_instance_valid(_ui_update_alert_btn):
 		_ui_update_alert_btn.text = "Mod Loader v%s -- v%s available, click to update" % [MODLOADER_VERSION, latest]

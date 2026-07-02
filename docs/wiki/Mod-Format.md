@@ -93,7 +93,7 @@ Use Godot `ConfigFile` string arrays. Bare CSV (`required=a, b`) is not valid `C
 | `required` | string array | Mods that must be installed and enabled. If any required dependency is missing, disabled, or not loadable, this mod is skipped. |
 | `optional` | string array | Soft integrations. Parsed and displayed by the launcher; absence does not block loading. |
 
-Required dependencies should load before the dependent mod. If the current priority/name ordering would load a dependency later than its dependent, the launcher and boot log report a load-order warning. Set the dependent mod's priority higher than its required dependency to resolve it.
+Required dependencies load before the dependent mod automatically: if the priority/name ordering would load a dependency later than its dependent, the loader applies a minimal stable reorder (hoisting the dependency) and notes the adjustment in the launcher's order panel -- no author or user action needed. Dependency cycles are the exception: they are reported as a warning and the involved mods keep their priority order. Explicit priorities still work; the automatic adjustment only kicks in when a required dependency would otherwise load too late.
 
 ### `[autoload]` section
 
