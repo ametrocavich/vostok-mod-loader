@@ -101,6 +101,15 @@ func _merge_hook_calls_into_wrap_mask() -> void:
 			# normalize so the wrap surface picks those up too.
 			(_hooked_methods[path] as Dictionary)[method.to_lower()] = true
 
+# One mod, one call: mount its archive, scan + register file claims, then
+# apply its mod.txt sections. SEAM: mod.txt section handlers are the
+# inline blocks below, in this order -- [hooks], [registry] (+ the
+# implicit B_Loader form), [script_extend]/[script_overrides], then
+# [autoload]. To support a new section, add a block here; values using
+# non-Variant syntax (bare identifiers, `*`, top-level commas) also need
+# preprocessing in _parse_mod_txt (see the [hooks] quote-wrapping in
+# fs_archive.gd), and presence-only sections with empty bodies need the
+# [registry]-style sentinel-key workaround there too.
 func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 	var file_name: String = c["file_name"]
 	var full_path: String = c["full_path"]
@@ -311,7 +320,8 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 		_log_debug("  Autoload queued: " + autoload_name + " -> " + res_path + early_tag)
 		_register_claim(res_path, mod_name, file_name, load_index)
 
-# Logging
+# Resource-claim registry -- records which mod claims which res:// path
+# (feeds the conflict summary in conflict_report.gd)
 
 
 func _register_claim(res_path: String, mod_name: String, archive: String,
@@ -606,7 +616,7 @@ func _check_class_name_safety(text: String, file_path: String, mod_name: String)
 				_log_critical("  DANGER: %s calls take_over_path on class_name script %s (%s) -- this will crash" % [file_path, to_path, cn])
 				break
 
-# Override diagnostics (developer mode)
+# Autoload instantiation
 
 
 func _instantiate_autoload(mod_name: String, autoload_name: String, res_path: String) -> void:

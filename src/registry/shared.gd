@@ -58,7 +58,7 @@ func _typed_array_accepts(arr: Array, item: Variant) -> bool:
 # target Resource (via their existing _lookup_* / _load_* code) and delegate
 # here. `stash_key` is the key under _registry_patched[reg] -- usually the id,
 # but registries that accept Variant ids (recipes/events/trader_tasks) may
-# resolve the id to a different stable key (see _resolve_patch_target). Stash
+# resolve the id to a different stable key (see _resolve_recipe_patch_target). Stash
 # is the same dict patch() uses, so patch + append on the same field keeps the
 # true original on first-write-wins and revert restores it cleanly.
 #

@@ -54,6 +54,22 @@ static func _hook_base_of(hook_name: String) -> String:
 	return hook_name
 
 
+## Register a hook callback. Name grammar: "<script stem lowercase>-<method
+## lowercase>" plus an optional "-pre" / "-post" / "-callback" suffix; the
+## bare (suffixless) name is the single-owner REPLACE slot. Returns a hook
+## id usable with unhook(), or -1 when the replace slot is already owned.
+## Callbacks run in ascending `priority` order. Ties are NOT guaranteed to
+## run in registration order (Array.sort_custom is not a stable sort) --
+## use distinct priorities when order between two callbacks matters.
+##
+## IMPORTANT wrap-surface contract: registering here does NOT wrap the
+## vanilla method. The wrap surface is fixed at _generate_hook_pack time
+## from (a) [hooks] sections in mod.txt, (b) LITERAL .hook("...") string
+## calls found by the _re_hook_call source scan, (c) add_hook(), or (d) the
+## loader's own _seed_core_hooks seed (Menu.gd _ready). A hook() call whose
+## name is built at runtime (concatenation, variable) registers fine but
+## never fires unless the target method was wrapped by one of those
+## declarations.
 func hook(hook_name: String, callback: Callable, priority: int = 100) -> int:
 	var is_replace := not (hook_name.ends_with("-pre") \
 			or hook_name.ends_with("-post") \
@@ -157,6 +173,7 @@ func has_hooks(hook_name: String) -> bool:
 	return _hooks.has(hook_name) and (_hooks[hook_name] as Array).size() > 0
 
 ## Is a replace hook registered at this bare name (no -pre/-post/-callback)?
+## (Body is identical to has_hooks by design: suffixed names live under their own keys, so a bare-name key can only ever hold replace entries.)
 func has_replace(hook_name: String) -> bool:
 	return _hooks.has(hook_name) and (_hooks[hook_name] as Array).size() > 0
 

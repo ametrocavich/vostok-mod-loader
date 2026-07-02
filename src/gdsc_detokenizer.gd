@@ -463,6 +463,10 @@ func _save_vanilla_source(script_path: String, source: String) -> void:
 		f.store_string(source)
 		f.close()
 
+# ANCHOR: probe_paths below assume vanilla RTV ships Camera/Controller/Audio/AI
+# under res://Scripts/. If a game update renames ALL FOUR, this returns -1,
+# which _generate_hook_pack currently treats as "no probe" and proceeds
+# WITHOUT canary B protection (see hook_pack.gd's tok_version checks).
 func _probe_gdsc_version() -> int:
 	var probe_paths := ["res://Scripts/Camera.gd", "res://Scripts/Controller.gd",
 			"res://Scripts/Audio.gd", "res://Scripts/AI.gd"]
@@ -476,10 +480,3 @@ func _probe_gdsc_version() -> int:
 			continue
 		return int(raw.decode_u32(4))
 	return -1
-
-# Build the framework pack: enumerate res://Scripts/*.gd, detokenize each via
-# _read_vanilla_source, parse + generate wrappers, zip them, mount the zip.
-#
-# The zip mounts at res://modloader_hooks/ and wrappers load from there. NOT
-# from user:// -- Godot 4.6's extends-chain resolution for class_name parents
-# breaks for scripts loaded from user://, which shows up as broken super()

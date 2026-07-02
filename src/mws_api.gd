@@ -16,6 +16,15 @@
 ##     varies by endpoint -- see github.com/ModWorkshop/site for which is which.
 ##   - All requests carry a User-Agent. api.modworkshop.net rejects empty/default
 ##     UAs with a bodyless 403, so the template is mandatory.
+##   - All requests also carry Accept: application/json (see
+##     _mws_default_headers). Error bodies are discarded (_mws_get_json
+##     collapses non-2xx to null), so the header only matters if a caller
+##     ever starts reading error responses.
+##   - GETs opt into a per-URL in-memory TTL cache via _mws_get_json(url,
+##     cache_ttl_ms); TTLs are the _MWS_TTL_* consts below. Failures are
+##     never cached, so a flake retries the network on the next call.
+##   - mws_list_mods requests limit=50 (MWS_PAGE_LIMIT); the API returns
+##     422 for larger values, so page instead of raising the limit.
 ##   - Failures (network, HTTP error, malformed JSON) collapse to null. Callers
 ##     decide how to surface them -- usually a status label in the tab.
 

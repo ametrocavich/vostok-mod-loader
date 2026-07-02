@@ -18,10 +18,11 @@ const _TEXT_SCAN_EXTS: Dictionary = {
 	"gd": true, "tscn": true, "tres": true, "gdshader": true,
 }
 
-# Binary resources that may embed compiled GDScript or string payloads.
-# Byte-scanned for ASCII substrings of binary-safe rule patterns.
+# Binary payload scan set: resources that may embed compiled GDScript or
+# string payloads, plus compiled GDScript itself. Byte-scanned for ASCII
+# substrings of binary-safe rule patterns.
 const _BINARY_SCAN_EXTS: Dictionary = {
-	"scn": true, "res": true,
+	"scn": true, "res": true, "gdc": true,
 }
 
 # Cap findings per mod so a deliberately-noisy archive can't bury the UI.
@@ -36,6 +37,27 @@ const _MAX_TEXT_SCAN_BYTES: int = 8 * 1024 * 1024
 # which fires for solo red triggers (os_crash, disable_save_safety) or
 # for combinations (obfuscation + process spawn, runtime-code-build +
 # process spawn, both obfuscation patterns together).
+#
+# HOW TO ADD A RULE:
+#   1. Add an entry below: {id, pattern, description, binary}. `pattern`
+#      is RegEx source, compiled once in _security_compile_rules. Text
+#      scans run it against comment-stripped source
+#      (_strip_gdscript_comments) and record only the FIRST match per
+#      rule per file. Multi-line patterns must use [\s\S] -- RegEx `.`
+#      does not cross newlines.
+#   2. `binary: true` additionally runs the rule over .scn/.res/.gdc
+#      blobs flattened to printable ASCII (_security_scan_binary), so
+#      the pattern must be specific enough not to false-positive on
+#      serialized binary data.
+#   3. A match alone shows the user NOTHING. For a rule to affect the
+#      badge its id must ALSO appear in _RED_SOLO_RULES or in one of the
+#      family arrays (_PROCESS_SPAWN_RULES / _OBFUSCATION_RULES /
+#      _RUNTIME_CODE_RULES) combined by compute_risk_level. Those arrays
+#      repeat the id as a plain string -- a typo there silently drops
+#      the rule from the red logic while its findings still log.
+#   4. compute_risk_level also hardcodes the byte_decode_loop +
+#      large_int_array pair check; adding a third obfuscation rule means
+#      revisiting that check.
 const _SECURITY_RULES: Array = [
 	# --- Process spawning (combo with obfuscation/runtime_code -> red) ----
 	{
@@ -242,7 +264,7 @@ func _security_scan_zip(zip_path: String, findings: Array) -> void:
 				continue
 			_security_scan_text(f, bytes.get_string_from_utf8(), findings)
 			continue
-		if _BINARY_SCAN_EXTS.has(ext) or ext == "gdc":
+		if _BINARY_SCAN_EXTS.has(ext):
 			_security_scan_binary(f, zr.read_file(f), findings)
 	zr.close()
 
@@ -271,7 +293,7 @@ func _security_scan_folder(root: String, rel: String, findings: Array) -> void:
 				continue
 			_security_scan_text(rel_path, bytes.get_string_from_utf8(), findings)
 			continue
-		if _BINARY_SCAN_EXTS.has(ext) or ext == "gdc":
+		if _BINARY_SCAN_EXTS.has(ext):
 			_security_scan_binary(rel_path,
 					FileAccess.get_file_as_bytes(disk_path), findings)
 	dir.list_dir_end()
@@ -288,7 +310,7 @@ func _security_scan_pck(pck_path: String, findings: Array) -> void:
 			break
 		var path: String = entry["path"]
 		var ext := path.get_extension().to_lower()
-		if not (_TEXT_SCAN_EXTS.has(ext) or _BINARY_SCAN_EXTS.has(ext) or ext == "gdc"):
+		if not (_TEXT_SCAN_EXTS.has(ext) or _BINARY_SCAN_EXTS.has(ext)):
 			continue
 		f.seek(int(entry["offset"]))
 		var bytes := f.get_buffer(int(entry["size"]))

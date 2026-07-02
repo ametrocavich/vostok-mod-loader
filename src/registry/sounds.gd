@@ -43,8 +43,8 @@ func _audio_library() -> Resource:
 # Accept an AudioEvent, a bare AudioStream, or a Dictionary, and return an
 # AudioEvent Resource (or null with warning on bad input).
 #
-# AudioEvent's class script is loaded dynamically from the existing library
-#; we don't know its res:// path up front and don't want to hardcode it.
+# AudioEvent's class script is loaded dynamically from the existing library;
+# we don't know its res:// path up front and don't want to hardcode it.
 # Pull the class from any existing @export AudioEvent on the library. This
 # also tolerates the game renaming or moving AudioEvent.gd.
 func _coerce_audio_event(id: String, verb: String, data: Variant) -> Resource:

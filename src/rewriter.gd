@@ -12,7 +12,74 @@
 ##
 ## Also owns: regex compilation, parse-script, autofix legacy syntax,
 ## indent detection, bare-super rewriting.
+##
+## ============================ PIPELINE MAP ============================
+## HOW THE PATCH PIPELINE FITS TOGETHER (read before adding a target):
+##
+## 1. PCK read (pck_enumeration.gd): _enumerate_game_scripts() ->
+##    _parse_pck_file_list() walks RTV.pck's GDPC file table, yields every
+##    res://Scripts/*.gd and fills _pck_zero_byte_paths;
+##    _build_class_name_lookup() maps class_name -> path.
+## 2. Detokenize (gdsc_detokenizer.gd): _read_vanilla_source() ->
+##    _detokenize_script() reconstructs pristine vanilla source from the
+##    PCK's binary-token .gdc (GDSC v100/v101), cached under
+##    VANILLA_CACHE_DIR. _probe_gdsc_version() is stability canary B's
+##    input, consulted at the top of _generate_hook_pack.
+## 3. Declarations -> wrap surface (mod_loading.gd, hooks_api.gd,
+##    main_menu_hook.gd): [hooks] sections in mod.txt and source-scanned
+##    literal .hook("<stem>-<method>[-pre|-post|-callback]") calls (via
+##    _re_hook_call + _merge_hook_calls_into_wrap_mask) populate
+##    _hooked_methods (path -> {lowercased method: true}); [registry]
+##    sections (or B_Loader call detection) set _any_mod_declared_registry;
+##    add_hook() (godot-mod-loader compat) also writes _hooked_methods;
+##    _seed_core_hooks() adds the core Menu.gd _ready wrap.
+## 4. Rewrite (this file): _rtv_parse_script() parses the detokenized
+##    source; _rtv_rewrite_vanilla_source() renames hookable methods to
+##    _rtv_vanilla_<name>, applies per-script declaration transforms (the
+##    Database/Loader/AISpawner if/elif chain), injects function preludes
+##    (_rtv_apply_prelude_injections), appends dispatch wrappers
+##    (_rtv_dispatch_inline_src) and registry appendices
+##    (_rtv_registry_injection).
+## 5. Pack + mount + activate (hook_pack.gd): _generate_hook_pack() gates
+##    on the opt-in declarations, writes each rewrite as .gd +
+##    self-referencing .gd.remap + empty .gdc into a modloader_hooks zip,
+##    mounts it via ProjectSettings.load_resource_pack, then
+##    _activate_rewritten_scripts() forces GDScriptCache to serve it
+##    (source_code+reload, CACHE_MODE_IGNORE+take_over_path fallback).
+##    boot.gd's _mount_previous_session re-mounts last session's pack at
+##    static init. Runtime dispatch flows from the emitted wrappers into
+##    hooks_api.gd (_dispatch/_dispatch_post/_dispatch_deferred) through
+##    Engine.get_meta("RTVModLib").
+##
+## ADDING A NEW REWRITE TARGET touches, in sync (all dispatch on the bare
+## filename string):
+##   a. hook_pack.gd REGISTRY_TARGETS (only if whole-script wrap +
+##      force-activation is needed). The new file must NOT appear in
+##      constants.gd's RTV_SKIP_LIST / RTV_RESOURCE_*_SKIP -- those are
+##      checked BEFORE needed_paths in _generate_hook_pack's loop and win
+##      silently.
+##   b. this file: the declaration-transform if/elif in
+##      _rtv_rewrite_vanilla_source, and/or a case in
+##      _rtv_apply_prelude_injections, and/or a case in
+##      _rtv_registry_injection.
+##   c. a new registry section if mods register data against it: a
+##      Registry.FOO const + per-verb match-arms in registry.gd, a handler
+##      under src/registry/, and a build.sh FILES entry (the full recipe
+##      is in registry.gd's file header).
+## ADDING A NEW HOOK VARIANT (a 4th suffix besides -pre/-post/-callback)
+## touches: hooks_api.gd hook() + _hook_base_of + a new dispatcher, the
+## _re_hook_call regex in _compile_regex below, and BOTH emitter branches
+## of _rtv_dispatch_inline_src.
+## ======================================================================
 
+# NOTE: a second, deliberately separate regex set lives in
+# _rtv_compile_codegen_regex below. The two parse the same grammar but are NOT
+# equivalent (this set: whole-blob search/search_all, name-only func captures,
+# res://-quoted-only extends -- grammar consumers in mod_loading.gd, plus
+# _re_filename_priority in mod_discovery.gd; that set: per-line, full-signature
+# captures with a trailing-colon requirement -- sole consumer
+# _rtv_parse_script). Do not "dedup" them without diffing both parsers on a
+# script corpus.
 func _compile_regex() -> void:
 	_re_take_over = RegEx.new()
 	_re_take_over.compile('take_over_path\\s*\\(\\s*"(res://[^"]+)"')
@@ -40,9 +107,11 @@ func _compile_regex() -> void:
 	_re_hook_call = RegEx.new()
 	_re_hook_call.compile('\\.hook\\s*\\(\\s*"([A-Za-z_][\\w]*)-([A-Za-z_][\\w]*?)(?:-(?:pre|post|callback))?"')
 
-# Mod metadata collection (no mounting)
+# --- Codegen source parsing (regex compile + script-structure extraction) ---
 
 
+# NOTE: twin of _compile_regex above -- deliberately NOT shared; see the note
+# there before attempting to merge the two sets.
 func _rtv_compile_codegen_regex() -> void:
 	if _rtv_re_extends != null:
 		return
@@ -392,6 +461,7 @@ func _rtv_inject_database_registry(indent: String) -> String:
 # LT_Master at edit time. That's editor-only and irrelevant to runtime
 # modding, but we also swap that call for an iteration over
 # _rtv_vanilla_scenes so @tool still works if someone opens the script.
+# ANCHOR: vanilla Database.gd -- top-level `const X = preload("...")` declarations; silent no-op if the game changes the decl style.
 func _rtv_rewrite_database_constants(source: String) -> String:
 	var lines: PackedStringArray = source.split("\n")
 	var entries: PackedStringArray = []  # "KEY = PRELOAD"
@@ -437,6 +507,7 @@ func _rtv_rewrite_database_constants(source: String) -> String:
 #
 # Also stashes a snapshot var `_rtv_vanilla_shelters` so the registry can
 # compute "what's vanilla vs mod" for integrity checks / revert.
+# ANCHOR: vanilla Loader.gd -- top-level `const shelters = [...]` declaration; silent no-op if renamed/restructured.
 func _rtv_rewrite_loader_shelters(source: String) -> String:
 	var lines: PackedStringArray = source.split("\n")
 	var re := RegEx.new()
@@ -547,6 +618,7 @@ func _rtv_inject_prelude(lines: PackedStringArray, func_name: String, prelude_li
 #   - reuse vanilla's full loading flow (fade, label, timer, scene change)
 #   - can override vanilla scenes (override takes precedence in the check)
 #   - don't need to replicate any vanilla scene-change logic
+# ANCHOR: vanilla Loader.gd::LoadScene -- relies on locals `scenePath` + `scene`, gameData.menu/shelter/permadeath/tutorial flags, and the tail change_scene_to_file(scenePath).
 func _rtv_loader_loadscene_prelude() -> PackedStringArray:
 	var p := PackedStringArray()
 	p.append("\t# --- Metro mod loader: scene_paths registry prelude ---")
@@ -665,6 +737,7 @@ func _rtv_inject_loader_registry(indent: String) -> String:
 # -- we search for leading-whitespace + `agent =` and rewrite it. Only
 # vanilla fields (bandit/guard/military/punisher) should trigger this; any
 # other `agent = <literal>` outside those cases is left alone.
+# ANCHOR: vanilla AISpawner.gd::_ready -- `agent = <ident>` assignment lines inside the Zone if/elif; silent no-op if the mapping moves.
 func _rtv_rewrite_aispawner_agent_assignments(source: String) -> String:
 	var lines: PackedStringArray = source.split("\n")
 	# Regex: optional indent, "agent" "=" then an identifier (the vanilla
@@ -692,6 +765,7 @@ func _rtv_rewrite_aispawner_agent_assignments(source: String) -> String:
 # Dedupe: if a mod registers the same scene twice (or another mod does too),
 # we don't re-append. Keeps the random-pick weight stable when the same
 # scene would otherwise multiply.
+# ANCHOR: vanilla FishPool.gd::_ready -- relies on local `species: Array[PackedScene]` declared before the random-spawn loop.
 func _rtv_fishpool_ready_prelude() -> PackedStringArray:
 	var p := PackedStringArray()
 	p.append("\t# --- Metro mod loader: fish_species registry prelude ---")
@@ -725,6 +799,7 @@ func _rtv_fishpool_ready_prelude() -> PackedStringArray:
 # (populated by _register_shelter_or_map). When the mod shelters dict is
 # empty (no relevant mod loaded), the prelude is effectively a tight
 # branch + early continue with no behavior change vs vanilla.
+# ANCHOR: vanilla Compiler.gd::Spawn -- relies on locals `spawnTarget`/`transitions`/`waypoints`/`controller` (leading var decls), gameData.previousMap, and /root/Map.mapName.
 func _rtv_compiler_spawn_prelude() -> PackedStringArray:
 	var p := PackedStringArray()
 	p.append("\t# --- Metro mod loader: shelters/maps registry prelude ---")
@@ -800,12 +875,14 @@ func _rtv_compiler_spawn_prelude() -> PackedStringArray:
 # entries, rolls per entry, instantiates matching weapon scenes and
 # adds them to self.weapons. Vanilla SelectWeapon then runs as written
 # and picks one at random from the augmented pool.
+# ANCHOR: vanilla AI.gd::SelectWeapon -- relies on the `weapons` child container + hidden-until-picked child contract.
 func _rtv_ai_selectweapon_prelude() -> PackedStringArray:
 	var p := PackedStringArray()
 	p.append("\t# --- Metro mod loader: ai_loadouts registry prelude ---")
 	p.append("\t_rtv_apply_ai_loadouts()")
 	return p
 
+# ANCHOR: vanilla AI.gd fields `weapons`/`boss`/`AISpawner` + AISpawner.Zone enum key names "Area05"/"BorderZone"/"Vostok" (hardcoded in the emitted match below).
 func _rtv_inject_ai_registry(indent: String) -> String:
 	# AI.gd registry appendix. Helper functions read the ai_loadouts
 	# Engine-meta list and inject weapon scene instances into self.weapons
@@ -876,6 +953,7 @@ func _rtv_inject_ai_registry(indent: String) -> String:
 	out += I1 + I1 + I1 + "return \"\"\n"
 	return out
 
+# ANCHOR: vanilla AISpawner.gd Zone enum -- emitted resolver converts zone int via Zone.keys().
 func _rtv_inject_aispawner_registry(indent: String) -> String:
 	# AISpawner.gd registry appendix. Adds the resolver helper used by the
 	# rewritten `agent = _rtv_resolve_ai_type(zone, vanilla)` assignments.

@@ -17,6 +17,85 @@
 ##   _before_modpack_<sanitized_name>    -- backup of pre-apply state
 ##   [settings] active_modpack=<name>    -- which modpack is currently active
 ##   [settings] modpack_backup_profile   -- which profile to restore on unload
+##
+## State machine. Transitions are owned by: apply_modpack/_apply_modpack_inner
+## (no-pack -> active), unload_modpack (active -> no-pack), the boot reconciler
+## in ui.gd _load_ui_config (stranded -> no-pack), and _restore_apply_snapshot
+## (no-pack -> no-pack revert via the Restore backup button; the UI refuses it
+## while a pack is active).
+##
+##   NO-PACK      [settings] active_modpack is "" and active_profile is a user
+##                profile. Nominally no _before_modpack_ cfg sections exist,
+##                but a crash-window recovery (see stranded states below)
+##                clears the flag without erasing them; the next apply's
+##                step 1 erase cleans stale ones up.
+##   DOWNLOADING  apply_modpack is awaiting missing-mod downloads. No profile,
+##                backup, override, or MCM state has been touched yet -- a
+##                crash or Cancel here only leaves downloaded zips in /mods/
+##                and cached [mod_sources] entries (both harmless). Concurrent
+##                applies are serialized by _modpack_apply_in_progress; Cancel
+##                sets _modpack_apply_cancelled (checked before each download
+##                and once more after the loop).
+##   MUTATING     _apply_modpack_inner's numbered steps, fresh apply only
+##                (re-apply of the already-active pack skips them all):
+##                  0. _snapshot_state_before_apply -- independent restore
+##                     point; its failure never blocks the apply.
+##                  1. copy the active profile's .enabled/.priority into the
+##                     _before_modpack_ slot, set modpack_backup_profile, set
+##                     active_modpack EARLY (the crash trigger the reconciler
+##                     keys off), persist cfg, then snapshot the pre-pack MCM
+##                     into the backup slot (skipped coming from vanilla).
+##                  2. materialize the modpack__ profile from the zip if the
+##                     slot doesn't exist (enabled/priority/dep_ignore + MCM).
+##                  3. _apply_modpack_overrides -- copy zip files over user://,
+##                     snapshotting originals + an added/replaced manifest
+##                     into the backup slot.
+##                  4. _switch_profile into the modpack__ slot (rewrites
+##                     active_profile in cfg, swaps MCM).
+##                  5. re-assert active_modpack (the switch rewrote cfg).
+##                A hard failure after step 1 (e.g. a materialize error)
+##                returns with the flag still set; the next boot's reconciler
+##                clears it.
+##   ACTIVE       active_modpack=<name>, active_profile=modpack__<name>,
+##                backup slot sections + overrides manifest on disk. Re-apply
+##                in this state is downloads-only (never touches backups,
+##                restore points, profile slots, or MCM).
+##   UNLOADING    unload_modpack: aborts with profiles untouched when BOTH
+##                backup sections are missing (corruption guard); otherwise
+##                1. restore backup sections into the pre-apply profile slot,
+##                2. erase backup sections, clear both [settings] flags,
+##                persist, 3. restore override files from the manifest,
+##                4. _switch_profile back to the pre-apply profile,
+##                5. restore the pre-pack MCM from the backup slot
+##                (authoritative over whatever step 4 restored), 6. wipe the
+##                backup slot dir wholesale.
+##
+## Stranded states (crash/quit inside MUTATING or UNLOADING) are recovered at
+## the next boot by ui.gd _load_ui_config:
+##   - active_profile is a managed slot but active_modpack doesn't name it
+##     (quit between unload steps 2 and 4, or a profile delete resolved into
+##     a managed slot): when the slot is a modpack__ one, restore override
+##     files and roll live MCM back from the slot-derived backup; then recover
+##     active_profile to the first user profile and clear the flag.
+##   - active_modpack is set but active_profile isn't that pack's slot (crash
+##     between apply steps 1 and 4): best-effort override restore via the
+##     manifest -- a no-op if the crash predates step 3 writing it, the window
+##     the manual Restore button covers -- then clear the flag.
+##
+## Invariants:
+##   - Downloads strictly precede state mutation; the mutation phase does no
+##     network I/O.
+##   - The independent restore point (user://.modpack_backups/, one per fresh
+##     apply) is only ever taken while NO pack is active, and the apply/
+##     unload/reconcile machinery never consumes it -- only pruning to the
+##     MODPACK_SNAPSHOT_KEEP newest deletes one.
+##   - The _before_modpack_ backup slot is created at apply step 1 and torn
+##     down by unload (cfg sections at step 2, the on-disk dir at step 6).
+##     Reconciler recovery restores FROM the slot but never deletes it, so
+##     stale sections or dirs can linger after a crash-window recovery or an
+##     interrupted unload; the next apply's step 1 erase and the next
+##     unload's step 6 wipe remove any leftovers.
+##   - At most one pack is active; applying another requires unloading first.
 
 const MODPACK_PROFILE_PREFIX := "modpack__"
 const MODPACK_BACKUP_PREFIX := "_before_modpack_"
@@ -49,6 +128,30 @@ func _count_truthy(d: Dictionary) -> int:
 		if bool(d[k]):
 			count += 1
 	return count
+
+# --- profile.json (metroprofile v1) consumer map ------------------------------
+# A modpack zip's profile.json and a shared profile (zip or MTRPRF1 clipboard
+# string) carry the SAME schema, produced by a single writer. Adding a field
+# means auditing every site below; new fields must be optional with a safe
+# default on read (old parsers ignore unknown keys, new parsers must tolerate
+# absence) or the metroprofile version must be bumped. The v1 shape is locked
+# -- see the note above _profile_to_payload (ui.gd) and
+# docs/wiki/Profile-Format.md.
+#   WRITE:    _profile_to_json_string (ui.gd) -- sole producer; feeds both
+#             _export_profile_to_zip (modpack / profile zips) and
+#             _profile_to_payload (share strings).
+#   VALIDATE: _validate_modpack (below; modpack apply),
+#             _import_profile_from_zip (ui.gd; profile zip import),
+#             _parse_profile_payload (ui.gd; share-string import).
+#   READ:     _build_modpack_entry (name/description/author/exported_at/
+#             enabled -> Modpacks tab rows),
+#             _get_missing_mods_for_modpack (enabled + sources -> download
+#             list), _materialize_modpack_profile (enabled/priority/
+#             dep_ignore -> profile slot), _import_profile_from_parsed (ui.gd;
+#             name/enabled/priority/dep_ignore), _missing_mod_sources_combined
+#             (ui.gd; sources overlay for missing-mod stubs), and
+#             _show_modpack_detail_dialog via _read_modpack_profile_json
+#             (ui.gd; enabled + sources for the counts and detail mod list).
 
 # Pre-apply validation: open the zip, parse profile.json, sanity-check the
 # schema. Catches malformed zips, missing profile.json, wrong schema version,
@@ -357,9 +460,11 @@ func _restore_modpack_overrides(backup_profile: String) -> void:
 # deliberately excluded, so a snapshot is small (config + MCM + override files).
 
 # Capture mod_config.cfg + live user://MCM/ + the files this pack will overwrite
-# into user://.modpack_backups/<pack>_<timestamp>/. Best-effort: a failed copy
-# is logged but never blocks the apply. Returns the snapshot dir (or "" if
-# nothing could be written).
+# into user://.modpack_backups/<pack>_<timestamp>/. Best-effort: failures are
+# logged as loud warnings but never block the apply, and a snapshot that
+# captured nothing (despite mod_config.cfg existing to capture) is deleted
+# rather than left masquerading as a restore point in the Restore picker.
+# Returns the snapshot dir (or "" if nothing could be written).
 func _snapshot_state_before_apply(entry: Dictionary) -> String:
 	var sanitized: String = str(entry.get("sanitized_name", "pack"))
 	# Filesystem-safe sortable timestamp: 2026-06-30T14-22-08
@@ -434,7 +539,8 @@ func _snapshot_state_before_apply(entry: Dictionary) -> String:
 	return snap_root
 
 # List saved pre-apply restore points, newest first. Each entry:
-# {name, path, pack, created}.
+# {name, path, pack, created, sort_key} (sort_key is the internal
+# newest-first ordering key; see the comment inside).
 func _list_apply_snapshots() -> Array:
 	var out: Array = []
 	if not DirAccess.dir_exists_absolute(MODPACK_SNAPSHOT_DIR):
@@ -832,8 +938,8 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 		# Write the active_modpack flag NOW, before applying overrides or
 		# switching profiles, so it acts as the revert trigger if we crash
 		# mid-apply: the boot reconciler keys off this flag to restore stranded
-		# override files. Re-asserted after _switch_profile (step 5) in case the
-		# switch rewrites cfg.
+		# override files. Re-asserted at step 5 (after the step-4 _switch_profile)
+		# in case the switch rewrites cfg.
 		cfg.set_value("settings", "active_modpack", sanitized)
 		_persist_ui_cfg(cfg)
 
@@ -991,10 +1097,10 @@ func unload_modpack(tabs: TabContainer) -> Dictionary:
 	_persist_ui_cfg(cfg)
 
 	# 3. Restore non-MCM override files (Preferences.tres etc) from the
-	# backup slot's manifest. This must happen BEFORE _switch_profile
-	# touches user://MCM/, so MCM and other overrides are restored in
-	# the correct order. Files under MCM/ aren't in this manifest --
-	# they're handled by the MCM-snapshot path below.
+	# backup slot's manifest. Files under MCM/ are never in this manifest
+	# (_modpack_override_path_allowed rejects them at apply time), so this
+	# step has no ordering dependency on the MCM swap in steps 4-5; those
+	# handle MCM via the per-profile snapshot mechanic.
 	_restore_modpack_overrides(backup_profile)
 
 	# 4. Switch to pre-active profile. _switch_profile snapshots the

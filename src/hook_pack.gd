@@ -843,7 +843,8 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 			_log_info("[RTVCodegen] AUTOLOAD-CHECK %s: script=%s script_has_rename=%s instance_has_rename=%s" \
 					% [aname, scr.resource_path, has_rename, instance_methods_has_rename])
 
-	# Registry smoke probe (runs unconditionally). Verifies tetra's
+	# Registry smoke probe (developer-mode only -- we are past the
+	# `if not _developer_mode: return` gate above). Verifies tetra's
 	# const->dict rewrite + _get() injection on Database actually
 	# executed and serves scenes at runtime. Without this, a silent
 	# regression in the Database transform would only surface when a

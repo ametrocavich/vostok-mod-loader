@@ -3,7 +3,8 @@
 ##   - Mods tab: per-mod enable checkbox + load-order spin, profile selector
 ##     (switch / create / delete), and a live load-order preview.
 ##   - Browse tab: ModWorkshop catalog + install.
-##   - Modpacks tab: apply/unload modpack zips.
+##   - Modpacks tab: apply/unload modpack zips, save the current profile
+##     as a modpack, and restore automatic pre-apply backups.
 ##   - Updates tab: ModWorkshop version checking + downloads.
 ##   - Bottom bar has "Launch Vanilla" (one-shot bypass via the
 ##     DISABLED_ONCE_FILE sentinel) alongside the main Launch Game button.
@@ -379,6 +380,11 @@ func _persist_ui_cfg(cfg: ConfigFile) -> int:
 func _profile_sec(name: String, suffix: String) -> String:
 	return "profile." + name + suffix
 
+# Every per-profile config section suffix. Use only when wiping or renaming a
+# WHOLE profile -- the 2-element [".enabled", ".priority"] loops elsewhere
+# scan just those two sections by design.
+const PROFILE_SUBSECTIONS := [".enabled", ".priority", ".settings", ".dep_ignore"]
+
 # Read a single value from mod_config.cfg. Returns `default` when the file is
 # missing or unparseable, matching the early-return the hand-rolled accessors
 # used before this was centralized.
@@ -438,7 +444,7 @@ func _delete_active_profile() -> void:
 	if cfg.load(UI_CONFIG_PATH) != OK:
 		return
 	var target := _active_profile
-	for suffix: String in [".enabled", ".priority", ".settings", ".dep_ignore"]:
+	for suffix: String in PROFILE_SUBSECTIONS:
 		var sec := _profile_sec(target, suffix)
 		if cfg.has_section(sec):
 			cfg.erase_section(sec)
@@ -513,7 +519,7 @@ func _rename_profile(new_name: String) -> void:
 	if cfg.has_section(old_settings):
 		for key: String in cfg.get_section_keys(old_settings):
 			cfg.set_value(new_settings, key, cfg.get_value(old_settings, key))
-	for suffix: String in [".enabled", ".priority", ".settings", ".dep_ignore"]:
+	for suffix: String in PROFILE_SUBSECTIONS:
 		var sec := _profile_sec(old, suffix)
 		if cfg.has_section(sec):
 			cfg.erase_section(sec)
@@ -804,7 +810,7 @@ func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: Ta
 			if not bool(result.get("ok", false)):
 				_show_error_dialog("Save Modpack Failed", str(result.get("error", "unknown")))
 				return
-			_rebuild_profile_tab(tabs),
+			_rebuild_modpacks_tab(tabs),
 		func(): d.queue_free())
 	d.popup_centered()
 
@@ -864,6 +870,8 @@ func _export_profile_to_zip(profile_name: String, output_path: String, descripti
 	packer.close()
 	return {"ok": true}
 
+# UNUSED: no callers since the Modpacks tab replaced the share-profile flow.
+# Kept pending the delete-or-rewire decision (see quality plan follow-up).
 # Read a profile zip and apply it as a profile, including any MCM/ tree.
 # Returns {"ok": true, "name": "..."} on success or {"error": "..."} on
 # failure. The actual profile data is routed through the same
@@ -940,6 +948,8 @@ func _write_mcm_snapshot_from_data(profile_name: String, mcm_data: Dictionary) -
 		f.close()
 
 
+# UNUSED: no callers since the Modpacks tab replaced the share-profile flow.
+# Kept pending the delete-or-rewire decision (see quality plan follow-up).
 # Parse a shared payload back into the fields needed to reconstruct a profile.
 # Returns either {"error": "..."} on failure or the parsed metroprofile dict
 # on success. Validates the MTRPRF1 magic, checksum, and JSON shape.
@@ -1064,6 +1074,8 @@ func _import_profile_from_parsed(parsed: Dictionary, incoming_mcm_data: Dictiona
 # in the wiki: docs/wiki/Profile-Format.md. Changes to the export/import
 # shape require bumping the schema version so old parsers reject cleanly.
 
+# UNUSED: no callers since the Modpacks tab replaced the share-profile flow.
+# Kept pending the delete-or-rewire decision (see quality plan follow-up).
 # Build the shareable opaque payload for the given profile. Shape:
 #     MTRPRF1.<base64-encoded JSON>.<first 8 hex chars of SHA-256(body)>
 # The magic prefix identifies the schema version, the body is the profile's
@@ -1084,6 +1096,18 @@ func _profile_to_payload(profile_name: String) -> String:
 # Serialize the named profile to a JSON string. Used as the inner layer of
 # _profile_to_payload; exposed separately in case we need it for debugging
 # or tests. Empty string if the profile has no stored sections.
+# CONTRACT: this is the ONE writer of the metroprofile v1 payload, but the
+# payload is parsed independently in several places. Profile-STATE fields
+# (the enabled/priority/dep_ignore family, materialized into config
+# sections) must be read by BOTH consumers -- _import_profile_from_parsed
+# (share/zip import, below) and _materialize_modpack_profile (modpacks.gd,
+# modpack apply) -- or the field silently drops on one path. Metadata
+# fields may instead need their own readers ("sources", for example, is
+# read only by _missing_mod_sources_combined, _get_missing_mods_for_modpack
+# and the modpack detail dialog, not by either consumer above), and
+# _validate_modpack (modpacks.gd) pre-checks schema/name/enabled. Keep new
+# fields optional (docs/wiki/Profile-Format.md forward-compat rules) and
+# document them there.
 func _profile_to_json_string(profile_name: String, description: String = "", author: String = "") -> String:
 	var src := ConfigFile.new()
 	if src.load(UI_CONFIG_PATH) != OK:
@@ -1290,7 +1314,7 @@ func _launch_vanilla_once(win: Window) -> void:
 # Preserves the user's current tab so a Browse-row enable toggle doesn't
 # yank them onto the Mods tab mid-flow.
 func _rebuild_mods_tab(tabs: TabContainer) -> void:
-	var old := tabs.get_node_or_null("Mods")
+	var old := tabs.get_node_or_null(UI_TAB_MODS)
 	if old == null:
 		return
 	# Carry the list scroll position across the teardown -- a rebuild from a
@@ -1306,7 +1330,7 @@ func _rebuild_mods_tab(tabs: TabContainer) -> void:
 	tabs.remove_child(old)
 	old.queue_free()
 	var new_tab := build_mods_tab(tabs)
-	new_tab.name = "Mods"
+	new_tab.name = UI_TAB_MODS
 	tabs.add_child(new_tab)
 	tabs.move_child(new_tab, idx)
 	# Restore by name. If the previous tab was Mods itself, we land back on
@@ -1331,9 +1355,6 @@ func _restore_mods_scroll(saved_scroll: int) -> void:
 	if is_instance_valid(_ui_mods_scroll):
 		_ui_mods_scroll.scroll_vertical = saved_scroll
 
-# Parent a dialog on the launcher window (fallback: tree root) so it layers
-# over our always_on_top Window, and copy our dark theme onto it since theme
-# lookup doesn't cross Window boundaries reliably.
 # Modpack-apply failure summary with per-mod rows. Each failure shows the
 # profile_key + reason + an "Open MWS page" button (when an mws_id is
 # known, which is every case except sourceless legacy modpacks). The
@@ -1684,7 +1705,7 @@ func _show_security_findings_dialog(entry: Dictionary) -> void:
 			loc += ":" + str(f.get("line"))
 		var loc_lbl := Label.new()
 		loc_lbl.text = loc
-		loc_lbl.modulate = Color(0.55, 0.55, 0.55)
+		loc_lbl.modulate = UI_COL_MUTED
 		loc_lbl.add_theme_font_size_override("font_size", 10)
 		card.add_child(loc_lbl)
 
@@ -1701,8 +1722,7 @@ func _show_security_findings_dialog(entry: Dictionary) -> void:
 		body.add_child(HSeparator.new())
 
 	_attach_ui_dialog(d)
-	d.confirmed.connect(d.queue_free)
-	d.close_requested.connect(d.queue_free)
+	_wire_accept_dismiss(d)
 	d.popup_centered()
 
 # Mod entries that are currently enabled AND scored RED by the scanner.
@@ -1748,8 +1768,13 @@ func _confirm_red_launch(red_mods: Array) -> bool:
 	# didn't take effect for reasons I haven't chased.
 	d.get_ok_button().modulate = Color(1.0, 0.55, 0.55)
 
-	# Single-result polling: lambdas mark done + capture the choice.
-	# Array used because GDScript closures hold object references.
+	return await _await_dialog_choice(d)
+
+# Show an already-attached ConfirmationDialog and await the user's choice.
+# Single-result polling: lambdas mark done + capture the choice; an Array is
+# used because GDScript closures hold object references. Frees the dialog
+# and returns true on confirm, false on cancel/close.
+func _await_dialog_choice(d: ConfirmationDialog) -> bool:
 	var state := [false, false]  # [done, confirmed]
 	d.confirmed.connect(func():
 		state[0] = true
@@ -1765,8 +1790,7 @@ func _confirm_red_launch(red_mods: Array) -> bool:
 
 # Yes/no confirm shown when the user disables a mod that registers game content.
 # Returns true to proceed with the disable, false to keep it enabled. Modeled on
-# _confirm_red_launch's single-result polling (closures hold object refs, so the
-# result rides in an Array).
+# _confirm_red_launch's flow; the shared await-poll lives in _await_dialog_choice.
 func _confirm_disable_content_mod(mod_name: String) -> bool:
 	var d := ConfirmationDialog.new()
 	d.title = "Disable content mod?"
@@ -1778,18 +1802,7 @@ func _confirm_disable_content_mod(mod_name: String) -> bool:
 	_attach_ui_dialog(d)
 	d.exclusive = true
 	d.always_on_top = true
-	var state := [false, false]  # [done, confirmed]
-	d.confirmed.connect(func():
-		state[0] = true
-		state[1] = true)
-	d.canceled.connect(func(): state[0] = true)
-	d.close_requested.connect(func(): state[0] = true)
-	d.popup_centered()
-	d.grab_focus()
-	while not state[0]:
-		await get_tree().process_frame
-	d.queue_free()
-	return state[1]
+	return await _await_dialog_choice(d)
 
 # Validate a candidate profile name against the rules shared by the New and
 # Rename dialogs. Returns the user-facing error string, or "" when the name is
@@ -2024,7 +2037,7 @@ func _show_restore_snapshot_dialog(tabs: TabContainer) -> void:
 			_active_profile = str(rcfg.get_value("settings", "active_profile", _active_profile))
 			_reload_entries_for_active_profile()
 			_rebuild_mods_tab(tabs)
-			_rebuild_profile_tab(tabs)
+			_rebuild_modpacks_tab(tabs)
 			# The restore rewrote cfg + MCM on disk; a post-boot session must
 			# restart into it or the running game keeps the old mods live
 			# against the restored config (same convention as _switch_profile).
@@ -2035,7 +2048,7 @@ func _show_restore_snapshot_dialog(tabs: TabContainer) -> void:
 			d.queue_free())
 	d.popup_centered()
 
-func build_profile_tab(tabs: TabContainer) -> Control:
+func build_modpacks_tab(tabs: TabContainer) -> Control:
 	var margin := _make_tab_margin()
 
 	var container := VBoxContainer.new()
@@ -2131,6 +2144,15 @@ func build_profile_tab(tabs: TabContainer) -> Control:
 	return margin
 
 
+# Unload the active modpack and surface the outcome: error dialog on failure,
+# and always rebuild the Modpacks tab -- on success to remove the ACTIVE row
+# state, on error to correct the stale view that likely triggered the click.
+func _unload_modpack_with_feedback(tabs: TabContainer) -> void:
+	var result := unload_modpack(tabs)
+	if not bool(result.get("ok", false)):
+		_show_error_dialog("Unload Failed", str(result.get("error", "unknown")))
+	_rebuild_modpacks_tab(tabs)
+
 # Render one modpack row: name + filename/mod-count meta + Apply or
 # Active+Unload button. Apply is disabled when ANOTHER modpack is active
 # (single-slot constraint -- user has to unload first).
@@ -2188,7 +2210,7 @@ func _modpacks_render_row(entry: Dictionary, active_modpack: String, tabs: TabCo
 				dup_names.append(str((d_v as Dictionary).get("file_name", "?")))
 		var dup_lbl := Label.new()
 		dup_lbl.text = "Duplicate file(s) hidden: " + ", ".join(dup_names)
-		dup_lbl.modulate = Color(1.0, 0.6, 0.2)
+		dup_lbl.modulate = UI_COL_WARN
 		dup_lbl.add_theme_font_size_override("font_size", 11)
 		dup_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		info_col.add_child(dup_lbl)
@@ -2234,15 +2256,7 @@ func _modpacks_render_row(entry: Dictionary, active_modpack: String, tabs: TabCo
 		unload_btn.text = "Unload"
 		unload_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		row.add_child(unload_btn)
-		unload_btn.pressed.connect(func():
-			var result := unload_modpack(tabs)
-			if not bool(result.get("ok", false)):
-				_show_error_dialog("Unload Failed", str(result.get("error", "unknown")))
-			# Always rebuild -- success removes the ACTIVE row, error
-			# corrects the stale view that displayed an Unload button when
-			# state had already drifted to "no modpack active".
-			_rebuild_profile_tab(tabs)
-		)
+		unload_btn.pressed.connect(func(): _unload_modpack_with_feedback(tabs))
 	else:
 		var apply_btn := Button.new()
 		apply_btn.text = "Apply"
@@ -2347,7 +2361,7 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 				if pd != null and is_instance_valid(pd):
 					pd.queue_free()
 				if is_instance_valid(tabs):
-					_rebuild_profile_tab(tabs)
+					_rebuild_modpacks_tab(tabs)
 				var cancel_msg := "Apply cancelled -- the modpack was NOT applied and your profiles are unchanged."
 				if dl > 0:
 					cancel_msg += "\n%d downloaded mod(s) remain in your mods folder." % dl
@@ -2361,7 +2375,7 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 				if pd != null and is_instance_valid(pd):
 					pd.queue_free()
 				if is_instance_valid(tabs):
-					_rebuild_profile_tab(tabs)
+					_rebuild_modpacks_tab(tabs)
 				_show_modpack_failure_dialog(dl, failures, tabs)
 				return
 			if not bool(result.get("ok", false)):
@@ -2370,7 +2384,7 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 				_show_error_dialog("Apply Failed", str(result.get("error", "unknown")))
 				return
 			if is_instance_valid(tabs):
-				_rebuild_profile_tab(tabs)
+				_rebuild_modpacks_tab(tabs)
 			# Full success. If a progress dialog was shown, switch it to
 			# completion state (filled bar, summary line, OK button) so
 			# the user dismisses on their own time. With no downloads
@@ -2576,7 +2590,7 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 	if enabled_map.is_empty():
 		var empty := Label.new()
 		empty.text = "Modpack has no mods listed."
-		empty.modulate = Color(0.55, 0.55, 0.55)
+		empty.modulate = UI_COL_MUTED
 		empty.add_theme_font_size_override("font_size", 11)
 		box.add_child(empty)
 	else:
@@ -2596,7 +2610,7 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 			var en_lbl := Label.new()
 			en_lbl.text = "[on] " if en else "[off]"
 			en_lbl.add_theme_font_size_override("font_size", 11)
-			en_lbl.modulate = Color(0.58, 0.82, 0.38) if en else Color(0.5, 0.5, 0.5)
+			en_lbl.modulate = UI_COL_GOOD if en else Color(0.5, 0.5, 0.5)
 			en_lbl.custom_minimum_size.x = 40
 			mod_row.add_child(en_lbl)
 
@@ -2628,7 +2642,7 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 			var result := unload_modpack(tabs)
 			if not bool(result.get("ok", false)):
 				_show_error_dialog("Unload Failed", str(result.get("error", "unknown")))
-			_rebuild_profile_tab(tabs)
+			_rebuild_modpacks_tab(tabs)
 		)
 	else:
 		var apply_btn_d := d.add_button("Apply", true, "")
@@ -2648,30 +2662,30 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 
 # Mirror of _rebuild_mods_tab. Replaces the Modpacks tab control in place
 # preserving current_tab so the user doesn't get yanked to a different tab
-# during the swap. _rebuilding_profile_tab guards against recursion: the
+# during the swap. _rebuilding_modpacks_tab guards against recursion: the
 # remove_child shifts current_tab to a sibling which fires tab_changed,
 # whose listener calls back here -- the flag short-circuits the second
 # call. Also breaks recursion when we explicitly restore current_tab at
 # the end (fires another tab_changed).
-func _rebuild_profile_tab(tabs: TabContainer) -> void:
-	if _rebuilding_profile_tab:
+func _rebuild_modpacks_tab(tabs: TabContainer) -> void:
+	if _rebuilding_modpacks_tab:
 		return
-	_rebuilding_profile_tab = true
-	var old := tabs.get_node_or_null("Modpacks")
+	_rebuilding_modpacks_tab = true
+	var old := tabs.get_node_or_null(UI_TAB_MODPACKS)
 	if old == null:
-		_rebuilding_profile_tab = false
+		_rebuilding_modpacks_tab = false
 		return
 	var idx := old.get_index()
 	var was_current := tabs.current_tab == idx
 	tabs.remove_child(old)
 	old.queue_free()
-	var new_tab := build_profile_tab(tabs)
-	new_tab.name = "Modpacks"
+	var new_tab := build_modpacks_tab(tabs)
+	new_tab.name = UI_TAB_MODPACKS
 	tabs.add_child(new_tab)
 	tabs.move_child(new_tab, idx)
 	if was_current:
 		tabs.current_tab = idx
-	_rebuilding_profile_tab = false
+	_rebuilding_modpacks_tab = false
 
 # Delete-profile confirmation. The trash button is already disabled when the
 # active profile is Vanilla or the last remaining user profile; the guard in
@@ -2905,33 +2919,48 @@ func show_mod_ui() -> void:
 	# is_instance_valid so a launcher close mid-flight is harmless.
 	_check_modloader_update_async()
 
+	# --- Tab contract ---------------------------------------------------
+	# Each tab is built by a build_*_tab(tabs) -> Control function and added
+	# here under a stable node name (UI_TAB_*). That name is load-bearing:
+	# TabContainer shows it as the tab title, the in-place rebuild helpers
+	# (_rebuild_mods_tab, _rebuild_modpacks_tab) find the tab via
+	# get_node_or_null(name), and the tab_changed listener below matches on
+	# it. (_rebuild_mods_tab also restores the user's current tab by name;
+	# _rebuild_modpacks_tab restores it by index.)
+	# To add a tab: (1) write build_x_tab(tabs) returning its root Control,
+	# (2) add + name it below, (3) if other surfaces can change its state,
+	# add a _rebuild_x_tab helper (copy the recursion-guard pattern from
+	# _rebuild_modpacks_tab) and/or an on-show refresh via the tab_changed
+	# listener below. build_updates_tab takes no tabs arg only because it
+	# never rebuilds in place; prefer the (tabs) signature for new tabs.
+
 	var mods_tab := build_mods_tab(tabs)
-	mods_tab.name = "Mods"
+	mods_tab.name = UI_TAB_MODS
 	tabs.add_child(mods_tab)
 
 	var browse_tab := build_browse_tab(tabs)
-	browse_tab.name = "Browse"
+	browse_tab.name = UI_TAB_BROWSE
 	tabs.add_child(browse_tab)
 
-	var profile_tab := build_profile_tab(tabs)
-	profile_tab.name = "Modpacks"
-	tabs.add_child(profile_tab)
+	var modpacks_tab := build_modpacks_tab(tabs)
+	modpacks_tab.name = UI_TAB_MODPACKS
+	tabs.add_child(modpacks_tab)
 
 	var updates_tab := build_updates_tab()
-	updates_tab.name = "Updates"
+	updates_tab.name = UI_TAB_UPDATES
 	tabs.add_child(updates_tab)
 
 	# Refresh the Modpacks tab whenever the user switches to it. State can
 	# change behind the tab's back -- e.g. banner Unload from Mods tab --
 	# and without this listener the Modpacks tab keeps showing stale
-	# ACTIVE/Apply state until UI close/reopen. _rebuild_profile_tab now
+	# ACTIVE/Apply state until UI close/reopen. _rebuild_modpacks_tab now
 	# preserves current_tab and short-circuits recursion via the
-	# _rebuilding_profile_tab flag, so the rebuild-during-tab-show that
+	# _rebuilding_modpacks_tab flag, so the rebuild-during-tab-show that
 	# broke things in the earlier revision no longer applies.
 	tabs.tab_changed.connect(func(idx: int):
 		var ctrl := tabs.get_tab_control(idx)
-		if ctrl != null and ctrl.name == "Modpacks":
-			_rebuild_profile_tab(tabs)
+		if ctrl != null and ctrl.name == UI_TAB_MODPACKS:
+			_rebuild_modpacks_tab(tabs)
 	)
 
 	refresh_launch_button_label()
@@ -3260,15 +3289,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		var unload_btn := Button.new()
 		unload_btn.text = "Unload"
 		banner_row.add_child(unload_btn)
-		unload_btn.pressed.connect(func():
-			var result := unload_modpack(tabs)
-			if not bool(result.get("ok", false)):
-				_show_error_dialog("Unload Failed", str(result.get("error", "unknown")))
-			# Always rebuild the Modpacks tab -- on success to remove the
-			# ACTIVE row state, on error to clear stale view that's likely
-			# what triggered the click in the first place.
-			_rebuild_profile_tab(tabs)
-		)
+		unload_btn.pressed.connect(func(): _unload_modpack_with_feedback(tabs))
 		outer.add_child(banner)
 
 	# -- Toolbar (profile selector + folder shortcut + dev toggle) ------------
@@ -3782,7 +3803,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			# this entry. Falls back to just Remove when no source is known --
 			# e.g. user manually disabled a mod then deleted the file, or the
 			# modpack zip is gone.
-			var src_v: Variant = missing_sources.get(fn) if missing_sources.has(fn) else null
+			var src_v: Variant = missing_sources.get(fn)
 			var src_mws_id: int = 0
 			var src_version: String = ""
 			if src_v is Dictionary:
@@ -3822,7 +3843,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 				# Godot 4, so explicit STOP is required for hover signals.
 				var no_src_lbl := Label.new()
 				no_src_lbl.text = "Download unavailable"
-				no_src_lbl.modulate = Color(0.55, 0.55, 0.55)
+				no_src_lbl.modulate = UI_COL_MUTED
 				no_src_lbl.add_theme_font_size_override("font_size", 11)
 				no_src_lbl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 				no_src_lbl.mouse_filter = Control.MOUSE_FILTER_STOP
@@ -3898,7 +3919,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		var name_lbl := Label.new()
 		name_lbl.text = entry["mod_name"]
 		name_lbl.clip_text = true
-		name_lbl.modulate = Color(0.58, 0.82, 0.38) if entry["enabled"] else Color(0.5, 0.5, 0.5)
+		name_lbl.modulate = UI_COL_GOOD if entry["enabled"] else Color(0.5, 0.5, 0.5)
 		name_col.add_child(name_lbl)
 
 		if entry["ext"] == "folder":
@@ -3942,7 +3963,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		for warn_text: String in entry.get("warnings", []):
 			var warn := Label.new()
 			warn.text = warn_text
-			warn.modulate = Color(1.0, 0.6, 0.2)
+			warn.modulate = UI_COL_WARN
 			warn.add_theme_font_size_override("font_size", 11)
 			name_col.add_child(warn)
 		for warn_text: String in entry.get("dependency_warnings", []):
@@ -4024,7 +4045,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			var dup_v: String = ("v" + dup_v_raw) if dup_v_raw != "" else "(unversioned)"
 			var hide_lbl := Label.new()
 			hide_lbl.text = "older version hidden: " + str(dup["file_name"]) + " (" + dup_v + ")"
-			hide_lbl.modulate = Color(1.0, 0.6, 0.2)
+			hide_lbl.modulate = UI_COL_WARN
 			hide_lbl.add_theme_font_size_override("font_size", 11)
 			name_col.add_child(hide_lbl)
 
@@ -4039,7 +4060,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			var current_disp := current_v if current_v != "" else "(unset)"
 			var vm_lbl := Label.new()
 			vm_lbl.text = "profile version: " + stored_disp + " -> " + current_disp
-			vm_lbl.modulate = Color(1.0, 0.6, 0.2)
+			vm_lbl.modulate = UI_COL_WARN
 			vm_lbl.add_theme_font_size_override("font_size", 11)
 			name_col.add_child(vm_lbl)
 
@@ -4239,7 +4260,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 
 	var status_lbl := Label.new()
 	status_lbl.add_theme_font_size_override("font_size", 11)
-	status_lbl.modulate = Color(0.55, 0.55, 0.55)
+	status_lbl.modulate = UI_COL_MUTED
 	container.add_child(status_lbl)
 
 	var scroll := ScrollContainer.new()
@@ -4916,7 +4937,7 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 	var files_status := Label.new()
 	files_status.text = "Loading file list..."
 	files_status.add_theme_font_size_override("font_size", 11)
-	files_status.modulate = Color(0.55, 0.55, 0.55)
+	files_status.modulate = UI_COL_MUTED
 	box.add_child(files_status)
 	var files_list := VBoxContainer.new()
 	files_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -4992,7 +5013,7 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 				date_str = date_str.split("T")[0]
 			var date_lbl := Label.new()
 			date_lbl.text = date_str
-			date_lbl.modulate = Color(0.55, 0.55, 0.55)
+			date_lbl.modulate = UI_COL_MUTED
 			f_row.add_child(date_lbl)
 	load_files.call()
 
@@ -5358,7 +5379,8 @@ func check_updates_for_ui(status_info: Dictionary, add_log: Callable, check_btn:
 
 # Fire-and-forget from show_mod_ui. Hits the ModWorkshop versions API for
 # our own mod id, compares the result against MODLOADER_VERSION, and on a
-# newer release: reveals the launch-row LinkButton, and pops a one-shot
+# newer release: recolors the always-visible launch-row version LinkButton
+# (and rewrites its text), and pops a one-shot
 # dialog the first session each new version is detected. All UI mutations
 # guard on is_instance_valid because the launcher may close before the
 # HTTP request returns.

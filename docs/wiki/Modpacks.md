@@ -2,7 +2,7 @@
 
 A **modpack** is a curated loadout shipped as a single `.zip`: which mods are on, their load order, the author's [MCM](https://modworkshop.net) (Mod Configuration Menu) settings, and -- crucially -- where to download each mod from. Drop the zip into `mods/`, click **Apply**, and the launcher downloads anything you're missing and switches you to the author's exact setup. New in 3.3.
 
-The **Modpacks** tab is the fourth tab in the pre-launch window. Its implementation is [modpacks.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/modpacks.gd); the tab UI is `build_profile_tab` in [ui.gd:1822](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L1822).
+The **Modpacks** tab is the fourth tab in the pre-launch window. Its implementation is [modpacks.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/modpacks.gd); the tab UI is `build_modpacks_tab` in [ui.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd).
 
 ## Modpack vs. shareable profile
 

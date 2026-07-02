@@ -48,6 +48,12 @@ Inside the base64 body:
 | `priority` | no | Dictionary | `profile_key -> int`. Load-order priority in `[-999, 999]`. Absent entries default to 0 on import. |
 | `modloader_version` | no | String | Exporter's `MODLOADER_VERSION`. Advisory only. |
 | `exported_at` | no | String | ISO datetime when exported. Advisory only. |
+| `description` | no | String | Author-provided modpack description (save-as-modpack dialog). Omitted when empty. |
+| `author` | no | String | Author handle from the save-as-modpack dialog. Omitted when empty. |
+| `sources` | no | Dictionary | `profile_key -> {modworkshop_id: int, version?: String}`. Auto-derived from each installed mod's `[updates] modworkshop=` + `[mod] version=`; lets import/apply download missing mods and pin exact versions. |
+| `dep_ignore` | no | Dictionary | `profile_key -> true`, sparse (true-only entries). "Load anyway" dependency overrides; re-materialized on import and on modpack apply. |
+
+The same JSON (same forward-compat rules) is the `profile.json` at the root of a modpack zip. It has ONE writer (`_profile_to_json_string` in ui.gd -- share string and modpack export both route through it) but TWO independent parsers: `_import_profile_from_parsed` (ui.gd, clipboard + profile-zip import) and `_materialize_modpack_profile` (modpacks.gd, modpack apply). A new optional field must be read in BOTH parsers or it silently drops on one path.
 
 ## Profile key format
 

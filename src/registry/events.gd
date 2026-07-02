@@ -41,7 +41,8 @@ func _events_resource() -> Resource:
 	return res
 
 # Shape check: consistent with other registries' _looks_like_* helpers.
-# EventData's canonical fields are name, type, function, possibility.
+# Probes function/possibility/day -- EventData also declares name and type,
+# but those exist on too many other Resource classes to discriminate.
 func _looks_like_event_data(res: Resource) -> bool:
 	return _object_has_property(res, "function") \
 			and _object_has_property(res, "possibility") \

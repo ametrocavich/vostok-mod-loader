@@ -30,6 +30,9 @@ func _build_class_name_lookup() -> void:
 		_log_warning("Could not load global_script_class_cache.cfg -- using hardcoded fallback")
 		_class_name_to_path = _get_hardcoded_class_map()
 
+# ANCHOR: snapshot of vanilla RTV's global_script_class_cache.cfg (class_name
+# -> path). Fallback only; re-capture from a fresh vanilla install when the
+# game updates.
 func _get_hardcoded_class_map() -> Dictionary:
 	return {
 		"AIWeaponData": "res://Scripts/AIWeaponData.gd",
@@ -118,9 +121,7 @@ func _enumerate_game_scripts() -> Array[String]:
 				continue
 			# Canonicalize .gdc / .gd.remap / .remap to .gd.
 			var canonical := normalized
-			if canonical.ends_with(".gd.remap"):
-				canonical = canonical.substr(0, canonical.length() - 6)
-			elif canonical.ends_with(".remap"):
+			if canonical.ends_with(".remap"):
 				canonical = canonical.substr(0, canonical.length() - 6)
 			if canonical.ends_with(".gdc"):
 				canonical = canonical.substr(0, canonical.length() - 4) + ".gd"

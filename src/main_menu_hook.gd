@@ -35,6 +35,9 @@ func _on_menu_ready() -> void:
 		return
 	_inject_mods_button(menu_root)
 
+# ANCHOR: vanilla Menu scene node paths. If "Main/Buttons" is missing,
+# injection logs a warning and skips; if only the "Quit" child is missing,
+# the Mods button is silently appended last instead of before Quit.
 func _inject_mods_button(menu_root: Node) -> void:
 	var buttons := menu_root.get_node_or_null("Main/Buttons")
 	if buttons == null:

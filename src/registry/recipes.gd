@@ -121,7 +121,7 @@ func _unlock_crafting_category_button_if_needed(category: String) -> void:
 	var node_path: String = _LOCKED_CATEGORY_BUTTONS[category]
 	var id: String = "%s#%s" % [_INTERFACE_SCENE_PATH, node_path]
 	# Reset the button's modulate to full alpha but leave the icon child
-	# alone at its vanilla 0.5 alpha icons ship faded on every category
+	# alone at its vanilla 0.5 alpha; icons ship faded on every category
 	# button, and matching sibling behavior is the right default.
 	_patch_scene_node(id, {
 		"disabled": false,
@@ -176,7 +176,7 @@ func _override_recipe(id: String, data: Variant) -> bool:
 # track per-field original values. For handles it's the String; for direct
 # refs it's the object's instance_id (int), so distinct Resource instances
 # don't collide.
-func _resolve_patch_target(id: Variant) -> Array:
+func _resolve_recipe_patch_target(id: Variant) -> Array:
 	if id is String:
 		var reg: Dictionary = _registry_registered.get("recipes", {})
 		if reg.has(id):
@@ -189,7 +189,7 @@ func _resolve_patch_target(id: Variant) -> Array:
 	return [null, null]
 
 func _append_recipe(id: Variant, field: String, values: Array, allow_duplicates: bool) -> bool:
-	var resolved := _resolve_patch_target(id)
+	var resolved := _resolve_recipe_patch_target(id)
 	var target: Resource = resolved[0]
 	var key = resolved[1]
 	if target == null:
@@ -197,7 +197,7 @@ func _append_recipe(id: Variant, field: String, values: Array, allow_duplicates:
 	return _array_op_on_resource("recipes", key, target, field, "append", values, allow_duplicates)
 
 func _prepend_recipe(id: Variant, field: String, values: Array, allow_duplicates: bool) -> bool:
-	var resolved := _resolve_patch_target(id)
+	var resolved := _resolve_recipe_patch_target(id)
 	var target: Resource = resolved[0]
 	var key = resolved[1]
 	if target == null:
@@ -205,7 +205,7 @@ func _prepend_recipe(id: Variant, field: String, values: Array, allow_duplicates
 	return _array_op_on_resource("recipes", key, target, field, "prepend", values, allow_duplicates)
 
 func _remove_from_recipe(id: Variant, field: String, values: Array) -> bool:
-	var resolved := _resolve_patch_target(id)
+	var resolved := _resolve_recipe_patch_target(id)
 	var target: Resource = resolved[0]
 	var key = resolved[1]
 	if target == null:
@@ -217,7 +217,7 @@ func _patch_recipe(id: Variant, fields: Dictionary) -> bool:
 	if fields.is_empty():
 		push_warning("[Registry] patch('recipes', ...): empty fields dict is a no-op")
 		return false
-	var resolved := _resolve_patch_target(id)
+	var resolved := _resolve_recipe_patch_target(id)
 	var target: Resource = resolved[0]
 	var key = resolved[1]
 	if target == null:
@@ -267,7 +267,7 @@ func _revert_recipe(id: Variant, fields: Array) -> bool:
 	var did_something := false
 	var ov: Dictionary = _registry_overridden.get("recipes", {})
 	var patched: Dictionary = _registry_patched.get("recipes", {})
-	# Patch key computation matches _resolve_patch_target so we find the same
+	# Patch key computation matches _resolve_recipe_patch_target so we find the same
 	# stash entry regardless of whether the caller patches by handle or by ref.
 	var patch_key = null
 	var patch_target: Resource = null

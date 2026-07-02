@@ -55,7 +55,8 @@ func _verify_script_overrides() -> void:
 			_log_info("[OverrideVerify] %s | %s | resource_path=%s src_head=[%s]" \
 					% [mod_name, vp, scr.resource_path, src_head])
 
-# Two-pass helpers
+# Conflict summary + report output (developer mode; called from every
+# finish path in lifecycle.gd)
 
 func _print_conflict_summary() -> void:
 	_log_info("")

@@ -4,6 +4,89 @@
 ## rewriting, pass state persistence, heartbeat + crash recovery, safe mode,
 ## and the hook-pack preload that preempts Godot's PCK-bytecode pinning for
 ## class_name scripts.
+##
+## BOOT SEQUENCE
+## =============
+## Stage 0 -- static init (this file). constants.gd initializes
+## _filescope_mounted by calling _mount_previous_session() while the
+## ModLoader autoload script itself is loading -- override.cfg lists
+## ModLoader last in [autoload_prepend] (= loaded first), so this runs
+## before any game autoload compiles a class_name script. In order:
+##   1. DISABLED_FILE / DISABLED_ONCE_FILE sentinel present -> force
+##      vanilla state (reset override.cfg autoload sections, delete pass
+##      state + pass2-dirty marker, wipe hook pack), mount nothing.
+##   2. PASS2_DIRTY_PATH present -> a previous Pass 2 crashed mid-run;
+##      same full wipe, mount nothing.
+##   3. Load PASS_STATE_PATH. Missing or empty pass state -> mount
+##      nothing. Modloader-version mismatch, changed exe mtime (game
+##      updated), or any recorded archive now missing -> reset
+##      override.cfg + delete pass state (version/mtime mismatches also
+##      wipe the hook cache), mount nothing. This launch may log
+##      autoload-load errors (Godot read override.cfg before we ran);
+##      the NEXT launch boots clean.
+##   4. Mount every archive the previous session recorded, then the hook
+##      pack on top (replace_files=true), then preempt the wrapped
+##      class_name scripts via CACHE_MODE_IGNORE + take_over_path.
+## Static init logs via _write_filescope_log to
+## user://modloader_filescope.log -- the instance log helpers do not
+## exist yet at this point.
+##
+## Stage 1 -- _ready (lifecycle.gd). Dispatch: "--modloader-restart" in
+## the user cmdline args -> _run_pass_2, else _run_pass_1.
+##
+## Pass 1 (fresh launch): _check_crash_recovery + _check_safe_mode,
+## discover mods, show the launcher UI (show_mod_ui -- the only place
+## the UI appears at boot; post-boot it reopens via reopen_mod_ui from
+## the main-menu hook), load_all_mods, then compare _compute_state_hash
+## against the stored mods_hash:
+##   - hash unchanged (and non-empty) -> no restart;
+##     _finish_with_existing_mounts rides the archives static init
+##     already mounted.
+##   - archives enabled + hash changed -> generate the hook pack
+##     (defer_activation=true), write heartbeat, override.cfg and pass
+##     state (increments restart_count), relaunch the game with
+##     --modloader-restart.
+##   - no enabled archives -> delete stale pass state / hook artifacts,
+##     _finish_single_pass.
+##
+## Pass 2 (the restarted process): archives were already mounted by THIS
+## process's static init. Writes PASS2_DIRTY_PATH first thing, restores
+## script overrides from pass state, clears restart_count, re-runs
+## discovery + load_all_mods + hook pack generate/activate, instantiates
+## autoloads, deletes the heartbeat, clears the dirty marker. Never
+## shows the UI.
+##
+## Sentinel / state files (who writes, who clears):
+##   DISABLED_FILE       exe dir; user-created. Permanent vanilla mode.
+##   DISABLED_ONCE_FILE  exe dir; written by the UI's "Launch Vanilla"
+##                       button, cleared by _ready after one vanilla boot.
+##   SAFE_MODE_FILE      exe dir; user-created. _check_safe_mode (Pass 1)
+##                       resets override.cfg + pass state, then deletes it.
+##   PASS_STATE_PATH     user://; written by Pass 1 before restarting and
+##                       by _persist_hook_pack_state; read at static init
+##                       and by Pass 2. Holds archive_paths, mods_hash,
+##                       hook_pack_path/wrapped_paths, restart_count.
+##   HEARTBEAT_PATH      user://; written right before the Pass 1 ->
+##                       Pass 2 restart, deleted by every finish path. A
+##                       survivor at the next Pass 1 means the previous
+##                       launch died between restart and finish.
+##   PASS2_DIRTY_PATH    user://; written at Pass 2 entry, cleared at
+##                       Pass 2 end. A survivor means Pass 2 crashed;
+##                       static init force-wipes everything.
+##
+## Crash at each stage:
+##   - Pass 1 before the restart branch: no heartbeat written; next
+##     launch is a normal Pass 1.
+##   - Between the restart and Pass 2's finish: heartbeat survives;
+##     _check_crash_recovery warns, and once restart_count reaches
+##     MAX_RESTART_COUNT it resets override.cfg + pass state to break
+##     the restart loop. restart_count is cleared early in Pass 2, so
+##     crashes later in Pass 2 are covered by the dirty marker instead.
+##   - Pass 2 after the dirty marker: next static init force-wipes state
+##     (step 2 above); the launch after that regenerates fresh.
+##   - While DISABLED_ONCE_FILE is pending: the sentinel persists until
+##     a _ready runs, so a crash keeps the next launch vanilla -- an
+##     intentional fail-safe.
 
 static func _is_modloader_disabled() -> bool:
 	# Check for sentinel files in the game exe directory. When either is
@@ -36,6 +119,13 @@ static func _static_force_vanilla_state(reason: String, log_lines: PackedStringA
 		log_lines.append("[FileScope] RESET (" + reason + "): cleared pass2 dirty marker")
 	_static_wipe_hook_cache()
 	log_lines.append("[FileScope] RESET (" + reason + "): wiped hook pack")
+
+# The canonical clean override.cfg content. Boot-order correctness depends on
+# this exact layout ([autoload_prepend] with ModLoader as the only entry, an
+# empty [autoload], then any preserved non-modloader sections) -- all three
+# reset paths must write byte-identical content.
+static func _clean_override_cfg_content(preserved: String) -> String:
+	return "[autoload_prepend]\nModLoader=\"*" + MODLOADER_RES_PATH + "\"\n\n[autoload]\n\n" + preserved
 
 static func _mount_previous_session() -> Dictionary:
 	var mounted: Dictionary = {}
@@ -139,7 +229,7 @@ static func _mount_previous_session() -> Dictionary:
 		var preserved := _read_preserved_cfg_sections(cfg_path)
 		var f := FileAccess.open(cfg_path, FileAccess.WRITE)
 		if f:
-			f.store_string("[autoload_prepend]\nModLoader=\"*" + MODLOADER_RES_PATH + "\"\n\n[autoload]\n\n" + preserved)
+			f.store_string(_clean_override_cfg_content(preserved))
 			f.close()
 		var state_path := ProjectSettings.globalize_path(PASS_STATE_PATH)
 		if FileAccess.file_exists(state_path):
@@ -289,7 +379,7 @@ static func _static_reset_override_cfg(log_lines: PackedStringArray) -> void:
 	if f == null:
 		log_lines.append("[FileScope] WARNING: could not rewrite override.cfg (read-only?)")
 		return
-	f.store_string("[autoload_prepend]\nModLoader=\"*" + MODLOADER_RES_PATH + "\"\n\n[autoload]\n\n" + preserved)
+	f.store_string(_clean_override_cfg_content(preserved))
 	f.close()
 	log_lines.append("[FileScope] override.cfg reset to clean [autoload_prepend] state")
 
@@ -672,7 +762,7 @@ func _restore_clean_override_cfg() -> void:
 	if f == null:
 		_log_critical("Cannot write override.cfg -- game dir may be read-only: " + exe_dir)
 		return
-	f.store_string("[autoload_prepend]\nModLoader=\"*" + MODLOADER_RES_PATH + "\"\n\n[autoload]\n\n" + preserved)
+	f.store_string(_clean_override_cfg_content(preserved))
 	f.close()
 
 func _clear_restart_counter() -> void:

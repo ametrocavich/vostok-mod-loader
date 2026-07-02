@@ -37,6 +37,11 @@ func collect_mod_metadata() -> Array[Dictionary]:
 				_record_hidden_folder(_mods_dir, entry_name)
 			continue
 		var ext := entry_name.get_extension().to_lower()
+		# Accept set. Must stay in sync with _is_safe_mod_filename (the
+		# download filename gate below); mount-side, any non-zip/pck extension
+		# also needs the vmz-style cache fallback (_try_mount_pack in
+		# fs_archive.gd, the boot.gd static remount, hook_pack.gd's cached-zip
+		# sibling resolution).
 		if ext not in ["vmz", "zip", "pck"]:
 			skipped_files.append(entry_name)
 			continue
@@ -136,6 +141,102 @@ func _log_security_findings(entry: Dictionary) -> void:
 		_log_debug("  %s @ %s -- %s" \
 				% [f["rule"], loc, f.get("preview", "")])
 
+# --- The entry dict -------------------------------------------------------
+# The Dictionary built below is the loader's central data structure: every
+# element of _ui_mod_entries (and every loading-phase "candidate") has this
+# shape. The UI holds these dicts LIVE and mutates enabled / priority /
+# dependency_ignored in place (Dictionary reference semantics), so every
+# key here is public shape -- update this list when adding one.
+#
+# Written by _entry_from_config:
+#   file_name    String          archive filename / folder name. Readers:
+#                                UI rows, mod_loading (mount + dup warning).
+#                                Rewritten by ui.gd check_updates_for_ui
+#                                after an update rename.
+#   full_path    String          absolute path under <game>/mods/. Readers:
+#                                mod_loading (mount), boot
+#                                (_collect_enabled_archive_paths -> pass-state
+#                                mount list), _compare_dedup_priority (mtime),
+#                                UI (updates/delete flows). Rewritten
+#                                on update rename (check_updates_for_ui).
+#   ext          String          "vmz" | "zip" | "pck" | "folder". Readers:
+#                                mod_loading, boot, UI (folder rows are not
+#                                removable), _dedupe_by_mod_id.
+#   mod_name     String          display name ([mod] name; defaults to the
+#                                raw filename, or to the stem with the
+#                                prefix stripped when the VostokMods
+#                                "NNN-Name" priority pattern matches below).
+#                                Read everywhere for display; mod_loading
+#                                warns on case-insensitive dups.
+#   mod_id       String          dependency + dedupe identity ([mod] id;
+#                                same filename default as mod_name, and
+#                                without a declared id profile_key falls
+#                                back to "zip:").
+#   version      String          raw [mod] version, may be "". Readers:
+#                                update checks, dedupe, profile_key.
+#   author       String          display-only.
+#   profile_key  String          identity in profile sections -- contract
+#                                comment at its construction below.
+#   priority     int             clamped PRIORITY_MIN..PRIORITY_MAX;
+#                                overwritten per profile and by the spinner
+#                                (ui.gd _apply_profile_to_entries / row UI).
+#                                Reader: _compare_load_order.
+#   enabled      bool            defaults true here; real value is per-
+#                                profile (ui.gd _apply_profile_to_entries),
+#                                toggled in place by the UI and
+#                                _enable_required_deps. Readers:
+#                                _loadable_enabled_entries, boot, UI.
+#   required_dependencies, optional_dependencies
+#                Array[String]   from [dependencies]; read by the dependency
+#                                machinery in this file, the UI row, and the
+#                                per-mod metadata dict mod_loading builds
+#                                for the mods-facing hooks_api.
+#   dependency_warnings Array[String], dependency_blockers Array[String],
+#   dependency_blockers_info Array of {id, status, display, fixable}
+#                                recomputed by _refresh_dependency_status
+#                                (status: not_installed | disabled |
+#                                not_loaded | hidden_folder). Readers: UI rows.
+#   dependencies_satisfied bool  recomputed by _refresh_dependency_status;
+#                                currently write-only (no readers at HEAD).
+#   dependency_ignored bool      per-profile "Load anyway" override, written
+#                                by ui.gd _apply_profile_to_entries; read by
+#                                the dependency filter + refresh.
+#   cfg          ConfigFile|null parsed mod.txt (null for .pck and for
+#                                unparseable archives). Readers: mod_loading
+#                                ([registry]/[autoload] sections), boot, UI
+#                                (modworkshop id lookup),
+#                                _persist_mod_sources_for_entries.
+#   mod_txt_status String        "ok" | "none" | "parse_error" |
+#                                "nested:<path>" | "pck". Side channel set
+#                                by read_mod_config* (fs_archive.gd) through
+#                                _last_mod_txt_status; "pck" is preset in
+#                                _build_archive_entry. Readers:
+#                                _build_entry_warnings,
+#                                mod_loading._process_mod_candidate
+#                                (boot-log messages).
+#   mod_txt_error String         parse-error detail for "parse_error".
+#                                Readers: _build_entry_warnings,
+#                                mod_loading._process_mod_candidate
+#                                (boot-log messages).
+#   has_registry bool            mod.txt declares [registry]; drives the
+#                                disable-time save-safety confirm in the UI.
+#
+# Added by _build_archive_entry / _build_folder_entry right after:
+#   warnings          Array[String]  row warnings (_build_entry_warnings).
+#   security_findings Array of {rule, file, line, preview} (scan_mod).
+#   risk_level        int            RISK_CLEAN | RISK_RED
+#                                    (compute_risk_level).
+#
+# Added conditionally by _dedupe_by_mod_id:
+#   duplicates_hidden Array of {file_name, version} -- only present on a
+#                                winner that shadowed same-id duplicates.
+#                                Reader: UI row.
+#
+# Added conditionally by ui.gd _apply_profile_to_entries:
+#   profile_version_mismatch Dictionary {stored, current} -- present when
+#                                the profile stored this mod under a
+#                                different version's key; erased on every
+#                                profile apply. Reader: UI row.
 func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, ext: String) -> Dictionary:
 	var mod_name := file_name
 	var mod_id   := file_name
@@ -181,6 +282,23 @@ func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, e
 	# when mod.txt declares an id (empty version allowed, yielding "<id>@"),
 	# otherwise falls back to "zip:<file_name>" -- without a declared id the
 	# filename is all we have and renames still orphan those profile entries.
+	# CONTRACT -- parsers live far from here; keep in sync when changing:
+	#   - The "<id>@<version>" form is split on the FIRST "@" (key.find("@"))
+	#     by ui.gd _version_from_profile_key, _import_profile_from_parsed,
+	#     _missing_mods_in_active_profile, and by modpacks.gd
+	#     _get_missing_mods_for_modpack (rebuilds lowercased id + "@" + version
+	#     for a case-insensitive fallback match). ui.gd _apply_profile_to_entries
+	#     and _find_stored_key_for_mod_id instead prefix-match on mod_id + "@".
+	#     A mod id containing "@" would mis-parse at the split sites; ids are
+	#     assumed "@"-free.
+	#   - The "zip:" prefix is tested with begins_with("zip:") here (_dedupe_
+	#     by_mod_id, _record_hidden_folder), in ui.gd (profile apply, payload
+	#     import, missing-mod rows) and stripped for display with
+	#     trim_prefix("zip:") in the Mods-tab missing section.
+	#   - profile_key is also the key of the persisted [mod_sources] cache and
+	#     of the per-profile profile.<name>.enabled / .priority / .dep_ignore
+	#     sections in mod_config.cfg, so a format change invalidates existing
+	#     user configs.
 	var profile_key := ("zip:" + file_name) if not has_mod_id else (mod_id + "@" + version)
 
 	var entry := {
@@ -261,9 +379,6 @@ func _append_dependency_id(deps: Array[String], raw_id: String) -> void:
 		if existing.to_lower() == dep_key:
 			return
 	deps.append(dep_id)
-
-# Config persistence
-
 
 func _compare_load_order(a: Dictionary, b: Dictionary) -> bool:
 	if a["priority"] != b["priority"]:
@@ -760,7 +875,8 @@ func _extract_disposition_param(header_value: String, param: String) -> String:
 
 # Reject anything that isn't a plain basename with one of the mod extensions
 # we accept. Stops a malicious or misconfigured server from writing under a
-# parent dir or with an executable extension.
+# parent dir or with an executable extension. The extension list must stay
+# in sync with the scan accept set in collect_mod_metadata.
 func _is_safe_mod_filename(name: String) -> bool:
 	if name.is_empty():
 		return false
@@ -788,15 +904,44 @@ func _derive_updated_filename(old_file_name: String, headers: PackedStringArray,
 	var new_stem := stripped + "_v" + new_version.lstrip("vV")
 	return new_stem if ext.is_empty() else new_stem + "." + ext
 
-# Returns { ok: bool, new_path: String, new_file_name: String }. On success
+# --- Download surfaces ------------------------------------------------------
+# Five UI surfaces reach the two download entry points below. Keep this map
+# current when adding one (a unified download queue would replace it):
+#   1. Mods tab per-row "Update" badge (ui.gd build_mods_tab, updates block)
+#      -> download_and_replace_mod(path, id); errors: "Update Failed" dialog,
+#      verbatim.
+#   2. Updates tab "Download"/"Retry" button (ui.gd check_updates_for_ui,
+#      wired from build_updates_tab) -> download_and_replace_mod(path, id);
+#      errors: generic "download failed" label + log line (error text dropped).
+#   3. Browse tab "Get" + its serial queue (ui.gd build_browse_tab,
+#      perform_download_for_item) -> download_new_mod(id); errors: status
+#      label, verbatim.
+#   4. Missing-mod stub "Download" (ui.gd build_mods_tab, missing section)
+#      -> download_new_mod(id, version, true); errors: "Download Failed"
+#      dialog, verbatim.
+#   5. Modpack apply + retry (modpacks.gd _apply_modpack_inner,
+#      retry_failed_downloads) -> download_new_mod(id, version, true);
+#      errors: collected into a failures list for the apply summary; the
+#      apply loop (not retry) counts the "Already have" error prefix as
+#      installed rather than failed (see download_new_mod).
+# Each surface implements its own busy-state, queueing and error handling;
+# only Browse serializes its own downloads, and nothing prevents two surfaces
+# from downloading concurrently (the _live_full_path re-resolution in ui.gd
+# exists because the badge and the Updates tab can race on the same file).
+
+# Returns { ok: bool, new_path: String, new_file_name: String }; failure
+# returns additionally carry an "error": String (success returns do not,
+# unlike download_new_mod which always includes the key). On success
 # new_path / new_file_name reflect the on-disk filename the download landed
 # under -- which may differ from target_path when the server provided a
 # Content-Disposition or the mod.txt version-bumped (CoolMod_v1.0.zip ->
 # CoolMod_v1.1.zip). On failure the temp + backup are cleaned up and the
 # original file is left intact; new_path / new_file_name echo target_path.
 func download_and_replace_mod(target_path: String, modworkshop_id: int) -> Dictionary:
-	# Every failure return carries an "error" string -- the badge/Updates
-	# dialogs surface it verbatim, so "unknown" must never be the answer.
+	# Every failure return carries an "error" string -- the Mods-tab update
+	# badge surfaces it verbatim in an "Update Failed" dialog, so "unknown"
+	# must never be the answer. (The Updates tab currently drops it and shows
+	# a generic "download failed" label -- see check_updates_for_ui in ui.gd.)
 	var failure := {"ok": false, "new_path": target_path, "new_file_name": target_path.get_file(), "error": ""}
 
 	var req := HTTPRequest.new()
@@ -985,6 +1130,10 @@ func download_new_mod(modworkshop_id: int, version: String = "", allow_rename_on
 	# matches whichever one wins).
 	if FileAccess.file_exists(final_path):
 		if not allow_rename_on_collision:
+			# LOAD-BEARING PREFIX: modpack apply (modpacks.gd _apply_modpack_inner)
+			# matches err.begins_with("Already have") to count this failure as
+			# already-installed instead of failed. Reword it there too, or real
+			# collisions start showing up as spurious apply successes/failures.
 			failure["error"] = "Already have a file named " + derived_name
 			return failure
 		var meta_version := str((file_meta as Dictionary).get("version", "")).strip_edges().lstrip("vV")
@@ -998,6 +1147,7 @@ func download_new_mod(modworkshop_id: int, version: String = "", allow_rename_on
 		final_path = _mods_dir.path_join(derived_name)
 		temp_path = _mods_dir.path_join(derived_name + ".download")
 		if FileAccess.file_exists(final_path):
+			# Same "Already have" prefix contract as above.
 			failure["error"] = "Already have a file named " + derived_name + " (and the renamed variant)"
 			return failure
 	if FileAccess.file_exists(temp_path):

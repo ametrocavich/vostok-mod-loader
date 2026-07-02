@@ -1,7 +1,14 @@
 ## ----- constants.gd -----
-## All top-level const declarations and module-scope state (vars, signals).
-## These must appear in the compiled modloader.gd before any function body
-## that references them.
+## Shared constants and module-scope state (vars, signals) -- the flat
+## namespace's cross-domain surface. Subsystem-local consts live with
+## their subsystem instead (gdsc_detokenizer's TK_* table, security_scan's
+## rule tables, modpacks' MODPACK_* prefixes, mws_api's cache TTLs,
+## boot.gd's EARLY_AUTOLOAD_DIR); add a constant HERE only when more than
+## one domain file reads it. All top-level names share one namespace
+## across src/*.gd (build.sh concatenation), so they must be globally
+## unique. A const whose initializer references another const must be
+## declared after it -- for cross-file references that means earlier in
+## build.sh's FILES order.
 
 # release-please bumps MODLOADER_VERSION automatically via Conventional Commits:
 #   feat: ... -> minor bump
@@ -25,6 +32,14 @@ const UI_COL_INFO := Color(0.45, 0.55, 0.70)     # blue-grey: passive info
 const UI_COL_MUTED := Color(0.55, 0.55, 0.55)    # grey: secondary action
 const UI_COL_OVERRIDE := Color(0.65, 0.60, 0.40) # olive: user override active
 
+# Tab node names. TabContainer displays the child node's name as the tab
+# title, and the rebuild helpers look tabs up by these exact strings -- so
+# each name is a cross-function contract, not just a label.
+const UI_TAB_MODS := "Mods"
+const UI_TAB_BROWSE := "Browse"
+const UI_TAB_MODPACKS := "Modpacks"
+const UI_TAB_UPDATES := "Updates"
+
 # Dependency ids satisfied by the mod loader itself. Mod authors copy
 # "requires Metro Mod Loader" from their ModWorkshop page into
 # [dependencies]; blocking a mod because the loader "isn't installed"
@@ -33,6 +48,8 @@ const LOADER_ID_ALIASES: Array[String] = [
 	"metro_mod_loader", "metromodloader", "vostok_mod_loader",
 	"mod_loader", "modloader", "mml", "rtvmodlib",
 ]
+# --- Persistent files: caches, config, boot sentinels, pass state ---
+
 const TMP_DIR := "user://vmz_mount_cache"
 const UI_CONFIG_PATH := "user://mod_config.cfg"
 # Sentinel value for `[settings] active_profile` written by Reset to Vanilla.
@@ -50,6 +67,8 @@ const DISABLED_FILE := "modloader_disabled"
 const DISABLED_ONCE_FILE := "modloader_disabled_once"
 const MAX_RESTART_COUNT := 2
 
+# --- Hook pack / rewriter cache ---
+
 const HOOK_PACK_DIR := "user://modloader_hooks"
 # Hook pack filename: "<prefix>_<timestamp_ms>.zip". A fresh filename per
 # _generate_hook_pack call sidesteps ProjectSettings.load_resource_pack's
@@ -61,6 +80,8 @@ const HOOK_PACK_DIR := "user://modloader_hooks"
 const HOOK_PACK_PREFIX := "framework_pack"
 const HOOK_PACK_MOUNT_BASE := "res://modloader_hooks"
 const VANILLA_CACHE_DIR := "user://modloader_hooks/vanilla"
+# --- ModWorkshop network API ---
+
 const MODWORKSHOP_VERSIONS_URL := "https://api.modworkshop.net/mods/versions"
 const MODWORKSHOP_DOWNLOAD_URL_TEMPLATE := "https://api.modworkshop.net/mods/%s/download"
 const MODWORKSHOP_PAGE_URL_TEMPLATE := "https://modworkshop.net/mod/%s"
@@ -87,6 +108,8 @@ const MWS_RTV_GAME_ID := 864
 const MWS_PAGE_LIMIT := 50
 const MWS_USER_AGENT_TEMPLATE := "vostok-mod-loader/%s (+https://github.com/ametrocavich/vostok-mod-loader)"
 
+# --- Profile / modpack snapshot storage ---
+
 # Per-profile MCM snapshot storage. Switching profiles rotates the contents of
 # user://MCM/ in and out of these per-profile slots, so MCM settings stay
 # bound to the profile that authored them. Vanilla is exempt -- switching to
@@ -102,9 +125,13 @@ const MCM_SNAPSHOT_BASE := "user://.profile_snapshots"
 const MODPACK_SNAPSHOT_DIR := "user://.modpack_backups"
 const MODPACK_SNAPSHOT_KEEP := 5
 
+# --- Mod entry limits + tracked content ---
+
 const PRIORITY_MIN := -999
 const PRIORITY_MAX := 999
 const TRACKED_EXTENSIONS: Array[String] = ["gd", "tscn", "tres", "gdns", "gdnlib", "scn"]
+
+# --- Rewriter skip lists + codegen tables ---
 
 # Scripts skipped from rewrite. Dispatch-wrapper overhead and set_script
 # semantics break these specific use patterns. Inherited from tetra's original
@@ -151,6 +178,8 @@ const RTV_ENGINE_VOID_METHODS: Array[String] = [
 	"_enter_tree", "_exit_tree", "_notification",
 ]
 
+# ===== Module-scope state (mutable vars + signals) below this line =====
+
 var _mods_dir: String = ""
 var _developer_mode := false
 var _active_profile := "Default"
@@ -176,6 +205,19 @@ var _priority_save_pending: bool = false
 var _modloader_latest_version: String = ""
 var _ui_update_alert_btn: LinkButton = null
 var _has_loaded := false
+# Result of the most recent mod.txt read (read_mod_config /
+# read_mod_config_folder in fs_archive.gd; mod_discovery sets "pck" for
+# .pck mods, which carry no mod.txt). Values:
+#   "none"            no mod.txt found (or nothing parsed yet)
+#   "ok"              parsed successfully
+#   "parse_error"     ConfigFile rejected it, or mod.txt was empty;
+#                     details in _last_mod_txt_error when available
+#   "nested:<path>"   mod.txt buried in a subfolder = bad packaging
+#   "pck"             .pck mod, no mod.txt expected
+# Copied per-entry into candidate dicts as "mod_txt_status" by
+# mod_discovery; consumed by its warning builder and by
+# _process_mod_candidate's boot-log messages. New status values need
+# both consumers checked.
 var _last_mod_txt_status := "none"
 # Detailed parse-failure diagnostic written by _parse_mod_txt when ConfigFile
 # rejects mod.txt. Plumbed into UI warnings + boot-log messages so authors
@@ -335,9 +377,9 @@ var _modpack_apply_cancelled: bool = false
 var _mod_updates_state: Dictionary = {}
 var _mod_updates_check_in_progress: bool = false
 
-# Recursion guard for _rebuild_profile_tab. The rebuild does
+# Recursion guard for _rebuild_modpacks_tab. The rebuild does
 # remove_child + add_child + move_child, all of which can fire tab_changed
 # (when current_tab shifts to a sibling during remove, or when we restore
-# it at the end). The tab_changed listener calls _rebuild_profile_tab; this
+# it at the end). The tab_changed listener calls _rebuild_modpacks_tab; this
 # flag breaks the cycle so a single rebuild request doesn't recurse forever.
-var _rebuilding_profile_tab: bool = false
+var _rebuilding_modpacks_tab: bool = false
