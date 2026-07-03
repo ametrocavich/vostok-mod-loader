@@ -690,7 +690,7 @@ func _get_missing_mods_for_modpack(entry: Dictionary) -> Array:
 	# silently skipped at apply time -- the user sees a clear "no source
 	# info" failure instead of a mystery missing-from-profile entry.
 	var seen: Dictionary = {}
-	var ordered_keys: Array = []
+	var ordered_keys: Array[String] = []
 	for k_v in enabled_map.keys():
 		var k := str(k_v)
 		if k != "" and not seen.has(k):
