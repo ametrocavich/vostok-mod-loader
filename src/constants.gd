@@ -379,6 +379,13 @@ var _filescope_mounted: Dictionary = _mount_previous_session()
 # read in _mws_cache_get.
 var _mws_cache: Dictionary = {}
 
+# 429-aware backoff state for the MWS client. When a response comes back
+# 429 (or X-RateLimit-Remaining shows the guest budget spent) mws_api.gd
+# sets this to the Time.get_ticks_msec() moment requests may resume; until
+# then fresh network calls fail fast (the response cache above still
+# serves) and callers surface mws_rate_limit_message(). 0 = no cooldown.
+var _mws_cooldown_until_ms: int = 0
+
 # Discovered modpacks. Populated lazily by collect_modpack_metadata when
 # the Modpacks tab is built. Each entry: {file_path, file_name, raw_name,
 # sanitized_name, enabled_count, total_count}. See modpacks.gd.
