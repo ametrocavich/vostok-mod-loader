@@ -131,6 +131,30 @@ const PRIORITY_MIN := -999
 const PRIORITY_MAX := 999
 const TRACKED_EXTENSIONS: Array[String] = ["gd", "tscn", "tres", "gdns", "gdnlib", "scn"]
 
+# --- Supported engine binary formats (GDPC pack + GDSC script versions) ---
+
+# GDPC pack format versions the .pck header parsers accept. Shared by
+# _parse_pck_file_list (pck_enumeration.gd) and
+# _security_pck_list_with_offsets (security_scan.gd) so the two bounds
+# checks cannot drift. V2 = Godot 4.0-4.5, V3 = Godot 4.6.
+const PACK_FORMAT_V2 := 2
+const PACK_FORMAT_V3 := 3
+# Godot 4.7+ writes pack format v4 (encrypted-directory salt, sparse
+# bundles). Diagnosis only -- NEVER accepted: the 4.6 engine under us
+# cannot read v4 packs either, so both parsers keep rejecting it and use
+# this constant to emit a modder-friendly message instead of a generic
+# "unsupported version". See .research/GODOT_47_COMPAT.md section 2.1.
+const PACK_FORMAT_V4 := 4
+
+# GDSC (compiled .gdc script) tokenizer versions the detokenizer
+# understands. Shared by _detokenize_script (gdsc_detokenizer.gd) and
+# STABILITY canary B in _generate_hook_pack (hook_pack.gd).
+# v100 = Godot 4.0-4.4, v101 = Godot 4.5+ (TOKENIZER_VERSION is still 101
+# in 4.7-stable; see .research/GODOT_47_COMPAT.md section 2.2 -- which is
+# why canary C round-trips real output instead of trusting this number).
+const GDSC_VERSION_V100 := 100
+const GDSC_VERSION_V101 := 101
+
 # --- Rewriter skip lists + codegen tables ---
 
 # Scripts skipped from rewrite. Dispatch-wrapper overhead and set_script
@@ -194,6 +218,9 @@ var _ui_launch_btn: Button = null
 # scroll position across teardown -- without this, toggling a mod halfway
 # down a long list snapped the view back to the top.
 var _ui_mods_scroll: ScrollContainer = null
+# Modpacks-tab list scroller, same carry-across-rebuild pattern for
+# _rebuild_modpacks_tab (row actions rebuild the whole tab).
+var _ui_modpacks_scroll: ScrollContainer = null
 # Debounce guard for priority-spinbox saves (see _schedule_priority_save).
 var _priority_save_pending: bool = false
 # Self-update check state. _modloader_latest_version is populated by

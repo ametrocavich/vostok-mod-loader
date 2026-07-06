@@ -159,8 +159,8 @@ func _detokenize_script(script_path: String) -> String:
 		return ""
 
 	var version := raw.decode_u32(4)
-	if version != 100 and version != 101:
-		_log_critical("[Detokenize] Unsupported GDSC version %d in %s (expected 100 or 101)" % [version, script_path])
+	if version != GDSC_VERSION_V100 and version != GDSC_VERSION_V101:
+		_log_critical("[Detokenize] Unsupported GDSC version %d in %s (expected %d or %d)" % [version, script_path, GDSC_VERSION_V100, GDSC_VERSION_V101])
 		return ""
 
 	var decompressed_size := raw.decode_u32(8)
@@ -175,14 +175,14 @@ func _detokenize_script(script_path: String) -> String:
 			return ""
 
 	# -- Metadata --
-	var meta_size := 20 if version == 100 else 16  # v100 has 4-byte padding
+	var meta_size := 20 if version == GDSC_VERSION_V100 else 16  # v100 has 4-byte padding
 	if buf.size() < meta_size:
 		return ""
 	var ident_count: int = buf.decode_u32(0)
 	var const_count: int = buf.decode_u32(4)
 	var line_count: int  = buf.decode_u32(8)
 	var token_count: int
-	if version == 100:
+	if version == GDSC_VERSION_V100:
 		token_count = buf.decode_u32(16)
 	else:
 		token_count = buf.decode_u32(12)
@@ -322,8 +322,7 @@ func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Arr
 			line_started = true
 			if col_map.has(i):
 				var col: int = col_map[i]
-				# Convert column to tabs (Godot uses tab_size=4 for indentation).
-				var tabs: int = col / 4
+				var tabs: int = _indent_from_column(col)
 				for _t in tabs:
 					current_line += "\t"
 
@@ -378,6 +377,18 @@ func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Arr
 	if not result.ends_with("\n"):
 		result += "\n"
 	return result
+
+# Column -> leading tab count for reconstructed source. The ONLY place
+# column-to-indent math lives; keep it that way. GDSC token column data as
+# written by Godot 4.0-4.6 counts a tab as tab_size=4 columns, so indent
+# depth = col / 4. If a future engine serializes raw string offsets instead
+# (tab = 1 column, 1-based -- the disputed PR 116986 change, see
+# .research/GODOT_47_COMPAT.md section 2.2), this one site changes to
+# `col - 1` behind a detection heuristic. STABILITY canary C in hook_pack.gd
+# trips loudly if this math ever produces structurally broken indentation.
+func _indent_from_column(col: int) -> int:
+	@warning_ignore("integer_division")
+	return col / 4
 
 func _gdsc_variant_to_source(value: Variant) -> String:
 	if value == null:

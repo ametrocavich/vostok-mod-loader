@@ -39,6 +39,55 @@ func _wrapped_paths_packed(filenames: Array[String]) -> PackedStringArray:
 		out.append("res://Scripts/" + fn)
 	return out
 
+# STABILITY canary C helper. Detokenizes the first probe script that carries
+# GDSC bytes (same probe set as _probe_gdsc_version) and checks structural
+# indentation. Goes through _detokenize_script directly, NOT
+# _read_vanilla_source, so a pristine on-disk cache from an earlier session
+# cannot mask a detokenizer that is broken against the current game build.
+# Returns true when the structure checks out OR when no probe script could
+# be detokenized at all (inconclusive -- mirrors canary B's tok_version == -1
+# behavior; the per-script "Empty detokenized source" warnings downstream
+# still surface real failures).
+func _canary_detokenizer_roundtrip_ok() -> bool:
+	var probe_paths := ["res://Scripts/Camera.gd", "res://Scripts/Controller.gd",
+			"res://Scripts/Audio.gd", "res://Scripts/AI.gd"]
+	for p in probe_paths:
+		# Cheap byte pre-check (as in _probe_gdsc_version) so missing paths
+		# don't spam "Cannot read bytes" warnings from _detokenize_script.
+		var raw := FileAccess.get_file_as_bytes(p)
+		if raw.size() < 12:
+			raw = FileAccess.get_file_as_bytes(p.replace(".gd", ".gdc"))
+		if raw.size() < 12 or raw.slice(0, 4).get_string_from_ascii() != _GDSC_MAGIC:
+			continue
+		var source := _detokenize_script(p)
+		if source.is_empty():
+			continue
+		return _source_has_indented_func_body(source)
+	return true
+
+# True when at least one colon-terminated func declaration line is followed
+# by a tab-indented body line. Every vanilla RTV script satisfies this when
+# the column->tab math (_indent_from_column, tab_size=4) is correct. Under a
+# raw-offset column format a depth-1 body reconstructs at 0 tabs, so no func
+# body starts with a tab and the check fails.
+func _source_has_indented_func_body(source: String) -> bool:
+	var lines := source.split("\n")
+	for i in range(lines.size() - 1):
+		var line := lines[i]
+		if not (line.begins_with("func ") or line.begins_with("static func ")):
+			continue
+		if not line.strip_edges(false, true).ends_with(":"):
+			continue
+		# First non-empty line after the declaration is the body.
+		for j in range(i + 1, lines.size()):
+			var body := lines[j]
+			if body.strip_edges().is_empty():
+				continue
+			if body.begins_with("\t"):
+				return true
+			break  # non-empty, unindented body -- keep scanning other funcs
+	return false
+
 # Build the framework pack: enumerate res://Scripts/*.gd, detokenize each via
 # _read_vanilla_source, parse + generate wrappers, zip them, mount the zip.
 #
@@ -79,7 +128,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	# before any rewrite work. One loud, actionable message beats a flood of
 	# "Empty detokenized source" warnings, one per hookable script.
 	var tok_version := _probe_gdsc_version()
-	if tok_version != -1 and tok_version != 100 and tok_version != 101:
+	if tok_version != -1 and tok_version != GDSC_VERSION_V100 and tok_version != GDSC_VERSION_V101:
 		_log_critical("[STABILITY] Unsupported GDSC tokenizer v%d on Godot %s. This ModLoader supports v100 (Godot 4.0-4.4) and v101 (Godot 4.5-4.6). Hook pack generation disabled -- script hooks will not fire. See README for supported Godot versions." \
 				% [tok_version, Engine.get_version_info().get("string", "unknown")])
 		return ""
@@ -88,6 +137,22 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 				% [tok_version, Engine.get_version_info().get("string", "unknown")])
 
 	if _loaded_mod_ids.is_empty():
+		return ""
+
+	# STABILITY canary C: round-trip one known vanilla script through the
+	# detokenizer and sanity-check the reconstructed indentation. Canary B
+	# above only reads the version integer, which a future engine can leave
+	# at 101 while still changing the serialized column semantics (raw string
+	# offsets instead of tab_size=4 columns -- see PR 116986 and
+	# .research/GODOT_47_COMPAT.md section 2.2). Without this check, broken
+	# column math would produce silently mis-indented rewrites; with it, the
+	# failure is one loud, diagnosable stop, exactly like canary B. Placed
+	# after the no-mods short-circuit so pure-vanilla sessions skip the
+	# detokenize cost; gated on tok_version != -1 so the renamed-probe-set
+	# edge case degrades the same way canary B does (proceed, no false stop).
+	if tok_version != -1 and not _canary_detokenizer_roundtrip_ok():
+		_log_critical("[STABILITY] Detokenized vanilla source failed the indentation sanity check on Godot %s -- the .gdc column format likely changed even though the GDSC version is still %d. Hook pack generation disabled -- script hooks will not fire. Update the ModLoader to a version that supports this game build." \
+				% [Engine.get_version_info().get("string", "unknown"), tok_version])
 		return ""
 
 	# OPT-IN GATE (v3.0.1): user mods run against unmodified vanilla unless

@@ -168,8 +168,8 @@ func _collect_module_scope_scene_preloads(source: String) -> PackedStringArray:
 func _parse_pck_file_list(pck_path: String) -> PackedStringArray:
 	const MAGIC_GDPC: int = 0x43504447  # "GDPC" little-endian
 	const PACK_DIR_ENCRYPTED := 1
-	const PACK_FORMAT_V2 := 2
-	const PACK_FORMAT_V3 := 3
+	# PACK_FORMAT_V2 / V3 / V4 bounds live in constants.gd (shared with
+	# security_scan.gd's parser).
 	var result := PackedStringArray()
 	var f := FileAccess.open(pck_path, FileAccess.READ)
 	if f == null:
@@ -185,7 +185,15 @@ func _parse_pck_file_list(pck_path: String) -> PackedStringArray:
 
 	var pack_format_version: int = f.get_32()
 	if pack_format_version < PACK_FORMAT_V2 or pack_format_version > PACK_FORMAT_V3:
-		_log_warning("[PCK] %s: unsupported format version %d" % [pck_path, pack_format_version])
+		if pack_format_version == PACK_FORMAT_V4:
+			# Godot 4.7+ export. The stamped engine version u32s follow the
+			# format version in the GDPC header, so name the offending editor.
+			var ver_major: int = f.get_32()
+			var ver_minor: int = f.get_32()
+			_log_warning("[PCK] %s: pack format v4, exported with Godot %d.%d. This game runs Godot 4.6, which cannot read v4 packs. Re-export the .pck with Godot 4.6.x, or ship the mod as a .zip (zip mods are unaffected by pack versions)." \
+					% [pck_path, ver_major, ver_minor])
+		else:
+			_log_warning("[PCK] %s: unsupported format version %d" % [pck_path, pack_format_version])
 		f.close()
 		return result
 

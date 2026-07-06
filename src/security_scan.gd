@@ -418,8 +418,8 @@ func _security_scan_binary(file: String, bytes: PackedByteArray, findings: Array
 func _security_pck_list_with_offsets(pck_path: String) -> Array:
 	const MAGIC_GDPC: int = 0x43504447  # "GDPC"
 	const PACK_DIR_ENCRYPTED := 1
-	const PACK_FORMAT_V2 := 2
-	const PACK_FORMAT_V3 := 3
+	# PACK_FORMAT_V2 / V3 / V4 bounds live in constants.gd (shared with
+	# pck_enumeration.gd's parser).
 	var result: Array = []
 	var f := FileAccess.open(pck_path, FileAccess.READ)
 	if f == null:
@@ -430,6 +430,14 @@ func _security_pck_list_with_offsets(pck_path: String) -> Array:
 		return result
 	var version: int = f.get_32()
 	if version < PACK_FORMAT_V2 or version > PACK_FORMAT_V3:
+		if version == PACK_FORMAT_V4:
+			# Godot 4.7+ export -- the one rejection worth a modder-facing
+			# message. The stamped engine version u32s follow the format
+			# version in the GDPC header.
+			var ver_major: int = f.get_32()
+			var ver_minor: int = f.get_32()
+			_log_warning("[SecurityScan] %s: mod .pck uses pack format v4, exported with Godot %d.%d. This game runs Godot 4.6, which cannot read v4 packs. Ask the mod author to export with Godot 4.6.x, or to ship the mod as a .zip instead." \
+					% [pck_path, ver_major, ver_minor])
 		f.close()
 		return result
 	f.get_32(); f.get_32(); f.get_32()
