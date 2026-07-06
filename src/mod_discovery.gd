@@ -61,6 +61,7 @@ func collect_mod_metadata() -> Array[Dictionary]:
 		for sf in skipped_files:
 			_log_debug("  " + sf + "  (not .vmz/.zip/.pck)")
 	entries = _dedupe_by_mod_id(entries)
+	_log_provides_notes(entries)
 	# Persist any mws ids we just scanned so missing-mod stubs can offer
 	# Download for mods that were once installed but have since been
 	# removed. The cache survives mod deletion (we want to remember the
@@ -120,6 +121,49 @@ func _record_hidden_folder(mods_dir: String, dir_name: String) -> void:
 	_hidden_folder_profile_keys[entry["profile_key"]] = true
 	if not entry["profile_key"].begins_with("zip:"):
 		_hidden_folder_ids[entry["mod_id"]] = true
+		# Aliases too: a dep naming the folder mod's OLD id should get the
+		# same "hidden while Developer Mode is off" hint, not "not installed".
+		for alias in entry.get("provides", []):
+			_hidden_folder_ids[alias] = true
+
+# Once-per-scan log lines for provides= rename aliases, so the resolution
+# maps themselves (_entries_by_mod_id, rebuilt constantly) never log:
+#   - an alias naming a REAL installed mod's id is shadowed per-map (the
+#     real mod wins in every map it appears in -- see the second-pass rule
+#     in _entries_by_mod_id; when the real mod is DISABLED the alias still
+#     resolves in the enabled-only maps); say so, or the author/user has no
+#     way to learn why the alias did nothing.
+#   - two mods claiming the same alias: each resolution map picks its own
+#     first claimant (scan order for installed lookups, load order for the
+#     active/loadable maps), so the warning names both and no winner.
+func _log_provides_notes(entries: Array[Dictionary]) -> void:
+	var real_by_id: Dictionary = {}
+	for e in entries:
+		var k := _entry_mod_key(e)
+		if k != "" and not real_by_id.has(k):
+			real_by_id[k] = e
+	var alias_owner: Dictionary = {}
+	for e in entries:
+		for raw_alias in e.get("provides", []):
+			var ak := str(raw_alias).strip_edges().to_lower()
+			if ak == "":
+				continue
+			if real_by_id.has(ak):
+				var real: Dictionary = real_by_id[ak]
+				_log_info("provides alias '" + str(raw_alias) + "' from "
+						+ str(e.get("mod_name", e.get("file_name", "?")))
+						+ " is shadowed by installed mod "
+						+ str(real.get("mod_name", real.get("file_name", "?")))
+						+ " while that mod is enabled -- if it is disabled,"
+						+ " the alias satisfies dependents in its place")
+				continue
+			if alias_owner.has(ak):
+				_log_warning("Both " + str(alias_owner[ak]) + " and "
+						+ str(e.get("file_name", "?")) + " declare provides '"
+						+ str(raw_alias) + "' -- only one of them resolves"
+						+ " that id, depending on load order")
+			else:
+				alias_owner[ak] = str(e.get("file_name", "?"))
 
 # Surface scanner findings in the boot log alongside the discovery summary.
 # Logged at DEBUG -- findings are *disclosures* of "this mod uses these
@@ -191,6 +235,11 @@ func _log_security_findings(entry: Dictionary) -> void:
 #                                machinery in this file, the UI row, and the
 #                                per-mod metadata dict mod_loading builds
 #                                for the mods-facing hooks_api.
+#   provides     Array[String]   from [mod] provides= -- rename aliases (old
+#                                ids this mod satisfies). Resolved by the
+#                                alias pass in _entries_by_mod_id and
+#                                _apply_dependency_ordering; an alias never
+#                                shadows a real installed mod's id.
 #   dependency_warnings Array[String], dependency_blockers Array[String],
 #   dependency_blockers_info Array of {id, status, display, fixable}
 #                                recomputed by _refresh_dependency_status
@@ -246,6 +295,7 @@ func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, e
 	var has_mod_id := false
 	var required_dependencies: Array[String] = []
 	var optional_dependencies: Array[String] = []
+	var provides: Array[String] = []
 
 	# VostokMods compat: parse "100-ModName.vmz" filename priority prefix.
 	# The prefix is stripped from mod_name/mod_id defaults and used as fallback priority.
@@ -274,6 +324,7 @@ func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, e
 			priority = filename_priority
 		required_dependencies = _parse_dependency_list(cfg, "required")
 		optional_dependencies = _parse_dependency_list(cfg, "optional")
+		provides = _parse_provides_list(cfg, mod_id, file_name)
 	elif has_filename_priority:
 		priority = filename_priority
 	priority = clampi(priority, PRIORITY_MIN, PRIORITY_MAX)
@@ -309,6 +360,7 @@ func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, e
 		"priority": priority, "enabled": true,
 		"required_dependencies": required_dependencies,
 		"optional_dependencies": optional_dependencies,
+		"provides": provides,
 		"dependency_warnings": [], "dependency_blockers": [],
 		"dependency_blockers_info": [], "dependency_ignored": false,
 		"dependencies_satisfied": true,
@@ -380,6 +432,49 @@ func _append_dependency_id(deps: Array[String], raw_id: String) -> void:
 			return
 	deps.append(dep_id)
 
+# [mod] provides=["old_id", ...]: rename aliases (the SMAPI FormerIDs lesson).
+# Any dependency requirement naming an alias is satisfied by this mod; see
+# _entries_by_mod_id and _apply_dependency_ordering for the resolution rule
+# (a real installed mod with that id always wins over an alias).
+# Parsed with the same tolerance as [dependencies] lists -- string array,
+# PackedStringArray, or a whole-value "a, b" string for older author tools.
+# Junk shapes are dropped with a log line, never a crash: a bad provides=
+# value must degrade to "no aliases", not take the mod (or the scan) down.
+func _parse_provides_list(cfg: ConfigFile, mod_id: String, file_name: String) -> Array[String]:
+	var ids: Array[String] = []
+	if cfg == null or not cfg.has_section_key("mod", "provides"):
+		return ids
+	var raw: Variant = cfg.get_value("mod", "provides")
+	if raw is Array:
+		for item in (raw as Array):
+			if item is String or item is StringName:
+				_append_dependency_id(ids, str(item))
+			else:
+				_log_warning(file_name + ": ignoring non-string provides entry "
+						+ str(item))
+	elif typeof(raw) == TYPE_PACKED_STRING_ARRAY:
+		for item in (raw as PackedStringArray):
+			_append_dependency_id(ids, str(item))
+	elif raw is String or raw is StringName:
+		# Whole-value strings like "foo, bar" (mirrors _parse_dependency_list).
+		var text := str(raw).strip_edges()
+		if text.begins_with("[") and text.ends_with("]") and text.length() >= 2:
+			text = text.substr(1, text.length() - 2)
+		for part in text.split(","):
+			_append_dependency_id(ids, part)
+	else:
+		_log_warning(file_name + ": ignoring provides= -- expected a string array, got "
+				+ type_string(typeof(raw)))
+		return ids
+	# A mod "providing" its own id is a no-op (it IS that id); drop it so the
+	# alias passes never see a self-alias.
+	var self_key := mod_id.strip_edges().to_lower()
+	var cleaned: Array[String] = []
+	for alias in ids:
+		if alias.to_lower() != self_key:
+			cleaned.append(alias)
+	return cleaned
+
 func _compare_load_order(a: Dictionary, b: Dictionary) -> bool:
 	if a["priority"] != b["priority"]:
 		return a["priority"] < b["priority"]
@@ -401,6 +496,18 @@ func _entries_by_mod_id(entries: Array) -> Dictionary:
 			continue
 		if not by_id.has(key):
 			by_id[key] = entry
+	# Second pass: provides= rename aliases resolve to their providing mod.
+	# Running after the real-id pass guarantees an alias never SHADOWS a real
+	# installed mod with that id -- the real mod already owns the slot. When
+	# two mods claim the same alias the first in `entries` wins (same
+	# first-wins rule as duplicate real ids above); collect_mod_metadata logs
+	# both cases once per scan (_log_provides_notes).
+	for entry in entries:
+		for raw_alias in (entry as Dictionary).get("provides", []):
+			var alias_key := str(raw_alias).strip_edges().to_lower()
+			if alias_key == "" or by_id.has(alias_key):
+				continue
+			by_id[alias_key] = entry
 	return by_id
 
 func _dependency_display(entry: Dictionary) -> String:
@@ -443,6 +550,15 @@ func _filter_dependency_ready_candidates(candidates: Array,
 				# We ARE the loader; always satisfied.
 				if LOADER_ID_ALIASES.has(dep_key):
 					continue
+				# provides= rename alias: canonicalize to the providing mod's
+				# real id BEFORE the blocked check -- `blocked` is keyed by
+				# real ids, so an un-canonicalized alias would read a blocked
+				# provider as satisfied. No-op for real ids (the maps hand
+				# back the entry whose own key is dep_key already).
+				if active_by_id.has(dep_key):
+					dep_key = _entry_mod_key(active_by_id[dep_key])
+				elif installed_by_id.has(dep_key):
+					dep_key = _entry_mod_key(installed_by_id[dep_key])
 				if active_by_id.has(dep_key) and not blocked.has(dep_key):
 					continue
 				var status := "not_installed"
@@ -505,6 +621,14 @@ func _apply_dependency_ordering(candidates: Array) -> Dictionary:
 		var k := _entry_mod_key(candidates[i])
 		if k != "" and not key_to_index.has(k):
 			key_to_index[k] = i
+	# provides= rename aliases: an ordering edge naming old_id must point at
+	# the providing mod so hoisting AND cycle detection see through renames.
+	# Second pass so an alias can never steal a real id's slot (real mod wins).
+	for i in n:
+		for raw_alias in (candidates[i] as Dictionary).get("provides", []):
+			var ak := str(raw_alias).strip_edges().to_lower()
+			if ak != "" and not key_to_index.has(ak):
+				key_to_index[ak] = i
 	var indegree := PackedInt32Array()
 	indegree.resize(n)
 	var dependents: Dictionary = {}
@@ -819,6 +943,13 @@ func fetch_latest_modworkshop_versions(ids: Array[int]) -> Dictionary:
 
 		var res: Array = await req.request_completed
 		req.queue_free()
+		# Legacy path (own HTTPRequest, not the _mws_get_json chokepoint):
+		# still NOTE rate headers so a 429 here arms the shared cooldown and
+		# every surface's mws_error_status() hint lights up. Deliberately no
+		# fail-fast gate -- this batch check stays as-is until the migration
+		# phase, and blocking it on a conservative cooldown could fail checks
+		# the server would have allowed.
+		_mws_note_rate_headers(int(res[1]), res[2])
 		if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] < 200 or res[1] >= 300:
 			continue
 		var parsed = JSON.parse_string((res[3] as PackedByteArray).get_string_from_utf8())
@@ -1067,10 +1198,13 @@ func download_new_mod(modworkshop_id: int, version: String = "", allow_rename_on
 		if not (file_meta is Dictionary):
 			# Don't fall back to primary: silent substitution defeats the point
 			# of version pinning. Surface the gap so the caller can decide.
-			failure["error"] = "Version " + version + " not available on ModWorkshop"
+			# Rate-limit-aware copy: when the lookup failed because we're in
+			# a 429 cooldown, saying "not available" would be a lie -- the
+			# version may be fine and only the API budget is spent.
+			failure["error"] = mws_error_status("Version " + version + " not available on ModWorkshop")
 			return failure
 	if not (file_meta is Dictionary):
-		failure["error"] = "Mod has no downloadable file on ModWorkshop (off-site link or not uploaded)"
+		failure["error"] = mws_error_status("Mod has no downloadable file on ModWorkshop (off-site link or not uploaded)")
 		return failure
 	var download_url: String = str((file_meta as Dictionary).get("download_url", ""))
 	if download_url.is_empty():

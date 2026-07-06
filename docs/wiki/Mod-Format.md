@@ -73,6 +73,7 @@ Only `[mod]` is required. `[autoload]`, `[updates]`, `[dependencies]`, `[hooks]`
 | `version` | string | `""` | Used by the Updates tab to compare against ModWorkshop |
 | `priority` | int | 0 (or parsed from filename prefix) | Higher loads later, wins file conflicts. Clamped to `-999..999` |
 | `author` | string | `""` | Optional author/credit string. Parsed and stored on the entry dict; no UI surface yet (added 3.1.2) |
+| `provides` | string array | `[]` | Rename aliases: old ids this mod still satisfies for other mods' dependencies (added 3.3.0). See below. |
 
 **VostokMods compat**: if the archive filename matches `^(-?\d+)-(.*)`, the numeric prefix is used as a fallback priority when `[mod] priority` isn't set. Example: `100-BetterAI.vmz` loads with `priority=100`. See [mod_discovery.gd:130-154](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd#L130).
 
@@ -94,6 +95,25 @@ Use Godot `ConfigFile` string arrays. Bare CSV (`required=a, b`) is not valid `C
 | `optional` | string array | Soft integrations. Parsed and displayed by the launcher; absence does not block loading. |
 
 Required dependencies load before the dependent mod automatically: if the priority/name ordering would load a dependency later than its dependent, the loader applies a minimal stable reorder (hoisting the dependency) and notes the adjustment in the launcher's order panel -- no author or user action needed. Dependency cycles are the exception: they are reported as a warning and the involved mods keep their priority order. Explicit priorities still work; the automatic adjustment only kicks in when a required dependency would otherwise load too late.
+
+### Renaming a mod: `[mod] provides` (added 3.3.0)
+
+If you change your mod's `id`, every mod that lists the old id in `[dependencies]` breaks. Declare the old id (or ids) in `provides` and those requirements stay satisfied:
+
+```ini
+[mod]
+name="Better AI"
+id="better_ai"
+provides=["betterai_legacy", "old_better_ai"]
+```
+
+Rules:
+
+- Any `required=` or `optional=` entry naming a provided id resolves to this mod -- it satisfies the requirement, is hoisted by the automatic load ordering, and participates in cycle detection exactly as if it still had the old id. Matching is case-insensitive, like all id handling.
+- A provided id **never shadows an installed and enabled real mod**: if a mod whose actual `id` matches one of your aliases is installed and enabled, that real mod wins for dependency resolution and the loader logs that your alias is inert. If that real mod is installed but disabled, your alias satisfies dependents in its place.
+- If two installed mods provide the same alias, only one of them resolves it (which one depends on load order) and a warning is logged.
+- Use Godot `ConfigFile` string array syntax, same as `[dependencies]`. A malformed `provides` value is ignored with a log line; it never blocks the mod from loading.
+- Declare the alias **in the release that renames the mod** (and keep it): dependents update on their own schedule.
 
 ### `[autoload]` section
 
