@@ -72,6 +72,7 @@ func _mws_cache_put(url: String, data: Variant, ttl_ms: int) -> void:
 # child of the modloader autoload, queue_frees on completion. Pass cache_ttl_ms
 # > 0 to read/write the in-memory response cache; 0 bypasses caching entirely.
 func _mws_get_json(url: String, cache_ttl_ms: int = 0, allow_rate_wait: bool = true) -> Variant:
+	_mws_last_transport_failed = false
 	if cache_ttl_ms > 0:
 		var cached: Variant = _mws_cache_get(url)
 		if cached != null:
@@ -89,6 +90,11 @@ func _mws_get_json(url: String, cache_ttl_ms: int = 0, allow_rate_wait: bool = t
 		if get_tree() == null:
 			return null
 		await get_tree().create_timer(float(cooldown_ms + 100) / 1000.0).timeout
+		# Another in-flight request may have hit a 429 and pushed the cooldown
+		# further out while we waited. Re-check instead of firing into a window
+		# that just closed again -- that request would 429 and re-arm anyway.
+		if _mws_rate_cooldown_ms() > 0:
+			return null
 
 	var req := HTTPRequest.new()
 	req.timeout = API_CHECK_TIMEOUT
@@ -104,6 +110,9 @@ func _mws_get_json(url: String, cache_ttl_ms: int = 0, allow_rate_wait: bool = t
 	req.queue_free()
 
 	if res[0] != HTTPRequest.RESULT_SUCCESS:
+		# No HTTP response at all -- offline / DNS / timeout. Flag it so download
+		# callers can distinguish this from a 404 and show connection copy.
+		_mws_last_transport_failed = true
 		return null
 	var status: int = res[1]
 	_mws_note_rate_headers(status, res[2])
@@ -268,7 +277,14 @@ func mws_discover_snapshot() -> Dictionary:
 func mws_get_popular_and_latest() -> Variant:
 	var popular: Variant = await mws_list_mods("", "weekly_score", 0, 1)
 	var latest: Variant = await mws_list_mods("", "bumped_at", 0, 1)
-	if not (popular is Dictionary) and not (latest is Dictionary):
+	# Treat EITHER query failing as a failed fetch. The two run sequentially,
+	# so the guest budget can expire between them (popular 2xx arms the
+	# cooldown, latest fails fast at the gate) -- returning a half payload
+	# would render a landing with one section silently empty and clear the
+	# offline banner. Null instead lets the Browse tab fall back to the last
+	# complete snapshot behind the cached-results banner. A first-run with no
+	# snapshot still shows the plain error+retry state (unchanged).
+	if not (popular is Dictionary) or not (latest is Dictionary):
 		return null
 	var pop_rows: Array = _mws_data_rows(popular).slice(0, 10)
 	var lat_rows: Array = _mws_data_rows(latest).slice(0, 10)
@@ -277,7 +293,13 @@ func mws_get_popular_and_latest() -> Variant:
 	# flaked) must not clobber an older complete snapshot -- when we're
 	# degraded enough to need the snapshot, the complete one serves better.
 	if not pop_rows.is_empty() and not lat_rows.is_empty():
-		_mws_discover_snapshot_store(out)
+		# Only restamp when the payload actually changed. Both queries can be
+		# served from the 5-min in-memory cache with zero network, and rewriting
+		# the snapshot then would advance saved_at_unix without a real refresh --
+		# making the offline banner's "Last refreshed X ago" under-report age.
+		var prev: Variant = _mws_discover_snapshot.get("data") if not _mws_discover_snapshot.is_empty() else null
+		if not (prev is Dictionary and prev == out):
+			_mws_discover_snapshot_store(out)
 	return out
 
 # Safely pull the "data" array out of a list response. The `as Array` cast

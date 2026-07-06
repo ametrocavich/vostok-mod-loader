@@ -137,12 +137,15 @@ func _count_truthy(d: Dictionary) -> int:
 # absence) or the metroprofile version must be bumped. The v1 shape is locked
 # -- see the note above _profile_to_payload (ui.gd) and
 # docs/wiki/Profile-Format.md.
-#   WRITE:    _profile_to_json_string (ui.gd) -- sole producer; feeds both
-#             _export_profile_to_zip (modpack / profile zips) and
-#             _profile_to_payload (share strings).
-#   VALIDATE: _validate_modpack (below; modpack apply),
-#             _import_profile_from_zip (ui.gd; profile zip import),
-#             _parse_profile_payload (ui.gd; share-string import).
+#   WRITE:    _profile_to_json_string (ui.gd) -- sole producer; feeds
+#             _export_profile_to_zip (modpack / profile zips). NB:
+#             _profile_to_payload (share strings) is currently UNUSED -- the
+#             Modpacks tab replaced the share-profile flow (see its UNUSED
+#             marker in ui.gd); listed here only to keep the schema map whole.
+#   VALIDATE: _validate_modpack (below; modpack apply). The share-flow parsers
+#             _import_profile_from_zip and _parse_profile_payload (ui.gd) are
+#             likewise currently UNUSED (share-profile flow removed); they stay
+#             on the metroprofile-v1 schema should the flow ever return.
 #   READ:     _build_modpack_entry (name/description/author/exported_at/
 #             enabled -> Modpacks tab rows),
 #             _get_missing_mods_for_modpack (enabled + sources -> download

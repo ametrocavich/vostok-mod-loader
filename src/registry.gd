@@ -820,6 +820,25 @@ func get_entry(registry: String, id: String) -> Variant:
 # reports its own registrations, matching get_entry's cross-surface
 # behavior. Every other registry reads its own bucket directly.
 func _bulk_mod_entries(registry: String) -> Dictionary:
+	if registry == "scenes":
+		# Scenes keep their real PackedScene values on the Database node
+		# (_rtv_mod_scenes for registrations, _rtv_override_scenes for
+		# overrides); _registry_registered["scenes"] holds only bare `true`
+		# rollback markers. Reading those markers directly would (a) hand
+		# find()/list() a bool instead of a scene, and (b) miss overrides
+		# entirely, so an overridden vanilla id would still read back its
+		# pre-override scene. Merge the real values here, overrides last, so
+		# the read API matches get_entry precedence (override > register).
+		var scene_out: Dictionary = {}
+		var db := _database_node()
+		if db != null:
+			if "_rtv_mod_scenes" in db and db._rtv_mod_scenes is Dictionary:
+				for id in db._rtv_mod_scenes.keys():
+					scene_out[String(id)] = db._rtv_mod_scenes[id]
+			if "_rtv_override_scenes" in db and db._rtv_override_scenes is Dictionary:
+				for id in db._rtv_override_scenes.keys():
+					scene_out[String(id)] = db._rtv_override_scenes[id]
+		return scene_out
 	if registry == "shelters" or registry == "maps":
 		var shared: Dictionary = _registry_registered.get("shelters", {})
 		var out: Dictionary = {}

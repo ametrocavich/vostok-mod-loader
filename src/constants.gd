@@ -23,15 +23,6 @@ const MODLOADER_VERSION := "3.2.1"
 const MODLOADER_RES_PATH := "res://modloader.gd"
 const MOD_DIR := "mods"
 
-# Semantic sub-label palette for the launcher UI. make_dark_theme owns the
-# theme-level colors; these are the recurring tints that rows and panels
-# share so a state always looks the same everywhere it appears.
-const UI_COL_WARN := Color(1.0, 0.6, 0.2)        # orange: actionable problem
-const UI_COL_GOOD := Color(0.58, 0.82, 0.38)     # green: enabled / fixes things
-const UI_COL_INFO := Color(0.45, 0.55, 0.70)     # blue-grey: passive info
-const UI_COL_MUTED := Color(0.55, 0.55, 0.55)    # grey: secondary action
-const UI_COL_OVERRIDE := Color(0.65, 0.60, 0.40) # olive: user override active
-
 # Tab node names. TabContainer displays the child node's name as the tab
 # title, and the rebuild helpers look tabs up by these exact strings -- so
 # each name is a cross-function contract, not just a label.
@@ -386,6 +377,13 @@ var _mws_cache: Dictionary = {}
 # serves) and callers surface mws_rate_limit_message(). 0 = no cooldown.
 var _mws_cooldown_until_ms: int = 0
 
+# Whether the most recent _mws_get_json call failed at the transport layer
+# (connection refused / timeout / DNS) rather than getting an HTTP response.
+# Reset at the top of every call, set true only on RESULT_SUCCESS failure.
+# Lets download callers tell "you're offline" apart from a genuine HTTP 404
+# ("mod has no downloadable file") so the offline copy stays honest.
+var _mws_last_transport_failed: bool = false
+
 # Last-good Browse discover landing (offline grace). Written by mws_api.gd
 # after every fully-populated mws_get_popular_and_latest, both here and to
 # user://mws_cache/discover_snapshot.json so it survives relaunches.
@@ -420,6 +418,20 @@ var _modpack_apply_cancelled: bool = false
 # launcher close. mw_id == 0 entries are not stored (nothing to fetch).
 var _mod_updates_state: Dictionary = {}
 var _mod_updates_check_in_progress: bool = false
+
+# Set when an Updates-tab check changes _mod_updates_state while the Mods tab
+# is off-screen; the tab_changed listener rebuilds the Mods tab on next show so
+# the per-row update badges actually appear (instead of waiting for some
+# unrelated action to trigger a rebuild). Cleared by that rebuild.
+var _mods_badges_dirty: bool = false
+
+# profile_keys with a badge-triggered update download in flight. A mid-download
+# _rebuild_mods_tab (e.g. from a filter keystroke) re-creates the Update button
+# as a fresh enabled control while the pk is still in _mod_updates_state, so
+# without this guard a second click would start a duplicate concurrent download
+# of the same mod. The pressed handler refuses re-entry for a pk already here,
+# and the rebuilt badge renders as a disabled "Updating..." button.
+var _mod_update_in_flight: Dictionary = {}
 
 # Recursion guard for _rebuild_modpacks_tab. The rebuild does
 # remove_child + add_child + move_child, all of which can fire tab_changed

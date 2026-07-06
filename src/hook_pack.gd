@@ -532,7 +532,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		_log_debug("[Autofix] Carried %d unchanged mod sibling script(s) forward into new hook pack -- preserves VFS coverage across regen" \
 				% sibling_carried)
 
-	# STABILITY canary C: add a tiny known-content file to the hook pack so we
+	# STABILITY VFS-precedence canary: add a tiny known-content file to the hook pack so we
 	# can verify VFS mount precedence independently of the script-rewriting
 	# path. After mount, a FileAccess.get_file_as_string on this path should
 	# return the canary content -- if not, the pack mounted but isn't serving
@@ -568,7 +568,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 					% [script_count, hook_count])
 			_persist_hook_pack_state(pack_zip_rel, _wrapped_paths_packed(packed_filenames))
 		elif ProjectSettings.load_resource_pack(pack_zip_rel, true):
-			# STABILITY canary C readback: confirm VFS mount precedence works
+			# STABILITY VFS-precedence canary readback: confirm VFS mount precedence works
 			# end-to-end. If the canary file isn't readable with expected
 			# content, the hook pack mounted but isn't serving files -- every
 			# rewrite will silently fall back to vanilla.

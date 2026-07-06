@@ -44,10 +44,23 @@ static func _static_vmz_to_zip(vmz_path: String) -> String:
 	if dst == null:
 		src.close()
 		return ""
-	while src.get_position() < src.get_length():
+	var src_len := src.get_length()
+	while src.get_position() < src_len:
 		dst.store_buffer(src.get_buffer(65536))
+	var copy_ok := dst.get_error() == OK
 	src.close()
 	dst.close()
+	# Verify the cache zip is complete before writing the .src stamp that
+	# vouches for it. store_buffer() swallows write errors (returns void), so a
+	# disk-full / IO failure mid-copy would otherwise leave a truncated zip
+	# with a valid-looking stamp that every future launch trusts as good.
+	var chk := FileAccess.open(zip_path, FileAccess.READ)
+	var written_len := chk.get_length() if chk != null else -1
+	if chk != null:
+		chk.close()
+	if not copy_ok or written_len != src_len:
+		DirAccess.remove_absolute(zip_path)
+		return ""
 	var out := FileAccess.open(sidecar_path, FileAccess.WRITE)
 	if out != null:
 		out.store_string(src_stamp)

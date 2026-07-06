@@ -58,7 +58,15 @@ const SP_XL := 16  # dialog outer padding, tab content padding
 func _load_developer_mode_setting() -> void:
 	var cfg := ConfigFile.new()
 	if cfg.load(UI_CONFIG_PATH) != OK:
-		return
+		# Live config missing or corrupt. This runs BEFORE collect_mod_metadata
+		# (which drops dev-folder mods when developer_mode is off) and before
+		# _load_ui_config recovers the profiles from the rolling .bak -- so read
+		# developer_mode from that same backup here. Without this, a recoverable
+		# corrupt config silently turns dev mode off and strands every folder mod
+		# for the session even though the rest of the config recovers fine.
+		var bak := UI_CONFIG_PATH + ".bak"
+		if not (FileAccess.file_exists(bak) and cfg.load(bak) == OK):
+			return
 	_developer_mode = bool(cfg.get_value("settings", "developer_mode", false))
 	if _developer_mode:
 		_log_info("Developer mode: ON")
@@ -88,7 +96,12 @@ func _load_ui_config() -> void:
 			# Genuinely fresh install (or the backup is also unreadable):
 			# materialize the placeholder Default profile so it is a real on-disk
 			# profile from the first UI render (see the comment at the tail of
-			# this function for rationale).
+			# this function for rationale). If a corrupt live config exists,
+			# preserve it as .corrupt for inspection first -- the .bak is already
+			# bad in this branch, so there is nothing good left to lose, and it
+			# matches the recovery branch above.
+			if FileAccess.file_exists(UI_CONFIG_PATH):
+				DirAccess.copy_absolute(UI_CONFIG_PATH, UI_CONFIG_PATH + ".corrupt")
 			_save_ui_config()
 			return
 
@@ -1476,6 +1489,32 @@ func _restore_mods_scroll(saved_scroll: int) -> void:
 	if is_instance_valid(_ui_mods_scroll):
 		_ui_mods_scroll.scroll_vertical = saved_scroll
 
+# Swap the Updates tab for a freshly built one. build_updates_tab snapshots
+# _ui_mod_entries at build time and never updates in place, so a mod updated via
+# the Mods-tab badge (renamed archive -> new version-embedding profile_key) or
+# installed mid-session (Browse Get / modpack apply) leaves this tab showing
+# stale rows: a wrong "update available" flag whose Download then targets a
+# vanished file. Rebuilding on tab-show re-reads live entries. Mirrors
+# _rebuild_mods_tab's tab-swap and preserves the user's current tab by name.
+func _rebuild_updates_tab(tabs: TabContainer) -> void:
+	var old := tabs.get_node_or_null(UI_TAB_UPDATES)
+	if old == null:
+		return
+	var idx := old.get_index()
+	var current_tab_node := tabs.get_tab_control(tabs.current_tab) if tabs.get_tab_count() > 0 else null
+	var current_tab_name := str(current_tab_node.name) if current_tab_node != null else ""
+	tabs.remove_child(old)
+	old.queue_free()
+	var new_tab := build_updates_tab()
+	new_tab.name = UI_TAB_UPDATES
+	tabs.add_child(new_tab)
+	tabs.move_child(new_tab, idx)
+	for i in range(tabs.get_tab_count()):
+		var ctrl := tabs.get_tab_control(i)
+		if ctrl != null and ctrl.name == current_tab_name:
+			tabs.current_tab = i
+			break
+
 # Modpack-apply failure summary with per-mod rows. Each failure shows the
 # profile_key + reason + an "Open MWS page" button (when an mws_id is
 # known, which is every case except sourceless legacy modpacks). The
@@ -1940,6 +1979,10 @@ func _confirm_disable_content_mod(mod_name: String, count: int = 1) -> bool:
 	_attach_ui_dialog(d)
 	d.exclusive = true
 	d.always_on_top = true
+	# Red "Disable anyway" button: the spec assigns this confirm the DANGER
+	# voice (same as Delete/Unload). Uses the modulate path like the other
+	# dialog OK buttons (see style_dialog_danger_button's rationale).
+	style_dialog_danger_button(d.get_ok_button())
 	return await _await_dialog_choice(d)
 
 # Validate a candidate profile name against the rules shared by the New and
@@ -2817,10 +2860,7 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 		style_danger_button(unload_btn)
 		unload_btn.pressed.connect(func():
 			d.queue_free()
-			var result := unload_modpack(tabs)
-			if not bool(result.get("ok", false)):
-				_show_error_dialog("Could not unload modpack", str(result.get("error", "unknown")))
-			_rebuild_modpacks_tab(tabs)
+			_unload_modpack_with_feedback(tabs)
 		)
 	else:
 		var apply_btn_d := d.add_button("Apply", true, "")
@@ -3169,6 +3209,15 @@ func show_mod_ui() -> void:
 		# switch / modpack apply / Mods-tab edits happen behind its back).
 		elif ctrl != null and ctrl.name == UI_TAB_BROWSE:
 			_refresh_browse_installed_rows(ctrl)
+		# The Updates tab is a build-time snapshot of the mod list; rebuild it
+		# on show so mid-session updates/installs aren't shown as stale rows.
+		elif ctrl != null and ctrl.name == UI_TAB_UPDATES:
+			_rebuild_updates_tab(tabs)
+		# An Updates-tab check may have changed the badge state while the Mods
+		# tab was off-screen; rebuild once so the per-row badges appear.
+		elif ctrl != null and ctrl.name == UI_TAB_MODS and _mods_badges_dirty:
+			_mods_badges_dirty = false
+			_rebuild_mods_tab(tabs)
 	)
 
 	refresh_launch_button_label()
@@ -3316,6 +3365,12 @@ func _make_trashcan_icon() -> ImageTexture:
 
 func make_dark_theme() -> Theme:
 	var t := Theme.new()
+	# Default control font size. Without this, every control that doesn't set
+	# its own font_size falls back to the engine's 16px default -- which is
+	# FS_TITLE, the window-header size -- flattening the whole FS_* type scale
+	# (body text ends up as large as headings). Pin the default to FS_BODY so
+	# the scale reads as designed; larger surfaces opt up explicitly.
+	t.default_font_size = FS_BODY
 
 	# -- Button ----------------------------------------------------------------
 	var bn := _make_button_stylebox(COL_SURFACE, COL_BORDER)
@@ -3330,6 +3385,7 @@ func make_dark_theme() -> Theme:
 	t.set_color("font_color",          "Button", COL_TEXT)
 	t.set_color("font_hover_color",    "Button", COL_TEXT_HI)
 	t.set_color("font_pressed_color",  "Button", COL_TEXT)
+	t.set_color("font_focus_color",    "Button", COL_TEXT)
 	t.set_color("font_disabled_color", "Button", COL_TEXT_FAINT)
 
 	# -- CheckBox (code-drawn glyphs; the stock ones are light-theme) -----------
@@ -3409,6 +3465,13 @@ func make_dark_theme() -> Theme:
 	t.set_stylebox("normal", "LineEdit", le)
 	t.set_stylebox("focus",  "LineEdit", le_focus)
 	t.set_color("font_color", "LineEdit", COL_TEXT)
+
+	# -- TextEdit (multi-line; the modpack description box) ----------------------
+	# Mirror LineEdit so the only TextEdit in the UI matches the square-cornered
+	# dark system instead of falling back to the stock rounded light-theme box.
+	t.set_stylebox("normal", "TextEdit", le)
+	t.set_stylebox("focus",  "TextEdit", le_focus)
+	t.set_color("font_color", "TextEdit", COL_TEXT)
 
 	# -- SpinBox arrows (stock glyph is light-theme) -----------------------------
 	t.set_icon("updown", "SpinBox", _make_updown_icon(COL_TEXT_DIM))
@@ -3594,6 +3657,10 @@ func _style_accent_button(b: Button, accent: Color) -> void:
 	b.add_theme_color_override("font_color", accent)
 	b.add_theme_color_override("font_hover_color", accent)
 	b.add_theme_color_override("font_pressed_color", accent)
+	# Keep the accent while keyboard-focused: without this the button falls
+	# back to the theme's font_focus_color and loses its amber/red the moment
+	# it receives focus (e.g. tabbing onto Launch/Apply/Delete).
+	b.add_theme_color_override("font_focus_color", accent)
 	b.add_theme_font_size_override("font_size", FS_BODY)
 	b.add_theme_stylebox_override("hover", _make_button_stylebox(COL_SURFACE_2, accent))
 
@@ -4191,9 +4258,18 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			_wire_hint(u_btn, "Download the latest version and replace the file in place.")
 			var captured_pk := pk
 			var captured_upd := upd
+			# If a download for this pk is already running (this row was rebuilt
+			# mid-download), render the button inert instead of a fresh "Update".
+			if _mod_update_in_flight.has(pk):
+				u_btn.disabled = true
+				u_btn.text = "Updating..."
 			u_btn.pressed.connect(func():
 				if not is_instance_valid(u_btn):
 					return
+				# Refuse a second concurrent download of the same mod.
+				if _mod_update_in_flight.has(captured_pk):
+					return
+				_mod_update_in_flight[captured_pk] = true
 				u_btn.disabled = true
 				u_btn.text = "Updating..."
 				var mw_id: int = int(captured_upd.get("mw_id", 0))
@@ -4203,6 +4279,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 				# exists (the repeatable "Update Failed").
 				var full_path: String = _live_full_path(captured_pk, str(captured_upd.get("full_path", "")))
 				var result: Dictionary = await download_and_replace_mod(full_path, mw_id)
+				_mod_update_in_flight.erase(captured_pk)
 				if bool(result.get("ok", false)):
 					_mod_updates_state.erase(captured_pk)
 					_reload_entries_for_active_profile()
@@ -4219,7 +4296,13 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 					var err_detail := str(result.get("error", ""))
 					if err_detail != "" and err_detail != "unknown":
 						err_msg += "\n\nDetails: " + err_detail
-					_show_error_dialog("Update failed", err_msg)
+					# Only surface the dialog if the launcher is still open. If the
+					# user hit Launch mid-download, _ui_window is freed and
+					# _attach_ui_dialog would parent an exclusive, always-on-top
+					# dialog to the game root, stealing input mid-session (same
+					# guard the check-updates toast uses).
+					if is_instance_valid(_ui_window):
+						_show_error_dialog("Update failed", err_msg)
 			)
 			list.add_child(HSeparator.new())
 
@@ -4317,7 +4400,11 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 						if is_instance_valid(dl_btn):
 							dl_btn.disabled = false
 							dl_btn.text = "Download"
-						_show_error_dialog("Download failed", str(r.get("error", "unknown")))
+						# Suppress the dialog if the launcher closed mid-download
+						# (Launch pressed): _attach_ui_dialog would otherwise pop an
+						# exclusive always-on-top window over the running game.
+						if is_instance_valid(_ui_window):
+							_show_error_dialog("Download failed", str(r.get("error", "unknown")))
 				)
 			else:
 				# No source info -- name what's unavailable, not the data we
@@ -4672,7 +4759,12 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		filter_edit.call_deferred("set_caret_column", filter_edit.text.length())
 
 	refresh_order.call()
-	return outer
+	# Wrap in the shared tab margin like build_browse_tab / build_modpacks_tab /
+	# build_updates_tab, so the Mods tab has the same content padding and the
+	# view doesn't visibly shift when switching between tabs.
+	var margin := _make_tab_margin()
+	margin.add_child(outer)
+	return margin
 
 func build_browse_tab(tabs: TabContainer) -> Control:
 	var margin := _make_tab_margin()
@@ -4790,10 +4882,11 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	# while it is armed (rate-limited is actionable-by-waiting, unreachable
 	# is not); otherwise the generic unreachable line.
 	var browse_fail_reason := func() -> String:
-		var wait_s := mws_rate_cooldown_seconds()
-		if wait_s > 0:
-			return "ModWorkshop rate limit reached. Try again in %ds." % wait_s
-		return "ModWorkshop is unreachable."
+		# Single source for the rate-limit sentence: mws_error_status() returns
+		# the "rate limit reached, try again in Ns" copy when a cooldown is armed
+		# and the unreachable line otherwise -- identical to the old inline
+		# duplicate, but now the wording can't drift from the status label's.
+		return mws_error_status("ModWorkshop is unreachable.")
 
 	var clear_browse_banner := func():
 		if not is_instance_valid(banner_slot):
@@ -5187,7 +5280,16 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		state["has_more"] = current_page < last_page
 		clear_browse_banner.call()
 		render_mod_rows.call(rows, append)
-		var shown_so_far := list.get_child_count() / 2  # rows + separators
+		# Count from the data, not the scene tree. render_mod_rows clears a
+		# non-append view with queue_free(), which Godot defers to end-of-frame,
+		# so list.get_child_count() in this same synchronous block still counts
+		# the just-freed old rows -- inflating "N of M mods" and (worse) keeping
+		# shown_so_far > 0 so the new "No results" empty state never appears.
+		if append:
+			state["shown_count"] = int(state.get("shown_count", 0)) + rows.size()
+		else:
+			state["shown_count"] = rows.size()
+		var shown_so_far: int = int(state["shown_count"])
 		# Empty state as an invitation (spec section 7), not a bare zero.
 		if shown_so_far == 0:
 			set_status.call("No results. Try fewer filters.", COL_TEXT_DIM)
@@ -5326,12 +5428,23 @@ func _refresh_browse_installed_rows(root: Node) -> void:
 		var entry_v: Variant = by_id.get(int(node.get_meta("browse_mws_id")))
 		if node is CheckBox:
 			var cb := node as CheckBox
-			cb.text = "Enabled in " + _active_profile
-			cb.tooltip_text = "Toggle this mod in profile: " + _active_profile + "."
 			if entry_v is Dictionary:
+				cb.disabled = false
+				cb.text = "Enabled in " + _active_profile
+				cb.tooltip_text = "Toggle this mod in profile: " + _active_profile + "."
 				# set_pressed_no_signal: this is a display sync, not a user
 				# toggle -- firing toggled here would re-save the profile.
 				cb.set_pressed_no_signal(bool((entry_v as Dictionary).get("enabled", false)))
+			else:
+				# The mod was uninstalled behind the tab's back (Mods-tab Remove).
+				# Leave the row but make it inert: an enabled checkbox here toggles
+				# nothing (on_toggle finds no matching entry and falls through) yet
+				# still flips visually, falsely claiming a now-uninstalled mod was
+				# enabled/disabled in the profile.
+				cb.set_pressed_no_signal(false)
+				cb.disabled = true
+				cb.text = "Removed"
+				cb.tooltip_text = "This mod is no longer installed. Re-download it from its Browse entry."
 		elif node is Button and entry_v is Dictionary:
 			# A Download button whose mod is now installed (modpack apply or
 			# retry landed it). Skip in-flight buttons (Downloading/Queued,
@@ -5476,9 +5589,9 @@ func _browse_render_mod_row(mod_data: Dictionary, install_entry: Variant, on_get
 # Filenames from MWS are opaque/immutable per upload, so the storage filename
 # IS the cache key -- a thumbnail replaced by the author gets a different file
 # name and we naturally fetch fresh. No TTL needed, no manual cache busting.
-# Failures are silent: the row's gray placeholder stays visible. 500KB hard
-# cap defends against malformed responses without limiting real thumbnails
-# (typical MWS thumbs are 10-80KB).
+# Failures are silent: the row's gray placeholder stays visible. 1MB hard
+# cap (download_body_size_limit below) defends against malformed responses
+# without limiting real thumbnails (typical MWS thumbs are 10-80KB).
 func _browse_load_thumbnail_async(rect: TextureRect, image_record: Dictionary) -> void:
 	var fn: String = str(image_record.get("file", ""))
 	if fn.is_empty():
@@ -6089,6 +6202,12 @@ func check_updates_for_ui(status_info: Dictionary, add_log: Callable, check_btn:
 	if not is_instance_valid(check_btn):
 		return
 
+	# A check just ran, so _mod_updates_state may have gained or lost entries.
+	# This function runs from the Updates tab, where the Mods tab isn't visible
+	# to refresh its own badges -- flag it so a later switch to the Mods tab
+	# rebuilds and shows the promised per-row update badges.
+	_mods_badges_dirty = true
+
 	for fn: String in status_info:
 		var info: Dictionary = status_info[fn]
 		var lbl: Label = info["label"]
@@ -6223,18 +6342,32 @@ func _check_modloader_update_async() -> void:
 	# our own version as an update every session.
 	if latest == MODLOADER_VERSION:
 		return
-	# Prerelease-aware gate: "3.3.0-beta.1" numerically parses as 3.3.0.1,
-	# which would compare GREATER than the eventual "3.3.0" stable and mute
-	# the update prompt forever. Semver rule: a prerelease precedes its
-	# release, so compare on the base version and treat equal-base as
-	# update-available when the installed build carries a "-suffix". Dormant
-	# on stable builds (no "-" in MODLOADER_VERSION -> identical behavior).
+	# Prerelease-aware gate. compare_versions() mis-parses "3.3.0-beta.1" as
+	# 3.3.0.1, which ranks it ABOVE the eventual "3.3.0" stable (muting the
+	# prompt forever) AND above an older "3.3.0-beta.2" install (offering a
+	# downgrade). Semver rule: a prerelease precedes its release. So compare
+	# base versions first, then break equal-base ties on the prerelease tails:
+	# a stable supersedes any same-base prerelease; between two prereleases,
+	# only a strictly higher one is an update. Dormant on stable builds (no
+	# "-" in MODLOADER_VERSION -> installed_pre empty -> identical behavior).
 	var installed_base := MODLOADER_VERSION.split("-")[0]
-	var cmp := compare_versions(latest, installed_base)
-	if cmp < 0:
-		return  # installed is newer
-	if cmp == 0 and not MODLOADER_VERSION.contains("-"):
-		return  # installed is current
+	var latest_base := latest.split("-")[0]
+	var base_cmp := compare_versions(latest_base, installed_base)
+	if base_cmp < 0:
+		return  # installed base is newer
+	if base_cmp == 0:
+		# Same base version -- decide on the prerelease suffixes. compare_versions
+		# can't do this: it parses "3.3.0-beta.1" as 3.3.0.1 (the "-beta" segment
+		# reads as 0), which would rank ANY same-base prerelease above the base
+		# and even flag an OLDER prerelease as an update (a downgrade prompt).
+		var installed_pre := MODLOADER_VERSION.substr(installed_base.length()).lstrip("-")
+		var latest_pre := latest.substr(latest_base.length()).lstrip("-")
+		if installed_pre == "":
+			return  # installed is the stable base; a same-base prerelease is not an upgrade
+		if latest_pre == "":
+			pass  # latest is the stable release of our prerelease -> offer it
+		elif _compare_prerelease(latest_pre, installed_pre) <= 0:
+			return  # latest prerelease is the same as or older than installed
 
 	if is_instance_valid(_ui_update_alert_btn):
 		_ui_update_alert_btn.text = "v%s available, click to update" % latest

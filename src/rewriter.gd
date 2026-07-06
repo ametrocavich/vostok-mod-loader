@@ -176,30 +176,36 @@ func _rtv_parse_script(filename: String, source: String) -> Dictionary:
 		if m_cn != null:
 			script["class_name"] = m_cn.get_string(1)
 
-		# Top-level var names (line starts with "var" / "@export var" -- no leading indent).
+		# Top-level declarations only (column 0, no leading indent). Inner-class
+		# members are indented; capturing an inner-class `func` / `static func`
+		# here would register a method that is NOT on the script's own top-level
+		# interface. A wrap-mask -- especially the wildcard "*" -- would then emit
+		# a dispatch wrapper for it at column 0, producing a rewritten vanilla
+		# script that cannot compile (the wrapper references a method that only
+		# exists inside the inner class). var_names already had this guard.
 		if not line.begins_with("\t") and not line.begins_with(" "):
 			var m_var := _rtv_re_var.search(trimmed)
 			if m_var != null:
 				(script["var_names"] as Array).append(m_var.get_string(1))
 
-		var m_sfunc := _rtv_re_static_func.search(trimmed)
-		if m_sfunc != null:
-			var ret_group = m_sfunc.get_string(4) if m_sfunc.get_start(4) != -1 else null
-			func_starts.append([
-				line_num, m_sfunc.get_string(1), m_sfunc.get_string(2),
-				_rtv_extract_param_names(m_sfunc.get_string(2)), true,
-				ret_group,
-			])
-			continue
+			var m_sfunc := _rtv_re_static_func.search(trimmed)
+			if m_sfunc != null:
+				var ret_group = m_sfunc.get_string(4) if m_sfunc.get_start(4) != -1 else null
+				func_starts.append([
+					line_num, m_sfunc.get_string(1), m_sfunc.get_string(2),
+					_rtv_extract_param_names(m_sfunc.get_string(2)), true,
+					ret_group,
+				])
+				continue
 
-		var m_func := _rtv_re_func.search(trimmed)
-		if m_func != null:
-			var ret_group2 = m_func.get_string(4) if m_func.get_start(4) != -1 else null
-			func_starts.append([
-				line_num, m_func.get_string(1), m_func.get_string(2),
-				_rtv_extract_param_names(m_func.get_string(2)), false,
-				ret_group2,
-			])
+			var m_func := _rtv_re_func.search(trimmed)
+			if m_func != null:
+				var ret_group2 = m_func.get_string(4) if m_func.get_start(4) != -1 else null
+				func_starts.append([
+					line_num, m_func.get_string(1), m_func.get_string(2),
+					_rtv_extract_param_names(m_func.get_string(2)), false,
+					ret_group2,
+				])
 
 	# Second pass: extract function bodies to detect await + return-with-value.
 	for idx in func_starts.size():

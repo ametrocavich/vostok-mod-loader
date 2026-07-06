@@ -816,7 +816,20 @@ func _refresh_dependency_status() -> void:
 				continue
 			if LOADER_ID_ALIASES.has(dep_key):
 				continue
-			if loadable_by_id.has(dep_key):
+			# Resolve the dep the SAME way the load filter does, so this status
+			# panel never disagrees with what actually loads. Bind the id to
+			# whichever installed mod owns it (a real id beats a provides= alias
+			# -- _entries_by_mod_id's real-id pass runs first), then treat it as
+			# satisfied only if THAT mod is loadable. Testing loadable_by_id with
+			# the raw id instead would let a blocked real mod's id "escape" to a
+			# loadable alias provider and show a green row for a mod the loader
+			# skips. The identity check (key of the loadable entry == owner_key)
+			# rejects that escape; a pure alias with no real owner still resolves
+			# through installed_by_id to its provider and satisfies normally.
+			var owner_key := dep_key
+			if installed_by_id.has(dep_key):
+				owner_key = _entry_mod_key(installed_by_id[dep_key])
+			if loadable_by_id.has(owner_key) and _entry_mod_key(loadable_by_id[owner_key]) == owner_key:
 				continue
 			var status := "not_installed"
 			var display := dep_id
@@ -858,6 +871,39 @@ func compare_versions(a: String, b: String) -> int:
 		var vb := int(sb) if sb.is_valid_int() else 0
 		if va < vb: return -1
 		if va > vb: return 1
+	return 0
+
+# Compare two semver prerelease tails (the part after "-", e.g. "beta.1" vs
+# "beta.10"), already stripped of the leading "-". compare_versions above can't
+# do this -- it treats "0-beta" as 0. Splits on "." and compares identifier by
+# identifier: numeric identifiers compare numerically, others lexically; a
+# numeric identifier has LOWER precedence than a non-numeric one; and a shorter
+# run of identifiers has lower precedence when the shared prefix is equal
+# (semver 11). Returns -1 / 0 / 1.
+func _compare_prerelease(a: String, b: String) -> int:
+	if a == b:
+		return 0
+	var pa := a.split(".")
+	var pb := b.split(".")
+	var n: int = max(pa.size(), pb.size())
+	for i in n:
+		if i >= pa.size():
+			return -1
+		if i >= pb.size():
+			return 1
+		var ia: String = pa[i]
+		var ib: String = pb[i]
+		var a_num := ia.is_valid_int()
+		var b_num := ib.is_valid_int()
+		if a_num and b_num:
+			var va := ia.to_int()
+			var vb := ib.to_int()
+			if va != vb:
+				return -1 if va < vb else 1
+		elif a_num != b_num:
+			return -1 if a_num else 1
+		elif ia != ib:
+			return -1 if ia < ib else 1
 	return 0
 
 # Collapse same-id duplicates produced when an author publishes the same mod
@@ -1043,16 +1089,16 @@ func _derive_updated_filename(old_file_name: String, headers: PackedStringArray,
 # Five UI surfaces reach the two download entry points below. Keep this map
 # current when adding one (a unified download queue would replace it):
 #   1. Mods tab per-row "Update" badge (ui.gd build_mods_tab, updates block)
-#      -> download_and_replace_mod(path, id); errors: "Update Failed" dialog,
+#      -> download_and_replace_mod(path, id); errors: "Update failed" dialog,
 #      verbatim.
 #   2. Updates tab "Download"/"Retry" button (ui.gd check_updates_for_ui,
 #      wired from build_updates_tab) -> download_and_replace_mod(path, id);
 #      errors: generic "download failed" label + log line (error text dropped).
-#   3. Browse tab "Get" + its serial queue (ui.gd build_browse_tab,
+#   3. Browse tab "Download" + its serial queue (ui.gd build_browse_tab,
 #      perform_download_for_item) -> download_new_mod(id); errors: status
 #      label, verbatim.
 #   4. Missing-mod stub "Download" (ui.gd build_mods_tab, missing section)
-#      -> download_new_mod(id, version, true); errors: "Download Failed"
+#      -> download_new_mod(id, version, true); errors: "Download failed"
 #      dialog, verbatim.
 #   5. Modpack apply + retry (modpacks.gd _apply_modpack_inner,
 #      retry_failed_downloads) -> download_new_mod(id, version, true);
@@ -1091,12 +1137,17 @@ func download_and_replace_mod(target_path: String, modworkshop_id: int) -> Dicti
 	# request_completed -> [result, http_code, headers, body]
 	var res: Array = await req.request_completed
 	req.queue_free()
+	# Same api.modworkshop.net throttle bucket as the Browse/updates surfaces:
+	# note the rate headers so a 429 here arms the shared cooldown (and the
+	# other surfaces' mws_error_status hints light up), and wrap the HTTP-error
+	# copy so the user sees "try again in Ns" instead of a bare "HTTP 429".
+	_mws_note_rate_headers(int(res[1]), res[2])
 
 	if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] < 200 or res[1] >= 300:
 		if res[0] != HTTPRequest.RESULT_SUCCESS:
 			failure["error"] = "Download failed (connection error or timeout) -- check your network and retry"
 		else:
-			failure["error"] = "Download failed (HTTP %d)" % int(res[1])
+			failure["error"] = mws_error_status("Download failed (HTTP %d)" % int(res[1]))
 		return failure
 	var headers: PackedStringArray = res[2]
 	var response_body: PackedByteArray = res[3]
@@ -1204,7 +1255,15 @@ func download_new_mod(modworkshop_id: int, version: String = "", allow_rename_on
 			failure["error"] = mws_error_status("Version " + version + " not available on ModWorkshop")
 			return failure
 	if not (file_meta is Dictionary):
-		failure["error"] = mws_error_status("Mod has no downloadable file on ModWorkshop (off-site link or not uploaded)")
+		# Distinguish "offline" from "this mod genuinely has no hosted file".
+		# When the last lookup died at the transport layer (no HTTP response),
+		# the mod may be perfectly downloadable and we simply can't reach the
+		# API -- claiming it has no file would be wrong, and it collides with
+		# the "ModWorkshop is unreachable" banner shown over the same rows.
+		if _mws_last_transport_failed:
+			failure["error"] = "Could not reach ModWorkshop. Check your connection and try again."
+		else:
+			failure["error"] = mws_error_status("Mod has no downloadable file on ModWorkshop (off-site link or not uploaded)")
 		return failure
 	var download_url: String = str((file_meta as Dictionary).get("download_url", ""))
 	if download_url.is_empty():
