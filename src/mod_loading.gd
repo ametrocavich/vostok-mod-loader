@@ -93,13 +93,22 @@ func _merge_hook_calls_into_wrap_mask() -> void:
 						% [mod_name, prefix, method, prefix])
 				continue
 			var path: String = prefix_to_path[prefix]
-			if not _hooked_methods.has(path):
-				_hooked_methods[path] = {}
 			# Mask keys lowercase (hook_pack.gd compares fe["name"].to_lower()).
 			# Hook names are lowercase by convention but mods occasionally
 			# write mixed case like .hook("Interface-UpdateToolTip-pre", ...);
 			# normalize so the wrap surface picks those up too.
-			(_hooked_methods[path] as Dictionary)[method.to_lower()] = true
+			if not _hooked_methods.has(path):
+				_hooked_methods[path] = {method.to_lower(): true}
+				continue
+			var mask: Dictionary = _hooked_methods[path] as Dictionary
+			# An existing EMPTY dict is the wildcard sentinel from a
+			# "[hooks] <path> = *" declaration -- hook_pack.gd wraps every
+			# method when the mask is empty, which already covers this call.
+			# Inserting the method would narrow wrap-all to wrap-only-listed
+			# and silently kill the wildcard mod's runtime-registered hooks.
+			if mask.is_empty():
+				continue
+			mask[method.to_lower()] = true
 
 # One mod, one call: mount its archive, scan + register file claims, then
 # apply its mod.txt sections. SEAM: mod.txt section handlers are the
@@ -198,8 +207,15 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 			var methods_str := str(cfg.get_value("hooks", key, "")).strip_edges()
 			if script_path.is_empty():
 				continue
-			if not _hooked_methods.has(script_path):
+			var mask_existed := _hooked_methods.has(script_path)
+			if not mask_existed:
 				_hooked_methods[script_path] = {}
+			var script_mask: Dictionary = _hooked_methods[script_path] as Dictionary
+			# A pre-existing EMPTY mask is the wildcard sentinel: an earlier
+			# mod declared "<path> = *" and hook_pack.gd reads emptiness as
+			# wrap-every-method. Later per-method insertions must not narrow
+			# it, or the wildcard mod's runtime-registered hooks go silent.
+			var wildcard_already := mask_existed and script_mask.is_empty()
 			# Parse method list. "*" anywhere (including mixed with specific
 			# methods) promotes to whole-script wildcard -- the mixed form
 			# used to silently ignore the wildcard and wrap only the listed
@@ -221,10 +237,21 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 							% [script_path, ", ".join(specific_methods), mod_name])
 				else:
 					_log_info("  Hooks declared: %s :: * (all methods) [%s]" % [script_path, mod_name])
+				# "*" wins across mods too: drop any methods earlier mods
+				# listed for this path so the empty wrap-all sentinel applies.
+				# Wrap-all is a superset, so those methods stay wrapped.
+				if not script_mask.is_empty():
+					_log_info("  Hooks: '*' widens earlier method list for %s -- all methods wrapped" % script_path)
+					script_mask.clear()
 				# Leave the inner dict empty; hook_pack.gd treats that as wrap-all.
 				continue
+			if wildcard_already:
+				if not specific_methods.is_empty():
+					_log_info("  Hooks declared: %s :: %s [%s] -- already covered by an earlier wildcard (*), all methods wrapped" \
+							% [script_path, ", ".join(specific_methods), mod_name])
+				continue
 			for method_name in specific_methods:
-				(_hooked_methods[script_path] as Dictionary)[method_name.to_lower()] = true
+				script_mask[method_name.to_lower()] = true
 				_log_info("  Hook declared: %s :: %s [%s]" % [script_path, method_name, mod_name])
 
 	# [registry] opt-in (v3.0.1). Gates Database.gd wrapping + const-to-dict
@@ -297,7 +324,6 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 		if _registered_autoload_names.has(autoload_name):
 			_log_warning("Duplicate autoload name '" + autoload_name + "' -- skipped")
 			continue
-		_registered_autoload_names[autoload_name] = true
 
 		if _archive_file_sets.has(file_name) and not _archive_file_sets[file_name].has(res_path):
 			_log_critical("  Autoload path not found in archive: " + res_path)
@@ -311,6 +337,11 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 			if similar.size() > 0:
 				_log_critical("    Similar paths in archive: " + ", ".join(similar))
 			continue
+
+		# Reserve the name only after the path validated -- a skipped autoload
+		# (typo'd path, nothing queued) must not consume the name and block a
+		# later mod's valid autoload with a misleading duplicate warning.
+		_registered_autoload_names[autoload_name] = true
 
 		_pending_autoloads.append({
 			"mod_name": mod_name, "name": autoload_name, "path": res_path,

@@ -745,12 +745,16 @@ func compare_versions(a: String, b: String) -> int:
 # are passed through untouched: their identity is the filename, which the
 # scan loop already deduped.
 func _dedupe_by_mod_id(entries: Array[Dictionary]) -> Array[Dictionary]:
+	# Group on the same lowercased key the dependency machinery uses
+	# (_entry_mod_key), so ids differing only in case collapse too --
+	# otherwise both archives mount and the later one clobbers overlapping
+	# res:// paths while dependency lookups bind to only one of them.
 	var groups: Dictionary = {}
 	for e in entries:
 		var pk: String = str(e.get("profile_key", ""))
 		if e["ext"] == "pck" or pk.begins_with("zip:"):
 			continue
-		var mid: String = str(e["mod_id"])
+		var mid: String = _entry_mod_key(e)
 		if not groups.has(mid):
 			groups[mid] = []
 		(groups[mid] as Array).append(e)
@@ -769,7 +773,7 @@ func _dedupe_by_mod_id(entries: Array[Dictionary]) -> Array[Dictionary]:
 			var loser: Dictionary = members[j]
 			hidden.append({"file_name": loser["file_name"], "version": loser["version"]})
 			var l_v: String = ("v" + str(loser["version"])) if str(loser["version"]) != "" else "(unversioned)"
-			_log_warning("Duplicate mod_id '" + mid + "' detected: keeping "
+			_log_warning("Duplicate mod_id '" + str(winner["mod_id"]) + "' detected: keeping "
 					+ str(winner["file_name"]) + " (" + w_v + "), hiding "
 					+ str(loser["file_name"]) + " (" + l_v + ")")
 		winner["duplicates_hidden"] = hidden
@@ -782,7 +786,7 @@ func _dedupe_by_mod_id(entries: Array[Dictionary]) -> Array[Dictionary]:
 		if e["ext"] == "pck" or pk.begins_with("zip:"):
 			out.append(e)
 			continue
-		var mid: String = str(e["mod_id"])
+		var mid: String = _entry_mod_key(e)
 		if seen_ids.has(mid):
 			continue
 		seen_ids[mid] = true
@@ -1230,7 +1234,19 @@ func _serialize_mod_source(mws_id: int, version: String) -> String:
 # the file is gone, the cache remembers the source.
 func _persist_mod_sources_for_entries(entries: Array[Dictionary]) -> void:
 	var cfg := ConfigFile.new()
-	cfg.load(UI_CONFIG_PATH)
+	var load_err := cfg.load(UI_CONFIG_PATH)
+	# Refuse to persist over a config that exists but failed to parse. This
+	# scan runs BEFORE _load_ui_config's backup recovery, and _persist_ui_cfg
+	# copies the live file over the .bak first -- saving here would clobber
+	# the good backup with the corrupt file and then replace every profile
+	# with a config holding only [mod_sources]. Skipping keeps the backup
+	# intact so recovery can restore it moments later; the source cache is
+	# re-persisted on the next scan. A missing file is fine (first run).
+	if load_err != OK and FileAccess.file_exists(UI_CONFIG_PATH):
+		_log_critical("mod_config.cfg exists but failed to load (error " + str(load_err)
+				+ ") -- skipped saving the mod-source cache so the config backup stays"
+				+ " usable. The launcher will attempt backup recovery when it loads.")
+		return
 	var changed := false
 	for entry in entries:
 		var cfg2: ConfigFile = entry.get("cfg")
@@ -1279,7 +1295,15 @@ func _persist_single_mod_source(profile_key: String, mws_id: int, version: Strin
 	if profile_key.is_empty() or mws_id <= 0:
 		return
 	var cfg := ConfigFile.new()
-	cfg.load(UI_CONFIG_PATH)
+	var load_err := cfg.load(UI_CONFIG_PATH)
+	# Same guard as _persist_mod_sources_for_entries: never save over a
+	# config that exists but failed to load, or the .bak recovery source
+	# gets clobbered by _persist_ui_cfg's copy-then-save.
+	if load_err != OK and FileAccess.file_exists(UI_CONFIG_PATH):
+		_log_critical("mod_config.cfg exists but failed to load (error " + str(load_err)
+				+ ") -- skipped recording the mod source for '" + profile_key
+				+ "' so the config backup stays usable.")
+		return
 	var serialized := _serialize_mod_source(mws_id, version)
 	var current := str(cfg.get_value("mod_sources", profile_key, ""))
 	if current != serialized:

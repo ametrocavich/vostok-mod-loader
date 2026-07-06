@@ -810,13 +810,31 @@ func get_entry(registry: String, id: String) -> Variant:
 # between "everything visible to gameplay" and "only what mods added."
 #
 # Per-registry vanilla-source dispatch lives in _enumerate_vanilla; mod
-# entries are read from _registry_registered. On id collision the mod
-# entry wins (matches get_entry precedence: override > register > vanilla).
+# entries are read from _registry_registered via _bulk_mod_entries. On id
+# collision the mod entry wins (matches get_entry precedence: override >
+# register > vanilla).
+
+# Mod-side entries for the bulk read API. 'shelters' and 'maps' share one
+# storage bucket (loader.gd _register_shelter_or_map stores both under
+# 'shelters' with a 'kind' tag), so filter by kind here; each surface only
+# reports its own registrations, matching get_entry's cross-surface
+# behavior. Every other registry reads its own bucket directly.
+func _bulk_mod_entries(registry: String) -> Dictionary:
+	if registry == "shelters" or registry == "maps":
+		var shared: Dictionary = _registry_registered.get("shelters", {})
+		var out: Dictionary = {}
+		for id in shared.keys():
+			var meta = shared[id]
+			var kind: String = String(meta.get("kind", "shelters")) if meta is Dictionary else "shelters"
+			if kind == registry:
+				out[id] = meta
+		return out
+	return _registry_registered.get(registry, {})
 
 ## True if the id resolves to anything in this registry. Skips the entry
 ## construction get_entry would do; cheap membership check.
 func has(registry: String, id: String, include_vanilla: bool = true) -> bool:
-	var reg: Dictionary = _registry_registered.get(registry, {})
+	var reg: Dictionary = _bulk_mod_entries(registry)
 	if reg.has(id):
 		return true
 	if not include_vanilla:
@@ -835,7 +853,7 @@ func keys(registry: String, include_vanilla: bool = true) -> Array[String]:
 		for k in vanilla.keys():
 			out.append(String(k))
 			seen[k] = true
-	var reg: Dictionary = _registry_registered.get(registry, {})
+	var reg: Dictionary = _bulk_mod_entries(registry)
 	for k in reg.keys():
 		if not seen.has(k):
 			out.append(String(k))
@@ -847,7 +865,7 @@ func list(registry: String, include_vanilla: bool = true) -> Dictionary:
 	var out: Dictionary = {}
 	if include_vanilla:
 		out = _enumerate_vanilla(registry).duplicate()
-	var reg: Dictionary = _registry_registered.get(registry, {})
+	var reg: Dictionary = _bulk_mod_entries(registry)
 	for k in reg.keys():
 		out[k] = reg[k]
 	return out
@@ -889,11 +907,23 @@ func _enumerate_vanilla(registry: String) -> Dictionary:
 					out[String(f)] = it
 			return out
 		"scenes":
-			# Vanilla scenes are const declarations on Database.gd. Walk
-			# the script's constant map.
+			# Vanilla scenes start life as const declarations on Database.gd.
+			# When any mod declares [registry], the rewriter moves every
+			# `const X = preload(...)` into the injected _rtv_vanilla_scenes
+			# dict (rewriter.gd _rtv_rewrite_database_constants), leaving the
+			# script constant map with no PackedScene entries. Read the
+			# injected dict first -- the same source _scene_exists_in_vanilla
+			# uses -- and fall back to the const-map walk for the unrewritten
+			# case.
 			var out: Dictionary = {}
 			var db := _database_node()
-			if db == null or db.get_script() == null:
+			if db == null:
+				return out
+			if "_rtv_vanilla_scenes" in db and db._rtv_vanilla_scenes is Dictionary:
+				for k in db._rtv_vanilla_scenes.keys():
+					out[String(k)] = db._rtv_vanilla_scenes[k]
+				return out
+			if db.get_script() == null:
 				return out
 			var consts: Dictionary = db.get_script().get_script_constant_map()
 			for k in consts.keys():
@@ -926,6 +956,13 @@ func _enumerate_vanilla(registry: String) -> Dictionary:
 			for name in ldr._rtv_vanilla_shelters:
 				out[String(name)] = String(name)
 			return out
+		"maps":
+			# Mod-registered maps share the shelters storage bucket (see
+			# loader.gd _register_shelter_or_map); the mod side is handled by
+			# _bulk_mod_entries. There is no vanilla snapshot for maps --
+			# _rtv_vanilla_shelters captures only Loader.shelters, which
+			# lists shelters, not maps -- so the vanilla side is empty.
+			return {}
 		"recipes":
 			# Vanilla recipes live in Recipes.tres across seven category
 			# arrays. RecipeData has no inherent id -- we synthesize one

@@ -18,8 +18,17 @@ const _MODS_BUTTON_NAME := "MetroMods"
 
 func _seed_core_hooks() -> void:
 	if not _hooked_methods.has(_MENU_SCRIPT_PATH):
-		_hooked_methods[_MENU_SCRIPT_PATH] = {}
-	(_hooked_methods[_MENU_SCRIPT_PATH] as Dictionary)["_ready"] = true
+		_hooked_methods[_MENU_SCRIPT_PATH] = {"_ready": true}
+		return
+	# An existing EMPTY dict is the wildcard sentinel: a mod declared
+	# "res://Scripts/Menu.gd = *" in [hooks] and hook_pack.gd reads
+	# emptiness as wrap-every-method, which already covers _ready.
+	# Inserting a key here would silently narrow the wildcard to
+	# wrap-only-_ready, so leave the sentinel untouched.
+	var mask := _hooked_methods[_MENU_SCRIPT_PATH] as Dictionary
+	if mask.is_empty():
+		return
+	mask["_ready"] = true
 
 func _register_core_hooks() -> void:
 	hook(_MENU_HOOK_NAME, _on_menu_ready, 100)

@@ -131,6 +131,13 @@ static func _mount_previous_session() -> Dictionary:
 	var mounted: Dictionary = {}
 	var log_lines: PackedStringArray = []
 	log_lines.append("[FileScope] _mount_previous_session() starting")
+	# Log the runtime engine version unconditionally, once, at loader startup
+	# (this static init runs on every launch, on every early-return path) so
+	# every user log answers "which Godot is this game actually running"
+	# before triage starts. See GODOT_47_COMPAT.md item 7.
+	var vinfo := Engine.get_version_info()
+	log_lines.append("[FileScope] Engine: Godot %s, modloader %s, os %s" \
+			% [str(vinfo.get("string", "")), MODLOADER_VERSION, OS.get_name()])
 
 	# Nuclear escape hatch: sentinel file in game dir skips everything and
 	# resets persistent state so next launch is clean vanilla. This boot may
@@ -416,7 +423,9 @@ static func _static_cleanup_orphan_hook_packs(keep_path: String, log_lines: Pack
 # Delete the contents of a one-level-deep directory: every top-level file, and
 # every file one level inside each immediate subdirectory, then the subdir
 # itself. Does NOT remove dir_path. No-op if dir_path is missing/unopenable.
-# Hidden-file handling follows DirAccess defaults (matches both call sites).
+# Hidden-file handling follows DirAccess defaults. Only suitable for trees
+# that are guaranteed one level deep (the vanilla script cache: Scripts/*.gd);
+# deeper trees (early autoloads) use _wipe_early_autoload_tree instead.
 static func _wipe_shallow_tree(dir_path: String) -> void:
 	if not DirAccess.dir_exists_absolute(dir_path):
 		return
@@ -485,8 +494,39 @@ func _build_autoload_sections() -> Dictionary:
 const EARLY_AUTOLOAD_DIR := "user://modloader_early"
 
 func _clean_early_autoload_dir() -> void:
-	# Simple shallow wipe -- this directory is entirely modloader-managed.
-	_wipe_shallow_tree(ProjectSettings.globalize_path(EARLY_AUTOLOAD_DIR))
+	# _ensure_early_autoload_on_disk mirrors each script's full res:// relative
+	# path (e.g. MyMod/Scripts/Auto.gd = depth 3), so the tree can be
+	# arbitrarily deep and a shallow wipe leaves stale scripts behind. Wipe it
+	# recursively; the helper refuses to run outside the modloader_early prefix.
+	_wipe_early_autoload_tree(ProjectSettings.globalize_path(EARLY_AUTOLOAD_DIR))
+
+# Recursive delete of everything under dir_path, restricted to the
+# modloader-managed early-autoload directory (EARLY_AUTOLOAD_DIR). Refuses any
+# path outside that prefix so a bad argument can never recurse through user
+# data. Does NOT remove the root directory itself. No-op if dir_path is
+# missing/unopenable.
+func _wipe_early_autoload_tree(dir_path: String) -> void:
+	var root := ProjectSettings.globalize_path(EARLY_AUTOLOAD_DIR)
+	if dir_path != root and not dir_path.begins_with(root + "/"):
+		_log_warning("Refusing to wipe outside the early-autoload dir: " + dir_path)
+		return
+	if not DirAccess.dir_exists_absolute(dir_path):
+		return
+	var dir := DirAccess.open(dir_path)
+	if dir == null:
+		return
+	dir.list_dir_begin()
+	while true:
+		var entry := dir.get_next()
+		if entry == "":
+			break
+		if entry == "." or entry == "..":
+			continue
+		var full: String = dir_path.path_join(entry)
+		if dir.current_is_dir():
+			_wipe_early_autoload_tree(full)
+		DirAccess.remove_absolute(full)
+	dir.list_dir_end()
 
 # Extract an early autoload .gd script to disk if it only exists inside a
 # mounted archive.  Godot opens [autoload_prepend] scripts before file-scope
@@ -565,16 +605,37 @@ func _write_override_cfg(prepend_autoloads: Array[Dictionary]) -> Error:
 		return FileAccess.get_open_error()
 	f.store_string("\n".join(lines) + "\n" + preserved)
 	f.close()
-	# Windows DirAccess.rename() won't overwrite -- remove target first.
-	if FileAccess.file_exists(path):
-		DirAccess.remove_absolute(path)
 	var dir := DirAccess.open(exe_dir)
 	if dir == null:
 		DirAccess.remove_absolute(tmp)
 		return ERR_CANT_OPEN
+	# Never destroy the live override.cfg before the replacement is proven in
+	# place -- without override.cfg the modloader autoload never loads again,
+	# so nothing can self-heal. Windows DirAccess.rename() won't overwrite, so:
+	# park the current file as .old, promote the .tmp, then drop the .old.
+	# On any failure, restore the .old so the loader stays bootable.
+	var bak := path + ".old"
+	var had_existing := FileAccess.file_exists(path)
+	if had_existing:
+		if FileAccess.file_exists(bak):
+			DirAccess.remove_absolute(bak)
+		var park_err := dir.rename(path.get_file(), bak.get_file())
+		if park_err != OK:
+			# Could not move the live cfg aside (e.g. AV share lock). Leave it
+			# untouched and report failure; the caller falls back to single-pass.
+			DirAccess.remove_absolute(tmp)
+			return park_err
 	var err := dir.rename(tmp.get_file(), path.get_file())
 	if err != OK:
 		DirAccess.remove_absolute(tmp)
+		if had_existing:
+			# Put the previous cfg back so the next launch still loads the
+			# modloader. If the rename back fails too, fall back to a byte copy.
+			if dir.rename(bak.get_file(), path.get_file()) != OK:
+				DirAccess.copy_absolute(bak, path)
+		return err
+	if had_existing and FileAccess.file_exists(bak):
+		DirAccess.remove_absolute(bak)
 	return err
 
 func _persist_hook_pack_state(pack_path: String, wrapped_paths: PackedStringArray = PackedStringArray()) -> void:
@@ -628,12 +689,21 @@ func _stable_path_mtime(p: String) -> int:
 		var folder_name := p.get_file().trim_suffix("_dev.zip")
 		var folder := _mods_dir.path_join(folder_name)
 		if DirAccess.dir_exists_absolute(folder):
-			return _folder_recursive_mtime(folder)
+			# The newest-file mtime alone misses deletions and replacing a
+			# file with an older-mtime copy, so fold in the file count and a
+			# per-file path+mtime hash gathered on the same walk. Any change
+			# to the folder's file set or timestamps moves the state hash.
+			var stats := { "count": 0, "set_hash": 0 }
+			var newest := _folder_recursive_mtime(folder, stats)
+			return hash([newest, stats["count"], stats["set_hash"]])
 	return FileAccess.get_modified_time(p)
 
 # Newest file mtime anywhere under a folder (recursive). Folder mods are small
-# dev trees, so the walk is cheap.
-func _folder_recursive_mtime(folder: String) -> int:
+# dev trees, so the walk is cheap. The optional stats accumulator gathers the
+# file count and an order-independent XOR of per-file "path@mtime" hashes on
+# the same walk, so callers can detect deletions/renames/timestamp downgrades
+# that the max-mtime alone cannot see.
+func _folder_recursive_mtime(folder: String, stats: Dictionary = {}) -> int:
 	var newest := 0
 	var dir := DirAccess.open(folder)
 	if dir == null:
@@ -644,9 +714,12 @@ func _folder_recursive_mtime(folder: String) -> int:
 		if name != "." and name != "..":
 			var child := folder.path_join(name)
 			if dir.current_is_dir():
-				newest = maxi(newest, _folder_recursive_mtime(child))
+				newest = maxi(newest, _folder_recursive_mtime(child, stats))
 			else:
-				newest = maxi(newest, FileAccess.get_modified_time(child))
+				var mtime := FileAccess.get_modified_time(child)
+				newest = maxi(newest, mtime)
+				stats["count"] = int(stats.get("count", 0)) + 1
+				stats["set_hash"] = int(stats.get("set_hash", 0)) ^ ("%s@%d" % [child, mtime]).hash()
 		name = dir.get_next()
 	dir.list_dir_end()
 	return newest
@@ -737,6 +810,15 @@ func _clean_stale_cache() -> void:
 		var fname := dir.get_next()
 		if fname == "":
 			break
+		if fname.ends_with(".zip.src"):
+			# Sidecar recording the source mtime+size of a vmz cache zip
+			# (see _static_vmz_to_zip). Remove it when its zip is gone so
+			# orphans don't accumulate; sidecars whose zip gets removed
+			# below are deleted alongside it there.
+			if not FileAccess.file_exists(cache_dir.path_join(fname.trim_suffix(".src"))):
+				DirAccess.remove_absolute(cache_dir.path_join(fname))
+				_log_debug("Removed orphan cache sidecar: " + fname)
+			continue
 		if fname.get_extension().to_lower() != "zip":
 			continue
 		var base := fname.get_basename()
@@ -751,6 +833,9 @@ func _clean_stale_cache() -> void:
 			if FileAccess.file_exists(_mods_dir.path_join(vmz_name)):
 				continue
 		DirAccess.remove_absolute(cache_dir.path_join(fname))
+		var sidecar := cache_dir.path_join(fname + ".src")
+		if FileAccess.file_exists(sidecar):
+			DirAccess.remove_absolute(sidecar)
 		_log_debug("Removed stale cache: " + fname)
 	dir.list_dir_end()
 

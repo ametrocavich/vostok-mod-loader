@@ -134,8 +134,16 @@ func add_hook(script_path: String, method_name: String, callback: Callable, is_b
 	if not res_path.begins_with("res://"):
 		res_path = "res://Scripts/" + script_path.get_file()
 	if not _hooked_methods.has(res_path):
-		_hooked_methods[res_path] = {}
-	(_hooked_methods[res_path] as Dictionary)[method_name.to_lower()] = true
+		_hooked_methods[res_path] = {method_name.to_lower(): true}
+	else:
+		var mask: Dictionary = _hooked_methods[res_path] as Dictionary
+		# An existing EMPTY dict is the wildcard sentinel from a
+		# "[hooks] <path> = *" declaration -- hook_pack.gd wraps every
+		# method when the mask is empty, which already covers this method.
+		# Inserting it would narrow wrap-all to wrap-only-listed and
+		# silently kill the wildcard mod's runtime-registered hooks.
+		if not mask.is_empty():
+			mask[method_name.to_lower()] = true
 	return hook(hook_name, callback, 100)
 
 ## Batched form of hook(). `entries` is `{hook_name: callback, ...}`. Returns

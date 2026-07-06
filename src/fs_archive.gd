@@ -5,7 +5,11 @@
 
 # Copies a .vmz to the cache dir as .zip (same content, different extension)
 # so ZIPReader can open it. Returns the cached zip path, or "" on failure.
-# Re-extracts if the source .vmz is newer than the cache.
+# Cache identity is the source's mtime+size, recorded in a <zip>.src sidecar
+# at copy time: ANY mismatch (newer, older, or different size) re-copies, so
+# downgrading/restoring a .vmz whose preserved timestamp is older than the
+# cache never mounts the previous version's cached content. A missing or
+# unreadable sidecar (legacy cache, interrupted copy) also forces a re-copy.
 static func _static_vmz_to_zip(vmz_path: String) -> String:
 	var cache_dir := ProjectSettings.globalize_path(TMP_DIR)
 	if not DirAccess.dir_exists_absolute(cache_dir):
@@ -18,15 +22,24 @@ static func _static_vmz_to_zip(vmz_path: String) -> String:
 		return ""
 	var zip_name := vmz_path.get_file().get_basename() + ".zip"
 	var zip_path := cache_dir.path_join(zip_name)
-	if FileAccess.file_exists(zip_path):
-		# Re-extract if source is newer than cache (mod was updated in-place).
-		var src_time := FileAccess.get_modified_time(vmz_path)
-		var zip_time := FileAccess.get_modified_time(zip_path)
-		if src_time <= zip_time:
-			return zip_path
+	var sidecar_path := zip_path + ".src"
 	var src := FileAccess.open(vmz_path, FileAccess.READ)
 	if src == null:
 		return ""
+	var src_stamp := "%d:%d" % [FileAccess.get_modified_time(vmz_path), src.get_length()]
+	if FileAccess.file_exists(zip_path):
+		var cached_stamp := ""
+		var sf := FileAccess.open(sidecar_path, FileAccess.READ)
+		if sf != null:
+			cached_stamp = sf.get_as_text().strip_edges()
+			sf.close()
+		if cached_stamp == src_stamp:
+			src.close()
+			return zip_path
+	# Drop the old sidecar before rewriting the zip so an interrupted copy can
+	# never leave a stamp that vouches for mismatched content.
+	if FileAccess.file_exists(sidecar_path):
+		DirAccess.remove_absolute(sidecar_path)
 	var dst := FileAccess.open(zip_path, FileAccess.WRITE)
 	if dst == null:
 		src.close()
@@ -35,6 +48,11 @@ static func _static_vmz_to_zip(vmz_path: String) -> String:
 		dst.store_buffer(src.get_buffer(65536))
 	src.close()
 	dst.close()
+	var out := FileAccess.open(sidecar_path, FileAccess.WRITE)
+	if out != null:
+		out.store_string(src_stamp)
+		out.close()
+	# A failed sidecar write just means the next launch re-copies -- safe.
 	return zip_path
 
 # Prints all log lines AND dumps them to user://modloader_filescope.log for
