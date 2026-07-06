@@ -1798,36 +1798,35 @@ func _show_security_findings_dialog(entry: Dictionary) -> void:
 
 	var body := VBoxContainer.new()
 	body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	body.add_theme_constant_override("separation", 12)
+	body.add_theme_constant_override("separation", SP_L)
 	scroll.add_child(body)
 
 	var intro := Label.new()
 	intro.text = "The scanner found patterns in this mod's code that are commonly used by malware " \
 			+ "(obfuscated string decoding combined with process spawning, anti-debug calls, etc.). " \
 			+ "If you don't trust this mod, do not enable it."
-	intro.modulate = Color(0.95, 0.6, 0.6)
+	intro.add_theme_color_override("font_color", COL_ERR)
 	intro.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	intro.add_theme_font_size_override("font_size", 11)
+	intro.add_theme_font_size_override("font_size", FS_BODY)
 	body.add_child(intro)
 
 	body.add_child(HSeparator.new())
 
-	var rule_color := Color(0.95, 0.4, 0.4)
 	for f: Dictionary in findings:
 		var card := VBoxContainer.new()
-		card.add_theme_constant_override("separation", 4)
+		card.add_theme_constant_override("separation", SP_S)
 		body.add_child(card)
 
 		var rule_lbl := Label.new()
 		rule_lbl.text = str(f.get("rule", "?"))
-		rule_lbl.modulate = rule_color
-		rule_lbl.add_theme_font_size_override("font_size", 13)
+		rule_lbl.add_theme_color_override("font_color", COL_ERR)
+		rule_lbl.add_theme_font_size_override("font_size", FS_HEAD)
 		card.add_child(rule_lbl)
 
 		var desc_lbl := Label.new()
 		desc_lbl.text = str(f.get("description", ""))
 		desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		desc_lbl.add_theme_font_size_override("font_size", 11)
+		desc_lbl.add_theme_font_size_override("font_size", FS_BODY)
 		card.add_child(desc_lbl)
 
 		var loc := str(f.get("file", "?"))
@@ -1835,18 +1834,21 @@ func _show_security_findings_dialog(entry: Dictionary) -> void:
 			loc += ":" + str(f.get("line"))
 		var loc_lbl := Label.new()
 		loc_lbl.text = loc
-		loc_lbl.modulate = UI_COL_MUTED
-		loc_lbl.add_theme_font_size_override("font_size", 10)
+		loc_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
+		loc_lbl.add_theme_font_size_override("font_size", FS_META)
 		card.add_child(loc_lbl)
 
 		var preview := str(f.get("preview", ""))
 		if not preview.is_empty():
 			var pre_lbl := Label.new()
 			pre_lbl.text = "  " + preview
-			pre_lbl.modulate = Color(0.78, 0.85, 0.6)
-			pre_lbl.add_theme_font_size_override("font_size", 11)
+			pre_lbl.add_theme_color_override("font_color", COL_OK)
+			pre_lbl.add_theme_font_size_override("font_size", FS_BODY)
 			pre_lbl.autowrap_mode = TextServer.AUTOWRAP_OFF
 			pre_lbl.clip_text = true
+			pre_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+			pre_lbl.tooltip_text = preview
+			pre_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
 			card.add_child(pre_lbl)
 
 		body.add_child(HSeparator.new())
