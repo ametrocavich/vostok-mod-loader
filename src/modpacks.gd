@@ -478,13 +478,19 @@ func _snapshot_state_before_apply(entry: Dictionary) -> String:
 	var captured := 0
 
 	# 1. Profiles + settings.
+	var cfg_copy_failed := false
 	if FileAccess.file_exists(UI_CONFIG_PATH):
 		if DirAccess.copy_absolute(UI_CONFIG_PATH, snap_root.path_join("mod_config.cfg")) == OK:
 			captured += 1
 		else:
+			cfg_copy_failed = true
 			_log_warning("[Modpack] restore point: failed to copy mod_config.cfg into " + snap_root)
 
-	# 2. Live mod-config-menu settings tree.
+	# 2. Live mod-config-menu settings tree. Record whether user://MCM/ existed
+	# at all: when it did not, the snapshot legitimately has no MCM dir, and
+	# restore must WIPE the pack's MCM rather than skip (mcm_absent marker in
+	# snapshot.json, read by _restore_apply_snapshot step 2).
+	var mcm_existed := DirAccess.dir_exists_absolute(MCM_SOURCE_DIR)
 	if _copy_dir_recursive(MCM_SOURCE_DIR, snap_root.path_join("MCM")):
 		captured += 1
 
@@ -518,6 +524,7 @@ func _snapshot_state_before_apply(entry: Dictionary) -> String:
 		"pack": sanitized,
 		"created": Time.get_datetime_string_from_system(),
 		"added": added,
+		"mcm_absent": not mcm_existed,
 	}
 	var mf := FileAccess.open(snap_root.path_join("snapshot.json"), FileAccess.WRITE)
 	if mf != null:
@@ -530,6 +537,15 @@ func _snapshot_state_before_apply(entry: Dictionary) -> String:
 	# empty dir masquerading as a restore point in the Restore picker.
 	if captured == 0 and FileAccess.file_exists(UI_CONFIG_PATH):
 		_log_warning("[Modpack] restore point captured NOTHING -- removing " + snap_root
+				+ "; apply will proceed WITHOUT a restore point")
+		_remove_dir_recursive(snap_root)
+		return ""
+
+	# A snapshot without mod_config.cfg cannot restore profiles, and
+	# _restore_apply_snapshot refuses it outright. Delete it rather than
+	# leaving a picker entry that can only fail.
+	if cfg_copy_failed:
+		_log_warning("[Modpack] restore point is missing mod_config.cfg -- removing " + snap_root
 				+ "; apply will proceed WITHOUT a restore point")
 		_remove_dir_recursive(snap_root)
 		return ""
@@ -593,6 +609,59 @@ func _prune_apply_snapshots() -> void:
 		if i >= MODPACK_SNAPSHOT_KEEP:
 			_remove_dir_recursive(str(snaps[i]["path"]))
 
+# Read a restore point's snapshot.json. Returns {} when the file is missing,
+# unreadable, or not a JSON object, so callers can .get() with defaults.
+func _read_snapshot_meta(snap_path: String) -> Dictionary:
+	var meta_path := snap_path.path_join("snapshot.json")
+	if not FileAccess.file_exists(meta_path):
+		return {}
+	var mfr := FileAccess.open(meta_path, FileAccess.READ)
+	if mfr == null:
+		return {}
+	var parsed_v: Variant = JSON.parse_string(mfr.get_as_text())
+	mfr.close()
+	if parsed_v is Dictionary:
+		return parsed_v as Dictionary
+	return {}
+
+# Restore-only recursive copy that INCLUDES dot-prefixed entries. The override
+# capture in _snapshot_state_before_apply step 3 records files per-path with
+# no dot filter, so the replay must not filter either -- the shared
+# _copy_dir_recursive skips every ".xyz" entry and would silently never write
+# back a captured original like ".rtvcfg" or "cfg/.settings". Do NOT reuse
+# this for profile/MCM swaps: those rely on _copy_dir_recursive skipping dot
+# dirs (".profile_snapshots" etc).
+func _copy_snapshot_tree_incl_hidden(src: String, dst: String) -> void:
+	if not DirAccess.dir_exists_absolute(src):
+		return
+	DirAccess.make_dir_recursive_absolute(dst)
+	var dir := DirAccess.open(src)
+	if dir == null:
+		return
+	# On Linux/macOS dot-prefixed entries count as hidden and are omitted from
+	# the listing by default; on Windows they are listed regardless.
+	dir.include_hidden = true
+	dir.list_dir_begin()
+	while true:
+		var name := dir.get_next()
+		if name == "":
+			break
+		var src_full := src.path_join(name)
+		var dst_full := dst.path_join(name)
+		if dir.current_is_dir():
+			_copy_snapshot_tree_incl_hidden(src_full, dst_full)
+		else:
+			var src_f := FileAccess.open(src_full, FileAccess.READ)
+			if src_f == null:
+				continue
+			var bytes := src_f.get_buffer(src_f.get_length())
+			src_f.close()
+			var dst_f := FileAccess.open(dst_full, FileAccess.WRITE)
+			if dst_f != null:
+				dst_f.store_buffer(bytes)
+				dst_f.close()
+	dir.list_dir_end()
+
 # Restore a pre-apply snapshot: copy mod_config.cfg, MCM, and saved override
 # files back over the live user:// state -- a full revert to how things were
 # before that apply. Keeps a .bak of the current cfg first so a botched restore
@@ -603,23 +672,37 @@ func _restore_apply_snapshot(snap_path: String) -> Dictionary:
 		return {"ok": false, "error": "Snapshot folder no longer exists"}
 
 	# 1. mod_config.cfg (profiles + settings, incl. active_modpack/backup flags).
+	# Every valid restore point carries mod_config.cfg (the launcher saves it
+	# before any apply can run). If it is absent the capture failed at apply
+	# time; restoring the rest would revert MCM/files while leaving profiles
+	# untouched -- a mixed state reported as a clean revert. Refuse up front,
+	# before anything is mutated.
 	var cfg_snap := snap_path.path_join("mod_config.cfg")
-	if FileAccess.file_exists(cfg_snap):
-		if FileAccess.file_exists(UI_CONFIG_PATH):
-			DirAccess.copy_absolute(UI_CONFIG_PATH, UI_CONFIG_PATH + ".bak")
-		if DirAccess.copy_absolute(cfg_snap, UI_CONFIG_PATH) != OK:
-			return {"ok": false, "error": "Failed to restore mod_config.cfg"}
+	if not FileAccess.file_exists(cfg_snap):
+		return {"ok": false, "error": "This restore point is incomplete: it is missing the profiles file (mod_config.cfg) that should have been captured with it, so profiles and settings cannot be restored. Nothing was changed. Pick a different restore point."}
+	if FileAccess.file_exists(UI_CONFIG_PATH):
+		DirAccess.copy_absolute(UI_CONFIG_PATH, UI_CONFIG_PATH + ".bak")
+	if DirAccess.copy_absolute(cfg_snap, UI_CONFIG_PATH) != OK:
+		return {"ok": false, "error": "Failed to restore mod_config.cfg"}
 
 	# 2. Live MCM tree (wholesale replace so deleted-since files don't linger).
 	var mcm_snap := snap_path.path_join("MCM")
 	if DirAccess.dir_exists_absolute(mcm_snap):
 		_remove_dir_recursive(MCM_SOURCE_DIR)
 		_copy_dir_recursive(mcm_snap, MCM_SOURCE_DIR)
+	elif bool(_read_snapshot_meta(snap_path).get("mcm_absent", false)):
+		# user://MCM/ did not exist when this restore point was saved (so the
+		# snapshot has no MCM dir on purpose). Whatever lives there now was put
+		# there by the applied pack -- wipe it for a true revert. Snapshots
+		# from older versions lack the marker and keep the old skip behavior.
+		_remove_dir_recursive(MCM_SOURCE_DIR)
 
 	# 3. Override files saved at snapshot time, back to their user:// paths.
+	# Replayed with the dot-inclusive walker: capture recorded these per-path
+	# without a dot filter, so restore must not drop dot-prefixed entries.
 	var ov_root := snap_path.path_join("overrides")
 	if DirAccess.dir_exists_absolute(ov_root):
-		_copy_dir_recursive(ov_root, "user://")
+		_copy_snapshot_tree_incl_hidden(ov_root, "user://")
 
 	# 4. Delete files the pack ADDED (recorded in snapshot.json), so the revert
 	# matches pre-apply state instead of leaving the pack's new files behind.

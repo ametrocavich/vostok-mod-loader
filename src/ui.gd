@@ -302,6 +302,43 @@ func _schedule_priority_save() -> void:
 	_priority_save_pending = false
 	_save_ui_config()
 
+# Maps used by the stored-key preservation pass: "live" = profile_key of every
+# entry currently in _ui_mod_entries (these get rewritten from in-memory
+# state), "ids" = mod_id of every installed non-zip-keyed entry (used to drop
+# stale versioned keys whose state already migrated to a new key).
+func _collect_live_profile_key_maps() -> Dictionary:
+	var live_keys: Dictionary = {}
+	var installed_ids: Dictionary = {}
+	for entry in _ui_mod_entries:
+		var lk: String = str(entry["profile_key"])
+		live_keys[lk] = true
+		if not lk.begins_with("zip:"):
+			installed_ids[str(entry["mod_id"])] = true
+	return {"live": live_keys, "ids": installed_ids}
+
+# True when a stored profile key must survive _save_ui_config's erase+rewrite
+# of the active profile's sections. Keys with a live entry are rewritten from
+# in-memory state, so they are not preserved here. Everything else is state
+# the entry list cannot represent and a save must not silently drop:
+#   - folder mods hidden by developer-mode-off (_hidden_folder_profile_keys),
+#   - missing mods (file deleted, or a modpack reference not downloaded yet)
+#     that feed the Missing-from-this-profile recovery rows.
+# Those keys are only removed by the explicit Remove flows
+# (_delete_mod_file_and_cleanup, _remove_missing_entry_from_profile and its
+# bulk variant). The one exception: a stale versioned key whose id prefix
+# resolves to an installed mod is dropped, because _apply_profile_to_entries
+# already migrated its state onto the installed mod's current key and keeping
+# both would spawn duplicate rows if the mod is later deleted.
+func _preserve_stored_profile_key(key: String, live_keys: Dictionary, installed_ids: Dictionary) -> bool:
+	if live_keys.has(key):
+		return false
+	if _hidden_folder_profile_keys.has(key):
+		return true
+	var at := key.find("@")
+	if at > 0 and installed_ids.has(key.substr(0, at)):
+		return false
+	return true
+
 func _save_ui_config() -> void:
 	var cfg := ConfigFile.new()
 	cfg.load(UI_CONFIG_PATH)
@@ -320,24 +357,29 @@ func _save_ui_config() -> void:
 		var en_sec := _profile_sec(_active_profile, ".enabled")
 		var pr_sec := _profile_sec(_active_profile, ".priority")
 		var ig_sec := _profile_sec(_active_profile, ".dep_ignore")
-		# Snapshot stored state for folder mods that dev-mode-off filtered out
-		# of _ui_mod_entries -- otherwise the erase+rewrite below would drop
-		# their enabled/priority entries and the user loses those settings the
-		# moment they save with dev mode disabled.
+		# Snapshot stored state for every key with no live entry backing it --
+		# folder mods that dev-mode-off filtered out of _ui_mod_entries AND
+		# missing mods (file deleted, or modpack references not downloaded
+		# yet). Otherwise the erase+rewrite below would silently drop them on
+		# any save, killing the Missing-mods recovery rows and their
+		# confirm-gated Remove flow. See _preserve_stored_profile_key.
+		var key_maps := _collect_live_profile_key_maps()
+		var live_keys: Dictionary = key_maps["live"]
+		var installed_ids: Dictionary = key_maps["ids"]
 		var preserved_enabled: Dictionary = {}
 		var preserved_priority: Dictionary = {}
-		if not _hidden_folder_profile_keys.is_empty() and cfg.has_section(en_sec):
+		if cfg.has_section(en_sec):
 			for key: String in cfg.get_section_keys(en_sec):
-				if _hidden_folder_profile_keys.has(key):
+				if _preserve_stored_profile_key(key, live_keys, installed_ids):
 					preserved_enabled[key] = cfg.get_value(en_sec, key)
-		if not _hidden_folder_profile_keys.is_empty() and cfg.has_section(pr_sec):
+		if cfg.has_section(pr_sec):
 			for key: String in cfg.get_section_keys(pr_sec):
-				if _hidden_folder_profile_keys.has(key):
+				if _preserve_stored_profile_key(key, live_keys, installed_ids):
 					preserved_priority[key] = cfg.get_value(pr_sec, key)
 		var preserved_ignored: Dictionary = {}
-		if not _hidden_folder_profile_keys.is_empty() and cfg.has_section(ig_sec):
+		if cfg.has_section(ig_sec):
 			for key: String in cfg.get_section_keys(ig_sec):
-				if _hidden_folder_profile_keys.has(key):
+				if _preserve_stored_profile_key(key, live_keys, installed_ids):
 					preserved_ignored[key] = cfg.get_value(ig_sec, key)
 		if cfg.has_section(en_sec):
 			cfg.erase_section(en_sec)
@@ -414,6 +456,21 @@ func _live_full_path(profile_key: String, fallback: String) -> String:
 	for cur in _ui_mod_entries:
 		if str(cur.get("profile_key", "")) == profile_key:
 			return str(cur.get("full_path", fallback))
+	return fallback
+
+# Same staleness hazard as _live_full_path, for whole entry dicts: an awaited
+# confirm dialog can outlive a rescan (_reload_entries_for_active_profile
+# reassigns _ui_mod_entries to FRESH dicts, e.g. when a Browse download lands
+# mid-dialog), orphaning the dict captured at row build time -- a write to it
+# then mutates state nothing reads and the next _save_ui_config drops the
+# change. Re-resolve the live dict by profile key after any await; falls back
+# to the captured dict when the mod left the scan (write becomes a no-op).
+func _live_entry_for_profile_key(profile_key: String, fallback: Dictionary) -> Dictionary:
+	if profile_key == "":
+		return fallback
+	for cur in _ui_mod_entries:
+		if str(cur.get("profile_key", "")) == profile_key:
+			return cur
 	return fallback
 
 # Re-scan mods from disk and re-apply the active profile's enable/priority state
@@ -519,6 +576,24 @@ func _rename_profile(new_name: String) -> void:
 	if cfg.has_section(old_settings):
 		for key: String in cfg.get_section_keys(old_settings):
 			cfg.set_value(new_settings, key, cfg.get_value(old_settings, key))
+	# The save above wrote the new sections from in-memory entries plus the
+	# preservation pass -- but that pass read the NEW name's sections, which
+	# were empty, so stored keys with no live entry (dev-mode-hidden folder
+	# mods, missing mods) still live only under the OLD name. Carry them
+	# across before the old sections are erased below.
+	var key_maps := _collect_live_profile_key_maps()
+	var live_keys: Dictionary = key_maps["live"]
+	var installed_ids: Dictionary = key_maps["ids"]
+	for suffix: String in [".enabled", ".priority", ".dep_ignore"]:
+		var old_sec := _profile_sec(old, suffix)
+		if not cfg.has_section(old_sec):
+			continue
+		var new_sec := _profile_sec(new_name, suffix)
+		for key: String in cfg.get_section_keys(old_sec):
+			if cfg.has_section_key(new_sec, key):
+				continue
+			if _preserve_stored_profile_key(key, live_keys, installed_ids):
+				cfg.set_value(new_sec, key, cfg.get_value(old_sec, key))
 	for suffix: String in PROFILE_SUBSECTIONS:
 		var sec := _profile_sec(old, suffix)
 		if cfg.has_section(sec):
@@ -1236,7 +1311,7 @@ func _remove_missing_entry_from_profile(stored_key: String) -> void:
 	var cfg := ConfigFile.new()
 	if cfg.load(UI_CONFIG_PATH) != OK:
 		return
-	for suffix: String in [".enabled", ".priority"]:
+	for suffix: String in [".enabled", ".priority", ".dep_ignore"]:
 		var sec := _profile_sec(_active_profile, suffix)
 		if cfg.has_section(sec) and cfg.has_section_key(sec, stored_key):
 			cfg.erase_section_key(sec, stored_key)
@@ -1253,7 +1328,7 @@ func _remove_all_missing_entries_from_profile() -> void:
 	var cfg := ConfigFile.new()
 	if cfg.load(UI_CONFIG_PATH) != OK:
 		return
-	for suffix: String in [".enabled", ".priority"]:
+	for suffix: String in [".enabled", ".priority", ".dep_ignore"]:
 		var sec := _profile_sec(_active_profile, suffix)
 		if not cfg.has_section(sec):
 			continue
@@ -1464,6 +1539,10 @@ func _run_modpack_retry(failures: Array, tabs: TabContainer) -> void:
 	status_lbl.custom_minimum_size.x = 400
 	pd.add_child(status_lbl)
 	_attach_ui_dialog(pd)
+	# Swallow ESC while downloads run, same as the apply progress dialog:
+	# a hidden (not cancelled) exclusive dialog would lift the input block
+	# and let the user Launch / apply another modpack mid-retry.
+	pd.dialog_close_on_escape = false
 	var pd_ok := pd.get_ok_button()
 	if pd_ok != null:
 		pd_ok.visible = false
@@ -1791,14 +1870,19 @@ func _await_dialog_choice(d: ConfirmationDialog) -> bool:
 # Yes/no confirm shown when the user disables a mod that registers game content.
 # Returns true to proceed with the disable, false to keep it enabled. Modeled on
 # _confirm_red_launch's flow; the shared await-poll lives in _await_dialog_choice.
-func _confirm_disable_content_mod(mod_name: String) -> bool:
+# `count` > 1 switches to batch wording for bulk actions (the None button);
+# `mod_name` then names one affected mod as an example.
+func _confirm_disable_content_mod(mod_name: String, count: int = 1) -> bool:
 	var d := ConfirmationDialog.new()
-	d.title = "Disable content mod?"
+	d.title = "Disable content mod?" if count <= 1 else "Disable content mods?"
 	d.ok_button_text = "Disable anyway"
 	d.cancel_button_text = "Keep enabled"
 	d.dialog_autowrap = true
 	d.min_size = Vector2(520, 120)
-	d.dialog_text = "\"%s\" adds game content (items, recipes, and similar). Disabling or removing it can stop an existing save that uses its content from loading until you re-enable it. Your save is not deleted -- re-enabling the mod restores it.\n\nDisable anyway?" % mod_name
+	if count > 1:
+		d.dialog_text = "%d of these mods (including \"%s\") add game content (items, recipes, and similar). Disabling them can stop an existing save that uses their content from loading until you re-enable them. Your saves are not deleted -- re-enabling the mods restores them.\n\nDisable anyway?" % [count, mod_name]
+	else:
+		d.dialog_text = "\"%s\" adds game content (items, recipes, and similar). Disabling or removing it can stop an existing save that uses its content from loading until you re-enable it. Your save is not deleted -- re-enabling the mod restores it.\n\nDisable anyway?" % mod_name
 	_attach_ui_dialog(d)
 	d.exclusive = true
 	d.always_on_top = true
@@ -1816,8 +1900,21 @@ func _validate_profile_name(name: String, existing: Array, current := "") -> Str
 		return "That name is reserved."
 	if name == current:
 		return ""
-	if name in existing:
-		return "Profile \"" + name + "\" already exists."
+	# Case-insensitive, matching the vanilla check above: MCM snapshot dirs
+	# are keyed by profile name on a case-insensitive filesystem (Windows),
+	# so two profiles differing only by case would share one snapshot dir
+	# and deleting one would wipe the other's MCM state.
+	var lowered := name.to_lower()
+	for other_v in existing:
+		# Skip the profile being renamed: a case-only rename (Main -> MAIN)
+		# is safe -- it keeps ONE profile and one snapshot dir, and
+		# DirAccess.rename handles a case-only rename on NTFS -- so it must
+		# not be rejected as a duplicate of itself. New Profile passes
+		# current == "", so collision blocking there is unchanged.
+		if current != "" and str(other_v) == current:
+			continue
+		if str(other_v).to_lower() == lowered:
+			return "Profile \"" + str(other_v) + "\" already exists."
 	return ""
 
 # New Profile dialog: prompt for a name + initial state, validate, write the
@@ -2118,6 +2215,9 @@ func build_modpacks_tab(tabs: TabContainer) -> Control:
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	container.add_child(scroll)
+	# Kept on self so _rebuild_modpacks_tab can carry the scroll position
+	# across teardown (same pattern as _ui_mods_scroll).
+	_ui_modpacks_scroll = scroll
 
 	var list_wrap := MarginContainer.new()
 	list_wrap.add_theme_constant_override("margin_right", 16)
@@ -2225,6 +2325,11 @@ func _modpacks_render_row(entry: Dictionary, active_modpack: String, tabs: TabCo
 	meta_lbl.add_theme_font_size_override("font_size", 11)
 	meta_lbl.modulate = Color(0.6, 0.6, 0.6)
 	meta_lbl.clip_text = true
+	# Ellipsis + hover tooltip instead of a hard mid-word cut (Labels default
+	# to MOUSE_FILTER_IGNORE, which silently suppresses tooltips).
+	meta_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	meta_lbl.tooltip_text = meta_lbl.text
+	meta_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
 	info_col.add_child(meta_lbl)
 
 	var sanitized: String = str(entry.get("sanitized_name", ""))
@@ -2618,6 +2723,11 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 			key_lbl.text = k
 			key_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			key_lbl.clip_text = true
+			# Ellipsis + hover tooltip instead of a hard mid-word cut (Labels
+			# default to MOUSE_FILTER_IGNORE, which suppresses tooltips).
+			key_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+			key_lbl.tooltip_text = k
+			key_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
 			mod_row.add_child(key_lbl)
 
 			var status_lbl := Label.new()
@@ -2675,6 +2785,11 @@ func _rebuild_modpacks_tab(tabs: TabContainer) -> void:
 	if old == null:
 		_rebuilding_modpacks_tab = false
 		return
+	# Carry the list scroll position across the teardown -- a row action
+	# halfway down a long modpack list must not snap the view to the top.
+	var saved_scroll := 0
+	if is_instance_valid(_ui_modpacks_scroll):
+		saved_scroll = _ui_modpacks_scroll.scroll_vertical
 	var idx := old.get_index()
 	var was_current := tabs.current_tab == idx
 	tabs.remove_child(old)
@@ -2686,6 +2801,17 @@ func _rebuild_modpacks_tab(tabs: TabContainer) -> void:
 	if was_current:
 		tabs.current_tab = idx
 	_rebuilding_modpacks_tab = false
+	if saved_scroll > 0:
+		_restore_modpacks_scroll(saved_scroll)
+
+# Restore one frame later: the fresh rows haven't been laid out yet when
+# _rebuild_modpacks_tab returns, so setting scroll_vertical immediately
+# clamps against a zero-height list and lands back at the top (mirror of
+# _restore_mods_scroll).
+func _restore_modpacks_scroll(saved_scroll: int) -> void:
+	await get_tree().process_frame
+	if is_instance_valid(_ui_modpacks_scroll):
+		_ui_modpacks_scroll.scroll_vertical = saved_scroll
 
 # Delete-profile confirmation. The trash button is already disabled when the
 # active profile is Vanilla or the last remaining user profile; the guard in
@@ -2961,6 +3087,11 @@ func show_mod_ui() -> void:
 		var ctrl := tabs.get_tab_control(idx)
 		if ctrl != null and ctrl.name == UI_TAB_MODPACKS:
 			_rebuild_modpacks_tab(tabs)
+		# Browse rows bake profile name + enabled state at render time and
+		# the tab never rebuilds, so sync them in place on show (profile
+		# switch / modpack apply / Mods-tab edits happen behind its back).
+		elif ctrl != null and ctrl.name == UI_TAB_BROWSE:
+			_refresh_browse_installed_rows(ctrl)
 	)
 
 	refresh_launch_button_label()
@@ -2983,6 +3114,7 @@ func show_mod_ui() -> void:
 	_ui_launch_btn = null
 	_ui_update_alert_btn = null
 	_ui_mods_scroll = null
+	_ui_modpacks_scroll = null
 	# Drop the Browse-tab API response cache. It's a session optimization,
 	# not durable state -- the modloader autoload survives across launcher
 	# open/close (rare in practice) and we don't want the dict to accumulate
@@ -3529,7 +3661,13 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			msg = "%d update(s) available." % n
 			if er > 0:
 				msg += " (%d could not be checked)" % er
-		_show_info_toast(msg)
+		# Only toast while the launcher window still exists. If the user
+		# clicked Launch (or closed the launcher) mid-check, _ui_window is
+		# null and _attach_ui_dialog would parent an exclusive always-on-top
+		# dialog to the game's root -- stealing input mid-game. The rebuild
+		# above already covered the surviving-UI case.
+		if is_instance_valid(_ui_window):
+			_show_info_toast(msg)
 	)
 
 	filter_edit.text_changed.connect(func(t: String):
@@ -3547,11 +3685,26 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		_rebuild_mods_tab(tabs)
 	)
 	none_btn.pressed.connect(func():
+		# Bulk None disables content mods too -- run the same save-compatibility
+		# confirm the per-row checkbox uses, once for the whole batch.
+		var content_count := 0
+		var content_name := ""
+		for entry in _ui_mod_entries:
+			if _mods_entry_visible(entry) and bool(entry.get("enabled", false)) \
+					and bool(entry.get("has_registry", false)):
+				content_count += 1
+				if content_name == "":
+					content_name = str(entry.get("mod_name", "this mod"))
+		if content_count > 0:
+			var ok: bool = await _confirm_disable_content_mod(content_name, content_count)
+			if not ok:
+				return
 		for entry in _ui_mod_entries:
 			if _mods_entry_visible(entry):
 				entry["enabled"] = false
 		_save_ui_config()
-		_rebuild_mods_tab(tabs)
+		if is_instance_valid(tabs):
+			_rebuild_mods_tab(tabs)
 	)
 	hide_check.toggled.connect(func(on: bool):
 		_mods_hide_disabled = on
@@ -3704,6 +3857,10 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			u_name.text = str(upd.get("mod_name", "?"))
 			u_name.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			u_name.clip_text = true
+			u_name.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+			u_name.tooltip_text = str(upd.get("mod_name", "?"))
+			# Labels default to MOUSE_FILTER_IGNORE, which suppresses tooltips.
+			u_name.mouse_filter = Control.MOUSE_FILTER_PASS
 			upd_row.add_child(u_name)
 
 			var u_ver := Label.new()
@@ -3919,6 +4076,10 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		var name_lbl := Label.new()
 		name_lbl.text = entry["mod_name"]
 		name_lbl.clip_text = true
+		name_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		name_lbl.tooltip_text = str(entry["mod_name"])
+		# Labels default to MOUSE_FILTER_IGNORE, which suppresses tooltips.
+		name_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
 		name_lbl.modulate = UI_COL_GOOD if entry["enabled"] else Color(0.5, 0.5, 0.5)
 		name_col.add_child(name_lbl)
 
@@ -4121,12 +4282,20 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			# backs out, revert the checkbox without re-firing toggled.
 			if not on and bool(e.get("has_registry", false)):
 				var ok: bool = await _confirm_disable_content_mod(str(e.get("mod_name", "this mod")))
-				if not is_instance_valid(check):
-					return
 				if not ok:
-					check.set_pressed_no_signal(true)
+					# An async rebuild (e.g. an updates check finishing) may
+					# have freed this checkbox while the dialog was open; the
+					# rebuilt row already renders from the unchanged entry.
+					if is_instance_valid(check):
+						check.set_pressed_no_signal(true)
 					return
-			e["enabled"] = on
+			# Apply to the LIVE entry dict regardless of whether the original
+			# checkbox survived a mid-dialog rebuild. The captured dict stays
+			# live across rebuilds, but a mid-dialog RESCAN (e.g. a Browse
+			# download finishing) replaces _ui_mod_entries with fresh dicts --
+			# re-resolve so a confirmed disable is never dropped.
+			var live := _live_entry_for_profile_key(str(e.get("profile_key", "")), e)
+			live["enabled"] = on
 			# Full rebuild via the shared tail: dependency state on OTHER
 			# rows changes with the new enabled set.
 			_after_dep_action(tabs)
@@ -4312,7 +4481,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	# Enable/disable toggle from the Browse row. Mutates the entry in
 	# _ui_mod_entries (Dictionary references), saves via _save_ui_config,
 	# rebuilds the Mods tab so its row reflects the change.
-	var on_toggle := func(mws_id: int, enabled: bool):
+	var on_toggle := func(mws_id: int, enabled: bool, check: CheckBox):
 		for entry in _ui_mod_entries:
 			var cfg: ConfigFile = entry.get("cfg")
 			if cfg == null:
@@ -4322,11 +4491,29 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			var entry_mws := int(str(cfg.get_value("updates", "modworkshop", "0")))
 			if entry_mws != mws_id:
 				continue
-			entry["enabled"] = enabled
+			# Same content-mod guard as the Mods-tab checkbox: disabling a
+			# mod that registers game content can stop an existing save that
+			# uses it from loading. Confirm first; if the user backs out,
+			# revert the checkbox without re-firing toggled.
+			var live_entry: Dictionary = entry
+			if not enabled and bool(entry.get("has_registry", false)):
+				var ok: bool = await _confirm_disable_content_mod(str(entry.get("mod_name", "this mod")))
+				if not ok:
+					if is_instance_valid(check):
+						check.set_pressed_no_signal(true)
+					return
+				# The launcher window can close while the dialog is open;
+				# the controls may be freed. A rescan while the dialog was
+				# open (e.g. a queued download landing) replaces
+				# _ui_mod_entries with fresh dicts, so write the confirmed
+				# state to the LIVE entry, not the orphaned capture.
+				live_entry = _live_entry_for_profile_key(str(entry.get("profile_key", "")), entry)
+			live_entry["enabled"] = enabled
 			_save_ui_config()
 			if is_instance_valid(tabs):
 				_rebuild_mods_tab(tabs)
-			status_lbl.text = ("Enabled " if enabled else "Disabled ") + str(entry.get("mod_name", "?")) + " in profile " + _active_profile
+			if is_instance_valid(status_lbl):
+				status_lbl.text = ("Enabled " if enabled else "Disabled ") + str(live_entry.get("mod_name", "?")) + " in profile " + _active_profile
 			return
 
 	# Forward decl so on_get + queue processor can reference each other.
@@ -4355,6 +4542,10 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			return
 
 		if bool(result.get("ok", false)):
+			# Remember that this queued batch installed at least one mod, so
+			# the drain below can still sync duplicate rows when a LATER item
+			# in the batch fails (the re-fetch is gated on the last result).
+			state["queue_any_success"] = true
 			_reload_entries_for_active_profile()
 			if is_instance_valid(tabs):
 				_rebuild_mods_tab(tabs)
@@ -4382,11 +4573,33 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		if not remaining.is_empty():
 			var next_item: Dictionary = remaining.pop_front()
 			(state["fn_perform_download"] as Callable).call(next_item)
-		else:
+		elif bool(result.get("ok", false)):
+			# Re-render only after a SUCCESS. The re-fetch exists to flip
+			# duplicate Get buttons to Installed; on failure it would
+			# synchronously overwrite the "Download failed: ..." status with
+			# "Loading..." before it ever rendered a frame, and nothing
+			# changed on disk anyway -- so keep the failure visible instead.
+			#
+			# Carry the scroll position across the re-render: the full
+			# re-render resets the ScrollContainer to the top. The fetch
+			# lambdas consume restore_scroll and re-apply it one frame after
+			# rendering.
+			state["queue_any_success"] = false
+			if is_instance_valid(scroll):
+				state["restore_scroll"] = int(scroll.scroll_vertical)
 			if str(state["mode"]) == "discover":
 				(state["fn_discover_fetch"] as Callable).call()
 			else:
 				(state["fn_filter_fetch"] as Callable).call(false)
+		elif bool(state.get("queue_any_success", false)):
+			# Mixed batch: earlier queued downloads installed but the FINAL
+			# one failed, so the success-only re-fetch above is skipped and
+			# duplicate rows (same mod in popular AND latest) of the installed
+			# mods would keep a live Download button. Sync those rows in place
+			# -- no re-fetch, so the failure status text stays visible.
+			state["queue_any_success"] = false
+			if is_instance_valid(scroll):
+				_refresh_browse_installed_rows(scroll)
 
 	var on_get: Callable
 	on_get = func(mod_data: Dictionary, get_btn: Button):
@@ -4430,6 +4643,13 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		# the user clicks again before our await returns.
 		state["fetch_seq"] = int(state["fetch_seq"]) + 1
 		var my_seq := int(state["fetch_seq"])
+		# Consume any pending scroll carry (set by the post-download
+		# re-render) up front so a failed or superseded fetch cannot leak it
+		# into a later user-initiated fetch.
+		var my_restore := -1
+		if state.has("restore_scroll"):
+			my_restore = int(state["restore_scroll"])
+			state.erase("restore_scroll")
 		state["mode"] = "discover"
 		state["next_page"] = 1
 		state["has_more"] = false
@@ -4481,10 +4701,22 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 				list.add_child(_browse_render_mod_row(mod_data, install_map.get(mws_id), on_get, on_toggle))
 				list.add_child(HSeparator.new())
 		status_lbl.text = "%d popular, %d latest" % [popular.size(), latest.size()]
+		# Restore the pre-refetch scroll position one frame later: the fresh
+		# rows have no layout yet on this frame, so setting scroll_vertical
+		# now would clamp against a zero-height list (handoff bug class 6).
+		if my_restore >= 0:
+			await get_tree().process_frame
+			if int(state["fetch_seq"]) == my_seq and is_instance_valid(scroll):
+				scroll.scroll_vertical = my_restore
 
 	do_filter_fetch = func(append: bool):
 		state["fetch_seq"] = int(state["fetch_seq"]) + 1
 		var my_seq := int(state["fetch_seq"])
+		# Same pending-scroll-carry consumption as do_discover_fetch.
+		var my_restore := -1
+		if state.has("restore_scroll"):
+			my_restore = int(state["restore_scroll"])
+			state.erase("restore_scroll")
 		state["mode"] = "filter"
 		var page: int = int(state["next_page"]) if append else 1
 		if not append:
@@ -4511,7 +4743,11 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			load_more_btn.disabled = not bool(state["has_more"])
 			return
 		var rows: Array = _mws_data_rows(data)
-		var meta: Dictionary = (data as Dictionary).get("meta", {})
+		# .get()'s default only covers an ABSENT key; a present-but-null (or
+		# non-dict) meta would crash the typed assignment. Same guard shape
+		# as _mws_data_rows applies to the sibling data field.
+		var meta_v: Variant = (data as Dictionary).get("meta")
+		var meta: Dictionary = meta_v if meta_v is Dictionary else {}
 		var current_page: int = int(meta.get("current_page", page))
 		var last_page: int = int(meta.get("last_page", current_page))
 		var total: int = int(meta.get("total", rows.size()))
@@ -4522,6 +4758,13 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		status_lbl.text = "%d of %d mods" % [shown_so_far, total]
 		load_more_btn.visible = bool(state["has_more"])
 		load_more_btn.disabled = not bool(state["has_more"])
+		# Restore the pre-refetch scroll position one frame later: the fresh
+		# rows have no layout yet on this frame, so setting scroll_vertical
+		# now would clamp against a zero-height list (handoff bug class 6).
+		if my_restore >= 0:
+			await get_tree().process_frame
+			if int(state["fetch_seq"]) == my_seq and is_instance_valid(scroll):
+				scroll.scroll_vertical = my_restore
 
 	# Debounce: Godot 4 LineEdit's text_changed fires per keystroke. A timer
 	# armed on each keystroke and only the timeout actually queries the API
@@ -4613,6 +4856,55 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	return margin
 
 
+# Refresh the baked-at-render-time state of Browse rows in place. The
+# "Enabled in <profile>" checkboxes bake the profile name and enabled state
+# when rendered, and profile switches, modpack apply/unload, and Mods-tab
+# edits all change that state behind the Browse tab's back (the tab has no
+# rebuild path by design -- its content is network-fetched). Called from the
+# tab_changed listener when Browse is shown. In-place (no re-fetch, no
+# re-render) so search text, caret, scroll position, and loaded pages all
+# survive. Rows are found via the browse_mws_id meta tag set at render time.
+func _refresh_browse_installed_rows(root: Node) -> void:
+	if root == null or not is_instance_valid(root):
+		return
+	# mws_id -> entry for every installed mod that declares one. Last-wins,
+	# matching compute_install_map in build_browse_tab.
+	var by_id: Dictionary = {}
+	for entry in _ui_mod_entries:
+		var cfg: ConfigFile = entry.get("cfg")
+		if cfg == null:
+			continue
+		if not cfg.has_section_key("updates", "modworkshop"):
+			continue
+		var mws_id := int(str(cfg.get_value("updates", "modworkshop", "0")))
+		if mws_id > 0:
+			by_id[mws_id] = entry
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var node: Node = stack.pop_back()
+		for child in node.get_children():
+			stack.push_back(child)
+		if not node.has_meta("browse_mws_id"):
+			continue
+		var entry_v: Variant = by_id.get(int(node.get_meta("browse_mws_id")))
+		if node is CheckBox:
+			var cb := node as CheckBox
+			cb.text = "Enabled in " + _active_profile
+			cb.tooltip_text = "Toggle this mod in profile: " + _active_profile + "."
+			if entry_v is Dictionary:
+				# set_pressed_no_signal: this is a display sync, not a user
+				# toggle -- firing toggled here would re-save the profile.
+				cb.set_pressed_no_signal(bool((entry_v as Dictionary).get("enabled", false)))
+		elif node is Button and entry_v is Dictionary:
+			# A Download button whose mod is now installed (modpack apply or
+			# retry landed it). Skip in-flight buttons (Downloading/Queued,
+			# both disabled); the download path re-renders on its own.
+			var btn := node as Button
+			if not btn.disabled:
+				btn.text = "Installed"
+				btn.disabled = true
+
+
 # Render one row in the Browse tab list. Pulls from a ModSummary dict (live
 # response shape from /games/{id}/mods or /games/{id}/popular-and-latest).
 # Thumbnail loads asynchronously via _browse_load_thumbnail_async; the row
@@ -4694,6 +4986,11 @@ func _browse_render_mod_row(mod_data: Dictionary, install_entry: Variant, on_get
 	meta_lbl.add_theme_font_size_override("font_size", 11)
 	meta_lbl.modulate = Color(0.6, 0.6, 0.6)
 	meta_lbl.clip_text = true
+	# Ellipsis + hover tooltip instead of a hard mid-word cut (Labels default
+	# to MOUSE_FILTER_IGNORE, which silently suppresses tooltips).
+	meta_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	meta_lbl.tooltip_text = meta_lbl.text
+	meta_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
 	info_col.add_child(meta_lbl)
 
 	# Installed mods get an enable toggle bound to the active profile. The
@@ -4707,9 +5004,13 @@ func _browse_render_mod_row(mod_data: Dictionary, install_entry: Variant, on_get
 		enable_check.text = "Enabled in " + _active_profile
 		enable_check.button_pressed = bool(entry.get("enabled", false))
 		enable_check.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		# Tag with the mws id so _refresh_browse_installed_rows can re-derive
+		# this baked-at-render-time state when the tab is shown again.
+		enable_check.set_meta("browse_mws_id", int(mod_data.get("id", 0)))
 		var captured_mws_id := int(mod_data.get("id", 0))
+		var captured_check := enable_check
 		enable_check.toggled.connect(func(on: bool):
-			on_toggle.call(captured_mws_id, on)
+			on_toggle.call(captured_mws_id, on, captured_check)
 		)
 		row.add_child(enable_check)
 		_wire_hint(enable_check, "Toggle this mod in profile: " + _active_profile + ".")
@@ -4717,6 +5018,10 @@ func _browse_render_mod_row(mod_data: Dictionary, install_entry: Variant, on_get
 		var get_btn := Button.new()
 		get_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		get_btn.text = "Download"
+		# Tag with the mws id so _refresh_browse_installed_rows can flip this
+		# to Installed if the mod arrives behind the tab's back (modpack
+		# apply, retry downloads).
+		get_btn.set_meta("browse_mws_id", int(mod_data.get("id", 0)))
 		var captured := mod_data
 		var captured_btn := get_btn
 		get_btn.pressed.connect(func():
@@ -4738,6 +5043,12 @@ func _browse_render_mod_row(mod_data: Dictionary, install_entry: Variant, on_get
 func _browse_load_thumbnail_async(rect: TextureRect, image_record: Dictionary) -> void:
 	var fn: String = str(image_record.get("file", ""))
 	if fn.is_empty():
+		return
+	# Server-provided name: accept only a bare basename so path_join cannot
+	# escape the cache dir (same never-trust-a-server-name posture as the
+	# _is_safe_mod_filename gate on mod download names). get_file() only
+	# splits on "/", so reject backslashes and ".." explicitly too.
+	if fn != fn.get_file() or fn.contains("\\") or fn.contains(".."):
 		return
 
 	var cache_dir := "user://mws_cache/thumbs"
@@ -5100,6 +5411,10 @@ func build_updates_tab() -> Control:
 		var name_lbl := Label.new()
 		name_lbl.text = entry["mod_name"]
 		name_lbl.clip_text = true
+		name_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		name_lbl.tooltip_text = str(entry["mod_name"])
+		# Labels default to MOUSE_FILTER_IGNORE, which suppresses tooltips.
+		name_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
 		name_col.add_child(name_lbl)
 
 		var mtime := FileAccess.get_modified_time(entry["full_path"])
@@ -5119,7 +5434,15 @@ func build_updates_tab() -> Control:
 
 		var status_lbl := Label.new()
 		status_lbl.custom_minimum_size.x = 160
-		status_lbl.text = "no update info" if mw_id == 0 or version == "" else "--"
+		if entry["ext"] == "folder":
+			# Dev folders are the user's working copy on disk; downloading an
+			# archive would land a duplicate next to the folder. Explain why
+			# there is no Download button instead of offering one that misfires.
+			status_lbl.text = "dev folder (no download)"
+			status_lbl.tooltip_text = "Dev folders update from your working copy. Update downloads only apply to archive mods."
+			status_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
+		else:
+			status_lbl.text = "no update info" if mw_id == 0 or version == "" else "--"
 		row.add_child(status_lbl)
 
 		# Always add dl_btn to preserve column width. Use modulate.a to
@@ -5134,7 +5457,7 @@ func build_updates_tab() -> Control:
 
 		list.add_child(HSeparator.new())
 
-		if mw_id > 0 and version != "":
+		if mw_id > 0 and version != "" and entry["ext"] != "folder":
 			# Hold a reference to the underlying _ui_mod_entries dict so the
 			# download callback can update full_path / file_name in place
 			# when a successful update lands the archive under a new name.
@@ -5203,6 +5526,10 @@ func build_updates_tab() -> Control:
 			btn.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			btn.text = "Download"
 		await check_updates_for_ui(status_info, add_log, check_btn)
+		# The launcher can close (Launch clicked) while the check is in
+		# flight; the button is freed with it. Mirrors the Mods-tab guard.
+		if not is_instance_valid(check_btn):
+			return
 		check_btn.disabled = false
 		check_btn.text = "Check for Updates"
 	)
@@ -5223,6 +5550,10 @@ func _run_updates_check_for_mods() -> Dictionary:
 	for entry in _ui_mod_entries:
 		var cfg: ConfigFile = entry.get("cfg")
 		if cfg == null:
+			continue
+		# Dev folders cannot take a downloaded archive (it would land as a
+		# duplicate beside the folder), so never flag them for updates.
+		if str(entry.get("ext", "")) == "folder":
 			continue
 		if not cfg.has_section_key("updates", "modworkshop"):
 			continue
@@ -5354,6 +5685,11 @@ func check_updates_for_ui(status_info: Dictionary, add_log: Callable, check_btn:
 					# Update cached version so next Check won't re-flag this mod.
 					info["version"] = new_ver
 					(info["ver_lbl"] as Label).text = "v" + new_ver
+					# Drop the shared badge state so the Mods tab stops
+					# offering an update that was just installed (mirrors the
+					# badge-path erase after a successful download).
+					if pk != "":
+						_mod_updates_state.erase(pk)
 					# Reflect the on-disk rename in the in-memory entry so the
 					# next discovery pass (and any subsequent UI rebuild before
 					# relaunch) point at the right archive instead of the old
@@ -5396,6 +5732,12 @@ func _check_modloader_update_async() -> void:
 	if latest.is_empty():
 		return
 	_modloader_latest_version = latest
+	# Exact match first: when ModWorkshop publishes the very version we are
+	# running (including a prerelease like "3.3.0-beta.1"), there is nothing
+	# to update to -- without this the base-version compare below would flag
+	# our own version as an update every session.
+	if latest == MODLOADER_VERSION:
+		return
 	# Prerelease-aware gate: "3.3.0-beta.1" numerically parses as 3.3.0.1,
 	# which would compare GREATER than the eventual "3.3.0" stable and mute
 	# the update prompt forever. Semver rule: a prerelease precedes its
