@@ -351,6 +351,11 @@ func _schedule_priority_save() -> void:
 		return
 	_priority_save_pending = true
 	await get_tree().create_timer(0.4).timeout
+	# A profile switch (or other flush) may have already persisted and cleared
+	# the pending flag during the wait -- don't re-save now-stale in-memory state
+	# (which would belong to a different profile) on top of it.
+	if not _priority_save_pending:
+		return
 	_priority_save_pending = false
 	_save_ui_config()
 
@@ -587,6 +592,15 @@ func _switch_profile(name: String) -> void:
 	var old := _active_profile
 	if old == name:
 		return
+	# Flush a pending debounced priority edit for the OUTGOING profile first.
+	# A load-priority drag arms a 0.4s _schedule_priority_save timer; switching
+	# inside that window would let _apply_profile_to_entries below overwrite the
+	# in-memory priorities with the incoming profile's before the timer fires,
+	# silently discarding the edit (and the late save would then write it under
+	# the wrong profile). Persist now while _active_profile is still `old`.
+	if _priority_save_pending:
+		_priority_save_pending = false
+		_save_ui_config()
 	if old != VANILLA_PROFILE and old != name:
 		_snapshot_mcm_to(old)
 	_active_profile = name
