@@ -828,7 +828,7 @@ func _enabled_mods_without_modworkshop_id() -> Array:
 func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: TabContainer) -> void:
 	var has_orphans := not orphans.is_empty()
 	var d := ConfirmationDialog.new()
-	d.title = "Save Partial Modpack?" if has_orphans else "Save as Modpack"
+	d.title = "Save partial modpack?" if has_orphans else "Save as modpack"
 	# Capped to fit comfortably inside a 640px launcher (chrome ~80px,
 	# leaves ~480px for body). Width stays at 560.
 	d.min_size = Vector2i(560, 320 if has_orphans else 220)
@@ -841,18 +841,18 @@ func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: Ta
 
 	var box := VBoxContainer.new()
 	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	box.add_theme_constant_override("separation", 8)
+	box.add_theme_constant_override("separation", SP_M)
 	outer_scroll.add_child(box)
 
 	var from_lbl := Label.new()
 	from_lbl.text = "Saving from profile: " + profile_to_save
-	from_lbl.modulate = Color(0.78, 0.78, 0.78)
+	from_lbl.add_theme_color_override("font_color", COL_TEXT)
 	box.add_child(from_lbl)
 
 	var author_hdr := Label.new()
 	author_hdr.text = "Author (optional):"
-	author_hdr.add_theme_font_size_override("font_size", 11)
-	author_hdr.modulate = Color(0.65, 0.65, 0.65)
+	author_hdr.add_theme_font_size_override("font_size", FS_BODY)
+	author_hdr.add_theme_color_override("font_color", COL_TEXT_DIM)
 	box.add_child(author_hdr)
 
 	var author_input := LineEdit.new()
@@ -863,8 +863,8 @@ func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: Ta
 
 	var desc_hdr := Label.new()
 	desc_hdr.text = "Description (optional, shown in the Modpacks tab):"
-	desc_hdr.add_theme_font_size_override("font_size", 11)
-	desc_hdr.modulate = Color(0.65, 0.65, 0.65)
+	desc_hdr.add_theme_font_size_override("font_size", FS_BODY)
+	desc_hdr.add_theme_color_override("font_color", COL_TEXT_DIM)
 	box.add_child(desc_hdr)
 
 	var desc_input := TextEdit.new()
@@ -880,7 +880,7 @@ func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: Ta
 		var warn_hdr := Label.new()
 		warn_hdr.text = "%d enabled mod(s) lack [updates] modworkshop= in mod.txt:" % orphans.size()
 		warn_hdr.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		warn_hdr.modulate = Color(0.95, 0.75, 0.55)
+		warn_hdr.add_theme_color_override("font_color", COL_AMBER)
 		box.add_child(warn_hdr)
 
 		# Footer above the list so the consequence is visible without
@@ -889,13 +889,13 @@ func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: Ta
 		var footer := Label.new()
 		footer.text = "Without a ModWorkshop ID, these mods can't auto-download when someone applies the modpack -- recipients install them manually."
 		footer.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		footer.modulate = Color(0.85, 0.75, 0.55)
-		footer.add_theme_font_size_override("font_size", 11)
+		footer.add_theme_color_override("font_color", COL_TEXT_DIM)
+		footer.add_theme_font_size_override("font_size", FS_BODY)
 		box.add_child(footer)
 
 		var list := VBoxContainer.new()
 		list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		list.add_theme_constant_override("separation", 2)
+		list.add_theme_constant_override("separation", SP_XS)
 		box.add_child(list)
 
 		for o_v in orphans:
@@ -904,13 +904,20 @@ func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: Ta
 			var o: Dictionary = o_v
 			var lbl := Label.new()
 			lbl.text = "  - %s  (%s)" % [str(o.get("mod_name", "?")), str(o.get("profile_key", "?"))]
-			lbl.add_theme_font_size_override("font_size", 11)
+			lbl.add_theme_font_size_override("font_size", FS_BODY)
+			lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+			lbl.tooltip_text = lbl.text.strip_edges()
+			lbl.mouse_filter = Control.MOUSE_FILTER_PASS
 			list.add_child(lbl)
 
-	d.ok_button_text = "Save Anyway" if has_orphans else "Save"
+	d.ok_button_text = "Save anyway" if has_orphans else "Save modpack"
 	_attach_ui_dialog(d)
+	# "Save anyway" is a caution (this modpack cannot fully auto-download),
+	# not an encouraged action -- keep the danger voice on the orphan path.
 	if has_orphans:
-		d.get_ok_button().modulate = Color(1.0, 0.55, 0.55)
+		style_dialog_danger_button(d.get_ok_button())
+	else:
+		style_dialog_primary_button(d.get_ok_button())
 	_connect_dialog_exits(d,
 		func():
 			var desc := desc_input.text
@@ -922,7 +929,7 @@ func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: Ta
 			_save_preferred_author(author)
 			var result := save_profile_as_modpack(profile_to_save, desc, author)
 			if not bool(result.get("ok", false)):
-				_show_error_dialog("Save Modpack Failed", str(result.get("error", "unknown")))
+				_show_error_dialog("Could not save modpack", str(result.get("error", "unknown")))
 				return
 			_rebuild_modpacks_tab(tabs),
 		func(): d.queue_free())
@@ -1478,12 +1485,12 @@ func _restore_mods_scroll(saved_scroll: int) -> void:
 # offers no recovery action.
 func _show_modpack_failure_dialog(downloaded: int, failures: Array, tabs: TabContainer) -> void:
 	var d := AcceptDialog.new()
-	d.title = "Modpack Applied with Issues"
+	d.title = "Modpack applied with issues"
 	d.ok_button_text = "Close"
 	d.min_size = Vector2i(540, 420)
 
 	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 8)
+	box.add_theme_constant_override("separation", SP_M)
 	d.add_child(box)
 
 	var hdr := Label.new()
@@ -1497,13 +1504,13 @@ func _show_modpack_failure_dialog(downloaded: int, failures: Array, tabs: TabCon
 	box.add_child(scroll)
 
 	var list_wrap := MarginContainer.new()
-	list_wrap.add_theme_constant_override("margin_right", 16)
+	list_wrap.add_theme_constant_override("margin_right", SP_XL)
 	list_wrap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.add_child(list_wrap)
 
 	var list := VBoxContainer.new()
 	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	list.add_theme_constant_override("separation", 6)
+	list.add_theme_constant_override("separation", SP_S)
 	list_wrap.add_child(list)
 
 	for f_v in failures:
@@ -1511,7 +1518,7 @@ func _show_modpack_failure_dialog(downloaded: int, failures: Array, tabs: TabCon
 			continue
 		var f: Dictionary = f_v
 		var row := HBoxContainer.new()
-		row.add_theme_constant_override("separation", 8)
+		row.add_theme_constant_override("separation", SP_M)
 		list.add_child(row)
 
 		var info_col := VBoxContainer.new()
@@ -1520,19 +1527,22 @@ func _show_modpack_failure_dialog(downloaded: int, failures: Array, tabs: TabCon
 
 		var name_lbl := Label.new()
 		name_lbl.text = str(f.get("profile_key", "?"))
+		name_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		name_lbl.tooltip_text = name_lbl.text
+		name_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
 		info_col.add_child(name_lbl)
 
 		var err_lbl := Label.new()
 		err_lbl.text = str(f.get("error", "unknown"))
-		err_lbl.add_theme_font_size_override("font_size", 11)
-		err_lbl.modulate = Color(0.85, 0.55, 0.55)
+		err_lbl.add_theme_font_size_override("font_size", FS_BODY)
+		err_lbl.add_theme_color_override("font_color", COL_ERR)
 		err_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		info_col.add_child(err_lbl)
 
 		var mws_id: int = int(f.get("mws_id", 0))
 		if mws_id > 0:
 			var open_btn := Button.new()
-			open_btn.text = "Open MWS page"
+			open_btn.text = "Open ModWorkshop page"
 			open_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 			row.add_child(open_btn)
 			open_btn.pressed.connect(func():
@@ -1550,6 +1560,7 @@ func _show_modpack_failure_dialog(downloaded: int, failures: Array, tabs: TabCon
 			break
 	if any_retryable:
 		retry_btn = d.add_button("Retry failed", false, "")
+		style_primary_button(retry_btn)
 		var captured_failures := failures
 		retry_btn.pressed.connect(func():
 			d.queue_free()
@@ -1614,8 +1625,8 @@ func _run_modpack_retry(failures: Array, tabs: TabContainer) -> void:
 		# Everything recovered -- short success dialog instead of the
 		# error-styled failure one.
 		var ok_d := AcceptDialog.new()
-		ok_d.title = "Retry Complete"
-		ok_d.dialog_text = "Successfully downloaded %d mod(s) on retry." % dl
+		ok_d.title = "Retry complete"
+		ok_d.dialog_text = "Downloaded %d mod(s) on retry." % dl
 		ok_d.ok_button_text = "Close"
 		_attach_ui_dialog(ok_d)
 		_wire_accept_dismiss(ok_d)
@@ -1655,7 +1666,7 @@ func _show_error_dialog(title: String, message: String) -> void:
 # without the "error" connotation -- used for benign confirmations like
 # "all mods up to date" after a check.
 func _show_info_toast(message: String) -> void:
-	_show_accept_dialog("Modloader", message)
+	_show_accept_dialog("Mod Loader", message, "Close")
 
 
 # All launcher dialogs flow through this. Renders as a borderless dark
@@ -1694,19 +1705,20 @@ func _attach_ui_dialog(d: Window) -> void:
 		for c in existing:
 			d.remove_child(c)
 		var root := VBoxContainer.new()
-		root.add_theme_constant_override("separation", 8)
+		root.add_theme_constant_override("separation", SP_M)
 		root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		root.size_flags_vertical = Control.SIZE_EXPAND_FILL
 		if title_text != "":
 			var title_lbl := Label.new()
 			title_lbl.text = title_text
-			title_lbl.add_theme_font_size_override("font_size", 14)
-			title_lbl.modulate = Color(0.92, 0.92, 0.92)
+			title_lbl.add_theme_font_size_override("font_size", FS_HEAD)
+			title_lbl.add_theme_color_override("font_color", COL_TEXT_HI)
 			title_lbl.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
 			root.add_child(title_lbl)
 		if body_text != "":
 			var body_lbl := Label.new()
 			body_lbl.text = body_text
+			body_lbl.add_theme_font_size_override("font_size", FS_EMPH)
 			body_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 			body_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			body_lbl.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
@@ -1732,13 +1744,13 @@ func _sb_border(s: StyleBoxFlat, w := 1) -> void:
 # place that needs a matching look (e.g. inline cards) use the same style.
 func _make_dialog_panel_stylebox() -> StyleBoxFlat:
 	var s := StyleBoxFlat.new()
-	s.bg_color = Color(0.06, 0.06, 0.06)
-	s.border_color = Color(0.28, 0.28, 0.28)
+	s.bg_color = COL_SURFACE
+	s.border_color = COL_BORDER
 	_sb_border(s)
-	s.content_margin_left = 14
-	s.content_margin_right = 14
-	s.content_margin_top = 12
-	s.content_margin_bottom = 12
+	s.content_margin_left = SP_XL
+	s.content_margin_right = SP_XL
+	s.content_margin_top = SP_L
+	s.content_margin_bottom = SP_L
 	return s
 
 # Connect the same handler to both signals and a shared free-and-forget exit
@@ -1882,9 +1894,10 @@ func _confirm_red_launch(red_mods: Array) -> bool:
 	d.exclusive = true
 	d.always_on_top = true
 	# Red text on the destructive button so "Launch anyway" reads as the
-	# risky option. Modulate (not theme_color_override) because the latter
-	# didn't take effect for reasons I haven't chased.
-	d.get_ok_button().modulate = Color(1.0, 0.55, 0.55)
+	# risky option. Dialog OK buttons stay on modulate -- a theme
+	# font-color override didn't take effect here when tried (see
+	# style_dialog_danger_button for the shared rationale).
+	style_dialog_danger_button(d.get_ok_button())
 
 	return await _await_dialog_choice(d)
 
@@ -1964,13 +1977,13 @@ func _validate_profile_name(name: String, existing: Array, current := "") -> Str
 # expecting a blank slate).
 func _show_new_profile_dialog(tabs: TabContainer) -> void:
 	var d := ConfirmationDialog.new()
-	d.title = "New Profile"
-	d.ok_button_text = "Create"
+	d.title = "New profile"
+	d.ok_button_text = "Create profile"
 	d.dialog_hide_on_ok = false  # keep open until we validate the name
 
 	var form := VBoxContainer.new()
 	form.custom_minimum_size = Vector2(320, 0)
-	form.add_theme_constant_override("separation", 6)
+	form.add_theme_constant_override("separation", SP_M)
 	d.add_child(form)
 
 	var prompt := Label.new()
@@ -2006,8 +2019,8 @@ func _show_new_profile_dialog(tabs: TabContainer) -> void:
 	form.add_child(state_copy)
 
 	var err_lbl := Label.new()
-	err_lbl.modulate = Color(1.0, 0.5, 0.5)
-	err_lbl.add_theme_font_size_override("font_size", 11)
+	err_lbl.add_theme_color_override("font_color", COL_ERR)
+	err_lbl.add_theme_font_size_override("font_size", FS_BODY)
 	form.add_child(err_lbl)
 
 	_attach_ui_dialog(d)
@@ -2046,13 +2059,13 @@ func _show_new_profile_dialog(tabs: TabContainer) -> void:
 func _show_rename_profile_dialog(tabs: TabContainer) -> void:
 	var current := _active_profile
 	var d := ConfirmationDialog.new()
-	d.title = "Rename Profile"
-	d.ok_button_text = "Rename"
+	d.title = "Rename profile"
+	d.ok_button_text = "Rename profile"
 	d.dialog_hide_on_ok = false
 
 	var form := VBoxContainer.new()
 	form.custom_minimum_size = Vector2(320, 0)
-	form.add_theme_constant_override("separation", 6)
+	form.add_theme_constant_override("separation", SP_M)
 	d.add_child(form)
 
 	var prompt := Label.new()
@@ -2065,8 +2078,8 @@ func _show_rename_profile_dialog(tabs: TabContainer) -> void:
 	form.add_child(name_edit)
 
 	var err_lbl := Label.new()
-	err_lbl.modulate = Color(1.0, 0.5, 0.5)
-	err_lbl.add_theme_font_size_override("font_size", 11)
+	err_lbl.add_theme_color_override("font_color", COL_ERR)
+	err_lbl.add_theme_font_size_override("font_size", FS_BODY)
 	form.add_child(err_lbl)
 
 	_attach_ui_dialog(d)
@@ -2119,23 +2132,23 @@ func _show_restore_snapshot_dialog(tabs: TabContainer) -> void:
 	# first -- its manifest-driven revert is the correct path out.
 	var active_pack := get_active_modpack()
 	if active_pack != "":
-		_show_error_dialog("Modpack Active",
+		_show_error_dialog("Modpack active",
 				"Unload the active modpack (\"" + active_pack + "\") before restoring a backup. Unload reverts the pack's files first; restoring on top of an active pack would leave its files behind.")
 		return
 	var snaps := _list_apply_snapshots()
 	if snaps.is_empty():
-		_show_error_dialog("No Restore Points",
+		_show_error_dialog("No restore points",
 				"No automatic restore points have been saved yet. One is created before each modpack apply.")
 		return
 
 	var d := ConfirmationDialog.new()
-	d.title = "Restore Pre-Modpack Backup"
-	d.ok_button_text = "Restore Selected"
+	d.title = "Restore backup"
+	d.ok_button_text = "Restore backup"
 	d.dialog_hide_on_ok = false
 
 	var form := VBoxContainer.new()
 	form.custom_minimum_size = Vector2(440, 0)
-	form.add_theme_constant_override("separation", 6)
+	form.add_theme_constant_override("separation", SP_M)
 	d.add_child(form)
 
 	var prompt := Label.new()
@@ -2155,6 +2168,7 @@ func _show_restore_snapshot_dialog(tabs: TabContainer) -> void:
 	form.add_child(picker)
 
 	_attach_ui_dialog(d)
+	style_dialog_primary_button(d.get_ok_button())
 	_connect_dialog_exits(d,
 		func():
 			var idx := picker.selected
@@ -2165,7 +2179,7 @@ func _show_restore_snapshot_dialog(tabs: TabContainer) -> void:
 			var result := _restore_apply_snapshot(str(chosen["path"]))
 			d.queue_free()
 			if not bool(result.get("ok", false)):
-				_show_error_dialog("Restore Failed", str(result.get("error", "unknown")))
+				_show_error_dialog("Could not restore backup", str(result.get("error", "unknown")))
 				return
 			# Re-read state from the restored cfg and rebuild the UI.
 			var rcfg := ConfigFile.new()
@@ -2179,7 +2193,7 @@ func _show_restore_snapshot_dialog(tabs: TabContainer) -> void:
 			# against the restored config (same convention as _switch_profile).
 			if _boot_complete:
 				_dirty_since_boot = true
-			_show_accept_dialog("Restored", "Your mod state was restored from the selected backup."),
+			_show_accept_dialog("Backup restored", "Your mod state was restored from the selected backup."),
 		func():
 			d.queue_free())
 	d.popup_centered()
@@ -2188,7 +2202,7 @@ func build_modpacks_tab(tabs: TabContainer) -> Control:
 	var margin := _make_tab_margin()
 
 	var container := VBoxContainer.new()
-	container.add_theme_constant_override("separation", 6)
+	container.add_theme_constant_override("separation", SP_M)
 	margin.add_child(container)
 
 	# Refresh discovery up-front so the toolbar header (which queries
@@ -2198,11 +2212,13 @@ func build_modpacks_tab(tabs: TabContainer) -> Control:
 	var active_modpack := get_active_modpack()
 
 	var hdr_row := HBoxContainer.new()
-	hdr_row.add_theme_constant_override("separation", 8)
+	hdr_row.add_theme_constant_override("separation", SP_M)
 	container.add_child(hdr_row)
 
 	var hdr := Label.new()
 	hdr.text = "Modpacks in your mods folder"
+	hdr.add_theme_font_size_override("font_size", FS_HEAD)
+	hdr.add_theme_color_override("font_color", COL_TEXT_HI)
 	hdr.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hdr_row.add_child(hdr)
 
@@ -2227,7 +2243,7 @@ func build_modpacks_tab(tabs: TabContainer) -> Control:
 	)
 
 	var open_folder_btn := Button.new()
-	open_folder_btn.text = "Open Mods Folder"
+	open_folder_btn.text = "Open mods folder"
 	open_folder_btn.tooltip_text = "Drop modpack zips here. They appear automatically on next launcher open."
 	hdr_row.add_child(open_folder_btn)
 	open_folder_btn.pressed.connect(func():
@@ -2259,20 +2275,20 @@ func build_modpacks_tab(tabs: TabContainer) -> Control:
 	_ui_modpacks_scroll = scroll
 
 	var list_wrap := MarginContainer.new()
-	list_wrap.add_theme_constant_override("margin_right", 16)
+	list_wrap.add_theme_constant_override("margin_right", SP_XL)
 	list_wrap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.add_child(list_wrap)
 
 	var list := VBoxContainer.new()
 	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	list.add_theme_constant_override("separation", 4)
+	list.add_theme_constant_override("separation", SP_S)
 	list_wrap.add_child(list)
 
 	if _modpack_entries.is_empty():
 		var empty := Label.new()
-		empty.text = "No modpacks found.\n\nDrop a modpack .zip into your mods folder to install it."
+		empty.text = "No modpacks yet.\n\nDrop a modpack zip into your mods folder, or save your current profile as one."
 		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		empty.modulate = Color(0.5, 0.5, 0.5)
+		empty.add_theme_color_override("font_color", COL_TEXT_DIM)
 		list.add_child(empty)
 		return margin
 
@@ -2289,7 +2305,7 @@ func build_modpacks_tab(tabs: TabContainer) -> Control:
 func _unload_modpack_with_feedback(tabs: TabContainer) -> void:
 	var result := unload_modpack(tabs)
 	if not bool(result.get("ok", false)):
-		_show_error_dialog("Unload Failed", str(result.get("error", "unknown")))
+		_show_error_dialog("Could not unload modpack", str(result.get("error", "unknown")))
 	_rebuild_modpacks_tab(tabs)
 
 # Render one modpack row: name + filename/mod-count meta + Apply or
@@ -2297,7 +2313,7 @@ func _unload_modpack_with_feedback(tabs: TabContainer) -> void:
 # (single-slot constraint -- user has to unload first).
 func _modpacks_render_row(entry: Dictionary, active_modpack: String, tabs: TabContainer) -> Control:
 	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 12)
+	row.add_theme_constant_override("separation", SP_L)
 
 	var info_col := VBoxContainer.new()
 	info_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -2309,20 +2325,21 @@ func _modpacks_render_row(entry: Dictionary, active_modpack: String, tabs: TabCo
 	# way to open the modal -- a chevron on the name didn't read as
 	# interactive in testing.
 	var name_row := HBoxContainer.new()
-	name_row.add_theme_constant_override("separation", 8)
+	name_row.add_theme_constant_override("separation", SP_M)
 	info_col.add_child(name_row)
 
 	var name_lbl := Label.new()
 	name_lbl.text = str(entry.get("raw_name", "?"))
-	name_lbl.add_theme_font_size_override("font_size", 14)
+	name_lbl.add_theme_font_size_override("font_size", FS_HEAD)
+	name_lbl.add_theme_color_override("font_color", COL_TEXT_HI)
 	name_row.add_child(name_lbl)
 
 	var author: String = str(entry.get("author", "")).strip_edges()
 	if not author.is_empty():
 		var author_lbl := Label.new()
 		author_lbl.text = "by " + author
-		author_lbl.add_theme_font_size_override("font_size", 11)
-		author_lbl.modulate = Color(0.6, 0.6, 0.6)
+		author_lbl.add_theme_font_size_override("font_size", FS_BODY)
+		author_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
 		author_lbl.size_flags_vertical = Control.SIZE_SHRINK_END
 		name_row.add_child(author_lbl)
 
@@ -2333,8 +2350,8 @@ func _modpacks_render_row(entry: Dictionary, active_modpack: String, tabs: TabCo
 	if not description.is_empty():
 		var desc_lbl := Label.new()
 		desc_lbl.text = description
-		desc_lbl.add_theme_font_size_override("font_size", 11)
-		desc_lbl.modulate = Color(0.72, 0.72, 0.72)
+		desc_lbl.add_theme_font_size_override("font_size", FS_BODY)
+		desc_lbl.add_theme_color_override("font_color", COL_TEXT)
 		desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		info_col.add_child(desc_lbl)
 
@@ -2349,8 +2366,8 @@ func _modpacks_render_row(entry: Dictionary, active_modpack: String, tabs: TabCo
 				dup_names.append(str((d_v as Dictionary).get("file_name", "?")))
 		var dup_lbl := Label.new()
 		dup_lbl.text = "Duplicate file(s) hidden: " + ", ".join(dup_names)
-		dup_lbl.modulate = UI_COL_WARN
-		dup_lbl.add_theme_font_size_override("font_size", 11)
+		dup_lbl.add_theme_color_override("font_color", COL_AMBER)
+		dup_lbl.add_theme_font_size_override("font_size", FS_BODY)
 		dup_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		info_col.add_child(dup_lbl)
 
@@ -2361,8 +2378,8 @@ func _modpacks_render_row(entry: Dictionary, active_modpack: String, tabs: TabCo
 		meta_lbl.text = "%d of %d mods enabled - %s" % [enabled_count, total_count, str(entry.get("file_name", ""))]
 	else:
 		meta_lbl.text = str(entry.get("file_name", ""))
-	meta_lbl.add_theme_font_size_override("font_size", 11)
-	meta_lbl.modulate = Color(0.6, 0.6, 0.6)
+	meta_lbl.add_theme_font_size_override("font_size", FS_META)
+	meta_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
 	meta_lbl.clip_text = true
 	# Ellipsis + hover tooltip instead of a hard mid-word cut (Labels default
 	# to MOUSE_FILTER_IGNORE, which silently suppresses tooltips).
@@ -2390,20 +2407,26 @@ func _modpacks_render_row(entry: Dictionary, active_modpack: String, tabs: TabCo
 
 	if is_active:
 		var active_lbl := Label.new()
-		active_lbl.text = "ACTIVE"
-		active_lbl.add_theme_font_size_override("font_size", 11)
-		active_lbl.modulate = Color(0.6, 0.85, 0.6)
+		active_lbl.text = "Active"
+		active_lbl.add_theme_font_size_override("font_size", FS_META)
+		active_lbl.add_theme_color_override("font_color", COL_TEXT_HI)
+		active_lbl.add_theme_stylebox_override("normal", _make_badge_stylebox(COL_OK, COL_OK_DIM))
 		active_lbl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		row.add_child(active_lbl)
 
 		var unload_btn := Button.new()
 		unload_btn.text = "Unload"
+		style_danger_button(unload_btn)
 		unload_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		row.add_child(unload_btn)
 		unload_btn.pressed.connect(func(): _unload_modpack_with_feedback(tabs))
 	else:
 		var apply_btn := Button.new()
 		apply_btn.text = "Apply"
+		# Bare theme voice: N modpack rows would mean N amber buttons on one
+		# surface (spec caps primary at one per surface, same call as Browse
+		# row Download buttons). Primary lives on the detail dialog's Apply
+		# and the apply-confirm OK.
 		apply_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		apply_btn.disabled = another_active
 		if another_active:
@@ -2427,7 +2450,7 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 	# malformed -- before the user commits.
 	var validation := _validate_modpack(entry)
 	if not bool(validation.get("ok", false)):
-		_show_error_dialog("Cannot Apply Modpack", str(validation.get("error", "unknown")))
+		_show_error_dialog("Cannot apply modpack", str(validation.get("error", "unknown")))
 		return
 	var apply_enabled := int(validation.get("enabled_count", 0))
 	var apply_total := int(validation.get("total_count", 0))
@@ -2442,10 +2465,11 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 	msg += "\n\nYour current state is backed up -- click Unload to restore."
 	msg += "\nA restore point is also saved automatically (Restore backup) in case anything goes wrong."
 	var cd := ConfirmationDialog.new()
-	cd.title = "Apply Modpack"
+	cd.title = "Apply modpack"
 	cd.dialog_text = msg
-	cd.ok_button_text = "Apply"
+	cd.ok_button_text = "Apply modpack"
 	_attach_ui_dialog(cd)
+	style_dialog_primary_button(cd.get_ok_button())
 	_connect_dialog_exits(cd,
 		func():
 			cd.queue_free()
@@ -2506,12 +2530,12 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 					pd.queue_free()
 				if is_instance_valid(tabs):
 					_rebuild_modpacks_tab(tabs)
-				var cancel_msg := "Apply cancelled -- the modpack was NOT applied and your profiles are unchanged."
+				var cancel_msg := "Apply cancelled -- the modpack was not applied and your profiles are unchanged."
 				if dl > 0:
 					cancel_msg += "\n%d downloaded mod(s) remain in your mods folder." % dl
 				if dl_failed > 0:
 					cancel_msg += "\n%d download(s) had already failed before the cancel." % dl_failed
-				_show_accept_dialog("Apply Cancelled", cancel_msg)
+				_show_accept_dialog("Apply cancelled", cancel_msg)
 				return
 			# Partial: tear down progress, route to failure dialog which has
 			# its own dismiss-on-OK flow.
@@ -2525,7 +2549,7 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 			if not bool(result.get("ok", false)):
 				if pd != null and is_instance_valid(pd):
 					pd.queue_free()
-				_show_error_dialog("Apply Failed", str(result.get("error", "unknown")))
+				_show_error_dialog("Could not apply modpack", str(result.get("error", "unknown")))
 				return
 			if is_instance_valid(tabs):
 				_rebuild_modpacks_tab(tabs)
@@ -2537,7 +2561,7 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 				if is_instance_valid(pd_bar):
 					pd_bar.value = 100
 				if is_instance_valid(pd_status):
-					pd_status.text = "Done. Downloaded %d mod(s)." % dl
+					pd_status.text = "Modpack applied. Downloaded %d mod(s)." % dl
 				if is_instance_valid(pd_cancel):
 					pd_cancel.visible = false
 				pd.dialog_close_on_escape = true
@@ -2562,12 +2586,12 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 # so the helper's reparent-children step folds them into the root VBox.
 func _build_modpack_progress_dialog(raw_name: String) -> Dictionary:
 	var pd := AcceptDialog.new()
-	pd.title = "Applying \"" + raw_name + "\""
+	pd.title = "Applying modpack \"" + raw_name + "\""
 	pd.min_size = Vector2i(520, 200)
-	pd.ok_button_text = "OK"
+	pd.ok_button_text = "Close"
 
 	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 10)
+	box.add_theme_constant_override("separation", SP_M)
 	pd.add_child(box)
 
 	var status := Label.new()
@@ -2643,13 +2667,13 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 	d.add_child(scroll)
 
 	var inner_wrap := MarginContainer.new()
-	inner_wrap.add_theme_constant_override("margin_right", 16)
-	inner_wrap.add_theme_constant_override("margin_left", 4)
+	inner_wrap.add_theme_constant_override("margin_right", SP_XL)
+	inner_wrap.add_theme_constant_override("margin_left", SP_S)
 	inner_wrap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.add_child(inner_wrap)
 
 	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 8)
+	box.add_theme_constant_override("separation", SP_M)
 	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	inner_wrap.add_child(box)
 
@@ -2661,8 +2685,11 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 	if not author.is_empty():
 		file_text = "by " + author + "  -  " + file_text
 	file_lbl.text = file_text
-	file_lbl.modulate = Color(0.6, 0.6, 0.6)
-	file_lbl.add_theme_font_size_override("font_size", 11)
+	file_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
+	file_lbl.add_theme_font_size_override("font_size", FS_META)
+	file_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	file_lbl.tooltip_text = file_text
+	file_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
 	box.add_child(file_lbl)
 
 	# Description -- prominent if present, omitted otherwise to keep the
@@ -2672,8 +2699,8 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 		var desc_lbl := Label.new()
 		desc_lbl.text = description
 		desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		desc_lbl.add_theme_font_size_override("font_size", 12)
-		desc_lbl.modulate = Color(0.85, 0.85, 0.85)
+		desc_lbl.add_theme_font_size_override("font_size", FS_EMPH)
+		desc_lbl.add_theme_color_override("font_color", COL_TEXT)
 		box.add_child(desc_lbl)
 
 	var zip_size := 0
@@ -2717,25 +2744,24 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 	if zip_size > 0:
 		counts_parts.append(_format_size(zip_size))
 	if is_active:
-		counts_parts.append("ACTIVE")
+		counts_parts.append("active")
 	counts_lbl.text = " - ".join(counts_parts)
-	counts_lbl.modulate = Color(0.78, 0.78, 0.78) if not is_active else Color(0.65, 0.85, 0.65)
-	counts_lbl.add_theme_font_size_override("font_size", 12)
+	counts_lbl.add_theme_color_override("font_color", COL_OK if is_active else COL_TEXT)
+	counts_lbl.add_theme_font_size_override("font_size", FS_EMPH)
 	box.add_child(counts_lbl)
 
 	box.add_child(HSeparator.new())
 
 	var list_hdr := Label.new()
 	list_hdr.text = "Mods"
-	list_hdr.add_theme_font_size_override("font_size", 13)
-	list_hdr.modulate = Color(0.78, 0.78, 0.78)
+	list_hdr.add_theme_font_size_override("font_size", FS_HEAD)
 	box.add_child(list_hdr)
 
 	if enabled_map.is_empty():
 		var empty := Label.new()
-		empty.text = "Modpack has no mods listed."
-		empty.modulate = UI_COL_MUTED
-		empty.add_theme_font_size_override("font_size", 11)
+		empty.text = "This modpack lists no mods."
+		empty.add_theme_color_override("font_color", COL_TEXT_DIM)
+		empty.add_theme_font_size_override("font_size", FS_BODY)
 		box.add_child(empty)
 	else:
 		var sorted_keys: Array = enabled_map.keys()
@@ -2748,13 +2774,13 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 			var has_source: bool = int(src_data.get("modworkshop_id", 0)) > 0
 
 			var mod_row := HBoxContainer.new()
-			mod_row.add_theme_constant_override("separation", 8)
+			mod_row.add_theme_constant_override("separation", SP_M)
 			box.add_child(mod_row)
 
 			var en_lbl := Label.new()
-			en_lbl.text = "[on] " if en else "[off]"
-			en_lbl.add_theme_font_size_override("font_size", 11)
-			en_lbl.modulate = UI_COL_GOOD if en else Color(0.5, 0.5, 0.5)
+			en_lbl.text = "[on]" if en else "[off]"
+			en_lbl.add_theme_font_size_override("font_size", FS_BODY)
+			en_lbl.add_theme_color_override("font_color", COL_OK if en else COL_TEXT_DIM)
 			en_lbl.custom_minimum_size.x = 40
 			mod_row.add_child(en_lbl)
 
@@ -2771,30 +2797,32 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 
 			var status_lbl := Label.new()
 			if installed:
-				status_lbl.text = "installed"
-				status_lbl.modulate = Color(0.55, 0.75, 0.55)
+				status_lbl.text = "Installed"
+				status_lbl.add_theme_color_override("font_color", COL_OK)
 			elif has_source:
-				status_lbl.text = "will download"
-				status_lbl.modulate = Color(0.95, 0.75, 0.45)
+				status_lbl.text = "Will download"
+				status_lbl.add_theme_color_override("font_color", COL_AMBER)
 			else:
-				status_lbl.text = "no source"
-				status_lbl.modulate = Color(1.0, 0.45, 0.45)
-			status_lbl.add_theme_font_size_override("font_size", 11)
+				status_lbl.text = "No source"
+				status_lbl.add_theme_color_override("font_color", COL_ERR)
+			status_lbl.add_theme_font_size_override("font_size", FS_BODY)
 			status_lbl.custom_minimum_size.x = 110
 			mod_row.add_child(status_lbl)
 
 	# Action button on the dialog's native button bar.
 	if is_active:
 		var unload_btn := d.add_button("Unload", true, "")
+		style_danger_button(unload_btn)
 		unload_btn.pressed.connect(func():
 			d.queue_free()
 			var result := unload_modpack(tabs)
 			if not bool(result.get("ok", false)):
-				_show_error_dialog("Unload Failed", str(result.get("error", "unknown")))
+				_show_error_dialog("Could not unload modpack", str(result.get("error", "unknown")))
 			_rebuild_modpacks_tab(tabs)
 		)
 	else:
 		var apply_btn_d := d.add_button("Apply", true, "")
+		style_primary_button(apply_btn_d)
 		apply_btn_d.disabled = another_active
 		if another_active:
 			apply_btn_d.tooltip_text = "Unload \"" + active_modpack + "\" first"
@@ -2858,11 +2886,11 @@ func _restore_modpacks_scroll(saved_scroll: int) -> void:
 func _show_delete_confirm(tabs: TabContainer) -> void:
 	var target := _active_profile
 	var d := ConfirmationDialog.new()
-	d.title = "Delete Profile"
+	d.title = "Delete profile"
 	d.dialog_text = "Delete profile \"" + target + "\"?\n\nThe mod selection stored in this profile will be discarded. Your other profiles are not affected."
-	d.ok_button_text = "Delete"
+	d.ok_button_text = "Delete profile"
 	_attach_ui_dialog(d)
-	d.get_ok_button().modulate = Color(1.0, 0.55, 0.55)
+	style_dialog_danger_button(d.get_ok_button())
 	_connect_dialog_exits(d,
 		func():
 			d.queue_free()
@@ -2903,7 +2931,7 @@ func _delete_mod_file_and_cleanup(entry: Dictionary) -> bool:
 # Mods tab in place so the row vanishes immediately.
 func _show_remove_mod_confirm(entry: Dictionary, tabs: TabContainer) -> void:
 	var d := ConfirmationDialog.new()
-	d.title = "Remove Mod"
+	d.title = "Remove mod"
 	var size_line := ""
 	var path: String = str(entry.get("full_path", ""))
 	if FileAccess.file_exists(path):
@@ -2917,8 +2945,8 @@ func _show_remove_mod_confirm(entry: Dictionary, tabs: TabContainer) -> void:
 		size_line,
 		_active_profile,
 	]
-	d.ok_button_text = "Delete"
-	d.get_ok_button().modulate = Color(1.0, 0.55, 0.55)
+	d.ok_button_text = "Delete mod"
+	style_dialog_danger_button(d.get_ok_button())
 	_attach_ui_dialog(d)
 	_connect_dialog_exits(d,
 		func():
@@ -2949,17 +2977,19 @@ func show_mod_ui() -> void:
 	# Kill the default Godot gray on the Window itself (embedded_border is the
 	# stylebox that paints the window's own background area).
 	var win_style := StyleBoxFlat.new()
-	win_style.bg_color = Color(0.0, 0.0, 0.0)
+	win_style.bg_color = COL_BG
 	win.add_theme_stylebox_override("panel",                    win_style)
 	win.add_theme_stylebox_override("embedded_border",          win_style.duplicate())
 	win.add_theme_stylebox_override("embedded_unfocused_border", win_style.duplicate())
 
 	# Solid dark background so Godot's default gray theme doesn't show through.
+	# The 0.6-alpha black is a deliberate scrim over the window floor, not a
+	# surface token; the outline snaps to COL_BORDER (was pure white glare).
 	var bg := Panel.new()
 	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	var bg_s := StyleBoxFlat.new()
 	bg_s.bg_color = Color(0.0, 0.0, 0.0, 0.6)
-	bg_s.border_color = Color(1.0, 1.0, 1.0)
+	bg_s.border_color = COL_BORDER
 	_sb_border(bg_s)
 	bg.add_theme_stylebox_override("panel", bg_s)
 	win.add_child(bg)
@@ -2971,17 +3001,58 @@ func show_mod_ui() -> void:
 	win.theme = dark_theme
 
 	var margin := MarginContainer.new()
-	margin.add_theme_constant_override("margin_left", 10)
-	margin.add_theme_constant_override("margin_right", 10)
-	margin.add_theme_constant_override("margin_top", 8)
-	margin.add_theme_constant_override("margin_bottom", 10)
+	margin.add_theme_constant_override("margin_left", SP_L)
+	margin.add_theme_constant_override("margin_right", SP_L)
+	margin.add_theme_constant_override("margin_top", SP_M)
+	margin.add_theme_constant_override("margin_bottom", SP_L)
 	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	margin.theme = dark_theme
 	win.add_child(margin)
 
 	var root := VBoxContainer.new()
-	root.add_theme_constant_override("separation", 6)
+	root.add_theme_constant_override("separation", SP_M)
 	margin.add_child(root)
+
+	# Equipment plate header: ALL-CAPS title with the version beside it on a
+	# COL_SURFACE strip with a 1px amber-dim bottom border. The one FS_TITLE
+	# use in the UI (spec section 6).
+	var header := PanelContainer.new()
+	var header_s := StyleBoxFlat.new()
+	header_s.bg_color = COL_SURFACE
+	header_s.border_color = COL_AMBER_DIM
+	header_s.border_width_bottom = 1
+	header_s.content_margin_left = SP_L
+	header_s.content_margin_right = SP_L
+	header_s.content_margin_top = SP_M
+	header_s.content_margin_bottom = SP_M
+	header.add_theme_stylebox_override("panel", header_s)
+	root.add_child(header)
+	var header_row := HBoxContainer.new()
+	header_row.add_theme_constant_override("separation", SP_M)
+	header.add_child(header_row)
+	var plate_title := Label.new()
+	plate_title.text = "ROAD TO VOSTOK -- MOD LOADER"
+	plate_title.add_theme_font_size_override("font_size", FS_TITLE)
+	plate_title.add_theme_color_override("font_color", COL_TEXT_HI)
+	header_row.add_child(plate_title)
+
+	# Version / self-update alert beside the title. Default state shows the
+	# installed version in dim meta text; the _check_modloader_update_async
+	# coroutine flips it amber and rewrites the text when ModWorkshop reports
+	# a newer release. Click opens the mod page in the system browser
+	# regardless of state.
+	var alert := LinkButton.new()
+	alert.text = "v" + MODLOADER_VERSION
+	alert.underline = LinkButton.UNDERLINE_MODE_ON_HOVER
+	alert.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	alert.add_theme_font_size_override("font_size", FS_META)
+	alert.add_theme_color_override("font_color", COL_TEXT_DIM)
+	alert.add_theme_color_override("font_hover_color", COL_TEXT)
+	alert.pressed.connect(func():
+		OS.shell_open(MODWORKSHOP_PAGE_URL_TEMPLATE % str(MODLOADER_MODWORKSHOP_ID))
+	)
+	header_row.add_child(alert)
+	_ui_update_alert_btn = alert
 
 	var tabs := TabContainer.new()
 	tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -2991,7 +3062,7 @@ func show_mod_ui() -> void:
 
 	# Bottom bar: instructions + launch button
 	var bottom := HBoxContainer.new()
-	bottom.add_theme_constant_override("separation", 10)
+	bottom.add_theme_constant_override("separation", SP_M)
 	root.add_child(bottom)
 
 	var hint := Label.new()
@@ -2999,8 +3070,8 @@ func show_mod_ui() -> void:
 			+ "Required dependencies from mod.txt must be enabled and load first."
 	hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	hint.add_theme_font_size_override("font_size", 11)
-	hint.modulate = Color(0.45, 0.45, 0.45)
+	hint.add_theme_font_size_override("font_size", FS_BODY)
+	hint.add_theme_color_override("font_color", COL_TEXT_DIM)
 	bottom.add_child(hint)
 	# Expose for _wire_hint so toolbar/dropdown hovers can temporarily repurpose
 	# this label as a status-line substitute for broken Godot tooltips.
@@ -3008,65 +3079,30 @@ func show_mod_ui() -> void:
 
 	var launch_btn := Button.new()
 	# Text is set by refresh_launch_button_label below (called after tabs
-	# build), which picks "Launch with Mods" or "Launch" based on enabled
-	# state. Starting empty avoids a one-frame "Launch Game" placeholder.
+	# build), which picks "Launch modded" or "Launch" based on enabled
+	# state. Starting empty avoids a one-frame placeholder flash.
 	launch_btn.text = ""
 	launch_btn.custom_minimum_size = Vector2(160, 36)
-	var ls_n := StyleBoxFlat.new()
-	ls_n.bg_color = Color(0.05, 0.05, 0.05)
-	ls_n.border_color = Color(0.28, 0.28, 0.28)
-	_sb_border(ls_n)
-	ls_n.content_margin_left = 10; ls_n.content_margin_right = 10
-	launch_btn.add_theme_stylebox_override("normal", ls_n)
-	var ls_h := ls_n.duplicate()
-	ls_h.bg_color = Color(0.10, 0.10, 0.10)
-	ls_h.border_color = Color(0.55, 0.55, 0.55)
-	launch_btn.add_theme_stylebox_override("hover", ls_h)
-	var ls_p := ls_n.duplicate()
-	ls_p.bg_color = Color(0.03, 0.03, 0.03)
-	launch_btn.add_theme_stylebox_override("pressed", ls_p)
-	launch_btn.add_theme_color_override("font_color", Color(0.88, 0.88, 0.88))
-	launch_btn.add_theme_color_override("font_hover_color", Color(1.0, 1.0, 1.0))
+	# PRIMARY voice: the one amber-emphasis action on this surface. Boxes,
+	# margins and the focus ring come from the theme.
+	style_primary_button(launch_btn)
 
-	# Always-visible self-version label sitting between the hint and Launch.
-	# Default state shows the installed version in dim gray; the
-	# _check_modloader_update_async coroutine flips it to orange and rewrites
-	# the text when ModWorkshop reports a newer release. Click opens the mod
-	# page in the system browser regardless of state.
-	var alert := LinkButton.new()
-	alert.text = "Mod Loader v" + MODLOADER_VERSION
-	alert.underline = LinkButton.UNDERLINE_MODE_ON_HOVER
-	alert.add_theme_font_size_override("font_size", 11)
-	alert.add_theme_color_override("font_color", Color(0.45, 0.45, 0.45))
-	alert.add_theme_color_override("font_hover_color", Color(0.78, 0.78, 0.78))
-	alert.pressed.connect(func():
-		OS.shell_open(MODWORKSHOP_PAGE_URL_TEMPLATE % str(MODLOADER_MODWORKSHOP_ID))
-	)
-	bottom.add_child(alert)
-	_ui_update_alert_btn = alert
+	# The version/self-update alert lives in the header plate (built above);
+	# the bottom bar keeps only the hint and the action cluster.
 
-	# Visual separator between informational left cluster (hint + version)
-	# and action right cluster (Vanilla + Launch). Without this, the version
-	# link reads as adjacent to Vanilla -- the eye loses the grouping.
+	# Visual separator between the informational hint and the action cluster
+	# (Launch vanilla + Launch) so the eye keeps the grouping.
 	var bar_gap := Control.new()
-	bar_gap.custom_minimum_size.x = 24
+	bar_gap.custom_minimum_size.x = SP_XL
 	bottom.add_child(bar_gap)
 
-	# Vanilla: one-shot bypass via sentinel + restart. Sized smaller than
-	# the primary Launch button so the visual hierarchy reads correctly --
-	# Launch is the common action, Vanilla is the diagnostic one. Hover
-	# hint communicates the restart, so we don't crowd the label.
+	# Vanilla: one-shot bypass via sentinel + restart. Bare theme voice and
+	# sized smaller than the primary Launch button so the visual hierarchy
+	# reads correctly -- Launch is the common action, vanilla is the
+	# diagnostic one. Hover hint communicates the restart.
 	var vanilla_btn := Button.new()
-	vanilla_btn.text = "  Vanilla  "
+	vanilla_btn.text = "Launch vanilla"
 	vanilla_btn.custom_minimum_size = Vector2(90, 36)
-	var vs_n := ls_n.duplicate()
-	vanilla_btn.add_theme_stylebox_override("normal", vs_n)
-	var vs_h := ls_h.duplicate()
-	vanilla_btn.add_theme_stylebox_override("hover", vs_h)
-	var vs_p := ls_p.duplicate()
-	vanilla_btn.add_theme_stylebox_override("pressed", vs_p)
-	vanilla_btn.add_theme_color_override("font_color", Color(0.65, 0.65, 0.65))
-	vanilla_btn.add_theme_color_override("font_hover_color", Color(0.9, 0.9, 0.9))
 	var win_for_vanilla := win
 	vanilla_btn.pressed.connect(func(): _launch_vanilla_once(win_for_vanilla))
 	bottom.add_child(vanilla_btn)
@@ -3171,17 +3207,17 @@ func refresh_launch_button_label() -> void:
 	if not is_instance_valid(_ui_launch_btn):
 		return
 	# Count what will actually LOAD, not what's checked -- with every enabled
-	# mod dependency-blocked, "Launch with Mods" would promise a modded
+	# mod dependency-blocked, "Launch modded" would promise a modded
 	# session and deliver vanilla.
 	var pick := _loadable_enabled_entries()
 	var loadable_count: int = (pick["loadable"] as Array).size()
 	var enabled_count := int(pick["enabled_count"])
 	if loadable_count > 0:
-		_ui_launch_btn.text = "  Launch with Mods  "
+		_ui_launch_btn.text = "Launch modded"
 	elif enabled_count > 0:
-		_ui_launch_btn.text = "  Launch Unmodded (%d blocked)  " % enabled_count
+		_ui_launch_btn.text = "Launch unmodded (%d blocked)" % enabled_count
 	else:
-		_ui_launch_btn.text = "  Launch  "
+		_ui_launch_btn.text = "Launch"
 
 # -- Sub-label / row-action factories -----------------------------------------
 # The launcher's small-print conventions, encoded once: font 11, ellipsis
@@ -3192,8 +3228,8 @@ func refresh_launch_button_label() -> void:
 func _make_sub_label(text: String, color: Color, tip := "") -> Label:
 	var lbl := Label.new()
 	lbl.text = text
-	lbl.modulate = color
-	lbl.add_theme_font_size_override("font_size", 11)
+	lbl.add_theme_color_override("font_color", color)
+	lbl.add_theme_font_size_override("font_size", FS_BODY)
 	lbl.clip_text = true
 	lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	if tip != "":
@@ -3207,8 +3243,12 @@ func _make_row_action(text: String, color: Color, tip := "") -> Button:
 	var btn := Button.new()
 	btn.text = text
 	btn.flat = true
-	btn.modulate = color
-	btn.add_theme_font_size_override("font_size", 11)
+	btn.add_theme_color_override("font_color", color)
+	# Flat buttons draw no hover stylebox, so a brightened hover font color
+	# is the only visible hover cue these row actions get.
+	btn.add_theme_color_override("font_hover_color", color.lerp(COL_TEXT_HI, 0.35))
+	btn.add_theme_color_override("font_pressed_color", color)
+	btn.add_theme_font_size_override("font_size", FS_BODY)
 	btn.size_flags_horizontal = Control.SIZE_SHRINK_END
 	if tip != "":
 		btn.tooltip_text = tip
@@ -3533,6 +3573,19 @@ func style_primary_button(b: Button) -> void:
 func style_danger_button(b: Button) -> void:
 	_style_accent_button(b, COL_ERR)
 
+# Accent voices for DIALOG action buttons (get_ok_button() results). Kept on
+# modulate, not the style_* helpers above: a theme font-color override on a
+# dialog OK button did not take effect when it was last tried (see
+# _confirm_red_launch) and this pass cannot runtime-verify a change, so the
+# proven modulate path stays. If a live run shows style_danger_button
+# rendering red on a dialog OK button, collapse these two into the style_*
+# helpers and delete this note.
+func style_dialog_primary_button(b: Button) -> void:
+	b.modulate = COL_AMBER
+
+func style_dialog_danger_button(b: Button) -> void:
+	b.modulate = COL_ERR
+
 # Shared body of the two accent voices. Everything not overridden here
 # (normal/pressed/disabled boxes, focus ring) stays on the theme.
 func _style_accent_button(b: Button, accent: Color) -> void:
@@ -3646,39 +3699,26 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	# can unload back to it with one click. Hidden when no modpack is active.
 	var active_modpack := get_active_modpack()
 	if active_modpack != "":
-		var banner := PanelContainer.new()
-		var banner_style := StyleBoxFlat.new()
-		banner_style.bg_color = Color(0.30, 0.18, 0.10)
-		banner_style.border_color = Color(0.55, 0.35, 0.15)
-		_sb_border(banner_style)
-		banner_style.content_margin_left = 10
-		banner_style.content_margin_right = 10
-		banner_style.content_margin_top = 6
-		banner_style.content_margin_bottom = 6
-		banner.add_theme_stylebox_override("panel", banner_style)
-		var banner_row := HBoxContainer.new()
-		banner_row.add_theme_constant_override("separation", 12)
-		banner.add_child(banner_row)
-		var banner_lbl := Label.new()
-		banner_lbl.text = "Modpack \"" + active_modpack + "\" is active. Edits save to this modpack's slot."
-		banner_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		banner_lbl.modulate = Color(1.0, 0.85, 0.65)
-		banner_row.add_child(banner_lbl)
+		var banner := _make_banner(
+				"Modpack \"" + active_modpack + "\" is active. Edits save to this modpack's slot.",
+				COL_AMBER)
 		var unload_btn := Button.new()
 		unload_btn.text = "Unload"
+		style_danger_button(unload_btn)
+		var banner_row: HBoxContainer = banner["row"]
 		banner_row.add_child(unload_btn)
 		unload_btn.pressed.connect(func(): _unload_modpack_with_feedback(tabs))
-		outer.add_child(banner)
+		outer.add_child(banner["panel"])
 
 	# -- Toolbar (profile selector + folder shortcut + dev toggle) ------------
 	# Single row: Open Mods Folder | Profile: [dropdown] [+] [pencil] [trash] | ... | Developer Mode
 
 	var toolbar := HBoxContainer.new()
-	toolbar.add_theme_constant_override("separation", 8)
+	toolbar.add_theme_constant_override("separation", SP_M)
 	outer.add_child(toolbar)
 
 	var open_btn := Button.new()
-	open_btn.text = "Open Mods Folder"
+	open_btn.text = "Open mods folder"
 	toolbar.add_child(open_btn)
 	open_btn.pressed.connect(func():
 		OS.shell_open(ProjectSettings.globalize_path(_mods_dir))
@@ -3687,7 +3727,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 
 	# Small visual gap between folder button and profile controls.
 	var pre_profile_gap := Control.new()
-	pre_profile_gap.custom_minimum_size.x = 12
+	pre_profile_gap.custom_minimum_size.x = SP_L
 	toolbar.add_child(pre_profile_gap)
 
 	var profile_lbl := Label.new()
@@ -3781,13 +3821,13 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	toolbar.add_child(spacer)
 
 	var dev_check := CheckBox.new()
-	dev_check.text = "Developer Mode"
+	dev_check.text = "Developer mode"
 	dev_check.tooltip_text = "Enables verbose logging, conflict report, and loose folder loading"
 	dev_check.button_pressed = _developer_mode
-	dev_check.add_theme_font_size_override("font_size", 11)
-	dev_check.modulate = Color(0.45, 0.45, 0.45)
+	dev_check.add_theme_font_size_override("font_size", FS_BODY)
+	dev_check.add_theme_color_override("font_color", COL_TEXT_DIM)
 	toolbar.add_child(dev_check)
-	_wire_hint(dev_check, "Developer Mode: verbose logging, conflict report, and loose folder loading.")
+	_wire_hint(dev_check, "Developer mode: verbose logging, conflict report, and loose folder loading.")
 
 	profile_opt.item_selected.connect(func(idx: int):
 		var meta = profile_opt.get_item_metadata(idx)
@@ -3831,7 +3871,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	# list only toggles the visible subset. Hide disabled is per-profile;
 	# Vanilla disables the toggles since rows are forced off there anyway.
 	var filter_bar := HBoxContainer.new()
-	filter_bar.add_theme_constant_override("separation", 6)
+	filter_bar.add_theme_constant_override("separation", SP_M)
 	left_col.add_child(filter_bar)
 
 	var filter_edit := LineEdit.new()
@@ -3841,13 +3881,13 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	filter_bar.add_child(filter_edit)
 
 	var all_btn := Button.new()
-	all_btn.text = "All"
+	all_btn.text = "Enable all"
 	all_btn.tooltip_text = "Enable every visible mod"
 	filter_bar.add_child(all_btn)
 	_wire_hint(all_btn, "Enable every visible mod (respects the search filter).")
 
 	var none_btn := Button.new()
-	none_btn.text = "None"
+	none_btn.text = "Disable all"
 	none_btn.tooltip_text = "Disable every visible mod"
 	filter_bar.add_child(none_btn)
 	_wire_hint(none_btn, "Disable every visible mod (respects the search filter).")
@@ -3856,7 +3896,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	hide_check.text = "Hide disabled"
 	hide_check.tooltip_text = "Hide rows for mods that are disabled in this profile"
 	hide_check.button_pressed = _mods_hide_disabled
-	hide_check.add_theme_font_size_override("font_size", 11)
+	hide_check.add_theme_font_size_override("font_size", FS_BODY)
 	filter_bar.add_child(hide_check)
 	_wire_hint(hide_check, "Hide rows for mods that are disabled in this profile.")
 
@@ -3866,7 +3906,9 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	# to switch to the Updates tab. The Updates tab stays around for the
 	# bulk-status view.
 	var check_btn := Button.new()
-	check_btn.text = "Check Updates"
+	# "Checking..." not "Checking for updates..." here: the filter bar is
+	# space-constrained and a wide button squeezes the filter box mid-check.
+	check_btn.text = "Check for updates"
 	if _mod_updates_check_in_progress:
 		check_btn.disabled = true
 		check_btn.text = "Checking..."
@@ -3885,7 +3927,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		# flag was up) strands at "Checking...".
 		if is_instance_valid(check_btn):
 			check_btn.disabled = false
-			check_btn.text = "Check Updates"
+			check_btn.text = "Check for updates"
 		if is_instance_valid(tabs):
 			_rebuild_mods_tab(tabs)
 		# Surface a one-liner so the user knows something happened even when
@@ -3898,15 +3940,15 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		if ck == 0:
 			msg = "No mods have [updates] modworkshop= + version set."
 		elif er >= ck:
-			msg = "Could not reach ModWorkshop -- 0 of %d mod(s) checked." % ck
+			msg = "Could not reach ModWorkshop. Check your connection and try again."
 		elif n == 0:
-			msg = "All %d checked mod(s) up to date." % (ck - er)
+			msg = "Everything is up to date. Checked %d mod(s)." % (ck - er)
 			if er > 0:
-				msg += " (%d could not be checked)" % er
+				msg += " %d could not be checked." % er
 		else:
 			msg = "%d update(s) available." % n
 			if er > 0:
-				msg += " (%d could not be checked)" % er
+				msg += " %d could not be checked." % er
 		# Only toast while the launcher window still exists. If the user
 		# clicked Launch (or closed the launcher) mid-check, _ui_window is
 		# null and _attach_ui_dialog would parent an exclusive always-on-top
@@ -3969,7 +4011,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	# while trying to drag the scrollbar handle.
 	var list_pad := MarginContainer.new()
 	list_pad.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	list_pad.add_theme_constant_override("margin_right", 16)
+	list_pad.add_theme_constant_override("margin_right", SP_XL)
 	left_scroll.add_child(list_pad)
 
 	var list := VBoxContainer.new()
@@ -3983,7 +4025,8 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	split.add_child(right)
 
 	var order_header := Label.new()
-	order_header.text = "Load Order"
+	order_header.text = "Load order"
+	order_header.add_theme_font_size_override("font_size", FS_HEAD)
 	order_header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	right.add_child(order_header)
 	right.add_child(HSeparator.new())
@@ -3992,11 +4035,11 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	var order_panel := PanelContainer.new()
 	order_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	var panel_style := StyleBoxFlat.new()
-	panel_style.bg_color = Color(0.09, 0.09, 0.09)
-	panel_style.content_margin_left = 8
-	panel_style.content_margin_right = 8
-	panel_style.content_margin_top = 6
-	panel_style.content_margin_bottom = 6
+	panel_style.bg_color = COL_SURFACE_2
+	panel_style.content_margin_left = SP_M
+	panel_style.content_margin_right = SP_M
+	panel_style.content_margin_top = SP_M
+	panel_style.content_margin_bottom = SP_M
 	order_panel.add_theme_stylebox_override("panel", panel_style)
 	right.add_child(order_panel)
 
@@ -4027,8 +4070,8 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		var enabled_count := int(pick["enabled_count"])
 		if enabled_count == 0:
 			var lbl := Label.new()
-			lbl.text = "(none enabled)"
-			lbl.modulate = Color(0.5, 0.5, 0.5)
+			lbl.text = "No mods enabled"
+			lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
 			order_list.add_child(lbl)
 			return
 		if loadable.is_empty():
@@ -4036,15 +4079,15 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			# (deterministic -- never autowrap here, see the oscillation fix).
 			order_list.add_child(_make_sub_label(
 					"%d enabled, none will load\n(missing dependencies)" % enabled_count,
-					UI_COL_WARN,
+					COL_AMBER,
 					"Every enabled mod is missing a required dependency.\nFix it from the orange row warnings, or use Load anyway."))
 			return
 		for i in loadable.size():
 			var e: Dictionary = loadable[i]
 			var lbl := Label.new()
 			lbl.text = str(i + 1) + ".  " + e["mod_name"]
-			lbl.add_theme_font_size_override("font_size", 12)
-			lbl.modulate = Color(0.80, 0.80, 0.80)
+			lbl.add_theme_font_size_override("font_size", FS_EMPH)
+			lbl.add_theme_color_override("font_color", COL_TEXT)
 			# Previously AUTOWRAP_WORD_SMART. That combo (autowrap label inside
 			# a fixed-width ScrollContainer) hits a Godot 4.6 layout-oscillation
 			# bug: at certain (label count, text width) combinations the vertical
@@ -4064,11 +4107,11 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			lbl.mouse_filter = Control.MOUSE_FILTER_PASS
 			order_list.add_child(lbl)
 		if bool(pick["adjusted"]):
-			order_list.add_child(_make_sub_label("reordered for dependencies", UI_COL_INFO,
+			order_list.add_child(_make_sub_label("reordered for dependencies", COL_TEXT_DIM,
 					"A required dependency sat below its dependent in priority\norder, so it was hoisted. Priorities otherwise unchanged."))
 		var blocked_count := enabled_count - loadable.size()
 		if blocked_count > 0:
-			order_list.add_child(_make_sub_label("%d blocked (deps)" % blocked_count, UI_COL_WARN,
+			order_list.add_child(_make_sub_label("%d blocked (deps)" % blocked_count, COL_AMBER,
 					"Blocked mods stay checked but don't load.\nSee the orange row warnings for fixes."))
 
 	# -- Updates available ----------------------------------------------------
@@ -4084,19 +4127,30 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			update_keys.append(pk_check)
 	if not update_keys.is_empty():
 		var u_hdr_row := HBoxContainer.new()
+		u_hdr_row.add_theme_constant_override("separation", SP_S)
 		list.add_child(u_hdr_row)
 		var u_hdr := Label.new()
-		u_hdr.text = "Updates available  (%d)" % update_keys.size()
-		u_hdr.modulate = Color(0.95, 0.65, 0.25)
-		u_hdr.add_theme_font_size_override("font_size", 12)
-		u_hdr.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		u_hdr.text = "Updates available"
+		u_hdr.add_theme_color_override("font_color", COL_AMBER)
+		# FS_HEAD to match the "Missing from this profile" header on this
+		# same list (spec: section headings at FS_HEAD; color carries the
+		# semantic difference).
+		u_hdr.add_theme_font_size_override("font_size", FS_HEAD)
 		u_hdr_row.add_child(u_hdr)
+		# Count as an amber badge chip (the spec's one update-badge look).
+		var u_badge := Label.new()
+		u_badge.text = str(update_keys.size())
+		u_badge.add_theme_stylebox_override("normal", _make_badge_stylebox())
+		u_badge.add_theme_font_size_override("font_size", FS_META)
+		u_badge.add_theme_color_override("font_color", COL_TEXT_HI)
+		u_badge.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		u_hdr_row.add_child(u_badge)
 		list.add_child(HSeparator.new())
 
 		for pk: String in update_keys:
 			var upd: Dictionary = _mod_updates_state[pk]
 			var upd_row := HBoxContainer.new()
-			upd_row.add_theme_constant_override("separation", 12)
+			upd_row.add_theme_constant_override("separation", SP_L)
 			list.add_child(upd_row)
 
 			var u_name := Label.new()
@@ -4111,8 +4165,8 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 
 			var u_ver := Label.new()
 			u_ver.text = "v%s  ->  v%s" % [str(upd.get("current_version", "?")), str(upd.get("latest_version", "?"))]
-			u_ver.modulate = Color(0.78, 0.78, 0.78)
-			u_ver.add_theme_font_size_override("font_size", 11)
+			u_ver.add_theme_color_override("font_color", COL_TEXT)
+			u_ver.add_theme_font_size_override("font_size", FS_BODY)
 			u_ver.custom_minimum_size.x = 160
 			upd_row.add_child(u_ver)
 
@@ -4143,7 +4197,14 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 					if is_instance_valid(u_btn):
 						u_btn.disabled = false
 						u_btn.text = "Update"
-					_show_error_dialog("Update Failed", str(result.get("error", "unknown")))
+					# Error pattern: what happened + what to do next; never a
+					# bare "unknown".
+					var err_name := str(captured_upd.get("mod_name", "this mod"))
+					var err_msg := "Could not download %s. Check your connection and try again." % err_name
+					var err_detail := str(result.get("error", ""))
+					if err_detail != "" and err_detail != "unknown":
+						err_msg += "\n\nDetails: " + err_detail
+					_show_error_dialog("Update failed", err_msg)
 			)
 			list.add_child(HSeparator.new())
 
@@ -4161,8 +4222,8 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		list.add_child(missing_hdr_row)
 		var missing_hdr := Label.new()
 		missing_hdr.text = "Missing from this profile"
-		missing_hdr.modulate = Color(1.0, 0.55, 0.55)
-		missing_hdr.add_theme_font_size_override("font_size", 11)
+		missing_hdr.add_theme_color_override("font_color", COL_ERR)
+		missing_hdr.add_theme_font_size_override("font_size", FS_HEAD)
 		missing_hdr.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		missing_hdr_row.add_child(missing_hdr)
 		var remove_all_btn := Button.new()
@@ -4179,7 +4240,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			]
 			d.ok_button_text = "Remove"
 			_attach_ui_dialog(d)
-			d.get_ok_button().modulate = Color(1.0, 0.55, 0.55)
+			style_dialog_danger_button(d.get_ok_button())
 			_connect_dialog_exits(d,
 				func():
 					d.queue_free()
@@ -4198,7 +4259,11 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			var miss_lbl := Label.new()
 			var display := fn.trim_prefix("zip:")
 			miss_lbl.text = display + "  --  not installed"
-			miss_lbl.modulate = Color(1.0, 0.45, 0.45)
+			miss_lbl.add_theme_color_override("font_color", COL_ERR)
+			miss_lbl.clip_text = true
+			miss_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+			miss_lbl.tooltip_text = miss_lbl.text
+			miss_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
 			miss_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			miss_row.add_child(miss_lbl)
 
@@ -4237,7 +4302,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 						if is_instance_valid(dl_btn):
 							dl_btn.disabled = false
 							dl_btn.text = "Download"
-						_show_error_dialog("Download Failed", str(r.get("error", "unknown")))
+						_show_error_dialog("Download failed", str(r.get("error", "unknown")))
 				)
 			else:
 				# No source info -- name what's unavailable, not the data we
@@ -4246,8 +4311,8 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 				# Godot 4, so explicit STOP is required for hover signals.
 				var no_src_lbl := Label.new()
 				no_src_lbl.text = "Download unavailable"
-				no_src_lbl.modulate = UI_COL_MUTED
-				no_src_lbl.add_theme_font_size_override("font_size", 11)
+				no_src_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
+				no_src_lbl.add_theme_font_size_override("font_size", FS_BODY)
 				no_src_lbl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 				no_src_lbl.mouse_filter = Control.MOUSE_FILTER_STOP
 				miss_row.add_child(no_src_lbl)
@@ -4273,19 +4338,31 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 
 	var h_on := Label.new()
 	h_on.text = "On"
+	h_on.add_theme_font_size_override("font_size", FS_META)
+	h_on.add_theme_color_override("font_color", COL_TEXT_DIM)
 	h_on.custom_minimum_size.x = 30
 	header_row.add_child(h_on)
 
 	var h_name := Label.new()
 	h_name.text = "Mod"
+	h_name.add_theme_font_size_override("font_size", FS_META)
+	h_name.add_theme_color_override("font_color", COL_TEXT_DIM)
 	h_name.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	header_row.add_child(h_name)
 
 	var h_prio := Label.new()
-	h_prio.text = "Load Order"
+	h_prio.text = "Load order"
+	h_prio.add_theme_font_size_override("font_size", FS_META)
+	h_prio.add_theme_color_override("font_color", COL_TEXT_DIM)
 	h_prio.custom_minimum_size.x = 100
 	h_prio.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	header_row.add_child(h_prio)
+
+	# Spacer matching the per-row trash button (28px) so the Load order
+	# header sits over the SpinBox column instead of the trash column.
+	var h_tail := Control.new()
+	h_tail.custom_minimum_size.x = 28
+	header_row.add_child(h_tail)
 
 	list.add_child(HSeparator.new())
 
@@ -4296,8 +4373,8 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		empty.text = "No mods found.\n\nPlace .vmz or .pck files in:\n" \
 				+ ProjectSettings.globalize_path(_mods_dir)
 		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		empty.modulate = Color(0.5, 0.5, 0.5)
-		empty.add_theme_font_size_override("font_size", 12)
+		empty.add_theme_color_override("font_color", COL_TEXT_DIM)
+		empty.add_theme_font_size_override("font_size", FS_EMPH)
 		list.add_child(empty)
 
 	# Track whether any row passed the filter so we can show a hint when a
@@ -4326,14 +4403,14 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		name_lbl.tooltip_text = str(entry["mod_name"])
 		# Labels default to MOUSE_FILTER_IGNORE, which suppresses tooltips.
 		name_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
-		name_lbl.modulate = UI_COL_GOOD if entry["enabled"] else Color(0.5, 0.5, 0.5)
+		name_lbl.add_theme_color_override("font_color", COL_OK if entry["enabled"] else COL_TEXT_DIM)
 		name_col.add_child(name_lbl)
 
 		if entry["ext"] == "folder":
 			var dev_lbl := Label.new()
 			dev_lbl.text = "[dev folder]"
-			dev_lbl.modulate = Color(0.9, 0.3, 0.3)
-			dev_lbl.add_theme_font_size_override("font_size", 11)
+			dev_lbl.add_theme_color_override("font_color", COL_ERR)
+			dev_lbl.add_theme_font_size_override("font_size", FS_BODY)
 			name_col.add_child(dev_lbl)
 		# -- Dependencies ------------------------------------------------------
 		# One compact clipped line when the mod declares dependencies (names
@@ -4348,7 +4425,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 				and not (entry.get("dependency_blockers", []) as Array).is_empty()
 		if dep_blocked:
 			# The green "enabled" tint would lie -- this mod won't load.
-			name_lbl.modulate = UI_COL_WARN
+			name_lbl.add_theme_color_override("font_color", COL_AMBER)
 		if required_deps.size() > 0 or optional_deps.size() > 0:
 			var named := PackedStringArray()
 			for d in required_deps:
@@ -4366,21 +4443,17 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 				tip.append("requires %s (%s)" % [_dependency_display_for_id(str(d)), str(d)])
 			for d in optional_deps:
 				tip.append("optional: %s (%s)" % [_dependency_display_for_id(str(d)), str(d)])
-			name_col.add_child(_make_sub_label(dep_line, UI_COL_INFO, "\n".join(tip)))
+			name_col.add_child(_make_sub_label(dep_line, COL_TEXT_DIM, "\n".join(tip)))
 		for warn_text: String in entry.get("warnings", []):
-			var warn := Label.new()
-			warn.text = warn_text
-			warn.modulate = UI_COL_WARN
-			warn.add_theme_font_size_override("font_size", 11)
-			name_col.add_child(warn)
+			name_col.add_child(_make_sub_label(warn_text, COL_AMBER, warn_text))
 		for warn_text: String in entry.get("dependency_warnings", []):
-			name_col.add_child(_make_sub_label(warn_text, UI_COL_WARN, warn_text))
+			name_col.add_child(_make_sub_label(warn_text, COL_AMBER, warn_text))
 
 		# Blocked: one orange line that says WHY + buttons that FIX it.
 		# A warning the user can't act on is just decoration.
 		if dep_blocked and not blockers_info.is_empty():
 			var block_row := HBoxContainer.new()
-			block_row.add_theme_constant_override("separation", 10)
+			block_row.add_theme_constant_override("separation", SP_M)
 			name_col.add_child(block_row)
 			var first: Dictionary = blockers_info[0]
 			# display already reads "Name (id)" for installed deps; a dash, not
@@ -4394,8 +4467,8 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 				btip.append("%s -- %s" % [str(b.get("display", "")),
 						_dependency_status_label(str(b.get("status", "")))])
 				if str(b.get("status", "")) == "hidden_folder":
-					btip.append("  (turn on Developer Mode to load folder mods)")
-			var bl := _make_sub_label("won't load -- needs " + why, UI_COL_WARN, "\n".join(btip))
+					btip.append("  (turn on Developer mode to load folder mods)")
+			var bl := _make_sub_label("won't load -- needs " + why, COL_AMBER, "\n".join(btip))
 			bl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			block_row.add_child(bl)
 			var fixable_count := 0
@@ -4407,7 +4480,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 				var fix_btn := _make_row_action(
 						"Enable " + ("%d dependencies" % fixable_count \
 								if fixable_count > 1 else "dependency"),
-						UI_COL_GOOD,
+						COL_OK,
 						"Turn on the required mod(s) -- installed, just disabled.")
 				block_row.add_child(fix_btn)
 				fix_btn.pressed.connect(func():
@@ -4415,7 +4488,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 					_after_dep_action(tabs)
 				)
 			if profile_editable:
-				var anyway_btn := _make_row_action("Load anyway", UI_COL_MUTED,
+				var anyway_btn := _make_row_action("Load anyway", COL_TEXT_DIM,
 						"Skip the dependency check for this mod in this profile.\nFor when a requirement is declared wrong or you know better.")
 				block_row.add_child(anyway_btn)
 				anyway_btn.pressed.connect(func():
@@ -4426,19 +4499,19 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			# Override active while requirements are still unmet: show what's
 			# being ignored and the way back.
 			var ov_row := HBoxContainer.new()
-			ov_row.add_theme_constant_override("separation", 10)
+			ov_row.add_theme_constant_override("separation", SP_M)
 			name_col.add_child(ov_row)
 			var missing_names := PackedStringArray()
 			for b in blockers_info:
 				missing_names.append(str(b.get("display", "")))
 			var ov := _make_sub_label("dependency check off -- missing: " + ", ".join(missing_names),
-					UI_COL_OVERRIDE,
+					COL_TEXT_DIM,
 					"This mod loads even though requirements are unmet\n(per-profile override). Re-check restores the normal rule.")
 			ov.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			ov_row.add_child(ov)
 			if profile_editable:
 				var e_dep2 := entry
-				var recheck_btn := _make_row_action("Re-check", UI_COL_MUTED)
+				var recheck_btn := _make_row_action("Re-check", COL_TEXT_DIM)
 				ov_row.add_child(recheck_btn)
 				recheck_btn.pressed.connect(func():
 					e_dep2["dependency_ignored"] = false
@@ -4450,11 +4523,8 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		for dup: Dictionary in entry.get("duplicates_hidden", []):
 			var dup_v_raw: String = str(dup.get("version", ""))
 			var dup_v: String = ("v" + dup_v_raw) if dup_v_raw != "" else "(unversioned)"
-			var hide_lbl := Label.new()
-			hide_lbl.text = "older version hidden: " + str(dup["file_name"]) + " (" + dup_v + ")"
-			hide_lbl.modulate = UI_COL_WARN
-			hide_lbl.add_theme_font_size_override("font_size", 11)
-			name_col.add_child(hide_lbl)
+			var hide_text := "older version hidden: " + str(dup["file_name"]) + " (" + dup_v + ")"
+			name_col.add_child(_make_sub_label(hide_text, COL_AMBER, hide_text))
 
 		# Profile was saved with a different version of this mod. Surface the
 		# change so the user knows their enabled/priority state was carried
@@ -4465,11 +4535,8 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			var current_v: String = str(vm.get("current", ""))
 			var stored_disp := stored_v if stored_v != "" else "(unset)"
 			var current_disp := current_v if current_v != "" else "(unset)"
-			var vm_lbl := Label.new()
-			vm_lbl.text = "profile version: " + stored_disp + " -> " + current_disp
-			vm_lbl.modulate = UI_COL_WARN
-			vm_lbl.add_theme_font_size_override("font_size", 11)
-			name_col.add_child(vm_lbl)
+			var vm_text := "profile version: " + stored_disp + " -> " + current_disp
+			name_col.add_child(_make_sub_label(vm_text, COL_AMBER, vm_text))
 
 		# Scanner indicator. Only renders for RED risk -- mods whose source
 		# combines patterns that are nearly diagnostic of malware (dropper
@@ -4483,8 +4550,12 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			var sec_btn := Button.new()
 			sec_btn.text = "suspicious code"
 			sec_btn.flat = true
-			sec_btn.modulate = Color(0.95, 0.4, 0.4)
-			sec_btn.add_theme_font_size_override("font_size", 11)
+			sec_btn.tooltip_text = "Show what the scanner flagged in this mod"
+			sec_btn.add_theme_color_override("font_color", COL_ERR)
+			# Brightened on hover: flat buttons have no hover stylebox, so
+			# the font shift is the only hover cue (matches _make_row_action).
+			sec_btn.add_theme_color_override("font_hover_color", COL_ERR.lerp(COL_TEXT_HI, 0.35))
+			sec_btn.add_theme_font_size_override("font_size", FS_BODY)
 			sec_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
 			sec_btn.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 			name_col.add_child(sec_btn)
@@ -4508,7 +4579,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		remove_btn.custom_minimum_size.x = 28
 		remove_btn.disabled = entry["ext"] == "folder"
 		if entry["ext"] == "folder":
-			remove_btn.tooltip_text = "Use Open Mods Folder to remove dev folders"
+			remove_btn.tooltip_text = "Use Open mods folder to remove dev folders"
 		else:
 			remove_btn.tooltip_text = "Permanently delete this mod"
 		row.add_child(remove_btn)
@@ -4567,9 +4638,9 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	# knows the filter, not a missing folder, is the cause.
 	if not _ui_mod_entries.is_empty() and not rendered_any:
 		var no_match := Label.new()
-		no_match.text = "No mods match the current filter."
-		no_match.modulate = Color(0.5, 0.5, 0.5)
-		no_match.add_theme_font_size_override("font_size", 12)
+		no_match.text = "No mods match. Try a shorter search or turn off Hide disabled."
+		no_match.add_theme_color_override("font_color", COL_TEXT_DIM)
+		no_match.add_theme_font_size_override("font_size", FS_EMPH)
 		list.add_child(no_match)
 
 	# Restore focus to the search input after a filter-driven rebuild.
@@ -4592,7 +4663,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	var margin := _make_tab_margin()
 
 	var container := VBoxContainer.new()
-	container.add_theme_constant_override("separation", 6)
+	container.add_theme_constant_override("separation", SP_M)
 	margin.add_child(container)
 
 	# Shared mutable state. Lambdas capture primitives by VALUE in GDScript;
@@ -4627,7 +4698,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 
 	# -- Toolbar: search + sort + category --
 	var toolbar := HBoxContainer.new()
-	toolbar.add_theme_constant_override("separation", 8)
+	toolbar.add_theme_constant_override("separation", SP_M)
 	container.add_child(toolbar)
 
 	var search_input := LineEdit.new()
@@ -4674,9 +4745,22 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	container.add_child(HSeparator.new())
 
 	var status_lbl := Label.new()
-	status_lbl.add_theme_font_size_override("font_size", 11)
-	status_lbl.modulate = UI_COL_MUTED
+	status_lbl.add_theme_font_size_override("font_size", FS_BODY)
+	status_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
 	container.add_child(status_lbl)
+
+	# One status-text pattern (spec section 6): every Browse state change
+	# routes through here so the color always matches the message --
+	# COL_AMBER in-progress, COL_OK success, COL_ERR failure, COL_TEXT_DIM
+	# neutral/meta. font_color override, never modulate (modulate would
+	# also tint child icons; spec jank class 5). Assigned BEFORE every
+	# closure that calls it, so by-value capture picks up a real Callable
+	# (handoff bug class 1).
+	var set_status := func(text: String, color: Color):
+		if not is_instance_valid(status_lbl):
+			return
+		status_lbl.text = text
+		status_lbl.add_theme_color_override("font_color", color)
 
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -4688,7 +4772,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	# at full width and OVERLAYS the scrollbar -- without this margin the
 	# rightmost pixels of every row hide behind it.
 	var list_wrap := MarginContainer.new()
-	list_wrap.add_theme_constant_override("margin_right", 16)
+	list_wrap.add_theme_constant_override("margin_right", SP_XL)
 	list_wrap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.add_child(list_wrap)
 
@@ -4758,8 +4842,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			_save_ui_config()
 			if is_instance_valid(tabs):
 				_rebuild_mods_tab(tabs)
-			if is_instance_valid(status_lbl):
-				status_lbl.text = ("Enabled " if enabled else "Disabled ") + str(live_entry.get("mod_name", "?")) + " in profile " + _active_profile
+			set_status.call(("Enabled " if enabled else "Disabled ") + str(live_entry.get("mod_name", "?")) + " in profile " + _active_profile, COL_TEXT_DIM)
 			return
 
 	# Forward decl so on_get + queue processor can reference each other.
@@ -4775,7 +4858,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			get_btn.text = "Downloading..."
 		var queue: Array = state["download_queue"]
 		var qsuffix := (" (" + str(queue.size()) + " queued)") if not queue.is_empty() else ""
-		status_lbl.text = "Downloading " + str(mod_data.get("name", "?")) + qsuffix + "..."
+		set_status.call("Downloading " + str(mod_data.get("name", "?")) + qsuffix + "...", COL_AMBER)
 
 		var result: Dictionary = await download_new_mod(mws_id)
 		state["downloading_id"] = -1
@@ -4798,12 +4881,18 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			if is_instance_valid(get_btn):
 				get_btn.text = "Installed"
 				get_btn.disabled = true
-			status_lbl.text = "Installed " + str(result.get("file_name", ""))
+			set_status.call("Installed " + str(result.get("file_name", "")), COL_OK)
 		else:
 			if is_instance_valid(get_btn):
 				get_btn.disabled = false
 				get_btn.text = "Download"
-			status_lbl.text = "Download failed: " + str(result.get("error", "unknown"))
+			# Error copy pattern (spec section 7): what happened + what to do
+			# next; fall back to the connection hint when the downloader gave
+			# no detail rather than saying "unknown".
+			var err_detail := str(result.get("error", "")).strip_edges()
+			if err_detail.is_empty():
+				err_detail = "Check your connection and try again."
+			set_status.call("Could not download " + str(mod_data.get("name", "mod")) + ". " + err_detail, COL_ERR)
 
 		# Drain queue or re-render. Re-rendering frees button refs in the
 		# queue, so we only re-render once the queue is empty -- otherwise
@@ -4854,18 +4943,18 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			# Another download is in flight. Queue this one (unless it's the
 			# same mod already in-flight or already queued -- silent dedup).
 			if int(state["downloading_id"]) == mws_id:
-				status_lbl.text = "Already downloading"
+				set_status.call("Already downloading this mod", COL_TEXT_DIM)
 				return
 			var queue: Array = state["download_queue"]
 			for q_v in queue:
 				if int((q_v as Dictionary).get("mod_data", {}).get("id", 0)) == mws_id:
-					status_lbl.text = "Already queued"
+					set_status.call("Already queued", COL_TEXT_DIM)
 					return
 			queue.append({"mod_data": mod_data, "get_btn": get_btn})
 			if is_instance_valid(get_btn):
 				get_btn.disabled = true
 				get_btn.text = "Queued"
-			status_lbl.text = "Queued " + str(mod_data.get("name", "?")) + " (" + str(queue.size()) + " in queue)"
+			set_status.call("Queued " + str(mod_data.get("name", "?")) + " (" + str(queue.size()) + " in queue)", COL_TEXT_DIM)
 			return
 		perform_download_for_item.call({"mod_data": mod_data, "get_btn": get_btn})
 
@@ -4901,7 +4990,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		state["has_more"] = false
 		load_more_btn.visible = false
 		load_more_btn.disabled = true
-		status_lbl.text = "Loading..."
+		set_status.call("Loading...", COL_TEXT_DIM)
 		var data: Variant = await mws_get_popular_and_latest()
 		# Stale completion: another fetch was started while we awaited.
 		# Newer fetch's render owns the UI; drop ours.
@@ -4910,7 +4999,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		if not is_instance_valid(status_lbl):
 			return
 		if not (data is Dictionary):
-			status_lbl.text = "Failed to load. Check connection."
+			set_status.call("Could not load mods. Check your connection and try again.", COL_ERR)
 			return
 		var popular: Array = (data as Dictionary).get("popular", [])
 		var latest: Array = (data as Dictionary).get("latest", [])
@@ -4920,8 +5009,8 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		if not popular.is_empty():
 			var pop_hdr := Label.new()
 			pop_hdr.text = "Popular"
-			pop_hdr.add_theme_font_size_override("font_size", 13)
-			pop_hdr.modulate = Color(0.78, 0.78, 0.78)
+			pop_hdr.add_theme_font_size_override("font_size", FS_HEAD)
+			pop_hdr.add_theme_color_override("font_color", COL_TEXT)
 			list.add_child(pop_hdr)
 			list.add_child(HSeparator.new())
 			for mod_data in popular:
@@ -4932,12 +5021,12 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 				list.add_child(HSeparator.new())
 		if not latest.is_empty():
 			var spacer := Control.new()
-			spacer.custom_minimum_size.y = 8
+			spacer.custom_minimum_size.y = SP_M
 			list.add_child(spacer)
 			var lat_hdr := Label.new()
 			lat_hdr.text = "Latest"
-			lat_hdr.add_theme_font_size_override("font_size", 13)
-			lat_hdr.modulate = Color(0.78, 0.78, 0.78)
+			lat_hdr.add_theme_font_size_override("font_size", FS_HEAD)
+			lat_hdr.add_theme_color_override("font_color", COL_TEXT)
 			list.add_child(lat_hdr)
 			list.add_child(HSeparator.new())
 			for mod_data in latest:
@@ -4946,7 +5035,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 				var mws_id := int((mod_data as Dictionary).get("id", 0))
 				list.add_child(_browse_render_mod_row(mod_data, install_map.get(mws_id), on_get, on_toggle))
 				list.add_child(HSeparator.new())
-		status_lbl.text = "%d popular, %d latest" % [popular.size(), latest.size()]
+		set_status.call("%d popular, %d latest" % [popular.size(), latest.size()], COL_TEXT_DIM)
 		# Restore the pre-refetch scroll position one frame later: the fresh
 		# rows have no layout yet on this frame, so setting scroll_vertical
 		# now would clamp against a zero-height list (handoff bug class 6).
@@ -4973,7 +5062,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		# click can't enqueue a redundant page request. The completion path
 		# re-derives visible/disabled from has_more.
 		load_more_btn.disabled = true
-		status_lbl.text = "Loading..." if not append else "Loading more..."
+		set_status.call("Loading..." if not append else "Loading more...", COL_TEXT_DIM)
 		var sort: String = str(state["sort"])
 		# Auto-pick best_match when there's a query and the user hasn't picked
 		# a non-default sort. They can override by selecting a sort explicitly.
@@ -4985,7 +5074,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		if not is_instance_valid(status_lbl):
 			return
 		if not (data is Dictionary):
-			status_lbl.text = "Search failed. Check connection."
+			set_status.call("Could not search. Check your connection and try again.", COL_ERR)
 			load_more_btn.disabled = not bool(state["has_more"])
 			return
 		var rows: Array = _mws_data_rows(data)
@@ -5001,7 +5090,11 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		state["has_more"] = current_page < last_page
 		render_mod_rows.call(rows, append)
 		var shown_so_far := list.get_child_count() / 2  # rows + separators
-		status_lbl.text = "%d of %d mods" % [shown_so_far, total]
+		# Empty state as an invitation (spec section 7), not a bare zero.
+		if shown_so_far == 0:
+			set_status.call("No results. Try fewer filters.", COL_TEXT_DIM)
+		else:
+			set_status.call("%d of %d mods" % [shown_so_far, total], COL_TEXT_DIM)
 		load_more_btn.visible = bool(state["has_more"])
 		load_more_btn.disabled = not bool(state["has_more"])
 		# Restore the pre-refetch scroll position one frame later: the fresh
@@ -5160,7 +5253,7 @@ func _refresh_browse_installed_rows(root: Node) -> void:
 # here in this iteration.
 func _browse_render_mod_row(mod_data: Dictionary, install_entry: Variant, on_get: Callable, on_toggle: Callable) -> Control:
 	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 12)
+	row.add_theme_constant_override("separation", SP_L)
 
 	# Thumbnail wrapper. PanelContainer gives us a solid background so the
 	# placeholder looks intentional rather than "missing image" before the
@@ -5169,7 +5262,7 @@ func _browse_render_mod_row(mod_data: Dictionary, install_entry: Variant, on_get
 	var thumb_wrap := PanelContainer.new()
 	thumb_wrap.custom_minimum_size = Vector2(96, 54)
 	var thumb_style := StyleBoxFlat.new()
-	thumb_style.bg_color = Color(0.10, 0.10, 0.10)
+	thumb_style.bg_color = COL_SURFACE_2
 	thumb_wrap.add_theme_stylebox_override("panel", thumb_style)
 	row.add_child(thumb_wrap)
 
@@ -5196,8 +5289,10 @@ func _browse_render_mod_row(mod_data: Dictionary, install_entry: Variant, on_get
 	var name_lnk := LinkButton.new()
 	name_lnk.text = str(mod_data.get("name", "?"))
 	name_lnk.underline = LinkButton.UNDERLINE_MODE_ON_HOVER
-	name_lnk.add_theme_color_override("font_color", Color(0.84, 0.84, 0.84))
-	name_lnk.add_theme_color_override("font_hover_color", Color(1.0, 1.0, 1.0))
+	name_lnk.add_theme_font_size_override("font_size", FS_EMPH)
+	name_lnk.add_theme_color_override("font_color", COL_TEXT)
+	name_lnk.add_theme_color_override("font_hover_color", COL_TEXT_HI)
+	name_lnk.tooltip_text = name_lnk.text
 	var captured_data_for_detail := mod_data
 	name_lnk.pressed.connect(func():
 		_show_browse_mod_detail_dialog(captured_data_for_detail, on_get)
@@ -5229,8 +5324,8 @@ func _browse_render_mod_row(mod_data: Dictionary, install_entry: Variant, on_get
 
 	var meta_lbl := Label.new()
 	meta_lbl.text = " - ".join(meta_parts)
-	meta_lbl.add_theme_font_size_override("font_size", 11)
-	meta_lbl.modulate = Color(0.6, 0.6, 0.6)
+	meta_lbl.add_theme_font_size_override("font_size", FS_META)
+	meta_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
 	meta_lbl.clip_text = true
 	# Ellipsis + hover tooltip instead of a hard mid-word cut (Labels default
 	# to MOUSE_FILTER_IGNORE, which silently suppresses tooltips).
@@ -5414,13 +5509,13 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 	# Right-margin wrap so content doesn't sit under the scrollbar -- same
 	# trick the Browse tab's main list uses.
 	var inner_wrap := MarginContainer.new()
-	inner_wrap.add_theme_constant_override("margin_right", 16)
-	inner_wrap.add_theme_constant_override("margin_left", 4)
+	inner_wrap.add_theme_constant_override("margin_right", SP_XL)
+	inner_wrap.add_theme_constant_override("margin_left", SP_S)
 	inner_wrap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.add_child(inner_wrap)
 
 	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 10)
+	box.add_theme_constant_override("separation", SP_L)
 	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	inner_wrap.add_child(box)
 
@@ -5434,7 +5529,7 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 		var banner_wrap := PanelContainer.new()
 		banner_wrap.custom_minimum_size = Vector2(0, 220)
 		var banner_style := StyleBoxFlat.new()
-		banner_style.bg_color = Color(0.10, 0.10, 0.10)
+		banner_style.bg_color = COL_SURFACE_2
 		banner_wrap.add_theme_stylebox_override("panel", banner_style)
 		box.add_child(banner_wrap)
 		var banner_rect := TextureRect.new()
@@ -5463,7 +5558,8 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 	if bumped != "":
 		parts.append("updated " + bumped)
 	meta.text = " - ".join(parts)
-	meta.modulate = Color(0.65, 0.65, 0.65)
+	meta.add_theme_font_size_override("font_size", FS_META)
+	meta.add_theme_color_override("font_color", COL_TEXT_DIM)
 	meta.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	box.add_child(meta)
 
@@ -5476,8 +5572,8 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 		box.add_child(HSeparator.new())
 		var desc_hdr := Label.new()
 		desc_hdr.text = "Description"
-		desc_hdr.add_theme_font_size_override("font_size", 13)
-		desc_hdr.modulate = Color(0.78, 0.78, 0.78)
+		desc_hdr.add_theme_font_size_override("font_size", FS_HEAD)
+		desc_hdr.add_theme_color_override("font_color", COL_TEXT)
 		box.add_child(desc_hdr)
 		var desc_lbl := Label.new()
 		desc_lbl.text = desc_str
@@ -5488,13 +5584,13 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 	box.add_child(HSeparator.new())
 	var files_hdr := Label.new()
 	files_hdr.text = "Files"
-	files_hdr.add_theme_font_size_override("font_size", 13)
-	files_hdr.modulate = Color(0.78, 0.78, 0.78)
+	files_hdr.add_theme_font_size_override("font_size", FS_HEAD)
+	files_hdr.add_theme_color_override("font_color", COL_TEXT)
 	box.add_child(files_hdr)
 	var files_status := Label.new()
 	files_status.text = "Loading file list..."
-	files_status.add_theme_font_size_override("font_size", 11)
-	files_status.modulate = UI_COL_MUTED
+	files_status.add_theme_font_size_override("font_size", FS_BODY)
+	files_status.add_theme_color_override("font_color", COL_TEXT_DIM)
 	box.add_child(files_status)
 	var files_list := VBoxContainer.new()
 	files_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -5525,6 +5621,9 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 	if already_installed:
 		get_btn.disabled = true
 	else:
+		# The dialog's one primary action (spec section 6). List rows keep
+		# bare-theme Download buttons -- primary is at most one per surface.
+		style_primary_button(get_btn)
 		var captured_data := mod_data
 		get_btn.pressed.connect(func():
 			on_get.call(captured_data, get_btn)
@@ -5536,11 +5635,12 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 		if not is_instance_valid(files_status):
 			return
 		if not (files_resp is Dictionary):
-			files_status.text = "Failed to load file history."
+			files_status.text = "Could not load file history. Check your connection and try again."
+			files_status.add_theme_color_override("font_color", COL_ERR)
 			return
 		var files: Array = _mws_data_rows(files_resp)
 		if files.is_empty():
-			files_status.text = "No files."
+			files_status.text = "No downloadable files yet."
 			return
 		files_status.queue_free()
 		for file_v in files:
@@ -5548,7 +5648,7 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 				continue
 			var fd: Dictionary = file_v
 			var f_row := HBoxContainer.new()
-			f_row.add_theme_constant_override("separation", 12)
+			f_row.add_theme_constant_override("separation", SP_L)
 			files_list.add_child(f_row)
 
 			var v_lbl := Label.new()
@@ -5562,7 +5662,7 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 			var size_lbl := Label.new()
 			size_lbl.text = _format_size(int(fd.get("size", 0)))
 			size_lbl.custom_minimum_size.x = 80
-			size_lbl.modulate = Color(0.6, 0.6, 0.6)
+			size_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
 			f_row.add_child(size_lbl)
 
 			var date_str := str(fd.get("created_at", ""))
@@ -5570,7 +5670,7 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 				date_str = date_str.split("T")[0]
 			var date_lbl := Label.new()
 			date_lbl.text = date_str
-			date_lbl.modulate = UI_COL_MUTED
+			date_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
 			f_row.add_child(date_lbl)
 	load_files.call()
 
@@ -5583,44 +5683,54 @@ func build_updates_tab() -> Control:
 	var margin := _make_tab_margin()
 
 	var container := VBoxContainer.new()
-	container.add_theme_constant_override("separation", 6)
+	container.add_theme_constant_override("separation", SP_M)
 	margin.add_child(container)
 
 	var toolbar := HBoxContainer.new()
-	toolbar.add_theme_constant_override("separation", 8)
+	toolbar.add_theme_constant_override("separation", SP_M)
 	container.add_child(toolbar)
 
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	toolbar.add_child(spacer)
 
+	# The tab's one primary action.
 	var check_btn := Button.new()
-	check_btn.text = "Check for Updates"
+	check_btn.text = "Check for updates"
+	style_primary_button(check_btn)
 	toolbar.add_child(check_btn)
 
 	container.add_child(HSeparator.new())
 
-	# Column headers
+	# Column headers: quiet meta labels over the list.
 	var header_row := HBoxContainer.new()
 	container.add_child(header_row)
 
 	var h_mod := Label.new()
 	h_mod.text = "Mod"
+	h_mod.add_theme_font_size_override("font_size", FS_META)
+	h_mod.add_theme_color_override("font_color", COL_TEXT_DIM)
 	h_mod.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	header_row.add_child(h_mod)
 
 	var h_ver := Label.new()
 	h_ver.text = "Version"
+	h_ver.add_theme_font_size_override("font_size", FS_META)
+	h_ver.add_theme_color_override("font_color", COL_TEXT_DIM)
 	h_ver.custom_minimum_size.x = 90
 	header_row.add_child(h_ver)
 
 	var h_status := Label.new()
 	h_status.text = "Status"
+	h_status.add_theme_font_size_override("font_size", FS_META)
+	h_status.add_theme_color_override("font_color", COL_TEXT_DIM)
 	h_status.custom_minimum_size.x = 160
 	header_row.add_child(h_status)
 
 	var h_action := Label.new()
 	h_action.text = "Action"
+	h_action.add_theme_font_size_override("font_size", FS_META)
+	h_action.add_theme_color_override("font_color", COL_TEXT_DIM)
 	h_action.custom_minimum_size.x = 90
 	header_row.add_child(h_action)
 
@@ -5669,26 +5779,41 @@ func build_updates_tab() -> Control:
 			var date_str := "%04d-%02d-%02d" % [dt["year"], dt["month"], dt["day"]]
 			var mod_lbl := Label.new()
 			mod_lbl.text = "modified " + date_str
-			mod_lbl.add_theme_font_size_override("font_size", 11)
-			mod_lbl.modulate = Color(0.5, 0.5, 0.5)
+			mod_lbl.add_theme_font_size_override("font_size", FS_META)
+			mod_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
 			name_col.add_child(mod_lbl)
 
 		var ver_lbl := Label.new()
 		ver_lbl.text = "v" + version if version != "" else "--"
+		# A long prerelease string ("v2026.1.0-beta.3") must not push the
+		# Status/Action columns out of alignment -- trim it to the column.
+		ver_lbl.clip_text = true
+		ver_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		ver_lbl.tooltip_text = ver_lbl.text
+		ver_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
 		ver_lbl.custom_minimum_size.x = 90
 		row.add_child(ver_lbl)
 
 		var status_lbl := Label.new()
 		status_lbl.custom_minimum_size.x = 160
+		# Status text is state-driven ("Update: v...") and can outgrow the
+		# column with long version strings; trim instead of shoving the
+		# Action column sideways.
+		status_lbl.clip_text = true
+		status_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		status_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
+		# PASS unconditionally: labels default to MOUSE_FILTER_IGNORE which
+		# silently suppresses tooltips, and the check flow writes long state
+		# text ("Update: v...") whose ellipsis needs a full-text tooltip.
+		status_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
 		if entry["ext"] == "folder":
 			# Dev folders are the user's working copy on disk; downloading an
 			# archive would land a duplicate next to the folder. Explain why
 			# there is no Download button instead of offering one that misfires.
-			status_lbl.text = "dev folder (no download)"
+			status_lbl.text = "Dev folder"
 			status_lbl.tooltip_text = "Dev folders update from your working copy. Update downloads only apply to archive mods."
-			status_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
 		else:
-			status_lbl.text = "no update info" if mw_id == 0 or version == "" else "--"
+			status_lbl.text = "No update info" if mw_id == 0 or version == "" else "--"
 		row.add_child(status_lbl)
 
 		# Always add dl_btn to preserve column width. Use modulate.a to
@@ -5717,7 +5842,8 @@ func build_updates_tab() -> Control:
 
 	if list.get_child_count() == 0:
 		var lbl := Label.new()
-		lbl.text = "No mods with update information found.\nAdd [updates] modworkshop=<id> and version=<x.y.z> to mod.txt to enable this."
+		lbl.text = "No mods with update info yet.\nAdd [updates] modworkshop=<id> and version=<x.y.z> to mod.txt to enable update checks."
+		lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
 		lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		list.add_child(lbl)
 
@@ -5727,18 +5853,18 @@ func build_updates_tab() -> Control:
 
 	var log_hdr := Label.new()
 	log_hdr.text = "Activity"
-	log_hdr.add_theme_font_size_override("font_size", 11)
-	log_hdr.modulate = Color(0.65, 0.65, 0.65)
+	log_hdr.add_theme_font_size_override("font_size", FS_BODY)
+	log_hdr.add_theme_color_override("font_color", COL_TEXT_DIM)
 	container.add_child(log_hdr)
 
 	var log_bg := PanelContainer.new()
 	log_bg.custom_minimum_size.y = 72
 	var log_style := StyleBoxFlat.new()
-	log_style.bg_color = Color(0.09, 0.09, 0.09)
-	log_style.content_margin_left = 6
-	log_style.content_margin_right = 6
-	log_style.content_margin_top = 4
-	log_style.content_margin_bottom = 4
+	log_style.bg_color = COL_SURFACE_2
+	log_style.content_margin_left = SP_M
+	log_style.content_margin_right = SP_M
+	log_style.content_margin_top = SP_S
+	log_style.content_margin_bottom = SP_S
 	log_bg.add_theme_stylebox_override("panel", log_style)
 	container.add_child(log_bg)
 
@@ -5753,19 +5879,20 @@ func build_updates_tab() -> Control:
 		var t := Time.get_time_string_from_system()
 		var lbl := Label.new()
 		lbl.text = "[" + t + "] " + msg
-		lbl.add_theme_font_size_override("font_size", 11)
-		lbl.modulate = Color(0.8, 0.8, 0.8)
+		lbl.add_theme_font_size_override("font_size", FS_BODY)
+		lbl.add_theme_color_override("font_color", COL_TEXT)
 		lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		log_list.add_child(lbl)
 		log_scroll.scroll_vertical = 999999
 
 	check_btn.pressed.connect(func():
 		check_btn.disabled = true
-		check_btn.text = "Checking..."
+		check_btn.text = "Checking for updates..."
 		for fn in status_info:
 			var info: Dictionary = status_info[fn]
-			(info["label"] as Label).text = "checking..."
-			(info["label"] as Label).modulate = Color(1.0, 1.0, 1.0)
+			(info["label"] as Label).text = "Checking..."
+			(info["label"] as Label).tooltip_text = "Checking..."
+			(info["label"] as Label).add_theme_color_override("font_color", COL_TEXT_DIM)
 			var btn: Button = info["dl_btn"]
 			btn.modulate.a = 0.0
 			btn.disabled = true
@@ -5777,7 +5904,7 @@ func build_updates_tab() -> Control:
 		if not is_instance_valid(check_btn):
 			return
 		check_btn.disabled = false
-		check_btn.text = "Check for Updates"
+		check_btn.text = "Check for updates"
 	)
 
 	return margin
@@ -5870,8 +5997,9 @@ func check_updates_for_ui(status_info: Dictionary, add_log: Callable, check_btn:
 		var dl_btn: Button = info["dl_btn"]
 		var latest_v = latest.get(str(info["mw_id"]), null)
 		if latest_v == null:
-			lbl.text = "no data"
-			lbl.modulate = Color(1.0, 1.0, 1.0)
+			lbl.text = "Check failed"
+			lbl.tooltip_text = lbl.text
+			lbl.add_theme_color_override("font_color", COL_ERR)
 			continue
 
 		# Also surface state via _mod_updates_state so the Mods tab can show
@@ -5881,14 +6009,18 @@ func check_updates_for_ui(status_info: Dictionary, add_log: Callable, check_btn:
 		var cmp := compare_versions(info["version"], str(latest_v))
 		if cmp >= 0:
 			# Local is same version or newer than what's on the server.
-			lbl.text = "up to date"
-			lbl.modulate = Color(0.6, 0.6, 0.6)
+			lbl.text = "Up to date"
+			lbl.tooltip_text = lbl.text
+			lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
 			if pk != "":
 				_mod_updates_state.erase(pk)
 		else:
-			# Server has a newer version.
-			lbl.text = "update: v" + str(latest_v)
-			lbl.modulate = Color(0.90, 0.90, 0.90)
+			# Server has a newer version. Amber = the update signal. Tooltip
+			# mirrors the text: long prerelease strings ellipsize in the
+			# 160px column (label is MOUSE_FILTER_PASS at creation).
+			lbl.text = "Update: v" + str(latest_v)
+			lbl.tooltip_text = lbl.text
+			lbl.add_theme_color_override("font_color", COL_AMBER)
 			dl_btn.modulate.a = 1.0
 			dl_btn.disabled = false
 			dl_btn.mouse_filter = Control.MOUSE_FILTER_STOP
@@ -5910,7 +6042,9 @@ func check_updates_for_ui(status_info: Dictionary, add_log: Callable, check_btn:
 			dl_btn.pressed.connect(func():
 				dl_btn.disabled = true
 				dl_btn.text = "Downloading..."
-				lbl.text = "downloading..."
+				lbl.text = "Downloading..."
+				lbl.tooltip_text = lbl.text
+				lbl.add_theme_color_override("font_color", COL_AMBER)
 				check_btn.disabled = true
 				# Re-resolve live: the Mods-tab badge may have updated/renamed this
 				# file since the Updates tab was built, orphaning the captured path.
@@ -5922,8 +6056,9 @@ func check_updates_for_ui(status_info: Dictionary, add_log: Callable, check_btn:
 					return
 				check_btn.disabled = false
 				if result.get("ok", false):
-					lbl.text = "updated -- restart to apply"
-					lbl.modulate = Color(0.80, 0.80, 0.80)
+					lbl.text = "Updated -- restart to apply"
+					lbl.tooltip_text = lbl.text
+					lbl.add_theme_color_override("font_color", COL_OK)
 					dl_btn.modulate.a = 0.0
 					dl_btn.disabled = true
 					dl_btn.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -5931,6 +6066,7 @@ func check_updates_for_ui(status_info: Dictionary, add_log: Callable, check_btn:
 					# Update cached version so next Check won't re-flag this mod.
 					info["version"] = new_ver
 					(info["ver_lbl"] as Label).text = "v" + new_ver
+					(info["ver_lbl"] as Label).tooltip_text = "v" + new_ver
 					# Drop the shared badge state so the Mods tab stops
 					# offering an update that was just installed (mirrors the
 					# badge-path erase after a successful download).
@@ -5950,11 +6086,12 @@ func check_updates_for_ui(status_info: Dictionary, add_log: Callable, check_btn:
 					var rename_note: String = (" (renamed to " + new_fn + ")") if new_fn != full_path.get_file() else ""
 					add_log.call(mod_name + " -- updated to v" + new_ver + rename_note + ". Restart game to apply.")
 				else:
-					lbl.text = "download failed"
-					lbl.modulate = Color(1.0, 0.4, 0.4)
+					lbl.text = "Download failed"
+					lbl.tooltip_text = lbl.text
+					lbl.add_theme_color_override("font_color", COL_ERR)
 					dl_btn.disabled = false
 					dl_btn.text = "Retry"
-					add_log.call(mod_name + " -- download failed.")
+					add_log.call("Could not download " + mod_name + ". Check your connection and try again.")
 			)
 
 # ----- modloader self-update check ----------------------------------------
@@ -5998,9 +6135,11 @@ func _check_modloader_update_async() -> void:
 		return  # installed is current
 
 	if is_instance_valid(_ui_update_alert_btn):
-		_ui_update_alert_btn.text = "Mod Loader v%s -- v%s available, click to update" % [MODLOADER_VERSION, latest]
-		_ui_update_alert_btn.add_theme_color_override("font_color", Color(1.0, 0.55, 0.45))
-		_ui_update_alert_btn.add_theme_color_override("font_hover_color", Color(1.0, 0.78, 0.65))
+		_ui_update_alert_btn.text = "v%s available, click to update" % latest
+		# Amber is the update signal (spec: the one accent); an available
+		# update is a notice, not an error, so no red here.
+		_ui_update_alert_btn.add_theme_color_override("font_color", COL_AMBER)
+		_ui_update_alert_btn.add_theme_color_override("font_hover_color", COL_TEXT_HI)
 
 	# Pop the dialog only the first session this specific new version is
 	# seen. Stays quiet on subsequent launches until ModWorkshop ships a
@@ -6024,7 +6163,7 @@ func _show_modloader_update_dialog(latest: String) -> void:
 		return
 	var d := ConfirmationDialog.new()
 	d.title = "Mod Loader update available"
-	d.ok_button_text = "Open Page"
+	d.ok_button_text = "Open page"
 	d.cancel_button_text = "Dismiss"
 	d.dialog_autowrap = true
 	d.min_size = Vector2(440, 120)
