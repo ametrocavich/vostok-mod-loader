@@ -3636,6 +3636,19 @@ func _make_banner(text: String, edge_color: Color) -> Dictionary:
 	row.add_child(lbl)
 	return {"panel": panel, "row": row, "label": lbl}
 
+# Relative age for cache timestamps ("just now", "12m ago", "3h ago",
+# "2d ago"). Coarse on purpose -- it qualifies how stale cached data is,
+# it is not a clock. Input is unix seconds (see _mws_discover_snapshot).
+func _format_age(saved_at_unix: int) -> String:
+	var delta := int(Time.get_unix_time_from_system()) - saved_at_unix
+	if delta < 60:
+		return "just now"
+	if delta < 60 * 60:
+		return "%dm ago" % int(delta / 60.0)
+	if delta < 24 * 60 * 60:
+		return "%dh ago" % int(delta / 3600.0)
+	return "%dd ago" % int(delta / 86400.0)
+
 # Runtime-generated 14x14 checkbox glyph, same code-drawn pattern as the
 # pencil/trashcan icons: 1px box on a COL_SURFACE well; checked adds a
 # 2px-weight check stroke.
@@ -4746,6 +4759,15 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 
 	container.add_child(HSeparator.new())
 
+	# Offline-grace banner slot. show_browse_banner (below) fills it when a
+	# list fetch fails (cached results / unreachable / rate limit) and the
+	# success paths clear it. Hidden when empty so it costs no height on the
+	# happy path; it sits above the list as a sibling, never over it, so it
+	# cannot block interaction with rendered rows.
+	var banner_slot := VBoxContainer.new()
+	banner_slot.visible = false
+	container.add_child(banner_slot)
+
 	var status_lbl := Label.new()
 	status_lbl.add_theme_font_size_override("font_size", FS_BODY)
 	status_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
@@ -4763,6 +4785,57 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			return
 		status_lbl.text = text
 		status_lbl.add_theme_color_override("font_color", color)
+
+	# Failure reason for the offline banner. The 429 cooldown owns the copy
+	# while it is armed (rate-limited is actionable-by-waiting, unreachable
+	# is not); otherwise the generic unreachable line.
+	var browse_fail_reason := func() -> String:
+		var wait_s := mws_rate_cooldown_seconds()
+		if wait_s > 0:
+			return "ModWorkshop rate limit reached. Try again in %ds." % wait_s
+		return "ModWorkshop is unreachable."
+
+	var clear_browse_banner := func():
+		if not is_instance_valid(banner_slot):
+			return
+		for child in banner_slot.get_children():
+			child.queue_free()
+		banner_slot.visible = false
+
+	# Banner with a Retry action (spec section 6: banner via the one
+	# builder; edge_color COL_AMBER = notice such as showing-cached-results,
+	# COL_ERR = error such as no-cached-data, matching the adjacent status
+	# label's color). saved_at_unix > 0 adds a
+	# "Last refreshed Xm ago" note in FS_META COL_TEXT_DIM (spec section 7:
+	# meta info never parenthetical in the body label). Retry re-runs the
+	# CURRENT view's fetch through `state`: this lambda is created before
+	# do_discover_fetch / do_filter_fetch are assigned, and lambdas capture
+	# locals by value at creation (handoff bug class 1), so the state
+	# dictionary is the only route to their real bodies.
+	var show_browse_banner := func(text: String, saved_at_unix: int, edge_color: Color):
+		if not is_instance_valid(banner_slot):
+			return
+		for child in banner_slot.get_children():
+			child.queue_free()
+		var banner := _make_banner(text, edge_color)
+		var banner_row: HBoxContainer = banner["row"]
+		if saved_at_unix > 0:
+			var age_lbl := Label.new()
+			age_lbl.text = "Last refreshed " + _format_age(saved_at_unix)
+			age_lbl.add_theme_font_size_override("font_size", FS_META)
+			age_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
+			banner_row.add_child(age_lbl)
+		var retry_btn := Button.new()
+		retry_btn.text = "Retry"
+		banner_row.add_child(retry_btn)
+		retry_btn.pressed.connect(func():
+			if str(state["mode"]) == "discover":
+				(state["fn_discover_fetch"] as Callable).call()
+			else:
+				(state["fn_filter_fetch"] as Callable).call(false)
+		)
+		banner_slot.add_child(banner["panel"])
+		banner_slot.visible = true
 
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -5000,9 +5073,20 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			return
 		if not is_instance_valid(status_lbl):
 			return
+		# Offline grace: a failed live fetch falls back to the last-good
+		# snapshot (this session's or a previous launch's, via disk) and
+		# renders it behind a cached-results banner instead of leaving the
+		# tab empty. No snapshot -> the old failure status, plus the
+		# banner's Retry affordance so recovery doesn't need a tab switch.
+		var cached_at := 0
 		if not (data is Dictionary):
-			set_status.call("Could not load mods. Check your connection and try again.", COL_ERR)
-			return
+			var snap: Dictionary = mws_discover_snapshot()
+			if snap.is_empty():
+				set_status.call(mws_error_status("Could not load mods. Check your connection and try again."), COL_ERR)
+				show_browse_banner.call(browse_fail_reason.call(), 0, COL_ERR)
+				return
+			data = snap["data"]
+			cached_at = int(snap["saved_at_unix"])
 		var popular: Array = (data as Dictionary).get("popular", [])
 		var latest: Array = (data as Dictionary).get("latest", [])
 		for child in list.get_children():
@@ -5037,6 +5121,10 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 				var mws_id := int((mod_data as Dictionary).get("id", 0))
 				list.add_child(_browse_render_mod_row(mod_data, install_map.get(mws_id), on_get, on_toggle))
 				list.add_child(HSeparator.new())
+		if cached_at > 0:
+			show_browse_banner.call("Showing cached results. " + str(browse_fail_reason.call()), cached_at, COL_AMBER)
+		else:
+			clear_browse_banner.call()
 		set_status.call("%d popular, %d latest" % [popular.size(), latest.size()], COL_TEXT_DIM)
 		# Restore the pre-refetch scroll position one frame later: the fresh
 		# rows have no layout yet on this frame, so setting scroll_vertical
@@ -5076,7 +5164,14 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		if not is_instance_valid(status_lbl):
 			return
 		if not (data is Dictionary):
-			set_status.call("Could not search. Check your connection and try again.", COL_ERR)
+			set_status.call(mws_error_status("Could not search. Check your connection and try again."), COL_ERR)
+			# Only the discover landing has an offline snapshot (filter/search
+			# results are never cached), so a failed search gets the Retry
+			# banner but no cached rows. Append failures skip the banner: the
+			# already-rendered pages stay on screen and the re-enabled Load
+			# more button below IS the retry affordance.
+			if not append:
+				show_browse_banner.call(browse_fail_reason.call(), 0, COL_ERR)
 			load_more_btn.disabled = not bool(state["has_more"])
 			return
 		var rows: Array = _mws_data_rows(data)
@@ -5090,6 +5185,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		var total: int = int(meta.get("total", rows.size()))
 		state["next_page"] = current_page + 1
 		state["has_more"] = current_page < last_page
+		clear_browse_banner.call()
 		render_mod_rows.call(rows, append)
 		var shown_so_far := list.get_child_count() / 2  # rows + separators
 		# Empty state as an invitation (spec section 7), not a bare zero.
@@ -5637,7 +5733,7 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 		if not is_instance_valid(files_status):
 			return
 		if not (files_resp is Dictionary):
-			files_status.text = "Could not load file history. Check your connection and try again."
+			files_status.text = mws_error_status("Could not load file history. Check your connection and try again.")
 			files_status.add_theme_color_override("font_color", COL_ERR)
 			return
 		var files: Array = _mws_data_rows(files_resp)
@@ -6000,7 +6096,11 @@ func check_updates_for_ui(status_info: Dictionary, add_log: Callable, check_btn:
 		var latest_v = latest.get(str(info["mw_id"]), null)
 		if latest_v == null:
 			lbl.text = "Check failed"
-			lbl.tooltip_text = lbl.text
+			# Rate-limit hint (spec section 7: what happened + what to do)
+			# lives in the tooltip -- the full sentence would ellipsize in
+			# this narrow column. Falls back to the plain text when no MWS
+			# cooldown is armed.
+			lbl.tooltip_text = mws_error_status(lbl.text)
 			lbl.add_theme_color_override("font_color", COL_ERR)
 			continue
 

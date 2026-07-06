@@ -386,6 +386,16 @@ var _mws_cache: Dictionary = {}
 # serves) and callers surface mws_rate_limit_message(). 0 = no cooldown.
 var _mws_cooldown_until_ms: int = 0
 
+# Last-good Browse discover landing (offline grace). Written by mws_api.gd
+# after every fully-populated mws_get_popular_and_latest, both here and to
+# user://mws_cache/discover_snapshot.json so it survives relaunches.
+# Shape: {"data": {popular: Array, latest: Array}, "saved_at_unix": int}.
+# Empty until a successful fetch stores it or mws_discover_snapshot()
+# lazy-loads it from disk. Serves ONLY the discover landing when a live
+# fetch fails -- filter/search responses are never snapshotted (the
+# 5-minute _mws_cache above is the only cache they get).
+var _mws_discover_snapshot: Dictionary = {}
+
 # Discovered modpacks. Populated lazily by collect_modpack_metadata when
 # the Modpacks tab is built. Each entry: {file_path, file_name, raw_name,
 # sanitized_name, enabled_count, total_count}. See modpacks.gd.
