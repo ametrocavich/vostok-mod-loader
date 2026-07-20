@@ -3797,6 +3797,69 @@ func _make_updown_icon(line: Color) -> ImageTexture:
 			img.set_pixel(x, 11 - row, line)  # down triangle, apex on bottom
 	return ImageTexture.create_from_image(img)
 
+# Best-effort cached ModWorkshop summary for a mod id, from the Browse discover
+# snapshot (popular + latest). Gives the Mods tab an instant thumbnail + author
+# for mods already seen in Browse, with no network. {} when not cached -- the
+# caller then fetches by id.
+func _mods_cached_summary_by_id(mod_id: int) -> Dictionary:
+	if mod_id <= 0:
+		return {}
+	var data_v: Variant = mws_discover_snapshot().get("data")
+	if not (data_v is Dictionary):
+		return {}
+	for key in ["popular", "latest"]:
+		var arr_v: Variant = (data_v as Dictionary).get(key)
+		if not (arr_v is Array):
+			continue
+		for row_v in (arr_v as Array):
+			if row_v is Dictionary and int((row_v as Dictionary).get("id", 0)) == mod_id:
+				return row_v
+	return {}
+
+# Populate an installed mod row's ModWorkshop thumbnail + author, and stash the
+# mod object so the name link can open the Browse detail dialog (description +
+# file history). Cache-first (Browse snapshot), then a by-id fetch only for mods
+# the snapshot doesn't cover. All async and best-effort: offline or a failed
+# fetch just leaves the gray placeholder and the name link shows a gentle
+# notice -- no error, no log spam. The holder Dictionary is captured by the name
+# link's lambda, so filling it here wires the click up once data arrives (never
+# capture the mod object by value into the lambda -- it isn't known at build).
+func _mods_load_mws_meta(mod_id: int, thumb_rect: TextureRect, name_col: VBoxContainer, holder: Dictionary) -> void:
+	var data := _mods_cached_summary_by_id(mod_id)
+	if data.is_empty():
+		var fetched: Variant = await mws_get_mod(mod_id)
+		if fetched is Dictionary:
+			var obj: Variant = (fetched as Dictionary).get("data", fetched)
+			if obj is Dictionary:
+				data = obj
+	if data.is_empty():
+		return
+	holder["data"] = data
+	if is_instance_valid(thumb_rect):
+		var thumb_record: Variant = data.get("thumbnail")
+		if thumb_record is Dictionary:
+			_browse_load_thumbnail_async(thumb_rect, thumb_record)
+	if is_instance_valid(name_col):
+		var user_dict: Dictionary = data.get("user", {}) if data.get("user") is Dictionary else {}
+		var author := str(user_dict.get("name", ""))
+		if author != "":
+			var author_lbl := _make_sub_label("by " + author, COL_TEXT_DIM, "")
+			name_col.add_child(author_lbl)
+			name_col.move_child(author_lbl, 1)  # right under the name
+
+# Click handler for a Mods-row ModWorkshop name link. Opens the same detail
+# dialog the Browse tab uses (banner/thumbnail + author + description + file
+# history) once the async load has filled `holder`; until then (or offline) it
+# says so instead of opening an empty dialog. Bound with the row's holder dict,
+# which _mods_load_mws_meta fills in place.
+func _open_mods_mws_detail(holder: Dictionary) -> void:
+	if holder.has("data"):
+		_show_browse_mod_detail_dialog(holder["data"], func(_d, _b): pass)
+	else:
+		_show_accept_dialog("ModWorkshop details",
+				"Still loading this mod's ModWorkshop page (or it's unavailable offline). Try again in a moment.",
+				"Close", 380)
+
 func build_mods_tab(tabs: TabContainer) -> Control:
 	_refresh_dependency_status()
 	var outer := VBoxContainer.new()
@@ -4471,6 +4534,12 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	h_on.custom_minimum_size.x = 30
 	header_row.add_child(h_on)
 
+	# Spacer over the per-row ModWorkshop thumbnail column so "Mod" stays above
+	# the name text rather than the thumbnails.
+	var h_thumb := Control.new()
+	h_thumb.custom_minimum_size.x = 96
+	header_row.add_child(h_thumb)
+
 	var h_name := Label.new()
 	h_name.text = "Mod"
 	h_name.add_theme_font_size_override("font_size", FS_META)
@@ -4520,35 +4589,68 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		check.custom_minimum_size.x = 30
 		row.add_child(check)
 
+		# ModWorkshop info column, for mods that declare [updates] modworkshop=N.
+		# Thumbnail (filled async) + author line + the name as a click-through to
+		# the same detail dialog the Browse tab uses -- so a mod's page,
+		# screenshots and description read in-app without hunting it down in
+		# Browse. Non-MWS mods get a same-width spacer so the name column stays
+		# aligned across every row.
+		var row_cfg: ConfigFile = entry.get("cfg")
+		var row_mws_id := 0
+		if row_cfg != null and row_cfg.has_section_key("updates", "modworkshop"):
+			row_mws_id = int(str(row_cfg.get_value("updates", "modworkshop", "0")))
+		var mws_holder: Dictionary = {}
+		var thumb_ref: TextureRect = null
+		if row_mws_id > 0:
+			var thumb_wrap := PanelContainer.new()
+			thumb_wrap.custom_minimum_size = Vector2(96, 54)
+			thumb_wrap.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+			var thumb_style := StyleBoxFlat.new()
+			thumb_style.bg_color = COL_SURFACE_2
+			thumb_wrap.add_theme_stylebox_override("panel", thumb_style)
+			row.add_child(thumb_wrap)
+			var thumb_rect := TextureRect.new()
+			thumb_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+			thumb_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+			thumb_rect.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			thumb_rect.size_flags_vertical = Control.SIZE_EXPAND_FILL
+			thumb_wrap.add_child(thumb_rect)
+			thumb_ref = thumb_rect
+		else:
+			var thumb_gap := Control.new()
+			thumb_gap.custom_minimum_size.x = 96
+			row.add_child(thumb_gap)
+
 		var name_col := VBoxContainer.new()
 		name_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		name_col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		row.add_child(name_col)
 
-		var name_lbl := Label.new()
-		name_lbl.text = entry["mod_name"]
-		name_lbl.clip_text = true
-		name_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-		name_lbl.tooltip_text = str(entry["mod_name"])
-		# Labels default to MOUSE_FILTER_IGNORE, which suppresses tooltips.
-		name_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
-		name_lbl.add_theme_color_override("font_color", COL_OK if entry["enabled"] else COL_TEXT_DIM)
-		name_col.add_child(name_lbl)
-
-		# ModWorkshop page link. When the mod's mod.txt carries
-		# [updates] modworkshop=N, surface a one-click link to its MWS page --
-		# description, screenshots, and install instructions all live there, so
-		# the user does not have to go hunt the mod down in the Browse tab to
-		# read them (the gap that prompted this). Zero network: opens the URL.
-		var mws_cfg: ConfigFile = entry.get("cfg")
-		if mws_cfg != null and mws_cfg.has_section_key("updates", "modworkshop"):
-			var row_mws_id := int(str(mws_cfg.get_value("updates", "modworkshop", "0")))
-			if row_mws_id > 0:
-				var mws_btn := _make_row_action("Open ModWorkshop page", COL_AMBER,
-						"Open this mod's ModWorkshop page (description, screenshots, install instructions) in your browser.")
-				mws_btn.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
-				name_col.add_child(mws_btn)
-				var page_id := row_mws_id
-				mws_btn.pressed.connect(func(): OS.shell_open(MODWORKSHOP_PAGE_URL_TEMPLATE % str(page_id)))
+		# name_ctrl is a LinkButton (MWS mods -> click for details) or a plain
+		# Label; both take the enabled/blocked font-color overrides below.
+		var name_ctrl: Control
+		if row_mws_id > 0:
+			var name_lnk := LinkButton.new()
+			name_lnk.text = entry["mod_name"]
+			name_lnk.underline = LinkButton.UNDERLINE_MODE_ON_HOVER
+			name_lnk.tooltip_text = str(entry["mod_name"]) + "  --  click for ModWorkshop details"
+			name_lnk.add_theme_color_override("font_color", COL_OK if entry["enabled"] else COL_TEXT_DIM)
+			name_lnk.add_theme_color_override("font_hover_color", COL_TEXT_HI)
+			name_col.add_child(name_lnk)
+			name_lnk.pressed.connect(_open_mods_mws_detail.bind(mws_holder))
+			_mods_load_mws_meta(row_mws_id, thumb_ref, name_col, mws_holder)
+			name_ctrl = name_lnk
+		else:
+			var name_lbl := Label.new()
+			name_lbl.text = entry["mod_name"]
+			name_lbl.clip_text = true
+			name_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+			name_lbl.tooltip_text = str(entry["mod_name"])
+			# Labels default to MOUSE_FILTER_IGNORE, which suppresses tooltips.
+			name_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
+			name_lbl.add_theme_color_override("font_color", COL_OK if entry["enabled"] else COL_TEXT_DIM)
+			name_col.add_child(name_lbl)
+			name_ctrl = name_lbl
 
 		if entry["ext"] == "folder":
 			var dev_lbl := Label.new()
@@ -4569,7 +4671,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 				and not (entry.get("dependency_blockers", []) as Array).is_empty()
 		if dep_blocked:
 			# The green "enabled" tint would lie -- this mod won't load.
-			name_lbl.add_theme_color_override("font_color", COL_AMBER)
+			name_ctrl.add_theme_color_override("font_color", COL_AMBER)
 		if required_deps.size() > 0 or optional_deps.size() > 0:
 			var named := PackedStringArray()
 			for d in required_deps:

@@ -370,6 +370,15 @@ func mws_get_latest_file(mod_id: int) -> Variant:
 func mws_list_files(mod_id: int) -> Variant:
 	return await _mws_get_json(MWS_API_BASE + "/mods/" + str(mod_id) + "/files", _MWS_TTL_DETAIL_MS)
 
+# Full mod detail for one mod id -- name, user, description (desc/short_desc),
+# thumbnail + banner image records. Lets the Mods tab show an installed mod's
+# ModWorkshop info (thumbnail, author, description) without the user having to
+# hunt it down in the Browse listing. Returns the mod object dict, or null on
+# failure/offline. The /mods/{id} route returns the object directly; callers
+# that also feed it listing rows unwrap a {data} envelope defensively.
+func mws_get_mod(mod_id: int) -> Variant:
+	return await _mws_get_json(MWS_API_BASE + "/mods/" + str(mod_id), _MWS_TTL_DETAIL_MS)
+
 # Build a full URL for an Image record (mod thumbnail or screenshot). Image
 # objects have a .file (storage filename, opaque) and .has_thumb (bool); when
 # has_thumb is true and want_thumb is true, prefer the smaller /thumbs/ variant.
