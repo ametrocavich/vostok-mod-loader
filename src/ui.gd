@@ -3025,6 +3025,12 @@ func _show_remove_mod_confirm(entry: Dictionary, tabs: TabContainer) -> void:
 func show_mod_ui() -> void:
 	var win := Window.new()
 	win.title = "Road to Vostok -- Mod Loader"
+	# Borderless: drop Godot's native title bar, which duplicated the in-panel
+	# header plate ("ROAD TO VOSTOK -- MOD LOADER") and stacked a second title +
+	# close X above it. The plate below carries the title, and the close X moves
+	# into the plate (built there). Header drag is added by hand since a
+	# borderless Window has no bar to grab. Title string kept for taskbar/alt-tab.
+	win.borderless = true
 	win.size = Vector2i(960, 640)
 	win.min_size = Vector2i(640, 420)
 	win.wrap_controls = false
@@ -3116,6 +3122,33 @@ func show_mod_ui() -> void:
 	header_row.add_child(alert)
 	_ui_update_alert_btn = alert
 
+	# Push the close control to the far right of the plate.
+	var header_spacer := Control.new()
+	header_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header_row.add_child(header_spacer)
+
+	# Close (X) lives in the plate now the window is borderless. Wired below to
+	# the same path as the old native close (X == Launch, by design), after
+	# launch_btn is built.
+	var close_btn := Button.new()
+	close_btn.flat = true
+	close_btn.icon = _make_close_icon(COL_TEXT_DIM)
+	close_btn.tooltip_text = "Close and launch"
+	close_btn.custom_minimum_size = Vector2(28, 28)
+	close_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	header_row.add_child(close_btn)
+
+	# Borderless windows have no bar to grab, so let the header plate drag the
+	# whole window. Labels ignore mouse input so the event falls through to the
+	# header; the version link and close button keep their own clicks.
+	var drag := {"on": false}
+	header.gui_input.connect(func(ev: InputEvent):
+		if ev is InputEventMouseButton and ev.button_index == MOUSE_BUTTON_LEFT:
+			drag["on"] = ev.pressed
+		elif ev is InputEventMouseMotion and drag["on"]:
+			win.position += Vector2i(ev.relative)
+	)
+
 	var tabs := TabContainer.new()
 	tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	root.add_child(tabs)
@@ -3176,6 +3209,8 @@ func show_mod_ui() -> void:
 
 	# Closing the window with X should behave the same as clicking Launch.
 	win.close_requested.connect(func(): launch_btn.pressed.emit())
+	# The in-plate X does exactly what the old native title-bar X did.
+	close_btn.pressed.connect(func(): launch_btn.pressed.emit())
 
 	# Fire-and-forget self-update check. Updates _ui_update_alert_btn and may
 	# pop the one-shot dialog when the API returns. Guards on
@@ -3795,6 +3830,19 @@ func _make_updown_icon(line: Color) -> ImageTexture:
 		for x in range(4 - row, 5 + row):
 			img.set_pixel(x, 2 + row, line)   # up triangle, apex on top
 			img.set_pixel(x, 11 - row, line)  # down triangle, apex on bottom
+	return ImageTexture.create_from_image(img)
+
+# Runtime-generated 14x14 close "X" glyph. Drawn as two ~3px diagonals rather
+# than a unicode multiply-sign, so the source stays plain ASCII.
+func _make_close_icon(line: Color) -> ImageTexture:
+	var img := Image.create(14, 14, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
+	for i in range(14):
+		for t in range(-1, 2):
+			var a := i + t
+			if a >= 0 and a < 14:
+				img.set_pixel(a, i, line)
+				img.set_pixel(a, 13 - i, line)
 	return ImageTexture.create_from_image(img)
 
 # Best-effort cached ModWorkshop summary for a mod id, from the Browse discover
