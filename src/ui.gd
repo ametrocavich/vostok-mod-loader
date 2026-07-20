@@ -871,9 +871,25 @@ func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: Ta
 	box.add_theme_constant_override("separation", SP_M)
 	outer_scroll.add_child(box)
 
+	# Modpack name, decoupled from the profile name -- one profile can be saved
+	# as differently-named packs. Defaults to the profile name so the old
+	# behavior is one Enter away.
+	var name_hdr := Label.new()
+	name_hdr.text = "Modpack name:"
+	name_hdr.add_theme_font_size_override("font_size", FS_BODY)
+	name_hdr.add_theme_color_override("font_color", COL_TEXT_DIM)
+	box.add_child(name_hdr)
+
+	var name_input := LineEdit.new()
+	name_input.placeholder_text = "Name for this modpack"
+	name_input.text = profile_to_save
+	name_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_child(name_input)
+
 	var from_lbl := Label.new()
-	from_lbl.text = "Saving from profile: " + profile_to_save
-	from_lbl.add_theme_color_override("font_color", COL_TEXT)
+	from_lbl.text = "Mods taken from profile: " + profile_to_save
+	from_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
+	from_lbl.add_theme_font_size_override("font_size", FS_META)
 	box.add_child(from_lbl)
 
 	var author_hdr := Label.new()
@@ -947,14 +963,17 @@ func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: Ta
 		style_dialog_primary_button(d.get_ok_button())
 	_connect_dialog_exits(d,
 		func():
+			var pack_name := name_input.text.strip_edges()
 			var desc := desc_input.text
 			var author := author_input.text.strip_edges()
 			d.queue_free()
+			if pack_name == "":
+				pack_name = profile_to_save
 			# Remember author across saves -- avoids forcing the user to
 			# retype their handle every modpack. Cleared if they explicitly
 			# blank it out.
 			_save_preferred_author(author)
-			var result := save_profile_as_modpack(profile_to_save, desc, author)
+			var result := save_profile_as_modpack(profile_to_save, pack_name, desc, author)
 			if not bool(result.get("ok", false)):
 				_show_error_dialog("Could not save modpack", str(result.get("error", "unknown")))
 				return
@@ -995,8 +1014,8 @@ func _add_dir_to_zip(packer: ZIPPacker, fs_path: String, zip_prefix: String) -> 
 # MCM/ snapshot of user://MCM/. Returns {"ok": true} or {"error": "..."}.
 # Cleans up partial output on any failure path so a corrupt half-zip
 # doesn't survive to confuse the user (or block a retry).
-func _export_profile_to_zip(profile_name: String, output_path: String, description: String = "", author: String = "") -> Dictionary:
-	var json_str := _profile_to_json_string(profile_name, description, author)
+func _export_profile_to_zip(profile_name: String, output_path: String, description: String = "", author: String = "", display_name: String = "") -> Dictionary:
+	var json_str := _profile_to_json_string(profile_name, description, author, display_name)
 	if json_str == "":
 		return {"error": "Active profile has no data to save."}
 
@@ -1256,7 +1275,11 @@ func _profile_to_payload(profile_name: String) -> String:
 # _validate_modpack (modpacks.gd) pre-checks schema/name/enabled. Keep new
 # fields optional (docs/wiki/Profile-Format.md forward-compat rules) and
 # document them there.
-func _profile_to_json_string(profile_name: String, description: String = "", author: String = "") -> String:
+func _profile_to_json_string(profile_name: String, description: String = "", author: String = "", display_name: String = "") -> String:
+	# display_name is the modpack's own name (the payload "name" field). When
+	# empty it falls back to the profile name -- so the share-string path and any
+	# caller that doesn't name the pack keep the old behavior. profile_name still
+	# selects which profile's config sections we read.
 	var src := ConfigFile.new()
 	if src.load(UI_CONFIG_PATH) != OK:
 		return ""
@@ -1292,7 +1315,7 @@ func _profile_to_json_string(profile_name: String, description: String = "", aut
 				dep_ignore[key] = true
 	var payload := {
 		"metroprofile":      1,
-		"name":              profile_name,
+		"name":              display_name.strip_edges() if display_name.strip_edges() != "" else profile_name,
 		"modloader_version": MODLOADER_VERSION,
 		"exported_at":       Time.get_datetime_string_from_system(),
 		"enabled":           enabled,

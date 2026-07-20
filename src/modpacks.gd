@@ -1260,13 +1260,17 @@ func retry_failed_downloads(failures: Array, progress: Callable = Callable()) ->
 # Save the named profile as a modpack zip in <game>/mods/. Used by the
 # "Save as modpack" entry on the profile dropdown. Filename is the
 # sanitized profile name; refuses to overwrite an existing zip.
-func save_profile_as_modpack(profile_name: String, description: String = "", author: String = "") -> Dictionary:
+func save_profile_as_modpack(profile_name: String, modpack_name: String = "", description: String = "", author: String = "") -> Dictionary:
 	if _mods_dir.is_empty():
 		_mods_dir = OS.get_executable_path().get_base_dir().path_join(MOD_DIR)
-	var safe := _sanitize_profile_name(profile_name)
+	# The pack's own name drives the zip filename + the profile.json "name". The
+	# source profile only supplies the mod set. Empty name falls back to the
+	# profile name (old behavior).
+	var pack_name := modpack_name.strip_edges() if modpack_name.strip_edges() != "" else profile_name
+	var safe := _sanitize_profile_name(pack_name)
 	if safe.is_empty():
-		return {"ok": false, "error": "Invalid profile name"}
+		return {"ok": false, "error": "Invalid modpack name"}
 	var output := _mods_dir.path_join(safe + ".zip")
 	if FileAccess.file_exists(output):
 		return {"ok": false, "error": "A file named " + safe + ".zip already exists in /mods/"}
-	return _export_profile_to_zip(profile_name, output, description, author)
+	return _export_profile_to_zip(profile_name, output, description, author, pack_name)
