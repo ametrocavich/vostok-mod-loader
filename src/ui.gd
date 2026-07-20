@@ -5467,6 +5467,22 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			load_more_btn.disabled = not bool(state["has_more"])
 			return
 		var rows: Array = _mws_data_rows(data)
+		# MWS ignores the sort param when a text query is present -- it always
+		# returns relevance order, so an outdated exact-name match (e.g. an old
+		# "Item Spawner") pins to the top no matter the dropdown. Re-sort the
+		# returned rows client-side by the selected field so the dropdown works
+		# for searches too. Sorts the loaded page(s); most queries fit one page,
+		# so this is complete in practice. ISO date strings compare chronologically.
+		if str(state["query"]) != "":
+			var sort_key := str(state["sort"])
+			var numeric := sort_key == "downloads" or sort_key == "likes" or sort_key == "views"
+			rows.sort_custom(func(a, b):
+				if not (a is Dictionary and b is Dictionary):
+					return false
+				if numeric:
+					return int((a as Dictionary).get(sort_key, 0)) > int((b as Dictionary).get(sort_key, 0))
+				return str((a as Dictionary).get(sort_key, "")) > str((b as Dictionary).get(sort_key, ""))
+			)
 		# .get()'s default only covers an ABSENT key; a present-but-null (or
 		# non-dict) meta would crash the typed assignment. Same guard shape
 		# as _mws_data_rows applies to the sibling data field.
