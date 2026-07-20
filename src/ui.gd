@@ -858,8 +858,11 @@ func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: Ta
 	d.title = "Save partial modpack?" if has_orphans else "Save as modpack"
 	# Capped to fit comfortably inside a 640px launcher (chrome ~80px,
 	# leaves ~480px for body). Width stays at 560.
-	d.min_size = Vector2i(560, 320 if has_orphans else 220)
-	d.max_size = Vector2i(700, 540)
+	# Sized so name + author + description all fit without the outer scroll
+	# swallowing the description (the name field pushed content past the old
+	# 220px). Still capped to sit inside the 640-tall launcher.
+	d.min_size = Vector2i(600, 520 if has_orphans else 420)
+	d.max_size = Vector2i(780, 600)
 
 	var outer_scroll := ScrollContainer.new()
 	outer_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -912,7 +915,7 @@ func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: Ta
 
 	var desc_input := TextEdit.new()
 	desc_input.placeholder_text = "e.g. \"Tarkov-style loot economy + harder AI\""
-	desc_input.custom_minimum_size = Vector2(520, 56)
+	desc_input.custom_minimum_size = Vector2(520, 100)
 	desc_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	desc_input.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
 	desc_input.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
