@@ -439,3 +439,13 @@ var _mod_update_in_flight: Dictionary = {}
 # it at the end). The tab_changed listener calls _rebuild_modpacks_tab; this
 # flag breaks the cycle so a single rebuild request doesn't recurse forever.
 var _rebuilding_modpacks_tab: bool = false
+
+# Shared re-entrancy guard for ALL in-place tab rebuilds (_rebuild_mods_tab,
+# _rebuild_modpacks_tab, _rebuild_updates_tab). The per-tab flag above is not
+# enough: remove_child shifts current_tab to a SIBLING, so the re-entrant
+# tab_changed can dispatch into a DIFFERENT rebuild helper than the one in
+# flight (e.g. removing the Updates tab lands current_tab on Modpacks, which
+# then calls _rebuild_modpacks_tab mid-mutation -> "Parent node is busy
+# adding/removing children"). The tab_changed listener bails while this is set,
+# so no rebuild can nest inside another regardless of which tab it targets.
+var _rebuilding_tab_in_place: bool = false

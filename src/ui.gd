@@ -1465,6 +1465,7 @@ func _rebuild_mods_tab(tabs: TabContainer) -> void:
 	var old := tabs.get_node_or_null(UI_TAB_MODS)
 	if old == null:
 		return
+	_rebuilding_tab_in_place = true
 	# Carry the list scroll position across the teardown -- a rebuild from a
 	# checkbox halfway down a long list must not snap the view to the top.
 	var saved_scroll := 0
@@ -1489,6 +1490,7 @@ func _rebuild_mods_tab(tabs: TabContainer) -> void:
 		if ctrl != null and ctrl.name == current_tab_name:
 			tabs.current_tab = i
 			break
+	_rebuilding_tab_in_place = false
 	# Profile switches / dev-mode toggles change enable state without
 	# hitting the per-row checkbox handler.
 	refresh_launch_button_label()
@@ -1514,6 +1516,7 @@ func _rebuild_updates_tab(tabs: TabContainer) -> void:
 	var old := tabs.get_node_or_null(UI_TAB_UPDATES)
 	if old == null:
 		return
+	_rebuilding_tab_in_place = true
 	var idx := old.get_index()
 	var current_tab_node := tabs.get_tab_control(tabs.current_tab) if tabs.get_tab_count() > 0 else null
 	var current_tab_name := str(current_tab_node.name) if current_tab_node != null else ""
@@ -1528,6 +1531,7 @@ func _rebuild_updates_tab(tabs: TabContainer) -> void:
 		if ctrl != null and ctrl.name == current_tab_name:
 			tabs.current_tab = i
 			break
+	_rebuilding_tab_in_place = false
 
 # Modpack-apply failure summary with per-mod rows. Each failure shows the
 # profile_key + reason + an "Open MWS page" button (when an mws_id is
@@ -2908,6 +2912,7 @@ func _rebuild_modpacks_tab(tabs: TabContainer) -> void:
 	if old == null:
 		_rebuilding_modpacks_tab = false
 		return
+	_rebuilding_tab_in_place = true
 	# Carry the list scroll position across the teardown -- a row action
 	# halfway down a long modpack list must not snap the view to the top.
 	var saved_scroll := 0
@@ -2923,6 +2928,7 @@ func _rebuild_modpacks_tab(tabs: TabContainer) -> void:
 	tabs.move_child(new_tab, idx)
 	if was_current:
 		tabs.current_tab = idx
+	_rebuilding_tab_in_place = false
 	_rebuilding_modpacks_tab = false
 	if saved_scroll > 0:
 		_restore_modpacks_scroll(saved_scroll)
@@ -3215,6 +3221,12 @@ func show_mod_ui() -> void:
 	# _rebuilding_modpacks_tab flag, so the rebuild-during-tab-show that
 	# broke things in the earlier revision no longer applies.
 	tabs.tab_changed.connect(func(idx: int):
+		# Bail on re-entrant tab_changed fired mid-rebuild. An in-place rebuild
+		# does remove_child/add_child/move_child, each of which re-fires
+		# tab_changed while the TabContainer is busy; dispatching another rebuild
+		# here corrupts the tree (nodes freed mid-op -> tabs vanish).
+		if _rebuilding_tab_in_place:
+			return
 		var ctrl := tabs.get_tab_control(idx)
 		if ctrl != null and ctrl.name == UI_TAB_MODPACKS:
 			_rebuild_modpacks_tab(tabs)
