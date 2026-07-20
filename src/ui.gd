@@ -4534,6 +4534,22 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		name_lbl.add_theme_color_override("font_color", COL_OK if entry["enabled"] else COL_TEXT_DIM)
 		name_col.add_child(name_lbl)
 
+		# ModWorkshop page link. When the mod's mod.txt carries
+		# [updates] modworkshop=N, surface a one-click link to its MWS page --
+		# description, screenshots, and install instructions all live there, so
+		# the user does not have to go hunt the mod down in the Browse tab to
+		# read them (the gap that prompted this). Zero network: opens the URL.
+		var mws_cfg: ConfigFile = entry.get("cfg")
+		if mws_cfg != null and mws_cfg.has_section_key("updates", "modworkshop"):
+			var row_mws_id := int(str(mws_cfg.get_value("updates", "modworkshop", "0")))
+			if row_mws_id > 0:
+				var mws_btn := _make_row_action("Open ModWorkshop page", COL_AMBER,
+						"Open this mod's ModWorkshop page (description, screenshots, install instructions) in your browser.")
+				mws_btn.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+				name_col.add_child(mws_btn)
+				var page_id := row_mws_id
+				mws_btn.pressed.connect(func(): OS.shell_open(MODWORKSHOP_PAGE_URL_TEMPLATE % str(page_id)))
+
 		if entry["ext"] == "folder":
 			var dev_lbl := Label.new()
 			dev_lbl.text = "[dev folder]"
