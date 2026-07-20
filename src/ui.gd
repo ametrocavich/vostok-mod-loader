@@ -3051,12 +3051,15 @@ func show_mod_ui() -> void:
 	win.add_theme_stylebox_override("embedded_unfocused_border", win_style.duplicate())
 
 	# Solid dark background so Godot's default gray theme doesn't show through.
-	# The 0.6-alpha black is a deliberate scrim over the window floor, not a
+	# The 0.92-alpha black is a near-opaque scrim over the window floor, not a
 	# surface token; the outline snaps to COL_BORDER (was pure white glare).
+	# Was 0.6, but at 40% game bleed-through the text got hard to read over
+	# bright scenes -- 0.92 keeps only a faint hint of the game behind and is
+	# easier on OLED (less bright content under static UI).
 	var bg := Panel.new()
 	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	var bg_s := StyleBoxFlat.new()
-	bg_s.bg_color = Color(0.0, 0.0, 0.0, 0.6)
+	bg_s.bg_color = Color(0.0, 0.0, 0.0, 0.92)
 	bg_s.border_color = COL_BORDER
 	_sb_border(bg_s)
 	bg.add_theme_stylebox_override("panel", bg_s)
