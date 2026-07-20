@@ -1264,13 +1264,21 @@ func _profile_to_json_string(profile_name: String, description: String = "", aut
 	var pr_sec := _profile_sec(profile_name, ".priority")
 	if not src.has_section(en_sec):
 		return ""
+	# A modpack is the set of mods you actually run, so only ENABLED mods go in.
+	# Disabled-but-installed mods are excluded, so applying the pack never
+	# downloads or tracks mods the author wasn't using. (Previously every key in
+	# the profile was serialized, including key=false disabled entries.)
 	var enabled: Dictionary = {}
 	for key: String in src.get_section_keys(en_sec):
-		enabled[key] = bool(src.get_value(en_sec, key))
+		if bool(src.get_value(en_sec, key)):
+			enabled[key] = true
+	# Priority + dep_ignore + sources below are all scoped to the enabled set
+	# via enabled.has(key), so nothing about a disabled mod leaks into the pack.
 	var priority: Dictionary = {}
 	if src.has_section(pr_sec):
 		for key: String in src.get_section_keys(pr_sec):
-			priority[key] = int(str(src.get_value(pr_sec, key)))
+			if enabled.has(key):
+				priority[key] = int(str(src.get_value(pr_sec, key)))
 	# dep_ignore ("Load anyway") overrides, sparse -- only the true entries are
 	# stored. Optional v1 field; old parsers ignore it (forward-compat rule), so
 	# round-tripping through an older import just drops the overrides, never
@@ -1280,7 +1288,7 @@ func _profile_to_json_string(profile_name: String, description: String = "", aut
 	var ig_sec := _profile_sec(profile_name, ".dep_ignore")
 	if src.has_section(ig_sec):
 		for key: String in src.get_section_keys(ig_sec):
-			if bool(src.get_value(ig_sec, key)):
+			if bool(src.get_value(ig_sec, key)) and enabled.has(key):
 				dep_ignore[key] = true
 	var payload := {
 		"metroprofile":      1,
@@ -1300,9 +1308,15 @@ func _profile_to_json_string(profile_name: String, description: String = "", aut
 	# modworkshop= in mod.txt. Optional v1 metroprofile field; old parsers
 	# ignore it per the forward-compat rule. Lets a future import fetch
 	# missing mods automatically.
+	# Only enabled mods' sources -- a pack must not ship download info for mods
+	# it doesn't include (else applying it fetches mods the author had disabled).
 	var sources := _build_profile_sources()
-	if not sources.is_empty():
-		payload["sources"] = sources
+	var enabled_sources: Dictionary = {}
+	for src_key in sources:
+		if enabled.has(src_key):
+			enabled_sources[src_key] = sources[src_key]
+	if not enabled_sources.is_empty():
+		payload["sources"] = enabled_sources
 	if not dep_ignore.is_empty():
 		payload["dep_ignore"] = dep_ignore
 	return JSON.stringify(payload, "  ")
