@@ -3136,7 +3136,6 @@ func show_mod_ui() -> void:
 	var close_btn := Button.new()
 	close_btn.flat = true
 	close_btn.icon = _make_close_icon(COL_TEXT_DIM)
-	close_btn.tooltip_text = "Close and launch"
 	close_btn.custom_minimum_size = Vector2(28, 28)
 	close_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	header_row.add_child(close_btn)
@@ -3214,6 +3213,11 @@ func show_mod_ui() -> void:
 	win.close_requested.connect(func(): launch_btn.pressed.emit())
 	# The in-plate X does exactly what the old native title-bar X did.
 	close_btn.pressed.connect(func(): launch_btn.pressed.emit())
+	# Status-line hint, NOT a Godot tooltip: a raw tooltip is its own popup that
+	# isn't always_on_top, so it renders behind this always_on_top window
+	# (half-clipped). _wire_hint needs _ui_hint_label, which the bottom bar set
+	# above -- so this must come after it, not at close_btn's creation.
+	_wire_hint(close_btn, "Close and launch")
 
 	# Fire-and-forget self-update check. Updates _ui_update_alert_btn and may
 	# pop the one-shot dialog when the API returns. Guards on
