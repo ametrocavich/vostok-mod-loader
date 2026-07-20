@@ -5014,8 +5014,8 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	toolbar.add_child(search_input)
 
 	var sort_dropdown := OptionButton.new()
-	# Index -> API sort enum. best_match auto-selects when query is non-empty;
-	# user can still pick a different sort to override.
+	# Index -> API sort enum. Search honors this sort (no best_match override) --
+	# default "Recently bumped" keeps most-recently-updated mods on top.
 	sort_dropdown.add_item("Recently bumped")
 	sort_dropdown.add_item("Most downloaded")
 	sort_dropdown.add_item("Most liked")
@@ -5445,11 +5445,11 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		# re-derives visible/disabled from has_more.
 		load_more_btn.disabled = true
 		set_status.call("Loading..." if not append else "Loading more...", COL_TEXT_DIM)
+		# Search honors the chosen sort (default "Recently bumped" = bumped_at)
+		# instead of silently switching to best_match relevance. best_match pinned
+		# an exact-name match (e.g. an outdated "Ryhon Item Spawner") to the top
+		# regardless of upload date; a user searching wants most-recent first.
 		var sort: String = str(state["sort"])
-		# Auto-pick best_match when there's a query and the user hasn't picked
-		# a non-default sort. They can override by selecting a sort explicitly.
-		if str(state["query"]) != "" and sort == "bumped_at":
-			sort = "best_match"
 		var data: Variant = await mws_list_mods(str(state["query"]), sort, int(state["category_id"]), page)
 		if int(state["fetch_seq"]) != my_seq:
 			return
@@ -5904,6 +5904,96 @@ func _format_iso_datetime(iso: String) -> String:
 # the file history (/mods/{id}/files) into a separate section once available.
 # The Get button forwards to the same on_get callback the list rows use, so
 # install state stays consistent between the row and the modal.
+## Replace every match of `re` in `s` using a callable that maps a RegExMatch to
+## its replacement. Avoids RegEx.sub's backreference syntax (unused elsewhere in
+## this codebase) -- get_string()/get_start()/get_end() are unambiguous.
+func _re_replace(re: RegEx, s: String, repl: Callable) -> String:
+	var out := ""
+	var last := 0
+	for m in re.search_all(s):
+		out += s.substr(last, m.get_start() - last)
+		out += str(repl.call(m))
+		last = m.get_end()
+	out += s.substr(last)
+	return out
+
+## Convert ModWorkshop's Markdown-flavored description into Godot BBCode for a
+## RichTextLabel: headings, bold/italic/strikethrough, bullet lists, blockquotes,
+## horizontal rules, links, and MWS's {#hex}(text) / :::{#hex}(...):::
+## color spans. Inline images (![alt](url)) collapse to their alt text --
+## RichTextLabel can't load remote images inline without extra async work.
+## Best-effort and non-crashing: malformed input just renders imperfectly.
+func _markdown_to_bbcode(md: String) -> String:
+	# Sentinels stand in for our own '[' / ']' while we escape the user's literal
+	# brackets, so escaping can't mangle tags we generate. STX/ETX never appear
+	# in real descriptions.
+	var LB := char(2)
+	var RB := char(3)
+	var s := md.replace("\r\n", "\n").replace("\r", "\n")
+	s = s.replace(":::", "")  # drop MWS colored-block delimiters; keep {#hex}(..)
+
+	# Bracket/paren constructs, converted BEFORE escaping literal '['. Images
+	# first (a link with a leading '!').
+	var re_img := RegEx.new()
+	re_img.compile("!\\[([^\\]]*)\\]\\([^)]*\\)")
+	s = _re_replace(re_img, s, func(m): return m.get_string(1))
+	var re_link := RegEx.new()
+	re_link.compile("\\[([^\\]]*)\\]\\(([^)\\s]+)\\)")
+	s = _re_replace(re_link, s, func(m): return LB + "url=" + m.get_string(2) + RB + m.get_string(1) + LB + "/url" + RB)
+	var re_color := RegEx.new()
+	re_color.compile("\\{#([0-9a-fA-F]{3,8})\\}\\(([^)]*)\\)")
+	s = _re_replace(re_color, s, func(m): return LB + "color=#" + m.get_string(1) + RB + m.get_string(2) + LB + "/color" + RB)
+
+	# Escape remaining literal '[' so stray user brackets aren't read as tags.
+	# Only '[' matters to the parser; a lone ']' renders literally.
+	s = s.replace("[", "[lb]")
+
+	# Block level: strip line markers, wrap in sentinel tags. Done BEFORE inline
+	# emphasis so a bullet's leading '*' is gone before the '*italic*' rule runs.
+	var re_h := RegEx.new()
+	re_h.compile("^(#{1,6})\\s+(.*)$")
+	var re_li := RegEx.new()
+	re_li.compile("^\\s*[-*+]\\s+(.*)$")
+	var lines := PackedStringArray()
+	for line in s.split("\n"):
+		var t := line.strip_edges()
+		if t == "---" or t == "***" or t == "___":
+			lines.append(LB + "color=#555555" + RB + "--------------------" + LB + "/color" + RB)
+			continue
+		var mh := re_h.search(line)
+		if mh != null:
+			var lvl := mh.get_string(1).length()
+			var sz := 22 if lvl == 1 else (19 if lvl == 2 else 17)
+			lines.append(LB + "font_size=" + str(sz) + RB + LB + "b" + RB + mh.get_string(2) + LB + "/b" + RB + LB + "/font_size" + RB)
+			continue
+		if line.begins_with(">"):
+			lines.append(LB + "indent" + RB + LB + "color=#a0a0a0" + RB + line.substr(1).strip_edges() + LB + "/color" + RB + LB + "/indent" + RB)
+			continue
+		var ml := re_li.search(line)
+		if ml != null:
+			lines.append(LB + "indent" + RB + "- " + ml.get_string(1) + LB + "/indent" + RB)
+			continue
+		lines.append(line)
+	s = "\n".join(lines)
+
+	# Inline emphasis, whole string. Bold before italic so '**' isn't eaten by '*'.
+	var re_bold := RegEx.new()
+	re_bold.compile("\\*\\*([^*]+)\\*\\*")
+	s = _re_replace(re_bold, s, func(m): return LB + "b" + RB + m.get_string(1) + LB + "/b" + RB)
+	var re_bold2 := RegEx.new()
+	re_bold2.compile("__([^_]+)__")
+	s = _re_replace(re_bold2, s, func(m): return LB + "b" + RB + m.get_string(1) + LB + "/b" + RB)
+	var re_strike := RegEx.new()
+	re_strike.compile("~~([^~]+)~~")
+	s = _re_replace(re_strike, s, func(m): return LB + "s" + RB + m.get_string(1) + LB + "/s" + RB)
+	var re_ital := RegEx.new()
+	re_ital.compile("(?<![\\w*])\\*([^*\\n]+)\\*(?![\\w*])")
+	s = _re_replace(re_ital, s, func(m): return LB + "i" + RB + m.get_string(1) + LB + "/i" + RB)
+
+	# Restore our tags to real brackets, last, so escaping never touched them.
+	s = s.replace(LB, "[").replace(RB, "]")
+	return s
+
 func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> void:
 	var d := AcceptDialog.new()
 	d.title = str(mod_data.get("name", "?"))
@@ -5974,7 +6064,9 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 	box.add_child(meta)
 
 	# Description: prefer the long-form `desc`, fall back to `short_desc`.
-	# Rendered as plain text -- markdown -> BBCode pass is a future polish.
+	# ModWorkshop descriptions are Markdown (plus its {#hex}(...) color
+	# extension). Convert to BBCode and render in a RichTextLabel so headings,
+	# bold, lists, quotes, colors and links show instead of raw markup.
 	var desc_str := str(mod_data.get("desc", "")).strip_edges()
 	if desc_str.is_empty():
 		desc_str = str(mod_data.get("short_desc", "")).strip_edges()
@@ -5985,11 +6077,18 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 		desc_hdr.add_theme_font_size_override("font_size", FS_HEAD)
 		desc_hdr.add_theme_color_override("font_color", COL_TEXT)
 		box.add_child(desc_hdr)
-		var desc_lbl := Label.new()
-		desc_lbl.text = desc_str
-		desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		desc_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		box.add_child(desc_lbl)
+		var desc_rt := RichTextLabel.new()
+		desc_rt.bbcode_enabled = true
+		desc_rt.text = _markdown_to_bbcode(desc_str)
+		desc_rt.fit_content = true
+		desc_rt.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		desc_rt.selection_enabled = true
+		desc_rt.meta_underlined = true
+		desc_rt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		desc_rt.add_theme_color_override("default_color", COL_TEXT)
+		# Markdown links become [url=...]; open them in the system browser.
+		desc_rt.meta_clicked.connect(func(meta): OS.shell_open(str(meta)))
+		box.add_child(desc_rt)
 
 	box.add_child(HSeparator.new())
 	var files_hdr := Label.new()
