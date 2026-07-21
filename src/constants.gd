@@ -353,6 +353,8 @@ var _rtv_re_extends: RegEx
 var _rtv_re_class_name: RegEx
 var _rtv_re_func: RegEx
 var _rtv_re_static_func: RegEx
+var _rtv_re_sig_tail: RegEx
+var _rtv_re_param_name: RegEx
 var _rtv_re_var: RegEx
 var _rtv_re_ret_value: RegEx
 

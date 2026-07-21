@@ -135,18 +135,32 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 		return
 
 	var mount_path := full_path
+	var skip_remount := _filescope_mounted.has(full_path)
 	if ext == "folder":
-		mount_path = zip_folder_to_temp(full_path)
-		if mount_path == "":
-			_log_critical("Failed to zip folder: " + file_name)
-			return
+		# A folder mod's mount identity is its temp _dev.zip -- that is the
+		# path pass state records and static init file-scope-mounts, so the
+		# re-mount guard must key on it (the folder path itself never appears
+		# in _filescope_mounted; keying on full_path made the guard dead for
+		# folder mods). Decided BEFORE re-zipping: overwriting a VFS-mounted
+		# zip in place invalidates the mount's file handles (see the hook-pack
+		# regen note on file_access_zip), so only rebuild the zip when the
+		# folder's content actually changed -- in that case the state hash
+		# moves too and a clean restart follows.
+		mount_path = _folder_dev_zip_path(full_path)
+		skip_remount = _filescope_mounted.has(mount_path) \
+				and _folder_dev_zip_current(mount_path)
+		if not skip_remount:
+			mount_path = zip_folder_to_temp(full_path)
+			if mount_path == "":
+				_log_critical("Failed to zip folder: " + file_name)
+				return
 
 	# If this archive was already file-scope-mounted at static init, skip the
 	# redundant re-mount. ProjectSettings.load_resource_pack with
 	# replace_files=true (default in _try_mount_pack) would otherwise clobber
 	# any overlay pack we mounted AFTER this archive -- e.g. an inline-hooks
 	# overlay whose entries overlap with this mod's archive paths.
-	if _filescope_mounted.has(full_path):
+	if skip_remount:
 		_log_debug("  File-scope mount active -- skipping re-mount")
 		_log_debug("  Mount path: " + mount_path)
 	elif not _try_mount_pack(mount_path):

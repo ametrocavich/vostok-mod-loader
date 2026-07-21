@@ -582,15 +582,22 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			# content, the hook pack mounted but isn't serving files -- every
 			# rewrite will silently fall back to vanilla.
 			var canary_got := FileAccess.get_file_as_string("res://__modloader_canary__.txt")
-			if canary_got.strip_edges() == canary_content:
-				_log_info("[STABILITY] VFS canary OK: hook pack mount precedence verified (%s)" % canary_got.strip_edges())
-			else:
-				_log_critical("[STABILITY] VFS canary FAILED (got '%s', expected '%s') -- hook pack mounted but files aren't served. Rewrites will not take effect this session." % [canary_got.substr(0, 40), canary_content])
+			if canary_got.strip_edges() != canary_content:
+				# Fail LOUD and run vanilla. Activating anyway would leave a
+				# half-modded state: cached scripts get the rewrite via direct
+				# source mutation, while lazy VFS loads fall back to vanilla.
+				# Skipping the persist means next launch regenerates a fresh
+				# pack instead of static-init remounting this broken one -- a
+				# transient failure self-heals, it does not disable modding.
+				_log_critical("[STABILITY] VFS canary FAILED (got '%s', expected '%s') -- hook pack mounted but files aren't served. Skipping activation: script hooks will not fire this session, vanilla scripts run. Pack state not persisted; next launch regenerates." % [canary_got.substr(0, 40), canary_content])
+				return ""
+			_log_info("[STABILITY] VFS canary OK: hook pack mount precedence verified (%s)" % canary_got.strip_edges())
 			_log_info("[RTVCodegen] Generated %d rewritten vanilla script(s), %d hook points -- pack mounted at res:// (%s)" \
 					% [script_count, hook_count, pack_zip_rel.get_file()])
 			_activate_rewritten_scripts(packed_paths, pack_zip_rel)
 		else:
-			_log_critical("[RTVCodegen] Failed to mount hook pack at %s -- rewrites won't load" % zip_abs)
+			_log_critical("[RTVCodegen] Failed to mount hook pack at %s -- script hooks will not fire this session, vanilla scripts run. Next launch regenerates the pack." % zip_abs)
+			return ""
 	else:
 		_log_info("[RTVCodegen] No scripts rewritten -- no pack mounted")
 	return pack_zip_rel

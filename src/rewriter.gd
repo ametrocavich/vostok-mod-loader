@@ -119,26 +119,98 @@ func _rtv_compile_codegen_regex() -> void:
 	_rtv_re_extends.compile('^extends\\s+"?([\\w/.:"]+)"?')
 	_rtv_re_class_name = RegEx.new()
 	_rtv_re_class_name.compile('^class_name\\s+(\\w+)')
+	# Head-only match: the parameter list is extracted by _rtv_scan_signature,
+	# a depth-aware scan. A single [^)]* regex stops at the FIRST ')', so any
+	# signature whose parameter default contains parens -- e.g.
+	# func f(v = Vector2(1, 2)): -- failed to match and the whole function was
+	# silently skipped (never hookable).
 	_rtv_re_func = RegEx.new()
-	_rtv_re_func.compile('^func\\s+(\\w+)\\s*\\(([^)]*)\\)(\\s*->\\s*([\\w\\[\\]]+))?\\s*:')
+	_rtv_re_func.compile('^func\\s+(\\w+)\\s*\\(')
 	_rtv_re_static_func = RegEx.new()
-	_rtv_re_static_func.compile('^static\\s+func\\s+(\\w+)\\s*\\(([^)]*)\\)(\\s*->\\s*([\\w\\[\\]]+))?\\s*:')
+	_rtv_re_static_func.compile('^static\\s+func\\s+(\\w+)\\s*\\(')
+	_rtv_re_sig_tail = RegEx.new()
+	_rtv_re_sig_tail.compile('^\\s*(?:->\\s*([\\w\\[\\]]+)\\s*)?:')
+	_rtv_re_param_name = RegEx.new()
+	_rtv_re_param_name.compile('^[A-Za-z_]\\w*')
 	_rtv_re_var = RegEx.new()
 	_rtv_re_var.compile('^(?:@export\\s+)?var\\s+(\\w+)')
 	_rtv_re_ret_value = RegEx.new()
 	_rtv_re_ret_value.compile('(?:^|[:;])\\s*return\\b\\s*[^\\s#]')
 
+# Scan a func declaration line from just after the opening paren, tracking
+# paren/bracket/brace depth and string literals, so parameter defaults like
+# Vector2(1, 2), {a = 1, b = 2} or "a,b" don't end the parameter list early.
+# Returns {params, return_type (String or null)} for a complete single-line
+# declaration, {} otherwise (multi-line signatures stay skipped, as before).
+func _rtv_scan_signature(line: String, params_start: int) -> Dictionary:
+	var depth := 1
+	var in_str := ""
+	var escaped := false
+	var i := params_start
+	var n := line.length()
+	while i < n:
+		var c := line[i]
+		if in_str != "":
+			if escaped:
+				escaped = false
+			elif c == "\\":
+				escaped = true
+			elif c == in_str:
+				in_str = ""
+		elif c == "\"" or c == "'":
+			in_str = c
+		elif c == "(" or c == "[" or c == "{":
+			depth += 1
+		elif c == ")" or c == "]" or c == "}":
+			depth -= 1
+			if depth == 0:
+				break
+		i += 1
+	if i >= n or line[i] != ")":
+		return {}
+	var m_tail := _rtv_re_sig_tail.search(line.substr(i + 1))
+	if m_tail == null:
+		return {}
+	var ret_type = m_tail.get_string(1) if m_tail.get_start(1) != -1 else null
+	return {"params": line.substr(params_start, i - params_start), "return_type": ret_type}
+
+# Split a parameter list on TOP-LEVEL commas only -- commas nested inside
+# (), [], {} or string literals belong to a default value, not the list.
+func _rtv_split_params_top_level(params: String) -> Array:
+	var parts: Array = []
+	var depth := 0
+	var in_str := ""
+	var escaped := false
+	var start := 0
+	for i in params.length():
+		var c := params[i]
+		if in_str != "":
+			if escaped:
+				escaped = false
+			elif c == "\\":
+				escaped = true
+			elif c == in_str:
+				in_str = ""
+		elif c == "\"" or c == "'":
+			in_str = c
+		elif c == "(" or c == "[" or c == "{":
+			depth += 1
+		elif c == ")" or c == "]" or c == "}":
+			depth -= 1
+		elif c == "," and depth == 0:
+			parts.append(params.substr(start, i - start))
+			start = i + 1
+	parts.append(params.substr(start))
+	return parts
+
 func _rtv_extract_param_names(params: String) -> Array:
 	var names: Array = []
 	if params.strip_edges().is_empty():
 		return names
-	for p in params.split(","):
-		var trimmed := (p as String).strip_edges()
-		var without_type := trimmed.split(":")[0]
-		var without_default := (without_type as String).split("=")[0]
-		var name := (without_default as String).strip_edges()
-		if not name.is_empty():
-			names.append(name)
+	for p in _rtv_split_params_top_level(params):
+		var m := _rtv_re_param_name.search((p as String).strip_edges())
+		if m != null:
+			names.append(m.get_string(0))
 	return names
 
 func _rtv_script_hook_prefix(filename: String) -> String:
@@ -192,22 +264,24 @@ func _rtv_parse_script(filename: String, source: String) -> Dictionary:
 
 			var m_sfunc := _rtv_re_static_func.search(trimmed)
 			if m_sfunc != null:
-				var ret_group = m_sfunc.get_string(4) if m_sfunc.get_start(4) != -1 else null
-				func_starts.append([
-					line_num, m_sfunc.get_string(1), m_sfunc.get_string(2),
-					_rtv_extract_param_names(m_sfunc.get_string(2)), true,
-					ret_group,
-				])
+				var sig_s := _rtv_scan_signature(trimmed, m_sfunc.get_end(0))
+				if not sig_s.is_empty():
+					func_starts.append([
+						line_num, m_sfunc.get_string(1), sig_s["params"],
+						_rtv_extract_param_names(sig_s["params"]), true,
+						sig_s["return_type"],
+					])
 				continue
 
 			var m_func := _rtv_re_func.search(trimmed)
 			if m_func != null:
-				var ret_group2 = m_func.get_string(4) if m_func.get_start(4) != -1 else null
-				func_starts.append([
-					line_num, m_func.get_string(1), m_func.get_string(2),
-					_rtv_extract_param_names(m_func.get_string(2)), false,
-					ret_group2,
-				])
+				var sig_f := _rtv_scan_signature(trimmed, m_func.get_end(0))
+				if not sig_f.is_empty():
+					func_starts.append([
+						line_num, m_func.get_string(1), sig_f["params"],
+						_rtv_extract_param_names(sig_f["params"]), false,
+						sig_f["return_type"],
+					])
 
 	# Second pass: extract function bodies to detect await + return-with-value.
 	for idx in func_starts.size():

@@ -51,7 +51,8 @@ static func _static_vmz_to_zip(vmz_path: String) -> String:
 	src.close()
 	dst.close()
 	# Verify the cache zip is complete before writing the .src stamp that
-	# vouches for it. store_buffer() swallows write errors (returns void), so a
+	# vouches for it. store_buffer() returns a bool since Godot 4.3, but the
+	# loop above doesn't check per-chunk (get_error() below catches it), so a
 	# disk-full / IO failure mid-copy would otherwise leave a truncated zip
 	# with a valid-looking stamp that every future launch trusts as good.
 	var chk := FileAccess.open(zip_path, FileAccess.READ)
@@ -361,10 +362,32 @@ func _truncate_for_log(s: String) -> String:
 # Folder -> temp zip (developer mode). Zips a mod's source folder to a temp
 # .zip in the cache dir so it can be mounted like any other archive.
 
+# Cache path for a folder mod's temp zip. Shared by zip_folder_to_temp,
+# _collect_enabled_archive_paths and _process_mod_candidate's re-mount guard
+# -- all of them must agree on the folder's mount identity.
+func _folder_dev_zip_path(folder_path: String) -> String:
+	return ProjectSettings.globalize_path(TMP_DIR).path_join(
+			folder_path.get_file() + "_dev.zip")
+
+# True when the cached temp zip still matches the source folder's current
+# content. Compares the folder-state hash recorded in the .src sidecar at
+# zip time against _stable_path_mtime's hash of the folder NOW (newest
+# mtime + file count + per-file path@mtime set hash -- so deletions and
+# timestamp downgrades are caught, not just newer files). A missing zip or
+# sidecar reads as stale, which just forces a rebuild.
+func _folder_dev_zip_current(tmp_zip_path: String) -> bool:
+	if not FileAccess.file_exists(tmp_zip_path):
+		return false
+	var f := FileAccess.open(tmp_zip_path + ".src", FileAccess.READ)
+	if f == null:
+		return false
+	var stored := f.get_as_text().strip_edges()
+	f.close()
+	return not stored.is_empty() and stored == str(_stable_path_mtime(tmp_zip_path))
+
 func zip_folder_to_temp(folder_path: String) -> String:
 	var folder_name := folder_path.get_file()
-	var tmp_zip_path := ProjectSettings.globalize_path(TMP_DIR).path_join(
-			folder_name + "_dev.zip")
+	var tmp_zip_path := _folder_dev_zip_path(folder_path)
 	var zp := ZIPPacker.new()
 	if zp.open(tmp_zip_path) != OK:
 		_log_critical("Failed to create temp zip: " + tmp_zip_path)
@@ -379,6 +402,13 @@ func zip_folder_to_temp(folder_path: String) -> String:
 	# layout need their mod.txt paths re-prefixed with the folder name.)
 	_zip_folder_recursive(zp, folder_path, folder_name)
 	zp.close()
+	# Record the folder-state hash at zip time so _folder_dev_zip_current can
+	# tell a current cache from a stale one. Same .zip.src sidecar convention
+	# as the vmz cache -- _clean_stale_cache removes orphans either way.
+	var sf := FileAccess.open(tmp_zip_path + ".src", FileAccess.WRITE)
+	if sf != null:
+		sf.store_string(str(_stable_path_mtime(tmp_zip_path)))
+		sf.close()
 	return tmp_zip_path
 
 func _zip_folder_recursive(zp: ZIPPacker, disk_path: String, archive_prefix: String) -> void:

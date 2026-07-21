@@ -5446,6 +5446,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		state["mode"] = "discover"
 		state["next_page"] = 1
 		state["has_more"] = false
+		state.erase("loaded_rows")
 		load_more_btn.visible = false
 		load_more_btn.disabled = true
 		set_status.call("Loading...", COL_TEXT_DIM)
@@ -5558,13 +5559,26 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			load_more_btn.disabled = not bool(state["has_more"])
 			return
 		var rows: Array = _mws_data_rows(data)
+		# Accumulate every page fetched for this query/filter so the sort and
+		# render below operate on the FULL loaded set; a fresh (non-append)
+		# fetch resets the accumulator. Dedup by id: a mod bumped between page
+		# fetches shifts server pages and can arrive twice.
+		if append:
+			var acc: Array = state.get("loaded_rows", [])
+			var seen := {}
+			for r in acc:
+				if r is Dictionary:
+					seen[int((r as Dictionary).get("id", 0))] = true
+			for r in rows:
+				if not (r is Dictionary) or not seen.has(int((r as Dictionary).get("id", 0))):
+					acc.append(r)
+			rows = acc
+		state["loaded_rows"] = rows
 		# MWS ignores the sort param when a text query is present -- it always
 		# returns relevance order, so an outdated exact-name match pins to the
 		# top no matter the dropdown. Re-sort client-side by the selected field.
-		# LIMITATION: on Load-more (append) each fetched PAGE is sorted on its
-		# own and appended, so a multi-page query result is per-page sawtoothed,
-		# not globally sorted. Left as-is -- a true cross-page sort needs a
-		# fetch/render rework, and RTV searches essentially always fit one page.
+		# Sorting the accumulated set keeps multi-page results globally sorted
+		# (each page sorted in isolation used to per-page sawtooth on Load more).
 		# ISO date strings compare chronologically.
 		if str(state["query"]) != "":
 			var sort_key := str(state["sort"])
@@ -5596,16 +5610,21 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		state["next_page"] = current_page + 1
 		state["has_more"] = current_page < last_page
 		clear_browse_banner.call()
-		render_mod_rows.call(rows, append)
+		# Full re-render of the accumulated set. On Load more this replaces
+		# the old per-page append -- required for the global re-sort above to
+		# actually show -- so carry the current scroll position across the
+		# rebuild (restored one frame later below, same as the pending-carry
+		# path). A pending carry, if any, wins: it predates this fetch.
+		if append and my_restore < 0 and is_instance_valid(scroll):
+			my_restore = int(scroll.scroll_vertical)
+		render_mod_rows.call(rows, false)
 		# Count from the data, not the scene tree. render_mod_rows clears a
 		# non-append view with queue_free(), which Godot defers to end-of-frame,
 		# so list.get_child_count() in this same synchronous block still counts
 		# the just-freed old rows -- inflating "N of M mods" and (worse) keeping
 		# shown_so_far > 0 so the new "No results" empty state never appears.
-		if append:
-			state["shown_count"] = int(state.get("shown_count", 0)) + rows.size()
-		else:
-			state["shown_count"] = rows.size()
+		# `rows` is the full accumulated set here, so no append arithmetic.
+		state["shown_count"] = rows.size()
 		var shown_so_far: int = int(state["shown_count"])
 		# Empty state as an invitation (spec section 7), not a bare zero.
 		if shown_so_far == 0:
@@ -6017,11 +6036,6 @@ func _format_iso_datetime(iso: String) -> String:
 	return date_part + " " + hm
 
 
-# Detail modal for a Browse-tab row. Opens with whatever ModSummary fields the
-# list endpoint returned (name, desc, image, downloads, etc.) and async-loads
-# the file history (/mods/{id}/files) into a separate section once available.
-# The Get button forwards to the same on_get callback the list rows use, so
-# install state stays consistent between the row and the modal.
 ## Replace every match of `re` in `s` using a callable that maps a RegExMatch to
 ## its replacement. Avoids RegEx.sub's backreference syntax (unused elsewhere in
 ## this codebase) -- get_string()/get_start()/get_end() are unambiguous.
@@ -6119,6 +6133,11 @@ func _markdown_to_bbcode(md: String) -> String:
 	s = s.replace(LB, "[").replace(RB, "]")
 	return s
 
+# Detail modal for a Browse-tab row. Opens with whatever ModSummary fields the
+# list endpoint returned (name, desc, image, downloads, etc.) and async-loads
+# the file history (/mods/{id}/files) into a separate section once available.
+# The Get button forwards to the same on_get callback the list rows use, so
+# install state stays consistent between the row and the modal.
 func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> void:
 	var d := AcceptDialog.new()
 	d.title = str(mod_data.get("name", "?"))

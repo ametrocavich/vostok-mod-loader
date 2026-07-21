@@ -177,6 +177,10 @@ func _on_value_post() -> void:
 
 The dispatcher detects callback arity via `Callable.get_argument_count()`. If the count matches `vanilla_args.size() + 1`, the trailing `_result` is passed and the return value chains forward. If the count matches just `vanilla_args.size()`, the legacy 2-arg path runs (fire-and-forget) and a deprecation warning fires once per callback registration.
 
+### `await` inside a replace hook
+
+Only `await` inside a replace callback when the **vanilla method you replaced is itself a coroutine** (its body contains `await`). The generated wrapper mirrors the vanilla method's coroutine-ness: for a coroutine it `await`s your callback, but for a synchronous method it calls your callback synchronously and returns the value straight to the caller. If your callback suspends there, the caller receives a coroutine state object instead of the declared type -- and any typed call site (`var n: int = obj.Method()`) is a **runtime error** in the vanilla caller you cannot fix from a mod. If you need async work behind a synchronous hook, kick it off with `call_deferred` or a `-callback` suffix hook instead and return a plain value.
+
 Multiple post hooks chain in priority-ascending order. Each hook sees the running `_result` after all prior post hooks have transformed it:
 
 ```gdscript

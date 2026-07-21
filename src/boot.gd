@@ -567,9 +567,7 @@ func _collect_enabled_archive_paths() -> PackedStringArray:
 		if c["ext"] == "folder":
 			# Folder mods are zipped to a temp cache during load_all_mods().
 			# Store the temp zip path -- the folder itself can't be mounted.
-			var folder_name: String = c["full_path"].get_file()
-			var tmp_zip := ProjectSettings.globalize_path(TMP_DIR).path_join(
-					folder_name + "_dev.zip")
+			var tmp_zip: String = _folder_dev_zip_path(c["full_path"])
 			if FileAccess.file_exists(tmp_zip):
 				paths.append(tmp_zip)
 			else:
