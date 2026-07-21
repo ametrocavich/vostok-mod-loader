@@ -56,7 +56,7 @@ var _scene_nodes_listener_connected: bool = false
 # calls with the same id + field set (e.g. recipes.gd auto-unlocking the
 # Equipment tab once per registered recipe) from instantiating +
 # free-ing Interface.tscn N times. Runtime safety is unchanged --
-# _apply_patches_for_scene_root still re-checks _node_has_property on
+# _apply_patches_for_scene_root still re-checks _object_has_property on
 # every live instance, so the cache is strictly additive.
 var _validated_patches: Dictionary = {}
 
@@ -95,7 +95,7 @@ func _apply_patches_for_scene_root(scene_path: String, scene_root: Node) -> void
 		var stash_per_node: Dictionary = stash_per_scene.get(node_path, {})
 		for prop in props.keys():
 			var fname: String = String(prop)
-			if not _node_has_property(target, fname):
+			if not _object_has_property(target, fname):
 				_log_warning("[Registry] scene_nodes: property '%s' not found on node '%s' in '%s'; skipped" \
 						% [fname, node_path, scene_path])
 				continue
@@ -164,7 +164,7 @@ func _validate_scene_node_patch(scene_path: String, node_path: String, fields: D
 		probe.queue_free()
 		return false
 	for prop in fields.keys():
-		if not _node_has_property(target, String(prop)):
+		if not _object_has_property(target, String(prop)):
 			push_warning("[Registry] patch('scene_nodes', '%s#%s'): property '%s' not found on node (class=%s)" \
 					% [scene_path, node_path, prop, target.get_class()])
 			probe.queue_free()
@@ -172,15 +172,6 @@ func _validate_scene_node_patch(scene_path: String, node_path: String, fields: D
 	probe.queue_free()
 	_validated_patches[cache_key] = true
 	return true
-
-# Does `node` have a declared property named `prop`? Mirrors
-# _resource_has_property from shared.gd but for Node. (Nodes expose both
-# class properties and script properties through get_property_list.)
-func _node_has_property(node: Node, prop: String) -> bool:
-	for p in node.get_property_list():
-		if p.get("name") == prop:
-			return true
-	return false
 
 func _patch_scene_node(id: String, fields: Dictionary) -> bool:
 	if fields.is_empty():
@@ -272,19 +263,18 @@ func _revert_scene_node(id: String, fields: Array) -> bool:
 	if tree != null:
 		_collect_scene_roots(tree.root, scene_path, live_roots)
 	for fname in targets:
-		if not stash_per_node.has(fname) and fields.is_empty() == false:
-			# Per-field revert for a field that was never applied to any
-			# live instance: it won't have a stashed original. We still
-			# want to drop the patch, but there's nothing to restore on
-			# live instances.
-			push_warning("[Registry] revert('scene_nodes', '%s'): field '%s' wasn't patched (or never observed on a live instance)" % [id, fname])
-			continue
 		if stash_per_node.has(fname):
 			for root in live_roots:
 				var target: Node = _resolve_scene_target(root, node_path)
-				if target != null and _node_has_property(target, fname):
+				if target != null and _object_has_property(target, fname):
 					target.set(fname, stash_per_node[fname])
 			stash_per_node.erase(fname)
+		elif not fields.is_empty() and not pat_entry.has(fname):
+			# Field was never patched at all (typo): warn, nothing to drop.
+			push_warning("[Registry] revert('scene_nodes', '%s'): field '%s' wasn't patched" % [id, fname])
+		# Always drop the patch, even if no live instance ever observed it
+		# (a pending, never-applied patch has no stash entry but must still
+		# be erased so future instantiations see vanilla).
 		props.erase(fname)
 		pat_entry.erase(fname)
 	# Prune empty nested dicts to keep state clean.

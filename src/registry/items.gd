@@ -79,7 +79,7 @@ func _patch_item(id: String, fields: Dictionary) -> bool:
 		# Resource.get() returns null both for "missing" and for legitimate
 		# null values. Prefer property-list check so mistyped field names
 		# surface as warnings instead of silently patching a phantom field.
-		if not _resource_has_property(target, field_name):
+		if not _object_has_property(target, field_name):
 			push_warning("[Registry] patch('items', '%s'): field '%s' doesn't exist on %s" \
 					% [id, field_name, target.get_class()])
 			continue
@@ -155,7 +155,12 @@ func _revert_item(id: String, fields: Array) -> bool:
 			did_something = true
 		if ov.has(id):
 			var reg: Dictionary = _registry_registered.get("items", {})
-			reg.erase(id)
+			var original = ov[id]
+			if original != null and original != _find_vanilla_item(id):
+				# Overridden entry was a mod registration; put it back.
+				reg[id] = original
+			else:
+				reg.erase(id)
 			_registry_registered["items"] = reg
 			ov.erase(id)
 			_registry_overridden["items"] = ov

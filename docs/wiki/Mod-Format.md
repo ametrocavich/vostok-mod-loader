@@ -11,7 +11,7 @@ A mod is an archive (`.vmz`, `.zip`, or `.pck`, plus unpacked folders in develop
 | `.pck` | `ProjectSettings.load_resource_pack` directly | No | No | No |
 | folder | Zipped to `user://vmz_mount_cache/<name>_dev.zip` then mounted. Zip entries are wrapped under the folder name (see [Folder mode wrapper](#folder-mode-wrapper)). **Developer mode only** | Yes | Yes | Yes |
 
-`.vmz` is the historical community convention -- Godot's ZIPReader won't open files with `.vmz` extension directly, so the loader copies them to `<name>.zip` in the cache dir first (see [fs_archive.gd:9 `_static_vmz_to_zip`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/fs_archive.gd#L9)). Re-extraction triggers when the source `.vmz` mtime is newer than the cache. `.zip` archives skip the cache step and mount directly.
+`.vmz` is the historical community convention -- Godot's ZIPReader won't open files with `.vmz` extension directly, so the loader copies them to `<name>.zip` in the cache dir first (see [fs_archive.gd `_static_vmz_to_zip`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/fs_archive.gd)). Re-extraction triggers when the source `.vmz` mtime is newer than the cache. `.zip` archives skip the cache step and mount directly.
 
 ### Folder mode wrapper
 
@@ -48,6 +48,10 @@ EarlyNode="!res://MyMod/Early.gd"
 [updates]
 modworkshop=12345
 
+[dependencies]
+required=["mod_configuration_menu"]
+optional=["some_soft_integration"]
+
 [hooks]
 res://Scripts/Interface.gd = "_ready, update_tooltip"
 
@@ -58,19 +62,58 @@ res://Scripts/Camera.gd = "res://MyMod/MyCamera.gd"
 ; empty section is enough -- presence enables the registry API
 ```
 
-Only `[mod]` is required. `[autoload]`, `[updates]`, `[hooks]`, `[script_extend]`, `[registry]` are all optional; use the ones your mod needs.
+Only `[mod]` is required. `[autoload]`, `[updates]`, `[dependencies]`, `[hooks]`, `[script_extend]`, `[registry]` are all optional; use the ones your mod needs.
 
 ### `[mod]` section
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `name` | string | filename | Display name in the UI |
-| `id` | string | filename | Unique id. Duplicates after the first loaded mod are skipped |
+| `id` | string | filename | Unique id (case-insensitive). If two installed archives declare the same id, only one loads: highest `version` wins (newer file mtime, then filename, as tiebreaks); the others are hidden with a logged warning |
 | `version` | string | `""` | Used by the Updates tab to compare against ModWorkshop |
 | `priority` | int | 0 (or parsed from filename prefix) | Higher loads later, wins file conflicts. Clamped to `-999..999` |
 | `author` | string | `""` | Optional author/credit string. Parsed and stored on the entry dict; no UI surface yet (added 3.1.2) |
+| `provides` | string array | `[]` | Rename aliases: old ids this mod still satisfies for other mods' dependencies (added 3.3.0). See below. |
 
-**VostokMods compat**: if the archive filename matches `^(-?\d+)-(.*)`, the numeric prefix is used as a fallback priority when `[mod] priority` isn't set. Example: `100-BetterAI.vmz` loads with `priority=100`. See [mod_discovery.gd:130-154](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd#L130).
+**VostokMods compat**: if the archive filename matches `^(-?\d+)-(.*)`, the numeric prefix is used as a fallback priority when `[mod] priority` isn't set. Example: `100-BetterAI.vmz` loads with `priority=100`. See [mod_discovery.gd `_entry_from_config`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd).
+
+### `[dependencies]` section
+
+Declares other mods by `[mod] id` so the launcher can identify missing requirements and the runtime loader can avoid starting mods that cannot work.
+
+```ini
+[dependencies]
+required=["mod_configuration_menu", "rtv_shared_lib"]
+optional=["happy_fireplace"]
+```
+
+Use Godot `ConfigFile` string arrays. Bare CSV (`required=a, b`) is not valid `ConfigFile` syntax and causes the whole `mod.txt` parse to fail. A quoted whole-value string also parses (`required="foo, bar"` splits on commas) as a fallback for older author tools, but string arrays are the recommended form.
+
+| Key | Type | Meaning |
+|---|---|---|
+| `required` | string array | Mods that must be installed and enabled. If any required dependency is missing, disabled, or not loadable, this mod is skipped. |
+| `optional` | string array | Soft integrations. Parsed and displayed by the launcher; absence does not block loading. |
+
+Required dependencies load before the dependent mod automatically: if the priority/name ordering would load a dependency later than its dependent, the loader applies a minimal stable reorder (hoisting the dependency) and notes the adjustment in the launcher's order panel -- no author or user action needed. Dependency cycles are the exception: they are reported as a warning and the involved mods keep their priority order. Explicit priorities still work; the automatic adjustment only kicks in when a required dependency would otherwise load too late.
+
+### Renaming a mod: `[mod] provides` (added 3.3.0)
+
+If you change your mod's `id`, every mod that lists the old id in `[dependencies]` breaks. Declare the old id (or ids) in `provides` and those requirements stay satisfied:
+
+```ini
+[mod]
+name="Better AI"
+id="better_ai"
+provides=["betterai_legacy", "old_better_ai"]
+```
+
+Rules:
+
+- Any `required=` or `optional=` entry naming a provided id resolves to this mod -- it satisfies the requirement, is hoisted by the automatic load ordering, and participates in cycle detection exactly as if it still had the old id. Matching is case-insensitive, like all id handling.
+- A provided id **never shadows an installed and enabled real mod**: if a mod whose actual `id` matches one of your aliases is installed and enabled, that real mod wins for dependency resolution and the loader logs that your alias is inert. If that real mod is installed but disabled, your alias satisfies dependents in its place.
+- If two installed mods provide the same alias, only one of them resolves it (which one depends on load order) and a warning is logged.
+- Use Godot `ConfigFile` string array syntax, same as `[dependencies]`. A malformed `provides` value is ignored with a log line; it never blocks the mod from loading.
+- Declare the alias **in the release that renames the mod** (and keep it): dependents update on their own schedule.
 
 ### `[autoload]` section
 
@@ -90,7 +133,7 @@ EarlyNode="!res://MyMod/Early.gd"
 
 Early autoloads go into `override.cfg`'s `[autoload_prepend]` section, which means Godot loads them BEFORE the game's own autoloads. Late autoloads are instantiated by the loader after mounts land. The loader always puts itself (`ModLoader="*res://modloader.gd"`) last in `[autoload_prepend]`, and reverse-insertion order means it loads first.
 
-Early-autoload `.gd` scripts that only exist inside a mounted archive are extracted to `user://modloader_early/<path>` so Godot can find them before the restart completes its static-init mount. Scenes (`.tscn`) resolve via the file-scope mount directly. See [boot.gd:417 `_ensure_early_autoload_on_disk`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L417).
+Early-autoload `.gd` scripts that only exist inside a mounted archive are extracted to `user://modloader_early/<path>` so Godot can find them before the restart completes its static-init mount. Scenes (`.tscn`) resolve via the file-scope mount directly. See [boot.gd `_ensure_early_autoload_on_disk`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd).
 
 Duplicate autoload names are logged and skipped (first wins). Paths not present in the archive's file set are logged as `"  Autoload path not found in archive"` with similar-path suggestions to help debug case/typo mistakes.
 
@@ -100,7 +143,9 @@ Duplicate autoload names are logged and skipped (first wins). Paths not present 
 |---|---|---|
 | `modworkshop` | int | ModWorkshop mod id. Enables the Updates tab for this mod |
 
-Version compare uses [mod_discovery.gd:211 `compare_versions`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd#L211) -- splits on `.`, strips `v`/`V` prefix, pads shorter side with `"0"`, lexicographic int comparison.
+Declaring `modworkshop` also makes the mod auto-downloadable when someone applies a modpack that includes it -- the loader records `modworkshop` plus `[mod] version` as the mod's source and fetches it from ModWorkshop on the recipient's machine. Mods without a `modworkshop` id must be installed manually by modpack recipients.
+
+Version compare uses [mod_discovery.gd `compare_versions`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd) -- splits on `.`, strips `v`/`V` prefix, pads shorter side with `"0"`, lexicographic int comparison.
 
 ### `[hooks]` section
 
@@ -160,7 +205,7 @@ Opt-in gate for the registry API (`lib.register`, `lib.override`, `lib.patch`, `
 ; empty body -- presence is sufficient
 ```
 
-Declaring an empty `[registry]` section tells the loader to wrap `Database.gd`, `Loader.gd`, `AISpawner.gd`, and `FishPool.gd` with the injected fields the registry API needs. Without the declaration these scripts stay vanilla and registry calls no-op (`push_warning` logged).
+Declaring an empty `[registry]` section tells the loader to wrap `Database.gd`, `Loader.gd`, `AISpawner.gd`, `AI.gd`, `FishPool.gd`, and `Compiler.gd` with the injected fields the registry API needs. Without the declaration these scripts stay vanilla and registry calls no-op (`push_warning` logged).
 
 You don't enumerate what you'll register here -- the section's presence alone enables the subsystem. Use the runtime API to add/override/patch individual entries.
 
@@ -171,9 +216,7 @@ You don't enumerate what you'll register here -- the section's presence alone en
 needs=["Controller", "Camera"]
 ```
 
-Historical declaration from tetrahydroc's standalone [rtv-mod-lib](https://github.com/tetrahydroc/rtv-mod-lib) mod, which used it to pick which framework subclass scripts to generate. **No-op under v3.1.1** -- the loader's opt-in wrap surface is driven by `[hooks]`, `.hook()` call scanning, and `[registry]`, not by `needs=`. Kept for backward compatibility so mods declaring it don't error out.
-
-The loader logs `"[RTVModLib] [rtvmodlib] needs declarations are no-op under source-rewrite"` when mods declare this. If you're shipping a new mod, use `[hooks]` or rely on the `.hook()` scanner instead.
+Historical declaration from tetrahydroc's standalone [rtv-mod-lib](https://github.com/tetrahydroc/rtv-mod-lib) mod, which used it to pick which framework subclass scripts to generate. **Ignored by the current loader** -- the loader does not read this section; it parses as a normal ConfigFile section and is silently ignored, so mods declaring it don't error out. The opt-in wrap surface is driven by `[hooks]`, `.hook()` call scanning, and `[registry]`, not by `needs=`. New mods should use `[hooks]` or the `.hook()` scanner instead.
 
 ### `[script_overrides]` section (legacy alias)
 
@@ -186,14 +229,14 @@ Deprecated alias for `[script_extend]`. Both parse identically; `[script_extend]
 
 ## mod.txt validity states
 
-Tracked per-entry in `_last_mod_txt_status` (see [fs_archive.gd:147 `read_mod_config`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/fs_archive.gd#L147)):
+Tracked per-entry in `_last_mod_txt_status` (see [fs_archive.gd `read_mod_config`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/fs_archive.gd)):
 
 | Status | Meaning | UI warning |
 |---|---|---|
 | `ok` | Parse succeeded | -- |
 | `none` | No mod.txt at archive root | "Invalid mod -- may not work correctly. Try re-downloading." |
 | `nested:<path>` | `mod.txt` exists but not at root (e.g. in `SubFolder/mod.txt`) -- bad packaging | "Invalid mod -- packaged incorrectly. Try re-downloading." |
-| `parse_error` | ConfigFile.parse failed | "Invalid mod -- may not work correctly. Try re-downloading." |
+| `parse_error` | ConfigFile.parse failed | `mod.txt parse error at <detail>` (or `Invalid mod -- mod.txt failed to parse. Try re-downloading.` when no parse detail is available) |
 | `pck` | N/A (PCK skips mod.txt read) | -- |
 
 UTF-8 BOM is stripped before parsing ([fs_archive.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/fs_archive.gd)) so files saved from Windows editors don't trip ConfigFile. Non-UTF8 bytes elsewhere in `mod.txt` (or any `.gd` inside the archive) produce a Godot C++ warning `"Unicode parsing error, some characters were replaced with U+FFFD"` -- the loader logs `[ModScan] inspecting <file>` immediately before the decode so you can match the warning to the mod.

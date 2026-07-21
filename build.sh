@@ -23,7 +23,9 @@ FILES=(
     "$SRC/boot.gd"
     # Mod discovery + loading
     "$SRC/security_scan.gd"
+    "$SRC/mws_api.gd"
     "$SRC/mod_discovery.gd"
+    "$SRC/modpacks.gd"
     "$SRC/mod_loading.gd"
     "$SRC/conflict_report.gd"
     # UI

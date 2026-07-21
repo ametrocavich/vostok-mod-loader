@@ -1,32 +1,64 @@
 # Build
 
-The installable artifact `modloader.gd` is **built** from `src/*.gd` -- not edited directly. The editing surface is the `src/` tree; `modloader.gd` is produced on demand.
+The installable artifact `modloader.gd` is **built** from the `src/` tree (`src/*.gd` plus `src/registry/*.gd`) -- 39 source files -- not edited directly. The editing surface is the `src/` tree; `modloader.gd` is produced on demand.
 
 ## build.sh
 
 Source: [build.sh](https://github.com/ametrocavich/vostok-mod-loader/blob/development/build.sh).
 
-Concatenates `src/*.gd` into a single `modloader.gd` at the repo root. Explicit ordering (not filename-based sort) is in the `FILES` array:
+Concatenates the source files into a single `modloader.gd` at the repo root. Explicit ordering (not filename-based sort) is in the `FILES` array:
 
 ```bash
 FILES=(
+    # Fundamentals (header + module-scope state + log helpers)
     "$SRC/header.gd"
     "$SRC/constants.gd"
     "$SRC/logging.gd"
+    # File + archive helpers (no game-specific logic)
     "$SRC/fs_archive.gd"
+    # Static-init boot layer
     "$SRC/boot.gd"
+    # Mod discovery + loading
+    "$SRC/security_scan.gd"
+    "$SRC/mws_api.gd"
     "$SRC/mod_discovery.gd"
+    "$SRC/modpacks.gd"
     "$SRC/mod_loading.gd"
     "$SRC/conflict_report.gd"
+    # UI
     "$SRC/ui.gd"
+    # Public API (hooks + registry)
     "$SRC/hooks_api.gd"
+    # Registry dispatcher + per-section handlers
     "$SRC/registry.gd"
+    "$SRC/registry/shared.gd"
+    "$SRC/registry/scenes.gd"
+    "$SRC/registry/items.gd"
+    "$SRC/registry/loot.gd"
+    "$SRC/registry/sounds.gd"
+    "$SRC/registry/recipes.gd"
+    "$SRC/registry/events.gd"
+    "$SRC/registry/traders.gd"
+    "$SRC/registry/inputs.gd"
+    "$SRC/registry/loader.gd"
+    "$SRC/registry/ai.gd"
+    "$SRC/registry/ai_loadouts.gd"
+    "$SRC/registry/fish.gd"
+    "$SRC/registry/resources.gd"
+    "$SRC/registry/scene_nodes.gd"
+    "$SRC/registry/aggregators.gd"
+    # Declarative setup() entry point
+    "$SRC/setup.gd"
     "$SRC/framework_wrappers.gd"
+    # Codegen pipeline
     "$SRC/gdsc_detokenizer.gd"
     "$SRC/pck_enumeration.gd"
     "$SRC/rewriter.gd"
     "$SRC/hook_pack.gd"
+    # Orchestration
     "$SRC/lifecycle.gd"
+    "$SRC/main_menu_hook.gd"
+    # Temporary debug scaffolding
     "$SRC/debug.gd"
 )
 ```
@@ -35,12 +67,12 @@ Dependencies flow top-down -- earlier files may not reference code defined later
 
 ### Invariants enforced by build.sh
 
-Post-concat sanity checks ([build.sh:58-70](https://github.com/ametrocavich/vostok-mod-loader/blob/development/build.sh#L58)):
+Post-concat sanity checks ([build.sh:82-94](https://github.com/ametrocavich/vostok-mod-loader/blob/development/build.sh#L82)):
 
 - **Exactly one `extends` line**, and it must be at the very top ([header.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/header.gd)).
 - **At most one `class_name`** declaration (currently there is none -- the loader is ModLoader autoload).
 
-Missing source file aborts before concat ([build.sh:46-49](https://github.com/ametrocavich/vostok-mod-loader/blob/development/build.sh#L46)).
+Missing source file aborts before concat ([build.sh:70-73](https://github.com/ametrocavich/vostok-mod-loader/blob/development/build.sh#L70)).
 
 ### Running it
 
@@ -67,9 +99,9 @@ Automates version bumps and changelog generation from [Conventional Commits](htt
 
 1. PR merges to `master`.
 2. `release-please-action@v4` parses Conventional Commits since the last tag.
-3. Opens a follow-up PR titled something like "chore(main): release 2.3.2" that bumps `MODLOADER_VERSION` in [src/constants.gd:13](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L13) and updates `CHANGELOG.md`.
+3. Opens a follow-up PR titled something like "chore(master): release 3.3.0" that bumps `MODLOADER_VERSION` in [src/constants.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd) (the const between the `x-release-please` markers) and updates `CHANGELOG.md`.
 4. Merging that PR creates the git tag + GitHub Release.
-5. On release creation, the workflow rebuilds `modloader.gd` via `./build.sh` and uploads it (plus `override.cfg`) as release assets.
+5. On release creation, the workflow rebuilds `modloader.gd` via `./build.sh` and uploads it as a release asset along with `override.cfg`, `windows-installer.bat`, and `linux-installer.sh`.
 
 The workflow only rebuilds on release creation -- normal `master` pushes don't trigger a build.
 
@@ -81,9 +113,9 @@ From [CONTRIBUTING.md](https://github.com/ametrocavich/vostok-mod-loader/blob/de
 
 | Type | Bump | Example |
 |---|---|---|
-| `feat:` | minor (2.3.0 -> 2.4.0) | new feature or user-facing behavior |
-| `fix:` | patch (2.3.0 -> 2.3.1) | bug fix |
-| `feat!:` / `fix!:` | major (2.3.0 -> 3.0.0) | breaking change |
+| `feat:` | minor (3.2.0 -> 3.3.0) | new feature or user-facing behavior |
+| `fix:` | patch (3.2.0 -> 3.2.1) | bug fix |
+| `feat!:` / `fix!:` | major (3.2.0 -> 4.0.0) | breaking change |
 
 **No bump** (appears under "Miscellaneous" in changelog):
 
@@ -95,7 +127,7 @@ The bump is applied by release-please to a single line:
 
 ```gdscript
 # x-release-please-start-version
-const MODLOADER_VERSION := "2.3.1"
+const MODLOADER_VERSION := "3.2.1"
 # x-release-please-end
 ```
 

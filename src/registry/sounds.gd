@@ -43,8 +43,8 @@ func _audio_library() -> Resource:
 # Accept an AudioEvent, a bare AudioStream, or a Dictionary, and return an
 # AudioEvent Resource (or null with warning on bad input).
 #
-# AudioEvent's class script is loaded dynamically from the existing library
-#; we don't know its res:// path up front and don't want to hardcode it.
+# AudioEvent's class script is loaded dynamically from the existing library;
+# we don't know its res:// path up front and don't want to hardcode it.
 # Pull the class from any existing @export AudioEvent on the library. This
 # also tolerates the game renaming or moving AudioEvent.gd.
 func _coerce_audio_event(id: String, verb: String, data: Variant) -> Resource:
@@ -74,8 +74,23 @@ func _coerce_audio_event(id: String, verb: String, data: Variant) -> Resource:
 			ev.set("audioClips", d["audioClips"])
 		else:
 			ev.set("audioClips", [])
-		ev.set("volume", float(d.get("volume", 0.0)))
-		ev.set("randomPitch", bool(d.get("randomPitch", false)))
+		# .get's default only covers an ABSENT key; a present-but-null (or
+		# wrong-typed) value would hit float(null)/bool(null), which is a
+		# runtime constructor error. Type-check before converting.
+		var raw_vol = d.get("volume", 0.0)
+		if raw_vol is float or raw_vol is int:
+			ev.set("volume", float(raw_vol))
+		else:
+			if d.has("volume"):
+				push_warning("[Registry] %s('sounds', '%s'): 'volume' should be a number, got %s; using 0.0" % [verb, id, typeof(raw_vol)])
+			ev.set("volume", 0.0)
+		var raw_rp = d.get("randomPitch", false)
+		if raw_rp is bool:
+			ev.set("randomPitch", raw_rp)
+		else:
+			if d.has("randomPitch"):
+				push_warning("[Registry] %s('sounds', '%s'): 'randomPitch' should be a bool, got %s; using false" % [verb, id, typeof(raw_rp)])
+			ev.set("randomPitch", false)
 		return ev
 	push_warning("[Registry] %s('sounds', '%s', ...) expects AudioEvent / AudioStream / Dictionary, got %s" % [verb, id, typeof(data)])
 	return null
@@ -102,9 +117,9 @@ func _audio_event_class() -> GDScript:
 func _looks_like_audio_event(res: Resource) -> bool:
 	# AudioEvent is identified by its three canonical fields. Same heuristic
 	# shape as _looks_like_item_data for ItemData.
-	return _resource_has_property(res, "audioClips") \
-			and _resource_has_property(res, "volume") \
-			and _resource_has_property(res, "randomPitch")
+	return _object_has_property(res, "audioClips") \
+			and _object_has_property(res, "volume") \
+			and _object_has_property(res, "randomPitch")
 
 # True if the name is a declared @export property on AudioLibrary. Used to
 # distinguish "override vanilla sound" from "register new sound".
@@ -112,7 +127,7 @@ func _sound_exists_in_vanilla(id: String) -> bool:
 	var lib := _audio_library()
 	if lib == null:
 		return false
-	return _resource_has_property(lib, id)
+	return _object_has_property(lib, id)
 
 # Lookup precedence: mod overrides > mod registrations > vanilla library
 # field. Overrides on vanilla names live as set() mutations on the library
@@ -126,7 +141,7 @@ func _lookup_sound(id: String) -> Resource:
 	var lib := _audio_library()
 	if lib == null:
 		return null
-	if _resource_has_property(lib, id):
+	if _object_has_property(lib, id):
 		return lib.get(id)
 	return null
 
@@ -203,7 +218,7 @@ func _patch_sound(id: String, fields: Dictionary) -> bool:
 	var stash: Dictionary = patched.get(id, {})
 	for field in fields.keys():
 		var field_name := String(field)
-		if not _resource_has_property(target, field_name):
+		if not _object_has_property(target, field_name):
 			push_warning("[Registry] patch('sounds', '%s'): field '%s' doesn't exist on AudioEvent (valid: audioClips, volume, randomPitch)" \
 					% [id, field_name])
 			continue

@@ -92,12 +92,11 @@ func _override_input(id: String, data: Variant) -> bool:
 		var originals: Array = []
 		for e in InputMap.action_get_events(id):
 			originals.append(e)
-		# InputMap has no deadzone getter pre-4.x; grab via project_settings
-		# if available, else assume default. Action deadzone isn't routinely
-		# inspected so we can accept approximation; only matters for revert.
+		# Stash the real deadzone (action_get_deadzone exists since Godot 4.0)
+		# so a full revert restores it exactly instead of forcing 0.5.
 		ov[id] = {
 			"events": originals,
-			"deadzone": _DEFAULT_DEADZONE,
+			"deadzone": InputMap.action_get_deadzone(id),
 		}
 		_registry_overridden["inputs"] = ov
 	InputMap.action_erase_events(id)
@@ -126,10 +125,14 @@ func _patch_input(id: String, fields: Dictionary) -> bool:
 	# If the id isn't in our reg (vanilla action we haven't touched yet),
 	# seed a stub so patch/revert have somewhere to stash label changes.
 	if not reg.has(id):
+		# vanilla_stub marks this as a patch-seeded entry for a vanilla action,
+		# so remove() can refuse to erase the underlying InputMap action.
+		# _register_input and _override_input store full payloads without it.
 		reg[id] = {
 			"display_label": id,
 			"default_event": null,
 			"deadzone": _DEFAULT_DEADZONE,
+			"vanilla_stub": true,
 		}
 	var current: Dictionary = reg[id]
 	var patched: Dictionary = _registry_patched.get("inputs", {})
@@ -189,6 +192,12 @@ func _remove_input(id: String) -> bool:
 	var ov: Dictionary = _registry_overridden.get("inputs", {})
 	if ov.has(id):
 		push_warning("[Registry] remove('inputs', '%s'): entry is an override, use revert instead" % id)
+		return false
+	# A patch on a vanilla action seeds a reg stub (see _patch_input); without
+	# this guard, remove() would erase the VANILLA InputMap action for the
+	# whole session.
+	if reg[id] is Dictionary and (reg[id] as Dictionary).get("vanilla_stub", false):
+		push_warning("[Registry] remove('inputs', '%s'): vanilla action (only patched by a mod); use revert instead" % id)
 		return false
 	if InputMap.has_action(id):
 		InputMap.erase_action(id)

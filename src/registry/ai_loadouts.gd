@@ -119,13 +119,42 @@ func _validate_ai_loadout_data(id: String, verb: String, data: Variant):
 	# disabled" pattern) and a >1.0 entry just always fires.
 	var chance: float = 1.0
 	if d.has("chance"):
-		chance = clampf(float(d["chance"]), 0.0, 1.0)
-		if float(d["chance"]) < 0.0 or float(d["chance"]) > 1.0:
-			push_warning("[Registry] %s('ai_loadouts', '%s'): chance %s clamped to %s" % [verb, id, d["chance"], chance])
+		# Type-check before converting: float(null) is a runtime error in
+		# Godot 4, and JSON-derived mod data routinely carries a
+		# present-but-null key that d.has() doesn't guard against.
+		var raw_chance = d["chance"]
+		if raw_chance is String:
+			# String chances have always been accepted via float(String), which
+			# uses String.to_float() semantics: whitespace-tolerant, and junk
+			# degrades ("abc" -> 0.0, "50%" -> 50.0 -> clamped below). Keep
+			# exactly that -- falling through to the 1.0 default would flip
+			# malformed input from its historical value to always-fires.
+			var chance_str := (raw_chance as String).strip_edges()
+			if not chance_str.is_valid_float():
+				push_warning("[Registry] %s('ai_loadouts', '%s'): non-numeric chance string '%s' -- parsed as %s" % [verb, id, raw_chance, chance_str.to_float()])
+			raw_chance = chance_str.to_float()
+		if raw_chance is float or raw_chance is int or raw_chance is bool:
+			# bool included: "chance": false -> 0.0 is the legitimate
+			# "wired but disabled" pattern noted above (and bool is not
+			# matched by `is int` in GDScript).
+			chance = clampf(float(raw_chance), 0.0, 1.0)
+			if float(raw_chance) < 0.0 or float(raw_chance) > 1.0:
+				push_warning("[Registry] %s('ai_loadouts', '%s'): chance %s clamped to %s" % [verb, id, raw_chance, chance])
+		else:
+			push_warning("[Registry] %s('ai_loadouts', '%s'): chance must be a number, got %s; using 1.0" % [verb, id, typeof(raw_chance)])
 	# replace: optional, default false. Document as a sharp edge in the
 	# plan but don't reject -- some mods want to override a vanilla AI's
 	# loadout entirely.
-	var replace: bool = bool(d.get("replace", false))
+	# Same present-but-null hole as chance: bool(null) is a runtime error,
+	# so coerce only known-safe types and warn otherwise.
+	var replace: bool = false
+	var raw_replace = d.get("replace", false)
+	if raw_replace is bool:
+		replace = raw_replace
+	elif raw_replace is int or raw_replace is float:
+		replace = bool(raw_replace)
+	else:
+		push_warning("[Registry] %s('ai_loadouts', '%s'): replace must be a bool; using false" % [verb, id])
 	return {
 		"weapon_scene": scene,
 		"ai_types": canonical_types,

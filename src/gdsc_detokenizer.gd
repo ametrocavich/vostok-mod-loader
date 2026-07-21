@@ -82,6 +82,35 @@ const _SPACE_AFTER := {
 	71: 1, 72: 1,                                   # void yield
 }
 
+# Named token-type indices used by _gdsc_reconstruct. Each equals the raw
+# integer it replaces (see the _TOKEN_TEXT table + the index map above), so
+# substituting them is a pure value-rename with no runtime change.
+const TK_ANNOTATION := 1
+const TK_IDENTIFIER := 2
+const TK_LITERAL := 3
+const TK_NOT := 12
+const TK_BANG := 15
+const TK_TILDE := 18
+const TK_KW_FIRST := 40   # "if" -- first keyword
+const TK_KW_WHEN := 50    # "when" -- last control-flow keyword (if..when)
+const TK_KW_LAST := 72    # "yield" -- last keyword
+const TK_BRACKET_OPEN := 73
+const TK_BRACKET_CLOSE := 74
+const TK_BRACE_CLOSE := 76
+const TK_PAREN_OPEN := 77
+const TK_PAREN_CLOSE := 78
+const TK_DOT := 81
+const TK_DOLLAR := 85
+const TK_UNDERSCORE := 87
+const TK_NEWLINE := 88
+const TK_INDENT := 89
+const TK_DEDENT := 90
+const TK_PI := 91
+const TK_TAU := 92
+const TK_INF := 93
+const TK_NAN := 94
+const TK_EOF := 99
+
 func _detokenize_script(script_path: String) -> String:
 	# Zero-byte PCK entries (base game ships CasettePlayer.gd empty in RTV
 	# 4.6.1) have nothing to decode. Return empty silently so callers don't
@@ -130,8 +159,8 @@ func _detokenize_script(script_path: String) -> String:
 		return ""
 
 	var version := raw.decode_u32(4)
-	if version != 100 and version != 101:
-		_log_critical("[Detokenize] Unsupported GDSC version %d in %s (expected 100 or 101)" % [version, script_path])
+	if version != GDSC_VERSION_V100 and version != GDSC_VERSION_V101:
+		_log_critical("[Detokenize] Unsupported GDSC version %d in %s (expected %d or %d)" % [version, script_path, GDSC_VERSION_V100, GDSC_VERSION_V101])
 		return ""
 
 	var decompressed_size := raw.decode_u32(8)
@@ -146,14 +175,14 @@ func _detokenize_script(script_path: String) -> String:
 			return ""
 
 	# -- Metadata --
-	var meta_size := 20 if version == 100 else 16  # v100 has 4-byte padding
+	var meta_size := 20 if version == GDSC_VERSION_V100 else 16  # v100 has 4-byte padding
 	if buf.size() < meta_size:
 		return ""
 	var ident_count: int = buf.decode_u32(0)
 	var const_count: int = buf.decode_u32(4)
 	var line_count: int  = buf.decode_u32(8)
 	var token_count: int
-	if version == 100:
+	if version == GDSC_VERSION_V100:
 		token_count = buf.decode_u32(16)
 	else:
 		token_count = buf.decode_u32(12)
@@ -228,6 +257,15 @@ func _detokenize_script(script_path: String) -> String:
 		tokens.append([tk_type, data_idx])
 		offset += token_len
 
+	# All section loops above bail with a silent break on buffer overrun, and
+	# a failed bytes_to_var() in the constants loop desyncs the offset. Cross-
+	# check collected sizes against the header counts so truncated/desynced
+	# input fails loudly instead of reconstructing (and caching) garbage.
+	if identifiers.size() != ident_count or constants.size() != const_count or tokens.size() != token_count:
+		_log_critical("[Detokenize] Section truncation/desync in %s: idents %d/%d consts %d/%d tokens %d/%d -- refusing partial reconstruction" \
+				% [script_path, identifiers.size(), ident_count, constants.size(), const_count, tokens.size(), token_count])
+		return ""
+
 	var result := _gdsc_reconstruct(tokens, identifiers, constants, line_map, col_map)
 	if result.is_empty():
 		return ""
@@ -251,6 +289,12 @@ func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Arr
 		# Handle line changes via line_map.
 		if line_map.has(i):
 			var new_line: int = line_map[i]
+			# Line values are raw u32s from the file; a corrupt/desynced buffer
+			# can yield huge values that would spin this loop for billions of
+			# iterations. No real script has 10000 consecutive blank lines.
+			if new_line - current_line_num > 10000:
+				_log_critical("[Detokenize] Absurd line jump %d -> %d -- corrupt line map, aborting reconstruction" % [current_line_num, new_line])
+				return ""
 			while current_line_num < new_line:
 				lines.append(current_line)
 				current_line = ""
@@ -258,10 +302,10 @@ func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Arr
 				need_space = false
 				line_started = false
 
-		if tk == 99:  # EOF
+		if tk == TK_EOF:
 			break
 
-		if tk == 88:  # NEWLINE
+		if tk == TK_NEWLINE:
 			lines.append(current_line)
 			current_line = ""
 			current_line_num += 1
@@ -270,18 +314,18 @@ func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Arr
 			prev_tk = tk
 			continue
 
-		if tk == 89 or tk == 90:  # INDENT / DEDENT -- skip, we use col_map instead
+		if tk == TK_INDENT or tk == TK_DEDENT:  # skip, we use col_map instead
 			prev_tk = tk
 			continue
 
 		# Build the text for this token.
 		var text := ""
-		if tk == 2:  # IDENTIFIER
+		if tk == TK_IDENTIFIER:
 			text = identifiers[idx] if idx < identifiers.size() else "<ident?>"
-		elif tk == 1:  # ANNOTATION
+		elif tk == TK_ANNOTATION:
 			var aname: String = identifiers[idx] if idx < identifiers.size() else "?"
 			text = aname if aname.begins_with("@") else ("@" + aname)
-		elif tk == 3:  # LITERAL
+		elif tk == TK_LITERAL:
 			text = _gdsc_variant_to_source(constants[idx] if idx < constants.size() else null)
 		elif _TOKEN_TEXT.has(tk):
 			text = _TOKEN_TEXT[tk]
@@ -293,8 +337,7 @@ func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Arr
 			line_started = true
 			if col_map.has(i):
 				var col: int = col_map[i]
-				# Convert column to tabs (Godot uses tab_size=4 for indentation).
-				var tabs: int = col / 4
+				var tabs: int = _indent_from_column(col)
 				for _t in tabs:
 					current_line += "\t"
 
@@ -303,25 +346,25 @@ func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Arr
 		if need_space and not current_line.is_empty() and not current_line.ends_with("\t"):
 			if _SPACE_BEFORE.has(tk):
 				add_space_before = true
-			elif tk == 2 or tk == 3 or tk == 1 or (tk >= 40 and tk <= 72):
+			elif tk == TK_IDENTIFIER or tk == TK_LITERAL or tk == TK_ANNOTATION or (tk >= TK_KW_FIRST and tk <= TK_KW_LAST):
 				# IDENTIFIER, LITERAL, ANNOTATION, or any keyword -- space before
 				# unless prev was an opener, dot, $, ~, !, indent, newline.
-				# Note: annotation (1) excluded only for identifiers (part of the
+				# Note: annotation excluded only for identifiers (part of the
 				# annotation name), NOT for keywords like var/func after @export.
-				var skip_anno := (prev_tk == 1 and (tk == 2 or tk == 1))  # ident/anno after anno
+				var skip_anno := (prev_tk == TK_ANNOTATION and (tk == TK_IDENTIFIER or tk == TK_ANNOTATION))  # ident/anno after anno
 				if not skip_anno \
-						and prev_tk != 77 and prev_tk != 73 \
-						and prev_tk != 81 and prev_tk != 85 \
-						and prev_tk != 18 \
-						and prev_tk != 15 and prev_tk != 89 \
-						and prev_tk != 88 and prev_tk != -1:
+						and prev_tk != TK_PAREN_OPEN and prev_tk != TK_BRACKET_OPEN \
+						and prev_tk != TK_DOT and prev_tk != TK_DOLLAR \
+						and prev_tk != TK_TILDE \
+						and prev_tk != TK_BANG and prev_tk != TK_INDENT \
+						and prev_tk != TK_NEWLINE and prev_tk != -1:
 					add_space_before = true
-			elif tk == 77:  # PAREN_OPEN
+			elif tk == TK_PAREN_OPEN:
 				# Space before ( after control-flow keywords, but NOT after
 				# function-like keywords (func, preload, super, assert, await).
-				if prev_tk >= 40 and prev_tk <= 50:  # if..when (control flow)
+				if prev_tk >= TK_KW_FIRST and prev_tk <= TK_KW_WHEN:  # if..when (control flow)
 					add_space_before = true
-			elif tk == 12 or tk == 15:  # NOT, BANG
+			elif tk == TK_NOT or tk == TK_BANG:
 				add_space_before = true
 
 		if add_space_before and not current_line.ends_with(" ") and not current_line.ends_with("\t"):
@@ -333,10 +376,10 @@ func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Arr
 		# keywords, and punctuation.  Also need space after identifiers (2),
 		# literals (3), close-parens (78), close-bracket (74), close-brace (76),
 		# constants (91-94 PI/TAU/INF/NAN), and underscore (87).
-		need_space = _SPACE_AFTER.has(tk) or tk == 2 or tk == 3 \
-				or tk == 78 or tk == 74 or tk == 76 \
-				or tk == 91 or tk == 92 or tk == 93 \
-				or tk == 94 or tk == 87
+		need_space = _SPACE_AFTER.has(tk) or tk == TK_IDENTIFIER or tk == TK_LITERAL \
+				or tk == TK_PAREN_CLOSE or tk == TK_BRACKET_CLOSE or tk == TK_BRACE_CLOSE \
+				or tk == TK_PI or tk == TK_TAU or tk == TK_INF \
+				or tk == TK_NAN or tk == TK_UNDERSCORE
 
 		prev_tk = tk
 
@@ -349,6 +392,18 @@ func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Arr
 	if not result.ends_with("\n"):
 		result += "\n"
 	return result
+
+# Column -> leading tab count for reconstructed source. The ONLY place
+# column-to-indent math lives; keep it that way. GDSC token column data as
+# written by Godot 4.0-4.6 counts a tab as tab_size=4 columns, so indent
+# depth = col / 4. If a future engine serializes raw string offsets instead
+# (tab = 1 column, 1-based -- the disputed PR 116986 change, see
+# .research/GODOT_47_COMPAT.md section 2.2), this one site changes to
+# `col - 1` behind a detection heuristic. STABILITY canary C in hook_pack.gd
+# trips loudly if this math ever produces structurally broken indentation.
+func _indent_from_column(col: int) -> int:
+	@warning_ignore("integer_division")
+	return col / 4
 
 func _gdsc_variant_to_source(value: Variant) -> String:
 	if value == null:
@@ -430,10 +485,21 @@ func _save_vanilla_source(script_path: String, source: String) -> void:
 	DirAccess.make_dir_recursive_absolute(
 		ProjectSettings.globalize_path(cache_file.get_base_dir()))
 	var f := FileAccess.open(cache_file, FileAccess.WRITE)
-	if f:
-		f.store_string(source)
-		f.close()
+	if f == null:
+		return
+	# store_string returns bool since Godot 4.3; a truncated cache file would
+	# be trusted as pristine vanilla forever, so remove it on any write error.
+	var ok := f.store_string(source)
+	var err := f.get_error()
+	f.close()
+	if not ok or err != OK:
+		_log_warning("[Detokenize] Vanilla cache write failed for %s (err %d) -- removing partial file" % [cache_file, err])
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(cache_file))
 
+# ANCHOR: probe_paths below assume vanilla RTV ships Camera/Controller/Audio/AI
+# under res://Scripts/. If a game update renames ALL FOUR, this returns -1,
+# which _generate_hook_pack currently treats as "no probe" and proceeds
+# WITHOUT canary B protection (see hook_pack.gd's tok_version checks).
 func _probe_gdsc_version() -> int:
 	var probe_paths := ["res://Scripts/Camera.gd", "res://Scripts/Controller.gd",
 			"res://Scripts/Audio.gd", "res://Scripts/AI.gd"]
@@ -447,10 +513,3 @@ func _probe_gdsc_version() -> int:
 			continue
 		return int(raw.decode_u32(4))
 	return -1
-
-# Build the framework pack: enumerate res://Scripts/*.gd, detokenize each via
-# _read_vanilla_source, parse + generate wrappers, zip them, mount the zip.
-#
-# The zip mounts at res://modloader_hooks/ and wrappers load from there. NOT
-# from user:// -- Godot 4.6's extends-chain resolution for class_name parents
-# breaks for scripts loaded from user://, which shows up as broken super()

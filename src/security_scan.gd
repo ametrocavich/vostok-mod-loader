@@ -18,10 +18,11 @@ const _TEXT_SCAN_EXTS: Dictionary = {
 	"gd": true, "tscn": true, "tres": true, "gdshader": true,
 }
 
-# Binary resources that may embed compiled GDScript or string payloads.
-# Byte-scanned for ASCII substrings of binary-safe rule patterns.
+# Binary payload scan set: resources that may embed compiled GDScript or
+# string payloads, plus compiled GDScript itself. Byte-scanned for ASCII
+# substrings of binary-safe rule patterns.
 const _BINARY_SCAN_EXTS: Dictionary = {
-	"scn": true, "res": true,
+	"scn": true, "res": true, "gdc": true,
 }
 
 # Cap findings per mod so a deliberately-noisy archive can't bury the UI.
@@ -36,6 +37,27 @@ const _MAX_TEXT_SCAN_BYTES: int = 8 * 1024 * 1024
 # which fires for solo red triggers (os_crash, disable_save_safety) or
 # for combinations (obfuscation + process spawn, runtime-code-build +
 # process spawn, both obfuscation patterns together).
+#
+# HOW TO ADD A RULE:
+#   1. Add an entry below: {id, pattern, description, binary}. `pattern`
+#      is RegEx source, compiled once in _security_compile_rules. Text
+#      scans run it against comment-stripped source
+#      (_strip_gdscript_comments) and record only the FIRST match per
+#      rule per file. Multi-line patterns must use [\s\S] -- RegEx `.`
+#      does not cross newlines.
+#   2. `binary: true` additionally runs the rule over .scn/.res/.gdc
+#      blobs flattened to printable ASCII (_security_scan_binary), so
+#      the pattern must be specific enough not to false-positive on
+#      serialized binary data.
+#   3. A match alone shows the user NOTHING. For a rule to affect the
+#      badge its id must ALSO appear in _RED_SOLO_RULES or in one of the
+#      family arrays (_PROCESS_SPAWN_RULES / _OBFUSCATION_RULES /
+#      _RUNTIME_CODE_RULES) combined by compute_risk_level. Those arrays
+#      repeat the id as a plain string -- a typo there silently drops
+#      the rule from the red logic while its findings still log.
+#   4. compute_risk_level also hardcodes the byte_decode_loop +
+#      large_int_array pair check; adding a third obfuscation rule means
+#      revisiting that check.
 const _SECURITY_RULES: Array = [
 	# --- Process spawning (combo with obfuscation/runtime_code -> red) ----
 	{
@@ -242,7 +264,7 @@ func _security_scan_zip(zip_path: String, findings: Array) -> void:
 				continue
 			_security_scan_text(f, bytes.get_string_from_utf8(), findings)
 			continue
-		if _BINARY_SCAN_EXTS.has(ext) or ext == "gdc":
+		if _BINARY_SCAN_EXTS.has(ext):
 			_security_scan_binary(f, zr.read_file(f), findings)
 	zr.close()
 
@@ -271,7 +293,7 @@ func _security_scan_folder(root: String, rel: String, findings: Array) -> void:
 				continue
 			_security_scan_text(rel_path, bytes.get_string_from_utf8(), findings)
 			continue
-		if _BINARY_SCAN_EXTS.has(ext) or ext == "gdc":
+		if _BINARY_SCAN_EXTS.has(ext):
 			_security_scan_binary(rel_path,
 					FileAccess.get_file_as_bytes(disk_path), findings)
 	dir.list_dir_end()
@@ -288,10 +310,15 @@ func _security_scan_pck(pck_path: String, findings: Array) -> void:
 			break
 		var path: String = entry["path"]
 		var ext := path.get_extension().to_lower()
-		if not (_TEXT_SCAN_EXTS.has(ext) or _BINARY_SCAN_EXTS.has(ext) or ext == "gdc"):
+		if not (_TEXT_SCAN_EXTS.has(ext) or _BINARY_SCAN_EXTS.has(ext)):
+			continue
+		# Size comes from the untrusted pck directory; get_buffer() allocates
+		# the full length up front, so cap it before reading.
+		var entry_size: int = int(entry["size"])
+		if entry_size <= 0 or entry_size > _MAX_TEXT_SCAN_BYTES:
 			continue
 		f.seek(int(entry["offset"]))
-		var bytes := f.get_buffer(int(entry["size"]))
+		var bytes := f.get_buffer(entry_size)
 		if _TEXT_SCAN_EXTS.has(ext):
 			if bytes.size() > _MAX_TEXT_SCAN_BYTES:
 				continue
@@ -362,7 +389,9 @@ func _strip_line_comment(line: String) -> String:
 # marked `binary: true` -- those whose match is unique enough not to
 # false-positive on legit binary serialized content.
 func _security_scan_binary(file: String, bytes: PackedByteArray, findings: Array) -> void:
-	if bytes.is_empty():
+	# Cap here so zip (post-decompress), folder, and pck callers are all
+	# bounded -- the ascii fallback loop below is too slow for huge blobs.
+	if bytes.is_empty() or bytes.size() > _MAX_TEXT_SCAN_BYTES:
 		return
 	var as_text := bytes.get_string_from_utf8()
 	if as_text.is_empty():
@@ -396,8 +425,8 @@ func _security_scan_binary(file: String, bytes: PackedByteArray, findings: Array
 func _security_pck_list_with_offsets(pck_path: String) -> Array:
 	const MAGIC_GDPC: int = 0x43504447  # "GDPC"
 	const PACK_DIR_ENCRYPTED := 1
-	const PACK_FORMAT_V2 := 2
-	const PACK_FORMAT_V3 := 3
+	# PACK_FORMAT_V2 / V3 / V4 bounds live in constants.gd (shared with
+	# pck_enumeration.gd's parser).
 	var result: Array = []
 	var f := FileAccess.open(pck_path, FileAccess.READ)
 	if f == null:
@@ -408,11 +437,21 @@ func _security_pck_list_with_offsets(pck_path: String) -> Array:
 		return result
 	var version: int = f.get_32()
 	if version < PACK_FORMAT_V2 or version > PACK_FORMAT_V3:
+		if version == PACK_FORMAT_V4:
+			# Godot 4.7+ export -- the one rejection worth a modder-facing
+			# message. The stamped engine version u32s follow the format
+			# version in the GDPC header.
+			var ver_major: int = f.get_32()
+			var ver_minor: int = f.get_32()
+			_log_warning("[SecurityScan] %s: mod .pck uses pack format v4, exported with Godot %d.%d. This game runs Godot 4.6, which cannot read v4 packs. Ask the mod author to export with Godot 4.6.x, or to ship the mod as a .zip instead." \
+					% [pck_path, ver_major, ver_minor])
 		f.close()
 		return result
 	f.get_32(); f.get_32(); f.get_32()
 	var pack_flags: int = f.get_32()
-	f.get_64()
+	# Directory entry offsets are relative to file_base (engine reads them as
+	# file_base + ofs), so keep it to make stored offsets absolute below.
+	var file_base: int = f.get_64()
 	if version == PACK_FORMAT_V3:
 		f.seek(f.get_64())
 	else:
@@ -432,6 +471,6 @@ func _security_pck_list_with_offsets(pck_path: String) -> Array:
 		f.get_buffer(16)
 		f.get_32()
 		if not path.is_empty():
-			result.append({"path": path, "offset": offset, "size": size})
+			result.append({"path": path, "offset": file_base + offset, "size": size})
 	f.close()
 	return result

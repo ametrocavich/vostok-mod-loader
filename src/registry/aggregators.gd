@@ -179,7 +179,13 @@ func _register_weapon_magazine_entry(entry: Variant) -> Dictionary:
 			push_warning("[Registry] register_weapon: inline magazine missing 'id' string key")
 			return {"id": "", "ok": false, "item_data": null}
 		var sub: Dictionary = _register_magazine(d["id"], d)
-		var sub_item: Resource = _lookup_item(d["id"])
+		# Only resolve item_data when the inline ItemData actually registered.
+		# On an id collision _register_item refuses but _lookup_item would
+		# still resolve -- to the unrelated colliding item -- and step 4 would
+		# silently wire that into the weapon's compatible.
+		var sub_item: Resource = null
+		if sub.get("items", false):
+			sub_item = _lookup_item(d["id"])
 		return {
 			"id": d["id"],
 			"ok": sub["ok"],
@@ -443,15 +449,24 @@ func _register_furniture_bundle(id: String, data: Variant) -> Dictionary:
 	# Step 4: optional crafting recipe. Build a fresh RecipeData with
 	# output = [our item], register under recipes/furniture category. Mods
 	# that just want trader-only furniture skip this.
-	if d.has("recipe") and d["recipe"] is Dictionary:
-		var rd: Dictionary = d["recipe"]
-		if not (rd.has("input") and rd["input"] is Array) or (rd["input"] as Array).is_empty():
-			push_warning("[Registry] register_furniture('%s'): recipe.input must be a non-empty array of ItemData" % id)
+	if d.has("recipe"):
+		# Every requested-but-failed path must set result["recipe"] = false so
+		# callers can trust the documented null-vs-bool contract above.
+		if not (d["recipe"] is Dictionary):
+			push_warning("[Registry] register_furniture('%s'): recipe must be a Dictionary, got %s" % [id, typeof(d["recipe"])])
+			result["recipe"] = false
 		else:
-			var recipe := _build_furniture_recipe(id, item_data, rd)
-			if recipe != null:
-				var recipe_id: String = "%s_recipe" % id
-				result["recipe"] = _register_recipe(recipe_id, {"recipe": recipe, "category": "furniture"})
+			var rd: Dictionary = d["recipe"]
+			if not (rd.has("input") and rd["input"] is Array) or (rd["input"] as Array).is_empty():
+				push_warning("[Registry] register_furniture('%s'): recipe.input must be a non-empty array of ItemData" % id)
+				result["recipe"] = false
+			else:
+				var recipe := _build_furniture_recipe(id, item_data, rd)
+				if recipe != null:
+					var recipe_id: String = "%s_recipe" % id
+					result["recipe"] = _register_recipe(recipe_id, {"recipe": recipe, "category": "furniture"})
+				else:
+					result["recipe"] = false
 	result["ok"] = result["items"] and result["scene"] and result["trader_pools_failed"].is_empty()
 	_log_debug("[Registry] register_furniture('%s') result: %s" % [id, result])
 	return result
@@ -470,12 +485,17 @@ func _build_furniture_recipe(id: String, output_item: Resource, rd: Dictionary) 
 	recipe.set("time", float(rd.get("time", 1.0)))
 	if rd.has("audio"):
 		recipe.set("audio", rd["audio"])
-	# Build typed Array[ItemData] for input. RecipeData.input is typed,
-	# and assigning an untyped Array silently fails the typed-array check
-	# in _register_recipe.
-	var typed_input: Array[ItemData] = []
+	# Build a typed input array without naming ItemData -- it's a game class,
+	# and referencing it here would force-compile vanilla ItemData.gd before
+	# hook-pack activation (see shared.gd's duck-typing note). Instead,
+	# duplicate the fresh recipe's own declared `input` (duplicate() preserves
+	# element typing), then append only entries the typed array accepts.
+	var typed_input: Array = []
+	var declared_input = recipe.get("input")
+	if declared_input is Array:
+		typed_input = (declared_input as Array).duplicate()
 	for it in rd["input"]:
-		if it is ItemData:
+		if it is Resource and _looks_like_item_data(it) and _typed_array_accepts(typed_input, it):
 			typed_input.append(it)
 		else:
 			push_warning("[Registry] register_furniture('%s'): recipe.input contains non-ItemData entry; skipped" % id)
@@ -483,8 +503,11 @@ func _build_furniture_recipe(id: String, output_item: Resource, rd: Dictionary) 
 		return null
 	recipe.set("input", typed_input)
 	# Output is the item we're registering, single-element typed array.
-	var typed_output: Array[ItemData] = []
-	if output_item is ItemData:
+	var typed_output: Array = []
+	var declared_output = recipe.get("output")
+	if declared_output is Array:
+		typed_output = (declared_output as Array).duplicate()
+	if output_item is Resource and _looks_like_item_data(output_item) and _typed_array_accepts(typed_output, output_item):
 		typed_output.append(output_item)
 	else:
 		push_warning("[Registry] register_furniture('%s'): output ItemData isn't typed as ItemData; recipe skipped" % id)
@@ -502,7 +525,7 @@ func _build_furniture_recipe(id: String, output_item: Resource, rd: Dictionary) 
 # the field exists. Best-effort: failures warn but don't abort the parent
 # registration -- icons are cosmetic.
 func _apply_icon(item_data: Resource, icon_path: String, owner_id: String) -> void:
-	if not _resource_has_property(item_data, "icon"):
+	if not _object_has_property(item_data, "icon"):
 		return
 	var img := Image.new()
 	if img.load(icon_path) != OK:

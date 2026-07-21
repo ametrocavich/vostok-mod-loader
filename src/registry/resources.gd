@@ -63,7 +63,7 @@ func _patch_resource(id: String, fields: Dictionary) -> bool:
 	var any_applied := false
 	for field in fields.keys():
 		var fname := String(field)
-		if not _resource_has_property(res, fname):
+		if not _object_has_property(res, fname):
 			push_warning("[Registry] patch('resources', '%s'): field '%s' doesn't exist on %s" % [id, fname, res.get_class()])
 			continue
 		# First-write-wins stash so subsequent patches to the same field

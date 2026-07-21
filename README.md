@@ -11,26 +11,31 @@ Mod loader for Road to Vostok (Godot 4.6). Adds a pre-game UI for managing mods,
 
 ## Installation
 
-1. Copy `override.cfg` and `modloader.gd` into the game folder:
+1. Download `override.cfg` and `modloader.gd` from the [latest release](https://github.com/ametrocavich/vostok-mod-loader/releases/latest). (Or run `windows-installer.bat` / `linux-installer.sh`, which fetch and place them for you.)
+2. Copy both files into the game folder:
    ```
    C:\Program Files (x86)\Steam\steamapps\common\Road to Vostok\
    ```
-2. Create a `mods` folder there if it doesn't exist.
-3. Drop `.vmz` files into `mods/`.
-4. Launch the game. The mod loader UI appears before the main menu.
+3. Create a `mods` folder there if it doesn't exist.
+4. Drop `.vmz` files into `mods/`.
+5. Launch the game. The mod loader UI appears before the main menu.
 
 ## Launcher UI
 
-Two tabs:
+Four tabs:
 
-- **Mods** -- detected mods with checkboxes and a priority spinbox. Higher priority loads later and wins file conflicts. Load-order preview on the right updates in real time.
+- **Mods** -- detected mods with checkboxes and a priority spinbox. Higher priority loads later and wins file conflicts. Load-order preview on the right updates in real time. Profiles, the Developer Mode toggle, and dependency handling live here too.
+- **Browse** -- search and install mods straight from ModWorkshop. Discover popular/latest, filter by search/sort/category; **Download** installs straight into your `mods/` folder, and downloads queue and run one at a time. See the [Browse wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Browse).
+- **Modpacks** -- apply a shared setup someone sent you, or save your current setup as one. A modpack is a small `.zip` listing which mods to enable (plus their settings) -- not the mod files themselves. Apply downloads any missing mods from ModWorkshop (mods without a ModWorkshop listing must be added manually) and switches you to the author's exact setup; Unload restores your prior state. Only one modpack can be active at a time; your previous setup is backed up automatically before applying (**Restore backup** brings it back). See the [Modpacks wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Modpacks).
 - **Updates** -- for mods with `[updates] modworkshop=<id>` in `mod.txt`, check for and download updates from ModWorkshop.
 
-Click **Launch Game** or close the window to start.
+**Dependencies** are handled inline on the Mods tab, not as a separate tab: mods with `[dependencies] required=[...]` in `mod.txt` show a blocked row when a requirement is missing or disabled, with inline **Enable dependency** / **Load anyway** actions, and the loader skips mods whose required dependencies are not loadable.
+
+Click **Launch modded** (or **Launch**, when no mods are enabled) or close the window to start.
 
 ### Guardrails
 
-The launcher does a static scan of every mod's source for a small set of patterns that have been seen in actual malicious mods (obfuscated string decoding paired with process spawning, anti-debug crashes, ransomware-setup calls). Mods that match get a small red "suspicious code" tag in the list, and clicking **Launch Game** with one enabled pops a confirmation dialog before the game starts.
+The launcher does a static scan of every mod's source for a small set of patterns that have been seen in actual malicious mods (obfuscated string decoding paired with process spawning, anti-debug crashes, ransomware-setup calls). Mods that match get a small red "suspicious code" tag in the list, and clicking **Launch modded** with one enabled pops a confirmation dialog before the game starts.
 
 This is **not** a virus scanner. It catches lazy / copy-paste attacks; a determined attacker with the modloader source can write around the patterns. Loading is never silently blocked -- you can confirm and launch any mod. The scanner exists to slow down the obvious cases, nothing more. Always install mods from sources you trust.
 
@@ -50,6 +55,10 @@ MyModMain="res://MyMod/Main.gd"
 
 [updates]
 modworkshop=12345
+
+[dependencies]
+required=["mod_configuration_menu"]
+optional=["some_soft_integration"]
 ```
 
 | Field | Description |
@@ -60,12 +69,13 @@ modworkshop=12345
 | `priority` | Higher loads later, wins file conflicts. Default 0 |
 | `[autoload]` | `Name="res://path.gd"` (or `.tscn`). Prefix value with `!` to load before the game's own autoloads |
 | `[updates] modworkshop` | ModWorkshop mod ID |
+| `[dependencies] required/optional` | Godot string arrays of mod IDs. Required deps must be installed, enabled, and load before the dependent mod |
 
 Mods without `mod.txt` still mount as resource packs -- their files override vanilla resources, but no autoloads run.
 
 ### Opt-in hook declarations
 
-v3.0.1 uses an opt-in model: a modlist that declares nothing loads byte-identical to a vanilla setup (no wrap, no rewrite, no hook pack). Declarations turn on specific parts of the system.
+The loader uses an opt-in model (introduced in v3.0.1): a modlist that declares nothing loads byte-identical to a vanilla setup (no wrap, no rewrite, no hook pack). Declarations turn on specific parts of the system.
 
 **Most mods don't need any declaration.** If your mod calls `.hook("controller-jump-pre", cb)` directly in its source, the scanner finds it and enrolls `Controller.gd :: jump` automatically. That covers every mod written against the native hook API -- nothing to add in `mod.txt`.
 
@@ -147,13 +157,13 @@ Full API reference, dispatch semantics, and three-entry pack recipe: [Hooks wiki
 
 ## Troubleshooting
 
-**From the UI**: click **Reset to Vanilla** in the pre-launch window. Wipes mod state (hook pack, override.cfg, pass state), unchecks every mod, restarts clean. Your mods stay in `mods/`.
+**From the UI**: click **Launch vanilla** in the pre-launch window to start the game once with no mods (your mods and settings are untouched). For a full reset, use the safe-mode file below.
 
 **If the game crashes or won't launch**:
 
 - **Wait it out** -- after 2 failed launches, the loader auto-resets to clean state.
 - **Force-disable**: create an empty file named `modloader_disabled` (no extension) in the game folder. On next launch, the loader sits idle (no mounts, no UI, no autoloads). Delete the file to re-enable. Use when the loader itself is broken and you can't reach the UI.
-- **Safe-mode reset**: create an empty file named `modloader_safe_mode` (no extension) in the game folder. On next launch, the loader resets `override.cfg`, deletes pass state, clears the heartbeat, then deletes the safe-mode file.
+- **Safe-mode reset**: create an empty file named `modloader_safe_mode` (no extension) in the game folder. On next launch, the loader resets its files to a clean state, then deletes the safe-mode file so it only runs once.
 
 More recovery detail (heartbeat, restart counter, crashed-Pass-2 dirty marker): [Stability-Canaries wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Stability-Canaries).
 
@@ -162,7 +172,7 @@ More recovery detail (heartbeat, restart counter, crashed-Pass-2 dirty marker): 
 - **Package as `.vmz`** with forward-slash paths. Use 7-Zip, not .NET `ZipFile.CreateFromDirectory()` (writes backslashes, breaks mounting).
 - **Include a `mod.txt`** at the archive root. Without it, autoloads won't run.
 - **Use `super()` in lifecycle methods** (`_ready`, `_process`, etc.) when overriding vanilla scripts. Skipping it breaks hook composition for other mods that hooked that method.
-- **Declare `[hooks]` or call `.hook(...)`** on the vanilla methods you care about. In v3.0.1, only declared methods get dispatch wrappers -- there's no auto-wrap surface anymore.
+- **Declare `[hooks]` or call `.hook(...)`** on the vanilla methods you care about. Since v3.0.1, only declared methods get dispatch wrappers -- there's no auto-wrap surface anymore.
 - **Prefer hooks over file replacement** when you only need to modify a few methods. Hooks compose across mods; file replacement doesn't.
 - **Test with other mods installed** and check the conflict report (Developer Mode).
 
