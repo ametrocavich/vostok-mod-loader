@@ -1288,11 +1288,11 @@ func download_new_mod(modworkshop_id: int, version: String = "", allow_rename_on
 		if _mws_last_transport_failed:
 			failure["error"] = "Could not reach ModWorkshop. Check your connection and try again."
 		else:
-			failure["error"] = mws_error_status("Mod has no downloadable file on ModWorkshop (off-site link or not uploaded)")
+			failure["error"] = mws_error_status("This mod has no downloadable file on ModWorkshop. Check its mod page -- the author may host the download elsewhere.")
 		return failure
 	var download_url: String = str((file_meta as Dictionary).get("download_url", ""))
 	if download_url.is_empty():
-		failure["error"] = "No download URL returned"
+		failure["error"] = "ModWorkshop did not provide a download link for this mod. It may be hosted off-site -- check its ModWorkshop page."
 		return failure
 
 	if _mods_dir.is_empty():
@@ -1319,7 +1319,7 @@ func download_new_mod(modworkshop_id: int, version: String = "", allow_rename_on
 	var resp_headers: PackedStringArray = res[2]
 	var body: PackedByteArray = res[3]
 	if body.is_empty():
-		failure["error"] = "Empty response body"
+		failure["error"] = "The download came back empty. Try again later."
 		return failure
 
 	# Filename derivation. Same _is_safe_mod_filename gate the update path uses
@@ -1377,7 +1377,7 @@ func download_new_mod(modworkshop_id: int, version: String = "", allow_rename_on
 
 	var out := FileAccess.open(temp_path, FileAccess.WRITE)
 	if out == null:
-		failure["error"] = "Cannot write to mods directory"
+		failure["error"] = "Could not write to the mods folder (permissions or disk full)"
 		return failure
 	var wrote := out.store_buffer(body)
 	out.close()
@@ -1422,12 +1422,12 @@ func download_new_mod(modworkshop_id: int, version: String = "", allow_rename_on
 	var dir_access := DirAccess.open(_mods_dir)
 	if dir_access == null:
 		DirAccess.remove_absolute(temp_path)
-		failure["error"] = "Cannot access mods directory"
+		failure["error"] = "Could not open the mods folder"
 		return failure
 
 	if dir_access.rename(temp_path.get_file(), derived_name) != OK:
 		DirAccess.remove_absolute(temp_path)
-		failure["error"] = "Failed to finalize download"
+		failure["error"] = "Could not move the downloaded file into the mods folder (file may be locked) -- close anything using it and retry"
 		return failure
 
 	return {"ok": true, "file_name": derived_name, "error": ""}

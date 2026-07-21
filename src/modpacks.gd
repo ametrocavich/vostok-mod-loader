@@ -165,21 +165,21 @@ func _validate_modpack(entry: Dictionary) -> Dictionary:
 	var files := reader.get_files()
 	if not ("profile.json" in files):
 		reader.close()
-		return {"ok": false, "error": "Zip is missing profile.json"}
+		return {"ok": false, "error": "This file is not a valid modpack (no mod list inside). Get a fresh copy of the modpack and try again."}
 	var bytes := reader.read_file("profile.json")
 	reader.close()
 	if bytes.is_empty():
-		return {"ok": false, "error": "profile.json is empty"}
+		return {"ok": false, "error": "This modpack file is damaged (its mod list is empty). Get a fresh copy and try again."}
 	var parsed_v: Variant = JSON.parse_string(bytes.get_string_from_utf8())
 	if not (parsed_v is Dictionary):
-		return {"ok": false, "error": "profile.json is not a JSON object"}
+		return {"ok": false, "error": "This modpack file is damaged (its mod list is unreadable). Get a fresh copy and try again."}
 	var pd: Dictionary = parsed_v
 	if int(pd.get("metroprofile", 0)) != 1:
-		return {"ok": false, "error": "Unsupported metroprofile schema version"}
+		return {"ok": false, "error": "This modpack was made for a newer version of the mod loader -- update the mod loader and try again"}
 	if not (pd.get("name") is String):
-		return {"ok": false, "error": "profile.json is missing 'name'"}
+		return {"ok": false, "error": "This modpack file is damaged (it has no name). Get a fresh copy and try again."}
 	if not (pd.get("enabled") is Dictionary):
-		return {"ok": false, "error": "profile.json is missing 'enabled'"}
+		return {"ok": false, "error": "This modpack file is damaged (its mod list is missing). Get a fresh copy and try again."}
 	var enabled: Dictionary = pd["enabled"]
 	var enabled_count := _count_truthy(enabled)
 	return {
@@ -703,7 +703,7 @@ func _restore_apply_snapshot(snap_path: String) -> Dictionary:
 	# before anything is mutated.
 	var cfg_snap := snap_path.path_join("mod_config.cfg")
 	if not FileAccess.file_exists(cfg_snap):
-		return {"ok": false, "error": "This restore point is incomplete: it is missing the profiles file (mod_config.cfg) that should have been captured with it, so profiles and settings cannot be restored. Nothing was changed. Pick a different restore point."}
+		return {"ok": false, "error": "This restore point is incomplete and cannot restore your profiles and settings. Nothing was changed -- pick a different restore point."}
 	if FileAccess.file_exists(UI_CONFIG_PATH):
 		DirAccess.copy_absolute(UI_CONFIG_PATH, UI_CONFIG_PATH + ".bak")
 	if DirAccess.copy_absolute(cfg_snap, UI_CONFIG_PATH) != OK:
@@ -843,8 +843,8 @@ func _get_missing_mods_for_modpack(entry: Dictionary) -> Array:
 			# user sees an explanatory failure row instead of a missing
 			# mod with no explanation.
 			item["unreachable"] = true
-			item["unreachable_reason"] = ("no source info for this mod in the modpack" if src_data.is_empty()
-					else "no modworkshop_id in this mod's source entry")
+			item["unreachable_reason"] = ("the modpack has no download info for this mod -- install it manually" if src_data.is_empty()
+					else "the modpack has no ModWorkshop ID for this mod -- install it manually")
 		missing.append(item)
 	return missing
 
@@ -1183,7 +1183,7 @@ func unload_modpack(tabs: TabContainer) -> Dictionary:
 	# silently destroying data.
 	if not cfg.has_section(bk_en) and not cfg.has_section(bk_pr):
 		return {"ok": false,
-				"error": "Backup state for this modpack is missing -- unload aborted, profiles untouched. Use the Restore backup button (Modpacks tab) to roll back to a pre-apply restore point, or delete settings.active_modpack in mod_config.cfg to clear the flag manually."}
+				"error": "The backup for this modpack is missing, so nothing was unloaded and your profiles are untouched. To force-remove the modpack, quit the game and delete the active_modpack line from mod_config.cfg."}
 
 	if cfg.has_section(dst_en):
 		cfg.erase_section(dst_en)
@@ -1300,7 +1300,7 @@ func save_profile_as_modpack(profile_name: String, modpack_name: String = "", de
 		return {"ok": false, "error": "Invalid modpack name"}
 	var output := _mods_dir.path_join(safe + ".zip")
 	if FileAccess.file_exists(output):
-		return {"ok": false, "error": "A file named " + safe + ".zip already exists in /mods/"}
+		return {"ok": false, "error": "A file named " + safe + ".zip already exists in your mods folder -- pick a different modpack name"}
 	var res := _export_profile_to_zip(profile_name, output, description, author, pack_name)
 	# Thread the saved file's path back so the UI can show the user exactly
 	# where it landed and how to share it.

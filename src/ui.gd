@@ -958,7 +958,7 @@ func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: Ta
 	if has_orphans:
 		box.add_child(HSeparator.new())
 		var warn_hdr := Label.new()
-		warn_hdr.text = "%d enabled mod(s) lack [updates] modworkshop= in mod.txt:" % orphans.size()
+		warn_hdr.text = "%d enabled mod(s) have no ModWorkshop ID:" % orphans.size()
 		warn_hdr.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		warn_hdr.add_theme_color_override("font_color", COL_AMBER)
 		box.add_child(warn_hdr)
@@ -1933,9 +1933,9 @@ func _confirm_disable_content_mod(mod_name: String, count: int = 1) -> bool:
 	d.dialog_autowrap = true
 	d.min_size = Vector2(520, 120)
 	if count > 1:
-		d.dialog_text = "%d of these mods (including \"%s\") add game content (items, recipes, and similar). Disabling them can stop an existing save that uses their content from loading until you re-enable them. Your saves are not deleted -- re-enabling the mods restores them.\n\nDisable anyway?" % [count, mod_name]
+		d.dialog_text = "%d of these mods (including \"%s\") add game content (items, recipes, and similar). Saves that use their content may not load while the mods are disabled. Your saves are not deleted -- re-enable the mods to get them back.\n\nDisable anyway?" % [count, mod_name]
 	else:
-		d.dialog_text = "\"%s\" adds game content (items, recipes, and similar). Disabling or removing it can stop an existing save that uses its content from loading until you re-enable it. Your save is not deleted -- re-enabling the mod restores it.\n\nDisable anyway?" % mod_name
+		d.dialog_text = "\"%s\" adds game content (items, recipes, and similar). A save that uses this content may not load while the mod is disabled. Your save is not deleted -- re-enable the mod to get it back.\n\nDisable anyway?" % mod_name
 	_attach_ui_dialog(d)
 	d.exclusive = true
 	d.always_on_top = true
@@ -2249,7 +2249,7 @@ func build_modpacks_tab(tabs: TabContainer) -> Control:
 
 	var open_folder_btn := Button.new()
 	open_folder_btn.text = "Open mods folder"
-	open_folder_btn.tooltip_text = "Drop modpack zips here. They appear automatically on next launcher open."
+	open_folder_btn.tooltip_text = "Drop modpack zips into this folder -- they appear in the list next time you open this tab."
 	hdr_row.add_child(open_folder_btn)
 	open_folder_btn.pressed.connect(func():
 		OS.shell_open(ProjectSettings.globalize_path(_mods_dir))
@@ -2466,7 +2466,7 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 	# "click and go" (everything already installed) or a long download op.
 	var missing_preview := _get_missing_mods_for_modpack(entry)
 	var dl_count := missing_preview.size()
-	var msg := "Apply \"%s\"?\n\nActivates %d of %d mods and replaces MCM settings." % [name_str, apply_enabled, apply_total]
+	var msg := "Apply \"%s\"?\n\nActivates %d of %d mods and replaces your mod settings (MCM)." % [name_str, apply_enabled, apply_total]
 	if dl_count > 0:
 		msg += "\nWill download %d mod(s) from ModWorkshop." % dl_count
 	msg += "\n\nYour current state is backed up -- click Unload to restore."
@@ -2515,7 +2515,7 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 				if is_instance_valid(pd_bar) and tot > 0:
 					pd_bar.value = float(cur) / float(tot) * 100.0
 				var prefix := "Downloading"
-				if act == "skipped": prefix = "Skipping (no source)"
+				if act == "skipped": prefix = "Skipping (manual install)"
 				elif act == "applying": prefix = "Applying modpack"
 				elif act == "retrying": prefix = "Retrying"
 				if nm != "":
@@ -2810,7 +2810,7 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 				status_lbl.text = "Will download"
 				status_lbl.add_theme_color_override("font_color", COL_AMBER)
 			else:
-				status_lbl.text = "No source"
+				status_lbl.text = "Manual install"
 				status_lbl.add_theme_color_override("font_color", COL_ERR)
 			status_lbl.add_theme_font_size_override("font_size", FS_BODY)
 			status_lbl.custom_minimum_size.x = 110
@@ -3123,7 +3123,7 @@ func show_mod_ui() -> void:
 
 	var hint := Label.new()
 	hint.text = "Higher number loads later and wins when mods share files.\n" \
-			+ "Required dependencies from mod.txt must be enabled and load first."
+			+ "Required dependencies must be enabled or the mod won't load."
 	hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.add_theme_font_size_override("font_size", FS_BODY)
@@ -3177,7 +3177,7 @@ func show_mod_ui() -> void:
 	# win.gui_embed_subwindows now embeds tooltips so that's fixed -- the hint is
 	# a deliberate style choice, not a workaround.) _wire_hint needs
 	# _ui_hint_label, which the bottom bar sets above -- so wire it here, after.
-	_wire_hint(close_btn, "Close and launch")
+	_wire_hint(close_btn, "Close the launcher and launch the game (same as Launch).")
 
 	# Fire-and-forget self-update check. Updates _ui_update_alert_btn and may
 	# pop the one-shot dialog when the API returns. Guards on
@@ -3896,7 +3896,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	var active_modpack := get_active_modpack()
 	if active_modpack != "":
 		var banner := _make_banner(
-				"Modpack \"" + active_modpack + "\" is active. Edits save to this modpack's slot.",
+				"Modpack \"" + active_modpack + "\" is active. Changes here save to the modpack, not your profiles.",
 				COL_AMBER)
 		var unload_btn := Button.new()
 		unload_btn.text = "Unload"
@@ -3987,7 +3987,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 
 	var new_profile_btn := Button.new()
 	new_profile_btn.text = "+"
-	new_profile_btn.tooltip_text = "New profile from current mod selection" if not modpack_locked else "Unload the active modpack first"
+	new_profile_btn.tooltip_text = "Create a new profile" if not modpack_locked else "Unload the active modpack first"
 	new_profile_btn.disabled = modpack_locked
 	new_profile_btn.custom_minimum_size.x = 28
 	toolbar.add_child(new_profile_btn)
@@ -4109,7 +4109,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		check_btn.disabled = true
 		check_btn.text = "Checking..."
 	filter_bar.add_child(check_btn)
-	_wire_hint(check_btn, "Query ModWorkshop for newer versions of every installed mod with update info.")
+	_wire_hint(check_btn, "Check ModWorkshop for newer versions of your installed mods. Mods that don't list a ModWorkshop page are skipped.")
 	check_btn.pressed.connect(func():
 		if _mod_updates_check_in_progress:
 			return
@@ -4134,7 +4134,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		var er := int(summary.get("errors", 0))
 		var msg := ""
 		if ck == 0:
-			msg = "No mods have [updates] modworkshop= + version set."
+			msg = "No installed mods have ModWorkshop update info, so there is nothing to check."
 		elif er >= ck:
 			msg = "Could not reach ModWorkshop. Check your connection and try again."
 		elif n == 0:
@@ -4306,10 +4306,10 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		if bool(pick["adjusted"]):
 			var reorder_lbl := _make_sub_label("reordered for dependencies", COL_TEXT_DIM)
 			order_list.add_child(reorder_lbl)
-			_wire_hint(reorder_lbl, "A required dependency sat below its dependent in priority order, so it was hoisted. Priorities otherwise unchanged.")
+			_wire_hint(reorder_lbl, "A required mod was moved up so it loads before the mod that needs it. Your load-order numbers are unchanged.")
 		var blocked_count := enabled_count - loadable.size()
 		if blocked_count > 0:
-			var blocked_lbl := _make_sub_label("%d blocked (deps)" % blocked_count, COL_AMBER)
+			var blocked_lbl := _make_sub_label("%d blocked by dependencies" % blocked_count, COL_AMBER)
 			order_list.add_child(blocked_lbl)
 			_wire_hint(blocked_lbl, "Blocked mods stay checked but don't load. See the orange row warnings for fixes.")
 
@@ -4372,7 +4372,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			var u_btn := Button.new()
 			u_btn.text = "Update"
 			upd_row.add_child(u_btn)
-			_wire_hint(u_btn, "Download the latest version and replace the file in place.")
+			_wire_hint(u_btn, "Download the latest version and replace the installed one.")
 			var captured_pk := pk
 			var captured_upd := upd
 			# If a download for this pk is already running (this row was rebuilt
@@ -4450,14 +4450,14 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		missing_hdr_row.add_child(missing_hdr)
 		var remove_all_btn := Button.new()
 		remove_all_btn.text = "Remove all"
-		remove_all_btn.tooltip_text = "Strip every missing-mod entry from the active profile"
+		remove_all_btn.tooltip_text = "Remove all missing mods from this profile"
 		missing_hdr_row.add_child(remove_all_btn)
-		_wire_hint(remove_all_btn, "Strip every missing-mod entry from the active profile.")
+		_wire_hint(remove_all_btn, "Remove every missing mod from the active profile.")
 		remove_all_btn.pressed.connect(func():
 			var n := missing_files.size()
 			var d := ConfirmationDialog.new()
 			d.title = "Remove missing-mod entries"
-			d.dialog_text = "Strip %d missing-mod entr%s from \"%s\"?\n\nOnly the active profile is affected. Other profiles keep their references." % [
+			d.dialog_text = "Remove %d missing-mod entr%s from \"%s\"?\n\nOnly the active profile is affected -- other profiles still list these mods." % [
 				n, ("y" if n == 1 else "ies"), _active_profile,
 			]
 			d.ok_button_text = "Remove"
@@ -4547,7 +4547,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 						# (Launch pressed): _attach_ui_dialog would otherwise pop an
 						# exclusive always-on-top window over the running game.
 						if is_instance_valid(_ui_window):
-							_show_error_dialog("Download failed", str(r.get("error", "unknown")))
+							_show_error_dialog("Download failed", str(r.get("error", "Could not download this mod. Check your connection and try again.")))
 				)
 			else:
 				# No source info -- name what's unavailable, not the data we
@@ -4562,13 +4562,13 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 				no_src_lbl.mouse_filter = Control.MOUSE_FILTER_STOP
 				miss_row.add_child(no_src_lbl)
 				_wire_hint(no_src_lbl,
-					"This mod has no recorded ModWorkshop source. Reinstall it manually, or set [updates] modworkshop=N in its mod.txt if you have a local copy.")
+					"This mod is not linked to ModWorkshop, so it can't be downloaded automatically. Reinstall it manually.")
 
 			var remove_btn := Button.new()
 			remove_btn.text = "Remove"
-			remove_btn.tooltip_text = "Strip this entry from the active profile"
+			remove_btn.tooltip_text = "Remove this missing mod from this profile"
 			miss_row.add_child(remove_btn)
-			_wire_hint(remove_btn, "Strip this entry from the active profile.")
+			_wire_hint(remove_btn, "Remove this mod from the active profile.")
 			var captured := fn
 			remove_btn.pressed.connect(func():
 				_remove_missing_entry_from_profile(captured)
@@ -4848,7 +4848,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			var current_v: String = str(vm.get("current", ""))
 			var stored_disp := stored_v if stored_v != "" else "(unset)"
 			var current_disp := current_v if current_v != "" else "(unset)"
-			var vm_text := "profile version: " + stored_disp + " -> " + current_disp
+			var vm_text := "version changed: " + stored_disp + " -> " + current_disp
 			name_col.add_child(_make_sub_label(vm_text, COL_AMBER, vm_text))
 
 		# Scanner indicator. Only renders for RED risk -- mods whose source
@@ -5028,7 +5028,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	var sort_dropdown := OptionButton.new()
 	# Index -> API sort enum. Search honors this sort (no best_match override) --
 	# default "Recently bumped" keeps most-recently-updated mods on top.
-	sort_dropdown.add_item("Recently bumped")
+	sort_dropdown.add_item("Recently updated")
 	sort_dropdown.add_item("Most downloaded")
 	sort_dropdown.add_item("Most liked")
 	sort_dropdown.add_item("Most viewed")
@@ -5549,7 +5549,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		var shown_so_far: int = int(state["shown_count"])
 		# Empty state as an invitation (spec section 7), not a bare zero.
 		if shown_so_far == 0:
-			set_status.call("No results. Try fewer filters.", COL_TEXT_DIM)
+			set_status.call("No results. Try a different search or category.", COL_TEXT_DIM)
 		else:
 			set_status.call("%d of %d mods" % [shown_so_far, total], COL_TEXT_DIM)
 		load_more_btn.visible = bool(state["has_more"])
@@ -5701,7 +5701,7 @@ func _refresh_browse_installed_rows(root: Node) -> void:
 				cb.set_pressed_no_signal(false)
 				cb.disabled = true
 				cb.text = "Removed"
-				cb.tooltip_text = "This mod is no longer installed. Re-download it from its Browse entry."
+				cb.tooltip_text = "This mod is no longer installed. Click its name and use Download to install it again."
 		elif node is Button and entry_v is Dictionary:
 			# A Download button whose mod is now installed (modpack apply or
 			# retry landed it). Skip in-flight buttons (Downloading/Queued,
@@ -6217,7 +6217,7 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 		if not is_instance_valid(files_status):
 			return
 		if not (files_resp is Dictionary):
-			files_status.text = mws_error_status("Could not load file history. Check your connection and try again.")
+			files_status.text = mws_error_status("Could not load the file list. Check your connection and try again.")
 			files_status.add_theme_color_override("font_color", COL_ERR)
 			return
 		var files: Array = _mws_data_rows(files_resp)
@@ -6393,7 +6393,7 @@ func build_updates_tab() -> Control:
 			# archive would land a duplicate next to the folder. Explain why
 			# there is no Download button instead of offering one that misfires.
 			status_lbl.text = "Dev folder"
-			status_lbl.tooltip_text = "Dev folders update from your working copy. Update downloads only apply to archive mods."
+			status_lbl.tooltip_text = "Dev folders load straight from your mods folder, so there is nothing to download. Update downloads only apply to mods installed as archives."
 		else:
 			status_lbl.text = "No update info" if mw_id == 0 or version == "" else "--"
 		row.add_child(status_lbl)
@@ -6401,7 +6401,7 @@ func build_updates_tab() -> Control:
 		# Always add dl_btn to preserve column width. Use modulate.a to
 		# hide it visually without collapsing its layout slot.
 		var dl_btn := Button.new()
-		dl_btn.text = "Download"
+		dl_btn.text = "Update"
 		dl_btn.custom_minimum_size.x = 90
 		dl_btn.modulate.a = 0.0
 		dl_btn.disabled = true
@@ -6424,7 +6424,7 @@ func build_updates_tab() -> Control:
 
 	if list.get_child_count() == 0:
 		var lbl := Label.new()
-		lbl.text = "No mods with update info yet.\nAdd [updates] modworkshop=<id> and version=<x.y.z> to mod.txt to enable update checks."
+		lbl.text = "No mods to check yet.\nGet mods from the Browse tab, then check for updates here."
 		lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
 		lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		list.add_child(lbl)
@@ -6479,7 +6479,7 @@ func build_updates_tab() -> Control:
 			btn.modulate.a = 0.0
 			btn.disabled = true
 			btn.mouse_filter = Control.MOUSE_FILTER_IGNORE
-			btn.text = "Download"
+			btn.text = "Update"
 		await check_updates_for_ui(status_info, add_log, check_btn)
 		# The launcher can close (Launch clicked) while the check is in
 		# flight; the button is freed with it. Mirrors the Mods-tab guard.
@@ -6654,7 +6654,7 @@ func check_updates_for_ui(status_info: Dictionary, add_log: Callable, check_btn:
 					dl_btn.modulate.a = 0.0
 					dl_btn.disabled = true
 					dl_btn.mouse_filter = Control.MOUSE_FILTER_IGNORE
-					dl_btn.text = "Download"
+					dl_btn.text = "Update"
 					# Update cached version so next Check won't re-flag this mod.
 					info["version"] = new_ver
 					(info["ver_lbl"] as Label).text = "v" + new_ver
@@ -6741,7 +6741,7 @@ func _check_modloader_update_async() -> void:
 			return  # latest prerelease is the same as or older than installed
 
 	if is_instance_valid(_ui_update_alert_btn):
-		_ui_update_alert_btn.text = "v%s available, click to update" % latest
+		_ui_update_alert_btn.text = "v%s available -- click to open ModWorkshop" % latest
 		# Amber is the update signal (spec: the one accent); an available
 		# update is a notice, not an error, so no red here.
 		_ui_update_alert_btn.add_theme_color_override("font_color", COL_AMBER)
