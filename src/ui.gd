@@ -4367,18 +4367,21 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			# visual intent without engaging autowrap.
 			lbl.clip_text = true
 			lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-			lbl.tooltip_text = e["mod_name"]
-			# Labels default to MOUSE_FILTER_IGNORE, which suppresses the tooltip;
-			# pass mouse events so the full name shows on hover (see _make_sub_label).
+			# Status-line hint, not tooltip_text: a raw tooltip is its own popup
+			# that isn't always_on_top, so it strands behind this window (same as
+			# the header close button). Full name shows in the bottom hint on hover.
 			lbl.mouse_filter = Control.MOUSE_FILTER_PASS
 			order_list.add_child(lbl)
+			_wire_hint(lbl, str(e["mod_name"]))
 		if bool(pick["adjusted"]):
-			order_list.add_child(_make_sub_label("reordered for dependencies", COL_TEXT_DIM,
-					"A required dependency sat below its dependent in priority\norder, so it was hoisted. Priorities otherwise unchanged."))
+			var reorder_lbl := _make_sub_label("reordered for dependencies", COL_TEXT_DIM)
+			order_list.add_child(reorder_lbl)
+			_wire_hint(reorder_lbl, "A required dependency sat below its dependent in priority order, so it was hoisted. Priorities otherwise unchanged.")
 		var blocked_count := enabled_count - loadable.size()
 		if blocked_count > 0:
-			order_list.add_child(_make_sub_label("%d blocked (deps)" % blocked_count, COL_AMBER,
-					"Blocked mods stay checked but don't load.\nSee the orange row warnings for fixes."))
+			var blocked_lbl := _make_sub_label("%d blocked (deps)" % blocked_count, COL_AMBER)
+			order_list.add_child(blocked_lbl)
+			_wire_hint(blocked_lbl, "Blocked mods stay checked but don't load. See the orange row warnings for fixes.")
 
 	# -- Updates available ----------------------------------------------------
 	# Compact triage list of mods with newer versions on ModWorkshop. Source
