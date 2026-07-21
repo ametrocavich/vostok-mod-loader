@@ -1,10 +1,12 @@
 # Hooks
 
-The hook system lets mods intercept vanilla method calls -- run code before/after, replace the implementation entirely, or receive a deferred callback. The public API matches tetrahydroc's RTVModLib mod exactly; the implementation under the hood is source rewriting.
+Hooks let your mod run code around a vanilla method: before it (`-pre`), after it (`-post`), instead of it (replace), or deferred until after it returns (`-callback`). You register a callback against a hook name like `"controller-jump-pre"`, and the loader arranges for it to fire whenever vanilla `Controller.jump()` runs. Under the hood the loader rewrites the vanilla script with a dispatch wrapper, but you never touch that machinery -- you write one `.hook()` call.
 
-## Quick start -- the 95% case
+Use hooks when you want to react to or change vanilla *behavior*. If you want to add or change *data* (items, loot, scenes, recipes), use the [Registry](Registry) instead. If you need to know whether another mod is loaded, see the mod-discovery API below and [Dependencies](Dependencies).
 
-If your mod calls `.hook("controller-jump-pre", my_callback)` directly in its own source, **you don't need any `mod.txt` declaration**. The loader scans your `.gd` files at load time, sees the `.hook()` call, and enrolls `Controller.gd :: jump` in the wrap surface automatically. At pack generation the vanilla `Controller.jump` gets a dispatch wrapper, and your callback fires.
+## Quick start -- the 90% case
+
+A working hook mod needs exactly two things: an `[autoload]` entry in `mod.txt`, and a literal `.hook("...")` call in your own source. No `[hooks]` section, no framework import. The loader scans your `.gd` files for literal `.hook("<stem>-<method>[-pre|-post|-callback]")` strings and wraps those vanilla methods automatically.
 
 ```gdscript
 # res://MyMod/Main.gd
@@ -25,7 +27,7 @@ func _on_lib_ready():
     _lib.hook("controller-jump-pre", _on_jump)
 
 func _on_jump(_delta):
-    _lib._caller.jumpVelocity = 20.0
+    _lib._caller.jumpVelocity = 20.0   # _caller = the node whose method is running
 ```
 
 ```ini
@@ -39,67 +41,67 @@ version="1.0.0"
 BigJump="res://MyMod/Main.gd"
 ```
 
-That's the whole mod. No `[hooks]` section. No framework imports. The scanner does the enrollment.
+That's the whole mod. The scanner sees `.hook("controller-jump-pre", ...)`, resolves `controller` to `res://Scripts/Controller.gd`, and wraps `jump`. Your callback receives the same arguments the vanilla method received.
 
-## Opt-in model
+Two rules to keep out of trouble:
 
-The loader uses an opt-in model (introduced in v3.0.1): **a modlist that declares nothing produces no wrap, no rewrite, and no hook pack** -- mods run against byte-identical vanilla scripts. Declarations turn individual subsystems on:
+1. **Hook names must be a literal string, fully lowercase.** A name built at runtime (concatenation, variable) registers fine but never fires, because the scanner can only enroll literal strings (see [Wrap surface](#wrap-surface----why-hook-alone-is-not-enough)). Mixed-case names enroll the wrap but the runtime key never matches -- write them lowercase.
+2. **Register from `_ready` or later** using the readiness pattern above. Calling `hook()` from `_ready` directly also works (the API exists before mod autoloads run); waiting for `frameworks_ready` additionally guarantees every other mod's autoload has finished, which you need for peer integration (`has_mod`) and registry-backed state. You can also just `await Engine.get_meta("RTVModLib").frameworks_ready`.
 
-| Trigger | Effect |
-|---|---|
-| `.hook("stem-method-...")` call in a mod's source | Scanner enrolls that method on `res://Scripts/<Stem>.gd` |
-| `ModLoader.add_hook(path, method, cb, before)` from an early autoload's `_init` | Shim translates to a native hook + enrolls path |
-| `[hooks]` in `mod.txt` | Manually enroll methods (or `= *` for all) |
-| `[registry]` in `mod.txt` | Turn on the registry (see [Registry](Registry)) |
-| `[script_extend]` in `mod.txt` | Chain-by-extends overrides |
+## Hook names
 
-The rewrite surface equals the union of those triggers. When no user mod declares anything, the loader logs `[RTVCodegen] No user opt-in declarations ([hooks] / .hook() / [registry]) -- user mods' vanilla targets run unmodified (v2.1.0-equivalent). Pack contains core hooks only.` at boot. User mods' vanilla targets stay byte-identical; the pack contains only a core-owned wrap on `Menu.gd :: _ready` that injects the launcher's "Mods" button into the main menu. When no mods are loaded at all, pack generation is skipped entirely (no file written).
-
-### `[hooks]` escape hatch
-
-Some mods can't get auto-enrolled. Examples:
-
-- `ModLoader.add_hook(path, method, cb, before)` called from a runtime autoload (not `!`-prefixed). Pack generation has already run by then.
-- Hook registrations that happen via a callback passed in from a different autoload -- the `.hook()` call site isn't in the registering mod's own source.
-- Hooks the mod author wants wrapped but doesn't plan to register until gameplay events fire.
-- Hook names built at runtime (string concatenation, variables, loops over a name list). The scanner only matches literal `.hook("...")` strings -- dynamic names register fine but never fire unless the target is declared in `[hooks]`.
-
-For these, declare the vanilla script path in `mod.txt`:
-
-```ini
-[hooks]
-res://Scripts/Interface.gd = "_ready, update_tooltip"   # specific methods
-res://Scripts/Controller.gd = "*"                       # wildcard -- all methods
-res://Scripts/Camera.gd = ""                            # empty value == *
+```
+<scriptname>-<methodname>[-pre|-post|-callback]
 ```
 
-Quote the value. ConfigFile parses RHS as a Variant literal, so unquoted method lists or a bare `*` raise "Unexpected identifier" and the entire `mod.txt` fails to parse (silently breaks every mod that loads after yours, since later sections never get read). Our loader auto-wraps unquoted values for backward compat, but mods are more portable when written quoted.
+Both parts lowercase. `<scriptname>` is the vanilla `.gd` filename without extension: `Controller.gd`'s `_physics_process` becomes `controller-_physics_process`. Only scripts directly under `res://Scripts/` are hookable.
 
-Method names in the list are case-insensitive (normalized to lowercase on write). The wildcard leaves the inner mask empty, which the generator reads as "wrap every non-static method."
+| Name form | Fires | Args | Return |
+|---|---|---|---|
+| `controller-jump-pre` | Before the vanilla body | Same as vanilla | Ignored |
+| `controller-jump` (bare) | Replace slot -- **single-owner, first registration wins** (later ones get -1). Runs before vanilla; call `skip_super()` to suppress vanilla and use your return value instead | Same as vanilla | Used **only if** you called `skip_super()`; otherwise vanilla runs after your callback and vanilla's result wins |
+| `controller-jump-post` | After vanilla (or after replace) | Same as vanilla, plus a trailing `_result` param for non-void methods if your callback declares it | Non-void methods: return non-null to replace the result; null = pass-through. Void methods: ignored |
+| `controller-jump-callback` | Deferred (`call_deferred`) after the method returns | Same as vanilla | Ignored |
 
-### `ModLoader.add_hook()` compat
+Per call, the order is: pre -> replace-or-vanilla -> post -> deferred callback.
 
-Mods written against [`godot-mod-loader`](https://github.com/GodotModding/godot-mod-loader) call `ModLoader.add_hook(script_path, method_name, callback, is_before)`. The loader provides a compat shim in [hooks_api.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd), `add_hook()`, that:
+## Getting the library
 
-1. Builds the native hook name: `<stem>-<method>-<pre|post>` (all lowercase).
-2. Enrolls `script_path` into `_hooked_methods` so the wrap surface picks it up.
-3. Calls `hook(hook_name, callback, 100)`.
+The loader registers itself as `Engine.get_meta("RTVModLib")` before any mod autoload runs. Public state on it:
 
-**Timing gotcha**: the shim enrolls the path *when called*, but `_generate_hook_pack` reads `_hooked_methods` at the top of Pass 1 (or Pass 2 in the restart flow). `add_hook()` calls from a mod's runtime autoload arrive too late -- the hook is registered, but there's no wrapper to dispatch it. To get wrapped, either:
+| Member | Meaning |
+|---|---|
+| `frameworks_ready` (signal) | Emitted once, after all mod autoloads have finished `_ready()`. Safe to `await` |
+| `_is_ready: bool` | True once `frameworks_ready` has emitted (public despite the underscore) -- use it for the check-then-connect pattern so you don't miss the signal |
+| `_caller: Node` | The node whose wrapped method is currently dispatching. Only meaningful inside a hook callback; the wrapper saves/restores it around nested calls, so it is always the correct node for the hook that is firing |
 
-- Call `add_hook()` from a `!`-prefixed early autoload's `_init` (runs before pack generation).
-- Declare the path in `[hooks]` with `= *` in `mod.txt` so the wrap mask is populated statically regardless of when the autoload runs.
+## API reference
 
-**Path gotcha**: a bare filename is normalized to `res://Scripts/<file>`. If your target script lives anywhere else (e.g. `res://Scripts/Framework/X.gd`), pass a fully-qualified `res://` path -- otherwise the enrollment silently matches nothing and the hook never fires.
+All calls on `Engine.get_meta("RTVModLib")`. Source: `src/hooks_api.gd`.
 
-## Public API
+| Method | Purpose |
+|---|---|
+| `hook(name, callback, priority=100) -> int` | Register a callback, return its id. Returns **-1** if `name` is a bare replace name that already has an owner (any earlier registration, even your own) -- this is logged at debug level only, so **check the return value**. Callbacks run in ascending priority order; ties are NOT guaranteed to run in registration order (`sort_custom` is not stable) -- use distinct priorities when ordering matters |
+| `hook_many({name: callback, ...}, priority=100) -> Dictionary` | Batched register. Returns `{ok, results}` where `results[name]` is the hook id or -1; `ok` is false if any registration failed |
+| `unhook(id) -> void` | Remove a hook by id |
+| `add_hook(path, method, cb, is_before=true) -> int` | godot-mod-loader compat shim; see [add_hook compat](#modloaderadd_hook-compat) for its timing and path caveats |
+| `has_hooks(name) -> bool` | Any callbacks registered at this exact name? |
+| `has_replace(name) -> bool` | Is a replace hook registered at this bare name? |
+| `get_replace_owner(name) -> int` | Id of the current replace owner, or -1 -- lets you detect an occupied slot and fall back to pre/post |
+| `skip_super() -> void` | Inside a replace callback only: suppress the vanilla body; your callback's return becomes the method's result |
+| `seq() -> int` | Monotonic dispatch counter, useful for tests/debug |
+| `has_mod(id, min_version="") -> bool` | True if a mod with that id is loaded. `min_version` does a numeric dotted-version compare (`>=`); non-numeric components compare as 0, and mods without a `version=` field compare as 0.0.0 |
+| `mod_info(id) -> Dictionary` | `{mod_id, mod_name, version, file_name, priority, required_dependencies, optional_dependencies}` for a loaded mod, `{}` if absent. Returns a deep copy -- mutate freely |
+| `loaded_mods() -> Array[String]` | All loaded mod ids. Order not guaranteed |
+| `static version() -> String` | Loader version string (e.g. `"3.3.0"`) |
+| `static major_version() / minor_version() / patch_version() -> int` | Numeric components, for feature gating: `if lib.major_version() >= 3:` |
 
-Mods reach the loader via `Engine.get_meta("RTVModLib")`. Source: [src/hooks_api.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd).
+Note: `provides=` rename aliases (see [Mod-Format](Mod-Format)) satisfy dependency resolution but are NOT matched by `has_mod()`/`mod_info()` -- these match only the mod's real `id`. Check both ids if you need to detect a renamed peer. See [Dependencies](Dependencies).
+
+For mods that install hooks alongside registry mutations as one step, `hook_many` is also available as a `["hooks", {name: callback, ...}]` entry inside `lib.setup(plan)`; the plan result entry is `{"verb": "hooks", "ok": bool, "results": {name: id_or_-1}}`. See [Setup-Plans](Setup-Plans).
 
 ```gdscript
 var lib = Engine.get_meta("RTVModLib")
-
-# Wait until all mod autoloads finished overrideScript calls.
 await lib.frameworks_ready
 
 var id = lib.hook("controller-_physics_process-pre", func(delta): print(delta), 100)
@@ -108,7 +110,6 @@ lib.unhook(id)
 if lib.has_replace("weaponrig-shoot"):
     print("another mod already replaced shoot")
 
-# Batched form for mods with many hooks at once.
 lib.hook_many({
     "controller-_physics_process-pre":  _on_phys_pre,
     "interface-getmagazine":            _replace_get_mag,
@@ -116,280 +117,132 @@ lib.hook_many({
 })
 ```
 
-For mods that register hooks alongside registry mutations as a single installation step, `hook_many` is also available as a `["hooks", {...}]` entry inside `lib.setup(plan)`. See [Setup-Plans](Setup-Plans) for the declarative form.
+## Replace hooks
 
-### Methods
+A bare hook name is the single-owner replace slot. Semantics that surprise people:
 
-| Method | Purpose |
-|---|---|
-| `hook(name, callback, priority=100) -> int` | Register a callback, return its id. Replace hooks are single-owner (returns -1 if already taken). Callbacks run in ascending priority order; ties are NOT guaranteed to run in registration order (`sort_custom` is not stable) -- use distinct priorities when ordering between two callbacks matters |
-| `hook_many({name: callback, ...}, priority=100) -> Dictionary` | Batched register; returns `{ok, results}` where `results[name]` is the hook id or -1 |
-| `unhook(id) -> void` | Remove a hook by id (linear scan across all hook names) |
-| `add_hook(path, method, cb, before=true) -> int` | godot-mod-loader compat wrapper around `hook()` + wrap-mask enrollment |
-| `has_hooks(name) -> bool` | Any callbacks registered at this name? |
-| `has_replace(name) -> bool` | Is a replace hook registered at this bare name? |
-| `get_replace_owner(name) -> int` | Returns id of the current replace owner, or -1 |
-| `skip_super() -> void` | Inside a replace callback: prevent the vanilla body from running on return |
-| `seq() -> int` | Monotonic dispatch counter, useful for tests |
-| `has_mod(id, min_version="") -> bool` | True if a mod with the given id is loaded; optional `min_version` does a numeric semver compare (`>=`) |
-| `mod_info(id) -> Dictionary` | `{mod_id, mod_name, version, file_name, priority, required_dependencies, optional_dependencies}` for a loaded mod, `{}` if absent. Returns a duplicate -- callers can mutate freely |
-| `loaded_mods() -> Array[String]` | All loaded mod ids. Order is not guaranteed |
-| `static version() -> String` | `MODLOADER_VERSION` |
-| `static major_version() -> int` | Parse major from `MODLOADER_VERSION` |
-| `static minor_version() -> int` | Same, minor |
-| `static patch_version() -> int` | Same, patch |
-
-Note: `provides=` rename aliases (see [Mod-Format](Mod-Format)) satisfy dependency resolution but are NOT matched by `has_mod()`/`mod_info()` -- these match only the mod's real `id`. Check both ids if you need to detect a renamed peer.
-
-### Signal
-
-- `frameworks_ready` -- emitted once after all mod autoloads finished. Mods that depend on overrideScript completion should `await` this.
-
-## Hook names
-
-Hook names follow this convention:
-
-```
-<scriptname>-<methodname>[-pre|-post|-callback]
-```
-
-Both `scriptname` and `methodname` are lowercased. `scriptname` is the `.gd` filename without extension. `Controller.gd`'s `_physics_process` method becomes `controller-_physics_process`.
-
-Suffixes:
-
-| Suffix | Fires | Args | Return? |
-|---|---|---|---|
-| `-pre` | Before vanilla body (or before replace) | Same as the vanilla method | Ignored |
-| (none) | In place of vanilla. **First registration wins, subsequent registrations are rejected** (returns -1). Within a replace callback, call `lib.skip_super()` to suppress vanilla | Same as vanilla | Return value becomes the method's return |
-| `-post` | After vanilla (or after replace if no `skip_super`). For **non-void** wrapped methods, post hooks may receive the running `_result` and mutate it; see below | Same as vanilla, **plus a trailing `_result` arg** for non-void methods if the callback declares it | For non-void methods: return non-null to replace `_result` for downstream post hooks; return null to pass through unchanged. Multiple post hooks chain in priority order |
-| `-callback` | Deferred via `Callable.bindv(args).call_deferred()` | Same as vanilla | Ignored |
-
-### Post-hook return mutation (non-void methods only)
-
-When the wrapped vanilla method returns a value, post hooks can transform it. Two callback signatures are supported:
+- **Your callback runs BEFORE vanilla, not instead of it, unless you call `skip_super()`.** If you don't call `skip_super()`, vanilla runs after your callback and **vanilla's return value wins** -- your return is discarded. Call `lib.skip_super()` inside the callback to suppress vanilla and make your return value the method's result.
+- **First registration wins.** A second `hook("lootcontainer-generateloot", ...)` returns -1 with only a debug-level log. Check for -1, or probe first with `has_replace()` / `get_replace_owner()` and fall back to pre/post:
 
 ```gdscript
-# Preferred form: declare the trailing _result param to receive + mutate
-func _on_value_post(current_result: int) -> int:
-    return current_result + 100  # bumps the result by 100
+var id = _lib.hook("lootcontainer-generateloot", _custom_loot)
+if id == -1:
+    # Another mod owns the replace slot -- observe instead.
+    _lib.hook("lootcontainer-generateloot-post", _modify_loot_after)
 
-# Legacy form: just vanilla args, no _result, no return propagation.
-# Still works (read-only observer), but emits a one-shot deprecation warning
-# per (hook_name, callback) pair. Will be removed in a future major version.
-func _on_value_post() -> void:
-    print("Item.Value() ran")
+func _custom_loot():
+    if some_condition:
+        _lib.skip_super()   # skip vanilla loot gen; our return value is the result
+        # generate custom loot ...
+    # if skip_super() not called, vanilla GenerateLoot runs normally after this
 ```
-
-The dispatcher detects callback arity via `Callable.get_argument_count()`. If the count matches `vanilla_args.size() + 1`, the trailing `_result` is passed and the return value chains forward. Any other count runs the legacy path (called with the vanilla args only, return ignored) and a deprecation warning fires once per callback registration.
 
 ### `await` inside a replace hook
 
-Only `await` inside a replace callback when the **vanilla method you replaced is itself a coroutine** (its body contains `await`). The wrapper always `await`s your replace callback (an `await` on a value that never suspends completes immediately, so this is free for synchronous callbacks). But if the vanilla method you replaced is synchronous and your callback actually suspends, the wrapper itself suspends -- and the vanilla call site, which does not `await`, receives a coroutine state object instead of the declared type. Any typed call site (`var n: int = obj.Method()`) is then a **runtime error** in the vanilla caller you cannot fix from a mod. If you need async work behind a synchronous hook, kick it off with `call_deferred` or a `-callback` suffix hook instead and return a plain value.
+Only suspend (`await` something that actually waits) inside a replace callback when the vanilla method you replaced is itself a coroutine. The wrapper always `await`s your replace callback -- free for synchronous callbacks -- but if vanilla is synchronous and your callback suspends, the wrapper suspends too, and the vanilla call site (which does not `await`) receives a coroutine state object instead of the declared type. Any typed call site (`var n: int = obj.Method()`) then throws a runtime error in vanilla code you cannot fix from a mod. For async work behind a synchronous hook, use `call_deferred` or a `-callback` hook and return a plain value.
 
-Multiple post hooks chain in priority-ascending order. Each hook sees the running `_result` after all prior post hooks have transformed it:
+## Post hooks and result mutation
 
-```gdscript
-# Vanilla Item.Value() returns V (an int)
-lib.hook("item-value-post", func(r): return r + 100, 50)        # priority 50, runs first
-lib.hook("item-value-post", func(r): return min(r, 200), 100)   # priority 100, runs second
-
-# For an item with vanilla value=50:
-#   1. vanilla returns 50
-#   2. priority-50 hook: r=50 -> returns 150 -> _result=150
-#   3. priority-100 hook: r=150 -> returns min(150, 200)=150 -> _result=150
-#   4. wrapper returns 150 to caller
-```
-
-`null` returns are pass-through ("I observed but don't want to change anything"). Methods that legitimately return `null` for valid values can't be modeled via a mutator; document that limitation and pick a different sentinel if needed.
-
-**Void methods**: post hooks for void wrapped methods continue to be fire-and-forget. There's no `_result` to pass; the void wrapper template doesn't call `_dispatch_post`.
-
-## Dispatch semantics
-
-The dispatch wrapper template lives in [rewriter.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter.gd), `_rtv_dispatch_inline_src`. For every hookable vanilla method, the rewriter emits roughly this structure:
-
-```
-func <name>(args):
-    var _lib = Engine.get_meta("RTVModLib") if Engine.has_meta("RTVModLib") else null
-    if !_lib:
-        return _rtv_vanilla_<name>(args)
-
-    # Global short-circuit: if no mod has ever called hook(), skip everything
-    if not _lib._any_mod_hooked:
-        return _rtv_vanilla_<name>(args)
-
-    # Per-hook-base short-circuit: no hooks registered on THIS method
-    if not _lib._hooked_bases.has("<hook_base>"):
-        return _rtv_vanilla_<name>(args)
-
-    # Re-entry guard: don't double-dispatch if a chained subclass wrapper
-    # calls super() into vanilla's wrapper. Keyed per instance so a
-    # coroutine suspended on one instance doesn't suppress dispatch on others.
-    var _rtv_wa_key: String = str(get_instance_id()) + ":<hook_base>"
-    if _lib._wrapper_active.has(_rtv_wa_key):
-        return _rtv_vanilla_<name>(args)
-    _lib._wrapper_active[_rtv_wa_key] = true
-
-    var _rtv_prev_caller = _lib._caller
-    _lib._caller = self
-    _lib._dispatch("<hook_base>-pre", [args])
-
-    var _result
-    var _repl = _lib._get_hooks("<hook_base>")
-    if _repl.size() > 0:
-        var _prev_skip = _lib._skip_super
-        _lib._skip_super = false
-        var _replret = await _repl[0].callv([args])
-        var _did_skip = _lib._skip_super
-        _lib._skip_super = _prev_skip
-        if _did_skip:
-            _result = _replret
-        else:
-            _result = _rtv_vanilla_<name>(args)
-    else:
-        _result = _rtv_vanilla_<name>(args)
-
-    # Re-set _caller: nested wrapped calls inside the body may have
-    # clobbered it, and post hooks should see the correct caller.
-    _lib._caller = self
-
-    # Non-void wrapper: chained post-hook dispatch with arity detection.
-    # `_dispatch_post` walks each post hook in priority order, passes the
-    # running `_result` if the callback declared the trailing param, and
-    # propagates the callback's return value forward.
-    _result = _lib._dispatch_post("<hook_base>-post", [args], _result)
-
-    _lib._dispatch_deferred("<hook_base>-callback", [args])
-    _lib._wrapper_active.erase(_rtv_wa_key)
-    _lib._caller = _rtv_prev_caller
-    return _result
-```
-
-Four performance / correctness features:
-
-- **Null-lib fallback**: if `RTVModLib` meta isn't set (loader not finished initializing, or loader failed), the wrapper calls the vanilla body directly.
-- **Global short-circuit**: `_lib._any_mod_hooked` is a sticky bool flipped true by the first `hook()` call. Dispatch wrappers skip every dict/function call when no mod has registered anything. Same approach as godot-mod-loader's `_ModLoaderHooks.any_mod_hooked`.
-- **Per-hook-base short-circuit**: `_hooked_bases` is a refcount keyed by `<script>-<method>`, maintained by `hook()`/`unhook()`. Wrapped methods with no hooks of their own fast-path past dispatch even when other mods have hooked other methods (which makes `_any_mod_hooked` sticky-true forever).
-- **Re-entry guard**: when a mod script that extends wrapped vanilla calls `super()`, control lands back in the vanilla wrapper. Without the guard, the vanilla wrapper would dispatch hooks again. The guard flips `_wrapper_active[hook_base]` = true on entry; nested re-entry at the same `hook_base` skips dispatch and runs the body directly. One dispatch per logical call regardless of chain depth.
-
-The wrapper also saves and restores `_lib._caller` around the body (`_rtv_prev_caller`), re-setting it before the post dispatch -- so nested wrapped calls inside the body don't leak a stale caller into your post hooks.
-
-**Void methods** use a structurally similar template but call `_lib._dispatch("<hook_base>-post", [args])` (fire-and-forget, return ignored) instead of `_dispatch_post`, since there's no `_result` to mutate.
-
-**Coroutines** (`await`) and engine lifecycle methods (`_ready` et al.) use structurally similar templates with appropriate adjustments -- `await` prepended to vanilla calls for coroutines.
-
-## Hook registration, step-by-step
-
-Source: [hooks_api.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd), `hook()`.
-
-1. Detect replace vs. aspect: `is_replace = not (name ends_with "-pre/-post/-callback")`.
-2. If replace and `_hooks[name]` is non-empty: debug-log the rejection, return `-1`.
-3. Create entry `{callback, priority, id}`, append to `_hooks[name]`, sort by priority ascending.
-4. Set `_any_mod_hooked = true` (sticky).
-5. Increment the `_hooked_bases` refcount for the hook's base (`<script>-<method>`, suffix stripped) so the wrapper's per-hook-base short-circuit opens.
-6. Return `id`, increment `_next_id`.
-
-## Dispatch internals
-
-Source: [hooks_api.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd), `_dispatch()`.
+For **non-void** wrapped methods, post hooks can transform the return value. Two callback shapes:
 
 ```gdscript
-func _dispatch(hook_name: String, args: Array) -> void:
-    if not _hooks.has(hook_name):
-        return
-    var entries: Array = (_hooks[hook_name] as Array).duplicate()
-    for entry in entries:
-        _seq += 1
-        entry["callback"].callv(args)
+# Preferred: declare a trailing _result param (arity = vanilla args + 1).
+# Return non-null to replace the result; return null to pass through.
+func _on_value_post(current_result: int):
+    return current_result + 100
+
+# Legacy: vanilla args only. Still runs (read-only observer), return ignored,
+# one-shot deprecation warning per callback. Will be removed in a future
+# major version.
+func _on_value_post_legacy() -> void:
+    print("Item.Value() ran")
 ```
 
-The `.duplicate()` is load-bearing: hooks that call `hook()` or `unhook()` mid-dispatch would otherwise mutate the live array during iteration. Snapshotting means new hooks registered during dispatch don't fire in the current dispatch -- they join the next one.
-
-`_dispatch_deferred` uses `callback.bindv(args).call_deferred()` instead, for `-callback` suffix hooks.
-
-`_dispatch_post` is the chained variant for non-void post hooks. Same snapshot-iterate pattern as `_dispatch`, but it inspects each callback's arity before calling and threads a running result through the chain:
+The dispatcher detects which form you wrote by argument count. Multiple post hooks chain in ascending priority order -- each sees the running result after all earlier post hooks transformed it, and the final value is what the caller receives:
 
 ```gdscript
-func _dispatch_post(hook_name: String, args: Array, current_result: Variant) -> Variant:
-    if not _hooks.has(hook_name):
-        return current_result
-    var entries: Array = (_hooks[hook_name] as Array).duplicate()
-    var expected_with_result: int = args.size() + 1
-    for entry in entries:
-        _seq += 1
-        var cb: Callable = entry["callback"]
-        var argc: int = cb.get_argument_count()
-        var ret: Variant = null
-        if argc == expected_with_result:
-            ret = cb.callv(args + [current_result])  # 3-arg form: receive _result
-        else:
-            cb.callv(args)                            # legacy 2-arg form
-            # one-shot deprecation warning per (hook_name, callback) pair
-        if ret != null:
-            current_result = ret
-    return current_result
+# Vanilla Item.Value() returns an int
+lib.hook("item-value-post", func(r): return r + 100, 50)        # runs first
+lib.hook("item-value-post", func(r): return min(r, 200), 100)   # runs second
+
+# vanilla returns 50 -> hook@50 makes it 150 -> hook@100 makes it min(150,200)=150
 ```
 
-Per-callback warning suppression uses `_post_legacy_warned: Dictionary` keyed by `"<hook_name>::<callback_object_id>::<callback_method>"` (the method is included so two legacy callbacks on the same object each get their own one-shot warning). First time a legacy callback is seen, the warning prints and the key flips. Subsequent dispatches against the same callback are silent. This is cheap enough that even a hot-path wrapped method with hundreds of dispatches per frame doesn't spam the log.
+Limitations:
 
-## How the code generation works
+- **Returning null is the pass-through sentinel** -- you cannot set the result to literal null through a post hook.
+- **Void methods have no result to mutate**; their post hooks are fire-and-forget. This includes every engine lifecycle method (`_ready`, `_process`, `_physics_process`, `_input`, `_unhandled_input`, `_unhandled_key_input`, `_enter_tree`, `_exit_tree`, `_notification`), which the loader forces void regardless of source annotations.
 
-For every vanilla script in the opt-in wrap surface, [hook_pack.gd:`_generate_hook_pack`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd) produces a rewritten `.gd`. The rewriter:
+## Priorities and dispatch order
 
-1. Detokenizes the `.gdc` bytecode to reconstructed source (see [GDSC-Detokenizer](GDSC-Detokenizer))
-2. Parses the source via [rewriter.gd:`_rtv_parse_script`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter.gd) -- extracts function signatures, params, return types, coroutine markers.
-3. Normalizes line endings (CRLF -> LF).
-4. Runs `_rtv_autofix_legacy_syntax` -- bodyless blocks get `pass`, `tool`/`onready var`/`export var` get `@` annotations, bare `base(args)` is rewritten to `super.<enclosing>(args)`, `base().method(x)` is rewritten to `super.method(x)`.
-5. **Per-method wrap mask**: for paths declared via `[hooks]` / `.hook()` / `add_hook()`, only listed methods get wrapped. For paths declared via `[registry]` (Database.gd, Loader.gd, AISpawner.gd, AI.gd, FishPool.gd, Compiler.gd), every method is wrapped because registry injection needs whole-script access.
-6. **Rename pass**: top-level `func <name>(` -> `func _rtv_vanilla_<name>(`. Inside renamed bodies, bare `super(` -> `super.<orig_name>(` so strict-reload can resolve the parent method.
-7. **Append dispatch wrappers**: one per hookable method, at the original name, calling `_rtv_vanilla_<name>(...)` internally.
-8. **Registry injection** (Database.gd / Loader.gd / AISpawner.gd / AI.gd / FishPool.gd / Compiler.gd only): see [Registry](Registry).
+- Within one hook name, callbacks run in ascending `priority` (default 100). **Ties are not stable** -- if the order between two of your callbacks (or yours and a peer mod's) matters, use distinct priorities.
+- `hook()`/`unhook()` called from inside a callback affect only FUTURE dispatches: the in-flight dispatch iterates a snapshot, so a hook registered mid-dispatch joins the next dispatch, and an unhooked one still finishes the current pass.
+- Hooks fire **exactly once per logical call** even across `extends` chains: if a mod script extends wrapped vanilla and calls `super()`, a re-entry guard prevents double dispatch. Conversely, a mod override method that does NOT call `super()` suppresses hook dispatch for that method entirely -- that is the documented contract.
 
-`_detect_indent_style` inspects the source's first indented line to decide whether to emit the wrappers with tabs or spaces. GDScript rejects mixing tabs and spaces in one file; IXP uses 4-space indent, vanilla RTV uses tabs.
+## Wrap surface -- why `hook()` alone is not enough
 
-## Three-entry pack recipe
+Registering a hook does NOT wrap the vanilla method. The wrap surface is fixed once, at pack-generation time (before your autoload's `_ready` runs), from exactly four sources:
 
-Each rewritten vanilla script ships as three zip entries in the hook pack:
+1. `[hooks]` sections in any mod's `mod.txt`
+2. **Literal** `.hook("...")` string calls found by the source scan of your mod's `.gd` files
+3. `add_hook()` calls that run early enough (see below)
+4. The loader's own core seed (`Menu.gd :: _ready`, for the main-menu Mods button)
 
-| Entry | Purpose |
-|---|---|
-| `Scripts/<Name>.gd` | Rewritten source |
-| `Scripts/<Name>.gd.remap` | `[remap]\npath="res://Scripts/<Name>.gd"` -- overrides the PCK's `.gd.remap -> .gdc` redirect before GDScript loader runs |
-| `Scripts/<Name>.gdc` | Zero bytes -- Godot prefers a sibling `.gdc` at the same base path even after our remap; an empty `.gdc` can't parse, silently falls back to our `.gd` |
+A `hook()` call whose name is built at runtime registers fine but never fires unless the target method was wrapped by one of those declarations. If you need dynamic hook names, declare the target in `[hooks]`.
 
-This entire recipe lives in `user://modloader_hooks/framework_pack_<session>.zip` (a per-session filename; stale packs from previous sessions are cleaned up at boot). The pack mounts with `replace_files=true`, which makes our entries win over the PCK's same-path entries in Godot's VFS layering.
+This is an opt-in model: when no user mod declares anything, vanilla scripts run byte-identical to vanilla -- no wrap, no dispatch overhead (boot log: "No user opt-in declarations..."). Other constraints on the surface:
 
-Under the cutover, pack generation is skipped entirely when no mods are loaded. When mods are loaded but none opt into the hook surface, the pack still ships -- but it contains only the core-owned wrap on `Menu.gd :: _ready` for the launcher's main-menu "Mods" button. `hook_pack_wrapped_paths` in pass state narrows to just `res://Scripts/Menu.gd`, so next session's static-init preempt touches that single script and nothing else. User mods' targets stay unmodified.
+- Only `res://Scripts/*.gd` is hookable. Other paths in `[hooks]` are ignored with a warning.
+- `static func`s are never hookable.
+- Zero-byte PCK scripts (the base game ships a few, e.g. `CasettePlayer.gd`) are not hookable.
+- A declared path that matches no vanilla script, or declared methods not found in the vanilla source, log a warning and no-op. A `.hook()` call whose stem resolves to no vanilla script also warns at boot ("no vanilla script matches prefix ...") -- watch the log for typos.
+- The six registry target scripts (`Database.gd`, `Loader.gd`, `AISpawner.gd`, `AI.gd`, `FishPool.gd`, `Compiler.gd`) enter the surface automatically when any mod declares `[registry]`. See [Registry](Registry).
 
-## Activation + fallback
+### `[hooks]` escape hatch
 
-[hook_pack.gd:`_activate_rewritten_scripts`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd) force-activates each rewritten script in Godot's ResourceCache.
+Declare vanilla paths in `mod.txt` when auto-enrollment cannot see your call:
 
-Scripts fall into one of three buckets:
+- `add_hook()` from a normal (runtime) autoload -- pack generation has already read the mask by then.
+- Hook registrations via indirection -- the `.hook()` call site is not in your mod's own source.
+- Hook names built at runtime (concatenation, variables, loops over a list).
+- Methods you want wrapped now but will only register hooks for later, on gameplay events.
 
-1. **Already live** -- static-init preload put our rewrite into the cache. Skip reload (would error with `"Cannot reload script while instances exist"` for autoload-backed Database / GameData / Inputs / Loader / Menu).
-2. **Pinned with source** -- GDScriptCache has our text but compiled methods are vanilla. Mutate `source_code` + `reload()`.
-3. **Pinned tokenized** -- PCK .gdc cached, static-init preempt missed. After the `reload()` attempt fails verification, fall back to `ResourceLoader.load(path, "", CACHE_MODE_IGNORE)` + `take_over_path(path)`.
+```ini
+[hooks]
+res://Scripts/Interface.gd = "_ready, update_tooltip"   # specific methods
+res://Scripts/Controller.gd = "*"                       # wildcard -- all methods
+res://Scripts/Camera.gd = ""                            # empty value == *
+```
 
-Scripts with module-scope `preload("res://...tscn|.scn")` are deferred from eager compile (the `_scripts_with_scene_preloads` set). VFS mount precedence still serves the rewrite when game code lazy-loads these paths after mod overrides have run -- this avoids baking Script ext_resources in scenes to the pre-override vanilla. See [Limitations](Limitations).
+Semantics:
 
-## Composing with `[script_extend]`
+- **Quote the value.** ConfigFile parses the right-hand side as a Variant literal, so an unquoted method list or bare `*` is a parse error. The loader auto-quotes unquoted values (and strips inline `#`/`;` comments) for backward compat, but quoted is the portable form.
+- Method names are case-insensitive (matched lowercased against vanilla names).
+- `*` mixed with named methods in one value: `*` wins, with a warning.
+- A wildcard from one mod widens earlier per-method lists for the same path across all mods; a later per-method entry cannot narrow an earlier wildcard.
+- A value that is junk (only commas) is ignored with a warning.
 
-Mods that replace a vanilla script wholesale declare `[script_extend] res://Scripts/<Vanilla>.gd = res://MyMod/MyOverride.gd` (see [Mod-Format](Mod-Format)). The override is a standalone `.gd` that `extends "res://Scripts/<Vanilla>.gd"` and `take_over_path`'s into place at runtime.
+### `ModLoader.add_hook()` compat
 
-When the same path is in the hook wrap surface:
+Mods written against [godot-mod-loader](https://github.com/GodotModding/godot-mod-loader) call `add_hook(script_path, method_name, callback, is_before)`. The shim builds the native name `<stem>-<method>-pre|post` (lowercased), enrolls the path into the wrap mask, and calls `hook(name, cb, 100)`. Two traps:
 
-- The hook pack rewrites vanilla's source. The rewritten source ships at `res://Scripts/<Vanilla>.gd` and is what Godot compiles.
-- The mod's override `extends` that rewritten vanilla. Godot's native extends resolution means the override sees the dispatch wrappers as its parent methods.
-- `super.method(...)` calls from the override land in the vanilla dispatch wrapper, which fires hooks (via the re-entry guard: once per logical call, not per chain link).
+- **Timing:** pack generation reads the wrap mask before normal autoloads run, so `add_hook()` from a regular autoload's `_ready` registers the hook but never gets a wrapper. Fix: call it from a `!`-prefixed early autoload's `_init` (`Name="!res://MyMod/Early.gd"` in `[autoload]` -- see [Mod-Format](Mod-Format)), or declare the path in `[hooks]`.
+- **Paths:** a bare filename normalizes to `res://Scripts/<file>`. If the target lives anywhere else, pass a fully-qualified `res://` path -- otherwise the enrollment silently matches nothing.
 
-The mod's own source is **not** rewritten. This is the main departure from v3.0.0's behavior: v3.0.0's "Step C" rewrote mod subclasses to use `_rtv_mod_` prefixes. That entire pipeline was removed in v3.0.1 -- Godot's native resolution handles chain composition correctly once the vanilla parent carries the wrappers.
+## Gotchas checklist
 
-Chain ordering with multiple mods: `take_over_path` runs in priority order (lowest first). Each override's `extends` resolves to the prior chain tip, producing `ModC -> ModB -> ModA -> rewritten_vanilla`. Hooks fire exactly once per logical call regardless of chain depth.
+- Hook names: literal strings, fully lowercase, or they never fire.
+- Replace slot: check for -1; rejection is silent at default log level.
+- Replace return value only counts if you called `skip_super()`; otherwise vanilla runs after you and wins.
+- Never suspend inside a replace hook on a synchronous vanilla method.
+- Post-result mutation: non-void methods only; null = pass-through, not "set to null"; engine lifecycle methods are always void.
+- Priority ties are unordered -- use distinct priorities.
+- `hook()`/`unhook()` mid-dispatch only affect the next dispatch.
+- `_caller` is only meaningful during a dispatch.
+- A whole-script replacement at the same path -- a mod shipping its own file at the wrapped `res://Scripts/` path, or `take_over_path` from a script that does not extend it -- displaces the rewrite; hooks will not fire for nodes using that script. Chain-by-`extends` via `[script_extend]` (or its parse-identical legacy alias `[script_overrides]`) composes through `super()` (see below). Either way, the loader warns at boot when a wrapped path also carries an override claim.
+- A mod override that skips `super()` suppresses hook dispatch for that method.
 
 ## Worked examples
-
-Adapted from tetrahydroc's RTVModLib README.
 
 ### AI Kill Tracker
 
@@ -427,23 +280,45 @@ version="1.0.0"
 KillTracker="res://KillTracker/Main.gd"
 ```
 
-No `[hooks]` section -- scanner sees `_lib.hook("ai-death-post", ...)` in Main.gd and enrolls `AI.gd :: death`.
+No `[hooks]` section -- the scanner sees `_lib.hook("ai-death-post", ...)` in Main.gd and enrolls `AI.gd :: death`.
 
-### Custom Trader Prices
+### Post-hook mutator chain
+
+Two mods transform the same return value without knowing about each other. `Item.Value()` returns an `int`; Mod A bumps prices, Mod B caps them.
 
 ```gdscript
-extends Node
+# Mod A: Trader Inflation -- adds +50 to every item value
+func _register():
+    _lib = Engine.get_meta("RTVModLib")
+    _lib.hook("item-value-post", _bump_value, 50)     # priority 50: early in the chain
 
-var _lib = null
+func _bump_value(current_result: int) -> int:
+    return current_result + 50
+```
 
-func _ready():
-    if Engine.has_meta("RTVModLib"):
-        var lib = Engine.get_meta("RTVModLib")
-        if lib._is_ready:
-            _on_lib_ready()
-        else:
-            lib.frameworks_ready.connect(_on_lib_ready)
+```gdscript
+# Mod B: Price Cap -- caps every item value at 1000
+func _register():
+    _lib = Engine.get_meta("RTVModLib")
+    _lib.hook("item-value-post", _cap_value, 100)     # priority 100: after Mod A
 
+func _cap_value(current_result: int):
+    if current_result > 1000:
+        return 1000
+    return null  # null = pass-through, leaves the result unchanged
+```
+
+For a vanilla item with `value=970`:
+1. Vanilla `Item.Value()` returns 970
+2. Mod A fires with `current_result=970`, returns 1020
+3. Mod B fires with `current_result=1020`, returns 1000
+4. The caller receives 1000
+
+For `value=500`: A makes it 550; B returns null; the caller receives 550. A third mod registering at priority 75 slots between them with no code changes anywhere.
+
+### Reading UI state from a post hook
+
+```gdscript
 func _on_lib_ready():
     _lib = Engine.get_meta("RTVModLib")
     _lib.hook("interface-calculatedeal-post", _modify_prices)
@@ -456,99 +331,126 @@ func _modify_prices():
         interface.requestValue.text = str(current * 2)
 ```
 
-### Post-hook mutator chain
+---
 
-A clean compose: two mods both transform a return value without conflicting. `Item.Value()` returns an `int`. Mod A wants to bump prices by a flat amount; Mod B wants to cap them. Both register `-post` hooks with priorities; the chain runs in order, each mod sees the running value.
+# Internals
 
-```gdscript
-# Mod A: Trader Inflation -- adds +50 to every item value
-extends Node
-var _lib = null
+Everything below is implementation detail. You do not need it to write hook mods; it is here for debugging and for understanding boot warnings.
 
-func _ready():
-    if Engine.has_meta("RTVModLib"):
-        var lib = Engine.get_meta("RTVModLib")
-        if lib._is_ready: _register()
-        else: lib.frameworks_ready.connect(_register)
+## Dispatch semantics
 
-func _register():
-    _lib = Engine.get_meta("RTVModLib")
-    # Priority 50 -- runs early in the chain
-    _lib.hook("item-value-post", _bump_value, 50)
+The dispatch wrapper template lives in `src/rewriter.gd` (`_rtv_dispatch_inline_src`). For every wrapped vanilla method, the rewriter emits roughly:
 
-func _bump_value(current_result: int) -> int:
-    return current_result + 50
 ```
+func <name>(args):
+    var _lib = Engine.get_meta("RTVModLib") if Engine.has_meta("RTVModLib") else null
+    if !_lib:
+        return _rtv_vanilla_<name>(args)
 
-```gdscript
-# Mod B: Price Cap -- caps every item value at 1000
-extends Node
-var _lib = null
+    # Global short-circuit: if no mod has ever called hook(), skip everything
+    if not _lib._any_mod_hooked:
+        return _rtv_vanilla_<name>(args)
 
-func _ready():
-    if Engine.has_meta("RTVModLib"):
-        var lib = Engine.get_meta("RTVModLib")
-        if lib._is_ready: _register()
-        else: lib.frameworks_ready.connect(_register)
+    # Per-hook-base short-circuit: no hooks registered on THIS method
+    if not _lib._hooked_bases.has("<hook_base>"):
+        return _rtv_vanilla_<name>(args)
 
-func _register():
-    _lib = Engine.get_meta("RTVModLib")
-    # Priority 100 -- runs after Mod A, so caps the inflated value
-    _lib.hook("item-value-post", _cap_value, 100)
+    # Re-entry guard: don't double-dispatch when a subclass wrapper calls
+    # super() into vanilla's wrapper. Keyed per instance.
+    var _rtv_wa_key: String = str(get_instance_id()) + ":<hook_base>"
+    if _lib._wrapper_active.has(_rtv_wa_key):
+        return _rtv_vanilla_<name>(args)
+    _lib._wrapper_active[_rtv_wa_key] = true
 
-func _cap_value(current_result: int) -> int:
-    if current_result > 1000:
-        return 1000
-    return null  # null = pass-through, leaves _result unchanged
-```
+    var _rtv_prev_caller = _lib._caller
+    _lib._caller = self
+    _lib._dispatch("<hook_base>-pre", [args])
 
-For a vanilla item with `value=970`:
-1. Vanilla `Item.Value()` returns 970
-2. Mod A's hook fires with `current_result=970`, returns 1020 -> `_result=1020`
-3. Mod B's hook fires with `current_result=1020`, returns 1000 -> `_result=1000`
-4. Wrapper returns 1000 to caller
-
-For a vanilla item with `value=500`:
-1. Vanilla returns 500
-2. Mod A: `current_result=500`, returns 550 -> `_result=550`
-3. Mod B: `current_result=550`, returns null (no cap needed) -> `_result` stays at 550
-4. Wrapper returns 550
-
-The chain composes without either mod knowing about the other. If a third mod ships and registers `item-value-post` with priority=75, it slots between Mod A and Mod B without code changes.
-
-### Replace hook with fallback
-
-```gdscript
-extends Node
-
-var _lib = null
-
-func _ready():
-    if Engine.has_meta("RTVModLib"):
-        var lib = Engine.get_meta("RTVModLib")
-        if lib._is_ready:
-            _on_lib_ready()
+    var _result
+    var _repl = _lib._get_hooks("<hook_base>")
+    if _repl.size() > 0:
+        var _prev_skip = _lib._skip_super
+        _lib._skip_super = false
+        var _replret = await _repl[0].callv([args])
+        var _did_skip = _lib._skip_super
+        _lib._skip_super = _prev_skip
+        if _did_skip:
+            _result = _replret
         else:
-            lib.frameworks_ready.connect(_on_lib_ready)
+            _result = _rtv_vanilla_<name>(args)
+    else:
+        _result = _rtv_vanilla_<name>(args)
 
-func _on_lib_ready():
-    _lib = Engine.get_meta("RTVModLib")
-    var id = _lib.hook("lootcontainer-generateloot", _custom_loot)
-    if id == -1:
-        # Another mod already owns this replace hook.
-        print("MyMod: GenerateLoot replace hook rejected, using pre/post instead")
-        _lib.hook("lootcontainer-generateloot-post", _modify_loot_after)
+    # Re-set _caller: nested wrapped calls inside the body may have
+    # clobbered it, and post hooks should see the correct caller.
+    _lib._caller = self
 
-func _custom_loot():
-    if some_condition:
-        _lib.skip_super()  # Skip vanilla loot gen
-        # Generate custom loot...
-    # If skip_super() not called, vanilla GenerateLoot runs normally.
+    # Non-void wrapper: chained post dispatch with arity detection.
+    _result = _lib._dispatch_post("<hook_base>-post", [args], _result)
+
+    _lib._dispatch_deferred("<hook_base>-callback", [args])
+    _lib._wrapper_active.erase(_rtv_wa_key)
+    _lib._caller = _rtv_prev_caller
+    return _result
 ```
+
+Notes:
+
+- **Void methods** use a structurally similar template but fire `_dispatch("<hook_base>-post", ...)` (return ignored) instead of `_dispatch_post`.
+- **Coroutines**: `await` is prepended to the vanilla call only when the vanilla body itself contains `await`. The replace callback is always awaited.
+- The dispatch helpers (`_dispatch`, `_dispatch_post`, `_dispatch_deferred` in `src/hooks_api.gd`) iterate a `.duplicate()` snapshot of the entry array -- that is what makes mid-dispatch `hook()`/`unhook()` safe.
+- `_skip_super` is saved/restored around the replace call, so nested wrapped calls are safe.
+- The legacy-post deprecation warning is one-shot per (hook name, callback object, callback method), so hot-path methods do not spam the log.
+- The `_hooked_bases` refcount (maintained by `hook()`/`unhook()`) is why wrapped-but-unhooked methods cost almost nothing at runtime.
+
+## How the code generation works
+
+For every vanilla script in the opt-in wrap surface, `src/hook_pack.gd` (`_generate_hook_pack`) produces a rewritten `.gd`:
+
+1. Detokenize the `.gdc` bytecode to reconstructed source (see [GDSC-Detokenizer](GDSC-Detokenizer)).
+2. Parse the source (`_rtv_parse_script` in `src/rewriter.gd`) -- signatures, params, return types, coroutine markers.
+3. Normalize line endings, autofix legacy syntax (bodyless blocks get `pass`, `tool`/`onready var`/`export var` get `@` annotations, `base(...)` forms become `super.` calls).
+4. Apply the per-method wrap mask: paths declared via `[hooks]`/`.hook()`/`add_hook()` wrap only listed methods; registry targets wrap every method (injection needs whole-script access).
+5. Rename pass: `func <name>(` -> `func _rtv_vanilla_<name>(`.
+6. Append one dispatch wrapper per wrapped method, at the original name.
+7. Registry injection for the registry targets: appendix helpers for `Database.gd`/`Loader.gd`/`AISpawner.gd`/`AI.gd`, plus function-body preludes for `Loader.gd`/`FishPool.gd`/`AI.gd`/`Compiler.gd` (see [Registry](Registry)).
+
+Indent style (tabs vs spaces) is detected from the source so the emitted wrappers match.
+
+## Three-entry pack recipe
+
+Each rewritten vanilla script ships as three zip entries in the hook pack:
+
+| Entry | Purpose |
+|---|---|
+| `Scripts/<Name>.gd` | Rewritten source |
+| `Scripts/<Name>.gd.remap` | `[remap]` pointing back at the `.gd` -- overrides the PCK's `.gd.remap -> .gdc` redirect |
+| `Scripts/<Name>.gdc` | Zero bytes -- Godot prefers a sibling `.gdc`; an empty one cannot parse and silently falls back to our `.gd` |
+
+The pack lives at `user://modloader_hooks/framework_pack_<timestamp>.zip` (a fresh filename per generation; stale packs are cleaned at boot) and mounts with `replace_files=true` so its entries win over the PCK. When no mods are loaded, pack generation is skipped entirely; when mods are loaded but none opt into the hook surface, the pack contains only the core `Menu.gd :: _ready` wrap for the launcher's Mods button.
+
+## Activation + fallback
+
+`_activate_rewritten_scripts` (`src/hook_pack.gd`) force-activates each rewritten script in Godot's ResourceCache. Scripts fall into three buckets: already live from static-init preload (skip reload), pinned with our source but vanilla-compiled (mutate `source_code` + `reload()`), or pinned tokenized (fall back to `ResourceLoader.load(..., CACHE_MODE_IGNORE)` + `take_over_path`). Scripts with module-scope scene `preload()`s are deferred from eager compile; VFS mount precedence still serves the rewrite on lazy load. See [Limitations](Limitations).
+
+## Composing with `[script_extend]`
+
+Mods that extend a vanilla script declare it under `[script_extend]` as `res://Scripts/<Vanilla>.gd = "res://MyMod/MyOverride.gd"` -- quote the value; unlike `[hooks]`, these values are not auto-quoted (see [Mod-Format](Mod-Format)). `[script_overrides]` is a parse-identical legacy alias for the same section. When the same path is in the hook wrap surface:
+
+- The rewritten vanilla ships at `res://Scripts/<Vanilla>.gd` and is what Godot compiles.
+- The mod's override `extends` that rewritten vanilla, so it sees the dispatch wrappers as its parent methods.
+- `super.method(...)` from the override lands in the dispatch wrapper, which fires hooks -- once per logical call, thanks to the re-entry guard, regardless of chain depth.
+- The mod's own source is never rewritten. Chain ordering with multiple mods follows load priority (lowest first): `ModC -> ModB -> ModA -> rewritten_vanilla`.
+
+By contrast, a whole-script replacement at a wrapped path -- a mod shipping its own file at the vanilla `res://Scripts/` path inside its archive, or taking over the path with a script that does not extend the wrapped vanilla -- displaces the rewrite entirely: no extends chain reaches the wrappers, so hooks do not fire for nodes using that script.
+
+The loader warns at boot whenever a wrapped path also carries an override claim of either kind (archive file claim or `[script_extend]`/`[script_overrides]` entry): `"<path> is rewritten and also overridden by <mods> -- override displaces the rewrite, hooks won't fire for that path"`. For a chained (extends-based) override the warning is conservative -- inherited methods and overridden methods that call `super()` still dispatch -- but any method your override redefines *without* calling `super()` really does stop dispatching, so treat the warning as a prompt to check your override's `super()` coverage.
 
 ## Related
 
 - [Registry](Registry) -- `lib.register`, `lib.override`, `lib.patch` for data-driven content (items, loot, scenes, recipes)
-- [Mod-Format](Mod-Format) -- full `mod.txt` schema including `[hooks]`, `[script_extend]`, `[registry]`
+- [Dependencies](Dependencies) -- `required=`/`optional=`/`provides=`, load ordering, and how they interact with `has_mod()`
+- [Mod-Format](Mod-Format) -- full `mod.txt` schema including `[hooks]`, `[autoload]` (and the `!` early-autoload prefix), `[script_extend]`, `[registry]`
+- [Setup-Plans](Setup-Plans) -- the declarative `lib.setup(plan)` form, including the `["hooks", {...}]` verb
 - [Stability-Canaries](Stability-Canaries) -- runtime probes that alarm when the dispatch chain breaks
-- [Limitations](Limitations) -- bug #83542, skip-listed scripts, scene-preload deferral
+- [Limitations](Limitations) -- skip-listed scripts, scene-preload deferral, engine bug workarounds

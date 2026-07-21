@@ -1,6 +1,6 @@
 # Modpacks
 
-A **modpack** is a curated loadout shipped as a single `.zip`: which mods are on, their load order, the author's in-game mod settings, and -- crucially -- where to download each mod from. Drop the zip into your mods folder, click **Apply**, and the launcher downloads anything you're missing and switches you to the author's exact setup. New in 3.3.0.
+A **modpack** is a mod list shipped as a single `.zip`: which mods are on, their load order, the author's in-game mod settings, and where to download each mod from. Drop the zip into your mods folder, click **Apply**, and the launcher downloads anything you're missing and switches you to the author's exact setup. New in 3.3.0.
 
 The **Modpacks** tab is the third tab in the pre-launch window.
 

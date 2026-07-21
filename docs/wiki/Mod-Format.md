@@ -79,7 +79,7 @@ Only `[mod]` is required. `[autoload]`, `[updates]`, `[dependencies]`, `[hooks]`
 
 ### `[dependencies]` section
 
-Declares other mods by `[mod] id` so the launcher can identify missing requirements and the runtime loader can avoid starting mods that cannot work.
+Declares other mods by their `[mod] id`. Required dependencies load before your mod automatically and block it (with an actionable explanation in the Mods tab) when missing; optional ones affect load order only. The full behavior -- automatic ordering, cycles, skip rules, the blocked-row UI -- is on [Dependencies](Dependencies).
 
 ```ini
 [dependencies]
@@ -87,14 +87,12 @@ required=["mod_configuration_menu", "rtv_shared_lib"]
 optional=["happy_fireplace"]
 ```
 
-Use Godot `ConfigFile` string arrays. Bare CSV (`required=a, b`) is not valid `ConfigFile` syntax and causes the whole `mod.txt` parse to fail. A quoted whole-value string also parses (`required="foo, bar"` splits on commas) as a fallback for older author tools, but string arrays are the recommended form.
-
 | Key | Type | Meaning |
 |---|---|---|
-| `required` | string array | Mods that must be installed and enabled. If any required dependency is missing, disabled, or not loadable, this mod is skipped. |
-| `optional` | string array | Soft integrations. Parsed and displayed by the launcher; absence does not block loading. |
+| `required` | string array | Mods that must be installed and enabled. If any required dependency is unmet, this mod is skipped. |
+| `optional` | string array | Soft integrations: ordered before yours when present; absence never blocks. |
 
-Required dependencies load before the dependent mod automatically: if the priority/name ordering would load a dependency later than its dependent, the loader applies a minimal stable reorder (hoisting the dependency) and notes the adjustment in the launcher's order panel -- no author or user action needed. Dependency cycles are the exception: they are reported as a warning and the involved mods keep their priority order. Explicit priorities still work; the automatic adjustment only kicks in when a required dependency would otherwise load too late.
+Use Godot `ConfigFile` string arrays. Bare CSV (`required=a, b`) is not valid `ConfigFile` syntax and fails the **whole** `mod.txt` parse. Accepted value shapes: [Dependencies#value-syntax](Dependencies#value-syntax-required-optional-provides).
 
 ### Renaming a mod: `[mod] provides` (added 3.3.0)
 
@@ -107,13 +105,7 @@ id="better_ai"
 provides=["betterai_legacy", "old_better_ai"]
 ```
 
-Rules:
-
-- Any `required=` or `optional=` entry naming a provided id resolves to this mod -- it satisfies the requirement, is hoisted by the automatic load ordering, and participates in cycle detection exactly as if it still had the old id. Matching is case-insensitive, like all id handling.
-- A provided id **never shadows an installed and enabled real mod**: if a mod whose actual `id` matches one of your aliases is installed and enabled, that real mod wins for dependency resolution and the loader logs that your alias is inert. If that real mod is installed but disabled, your alias satisfies dependents in its place.
-- If two installed mods provide the same alias, only one of them resolves it (which one depends on load order) and a warning is logged.
-- Use Godot `ConfigFile` string array syntax, same as `[dependencies]`. A malformed `provides` value is ignored with a log line; it never blocks the mod from loading.
-- Declare the alias **in the release that renames the mod** (and keep it): dependents update on their own schedule.
+Ship the alias in the same release that renames the id, and keep it -- dependents update on their own schedule. Resolution rules (shadowing, duplicate aliases, malformed values) are on [Dependencies#renaming-your-mod-provides](Dependencies#renaming-your-mod-provides).
 
 ### `[autoload]` section
 
@@ -149,7 +141,7 @@ Version compare uses [mod_discovery.gd `compare_versions`](https://github.com/am
 
 ### `[hooks]` section
 
-Enrolls specific vanilla methods (or whole scripts) in the rewrite surface so your hook callbacks can fire. **Most mods don't need this** -- if your mod calls `.hook("stem-method-variant", cb)` directly in its own source, the scanner picks the call up and enrolls the method automatically. See [Hooks#opt-in-model](Hooks#opt-in-model).
+Enrolls specific vanilla methods (or whole scripts) in the rewrite surface so your hook callbacks can fire. **Most mods don't need this** -- if your mod calls `.hook("stem-method-variant", cb)` directly in its own source, the scanner picks the call up and enrolls the method automatically. See [Hooks#wrap-surface](Hooks#wrap-surface----why-hook-alone-is-not-enough).
 
 Use `[hooks]` when auto-enrollment can't see your registration:
 
