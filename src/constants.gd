@@ -449,3 +449,12 @@ var _rebuilding_modpacks_tab: bool = false
 # adding/removing children"). The tab_changed listener bails while this is set,
 # so no rebuild can nest inside another regardless of which tab it targets.
 var _rebuilding_tab_in_place: bool = false
+
+# Mods-tab ModWorkshop meta memo. _mods_load_mws_meta runs fire-and-forget for
+# every MWS row on every _rebuild_mods_tab (checkbox/filter/toggle/profile), and
+# _mws_get_json caches only SUCCESSFUL parses -- so offline/404/rate-limited mods
+# would refetch on every rebuild forever, each spawning a live HTTPRequest. Memo
+# successes for the session; gate failed/in-flight ids behind a short retry
+# window so it's at most one attempt per mod per minute regardless of churn.
+var _mods_mws_meta_by_id: Dictionary = {}       # mod_id -> mod object (successes only)
+var _mods_mws_meta_retry_at: Dictionary = {}    # mod_id -> ticks_msec before which not to refetch

@@ -856,8 +856,6 @@ func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: Ta
 	var has_orphans := not orphans.is_empty()
 	var d := ConfirmationDialog.new()
 	d.title = "Save partial modpack?" if has_orphans else "Save as modpack"
-	# Capped to fit comfortably inside a 640px launcher (chrome ~80px,
-	# leaves ~480px for body). Width stays at 560.
 	# Sized so name + author + description all fit without the outer scroll
 	# swallowing the description (the name field pushed content past the old
 	# 220px). Still capped to sit inside the 640-tall launcher.
@@ -1336,10 +1334,22 @@ func _profile_to_json_string(profile_name: String, description: String = "", aut
 	# missing mods automatically.
 	# Only enabled mods' sources -- a pack must not ship download info for mods
 	# it doesn't include (else applying it fetches mods the author had disabled).
+	# `enabled` keys come from the on-disk config section; source keys are live
+	# profile_keys. They can disagree on version (stale disk key after an
+	# external mod swap, resynced only on the next _save_ui_config) or on id
+	# casing/format (see _get_missing_mods_for_modpack). Match on a lowercased
+	# id-prefix too, so an enabled mod's source is never silently dropped.
 	var sources := _build_profile_sources()
+	var enabled_ids: Dictionary = {}
+	for k: String in enabled:
+		var at := k.find("@")
+		if at > 0:
+			enabled_ids[k.substr(0, at).to_lower()] = true
 	var enabled_sources: Dictionary = {}
-	for src_key in sources:
-		if enabled.has(src_key):
+	for src_key: String in sources:
+		var s_at := src_key.find("@")
+		if enabled.has(src_key) \
+				or (s_at > 0 and enabled_ids.has(src_key.substr(0, s_at).to_lower())):
 			enabled_sources[src_key] = sources[src_key]
 	if not enabled_sources.is_empty():
 		payload["sources"] = enabled_sources
@@ -1864,6 +1874,11 @@ func _connect_dialog_exits(d: ConfirmationDialog, on_confirm: Callable, on_dismi
 func _wire_hint(c: Control, text: String) -> void:
 	if _ui_hint_label == null:
 		return
+	# mouse_entered/exited never fire on a MOUSE_FILTER_IGNORE control (Labels
+	# default to IGNORE), so guarantee our own precondition rather than relying
+	# on every caller to have set PASS.
+	if c.mouse_filter == Control.MOUSE_FILTER_IGNORE:
+		c.mouse_filter = Control.MOUSE_FILTER_PASS
 	var default_text := _ui_hint_label.text
 	c.mouse_entered.connect(func():
 		if is_instance_valid(_ui_hint_label):
@@ -3175,6 +3190,9 @@ func show_mod_ui() -> void:
 	# Push the close control to the far right of the plate.
 	var header_spacer := Control.new()
 	header_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	# Pure layout -- must not swallow mouse events, or it kills header drag over
+	# the widest stretch of the plate (plain Control defaults to STOP).
+	header_spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	header_row.add_child(header_spacer)
 
 	# Close (X) lives in the plate now the window is borderless. Wired below to
@@ -3188,14 +3206,19 @@ func show_mod_ui() -> void:
 	header_row.add_child(close_btn)
 
 	# Borderless windows have no bar to grab, so let the header plate drag the
-	# whole window. Labels ignore mouse input so the event falls through to the
-	# header; the version link and close button keep their own clicks.
-	var drag := {"on": false}
+	# whole window. Labels + the expanding spacer ignore mouse input so events
+	# fall through to the header; the version link and close button keep clicks.
+	# Anchor the grab offset and track ABSOLUTE mouse position: using ev.relative
+	# would self-cancel (moving the window shifts local coords back) and trail
+	# the cursor at half speed with jitter.
+	var drag := {"on": false, "grab": Vector2i.ZERO}
 	header.gui_input.connect(func(ev: InputEvent):
 		if ev is InputEventMouseButton and ev.button_index == MOUSE_BUTTON_LEFT:
 			drag["on"] = ev.pressed
+			if ev.pressed:
+				drag["grab"] = Vector2i(ev.global_position)
 		elif ev is InputEventMouseMotion and drag["on"]:
-			win.position += Vector2i(ev.relative)
+			win.position = DisplayServer.mouse_get_position() - drag["grab"]
 	)
 
 	var tabs := TabContainer.new()
@@ -3260,10 +3283,11 @@ func show_mod_ui() -> void:
 	win.close_requested.connect(func(): launch_btn.pressed.emit())
 	# The in-plate X does exactly what the old native title-bar X did.
 	close_btn.pressed.connect(func(): launch_btn.pressed.emit())
-	# Status-line hint, NOT a Godot tooltip: a raw tooltip is its own popup that
-	# isn't always_on_top, so it renders behind this always_on_top window
-	# (half-clipped). _wire_hint needs _ui_hint_label, which the bottom bar set
-	# above -- so this must come after it, not at close_btn's creation.
+	# Status-line hint, kept for the launcher's consistent hover-hint UX.
+	# (Historically raw tooltips stranded behind this always_on_top window;
+	# win.gui_embed_subwindows now embeds tooltips so that's fixed -- the hint is
+	# a deliberate style choice, not a workaround.) _wire_hint needs
+	# _ui_hint_label, which the bottom bar sets above -- so wire it here, after.
 	_wire_hint(close_btn, "Close and launch")
 
 	# Fire-and-forget self-update check. Updates _ui_update_alert_btn and may
@@ -3927,13 +3951,23 @@ func _mods_cached_summary_by_id(mod_id: int) -> Dictionary:
 # link's lambda, so filling it here wires the click up once data arrives (never
 # capture the mod object by value into the lambda -- it isn't known at build).
 func _mods_load_mws_meta(mod_id: int, thumb_rect: TextureRect, name_col: VBoxContainer, holder: Dictionary) -> void:
-	var data := _mods_cached_summary_by_id(mod_id)
+	var data: Dictionary = _mods_mws_meta_by_id.get(mod_id, {})
 	if data.is_empty():
-		var fetched: Variant = await mws_get_mod(mod_id)
-		if fetched is Dictionary:
-			var obj: Variant = (fetched as Dictionary).get("data", fetched)
-			if obj is Dictionary:
-				data = obj
+		# Skip if a recent attempt failed or is still in flight. The retry window
+		# is armed BEFORE the await, so quick racing rebuilds don't each fire a
+		# request; successes are memoed for the session below.
+		if Time.get_ticks_msec() < int(_mods_mws_meta_retry_at.get(mod_id, 0)):
+			return
+		_mods_mws_meta_retry_at[mod_id] = Time.get_ticks_msec() + 60000
+		data = _mods_cached_summary_by_id(mod_id)
+		if data.is_empty():
+			var fetched: Variant = await mws_get_mod(mod_id)
+			if fetched is Dictionary:
+				var obj: Variant = (fetched as Dictionary).get("data", fetched)
+				if obj is Dictionary:
+					data = obj
+		if not data.is_empty():
+			_mods_mws_meta_by_id[mod_id] = data
 	if data.is_empty():
 		return
 	holder["data"] = data
@@ -4374,9 +4408,9 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			# visual intent without engaging autowrap.
 			lbl.clip_text = true
 			lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-			# Status-line hint, not tooltip_text: a raw tooltip is its own popup
-			# that isn't always_on_top, so it strands behind this window (same as
-			# the header close button). Full name shows in the bottom hint on hover.
+			# Status-line hint, kept for the launcher's consistent hover-hint UX
+			# (the old strand-behind-the-window tooltip bug is gone now that the
+			# window embeds sub-windows). Full name shows in the bottom hint.
 			lbl.mouse_filter = Control.MOUSE_FILTER_PASS
 			order_list.add_child(lbl)
 			_wire_hint(lbl, str(e["mod_name"]))
@@ -4735,9 +4769,16 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		# Label; both take the enabled/blocked font-color overrides below.
 		var name_ctrl: Control
 		if row_mws_id > 0:
-			var name_lnk := LinkButton.new()
+			# Flat Button (not LinkButton) so clip_text keeps a long name from
+			# inflating the row's min width and forcing a horizontal scrollbar on
+			# the whole list. Hover color is the click cue in place of underline.
+			var name_lnk := Button.new()
+			name_lnk.flat = true
 			name_lnk.text = entry["mod_name"]
-			name_lnk.underline = LinkButton.UNDERLINE_MODE_ON_HOVER
+			name_lnk.clip_text = true
+			name_lnk.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+			name_lnk.alignment = HORIZONTAL_ALIGNMENT_LEFT
+			name_lnk.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			name_lnk.tooltip_text = str(entry["mod_name"]) + "  --  click for ModWorkshop details"
 			name_lnk.add_theme_color_override("font_color", COL_OK if entry["enabled"] else COL_TEXT_DIM)
 			name_lnk.add_theme_color_override("font_hover_color", COL_TEXT_HI)
@@ -5518,19 +5559,30 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			return
 		var rows: Array = _mws_data_rows(data)
 		# MWS ignores the sort param when a text query is present -- it always
-		# returns relevance order, so an outdated exact-name match (e.g. an old
-		# "Item Spawner") pins to the top no matter the dropdown. Re-sort the
-		# returned rows client-side by the selected field so the dropdown works
-		# for searches too. Sorts the loaded page(s); most queries fit one page,
-		# so this is complete in practice. ISO date strings compare chronologically.
+		# returns relevance order, so an outdated exact-name match pins to the
+		# top no matter the dropdown. Re-sort client-side by the selected field.
+		# LIMITATION: on Load-more (append) each fetched PAGE is sorted on its
+		# own and appended, so a multi-page query result is per-page sawtoothed,
+		# not globally sorted. Left as-is -- a true cross-page sort needs a
+		# fetch/render rework, and RTV searches essentially always fit one page.
+		# ISO date strings compare chronologically.
 		if str(state["query"]) != "":
 			var sort_key := str(state["sort"])
 			var numeric := sort_key == "downloads" or sort_key == "likes" or sort_key == "views"
 			rows.sort_custom(func(a, b):
-				if not (a is Dictionary and b is Dictionary):
+				if not (a is Dictionary):
 					return false
+				if not (b is Dictionary):
+					return true
 				if numeric:
-					return int((a as Dictionary).get(sort_key, 0)) > int((b as Dictionary).get(sort_key, 0))
+					# .get() default only covers ABSENT keys; a present-but-null
+					# counter would make int(null) a runtime error. JSON numbers
+					# parse as float, so accept int/float and coerce junk to 0.
+					var av: Variant = (a as Dictionary).get(sort_key)
+					var bv: Variant = (b as Dictionary).get(sort_key)
+					var ai: int = int(av) if (av is int or av is float) else 0
+					var bi: int = int(bv) if (bv is int or bv is float) else 0
+					return ai > bi
 				return str((a as Dictionary).get(sort_key, "")) > str((b as Dictionary).get(sort_key, ""))
 			)
 		# .get()'s default only covers an ABSENT key; a present-but-null (or
@@ -5996,6 +6048,9 @@ func _markdown_to_bbcode(md: String) -> String:
 	var LB := char(2)
 	var RB := char(3)
 	var s := md.replace("\r\n", "\n").replace("\r", "\n")
+	# Untrusted remote input must NOT contain our sentinels -- the final restore
+	# would turn them into real brackets and inject BBCode past the [lb] escape.
+	s = s.replace(LB, "").replace(RB, "")
 	s = s.replace(":::", "")  # drop MWS colored-block delimiters; keep {#hex}(..)
 
 	# Bracket/paren constructs, converted BEFORE escaping literal '['. Images
@@ -6005,7 +6060,11 @@ func _markdown_to_bbcode(md: String) -> String:
 	s = _re_replace(re_img, s, func(m): return m.get_string(1))
 	var re_link := RegEx.new()
 	re_link.compile("\\[([^\\]]*)\\]\\(([^)\\s]+)\\)")
-	s = _re_replace(re_link, s, func(m): return LB + "url=" + m.get_string(2) + RB + m.get_string(1) + LB + "/url" + RB)
+	# Percent-encode BBCode/markdown-sensitive chars in the URL so the later '['
+	# escape + emphasis passes can't corrupt the url= parameter (a literal ']'
+	# would end the tag early). '_' and '~' are RFC-3986 unreserved; %2A/%5B/%5D
+	# are handled identically by servers and OS.shell_open. Never encode '%'.
+	s = _re_replace(re_link, s, func(m): return LB + "url=" + m.get_string(2).replace("[", "%5B").replace("]", "%5D").replace("_", "%5F").replace("*", "%2A").replace("~", "%7E") + RB + m.get_string(1) + LB + "/url" + RB)
 	var re_color := RegEx.new()
 	re_color.compile("\\{#([0-9a-fA-F]{3,8})\\}\\(([^)]*)\\)")
 	s = _re_replace(re_color, s, func(m): return LB + "color=#" + m.get_string(1) + RB + m.get_string(2) + LB + "/color" + RB)
@@ -6153,7 +6212,15 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 		desc_rt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		desc_rt.add_theme_color_override("default_color", COL_TEXT)
 		# Markdown links become [url=...]; open them in the system browser.
-		desc_rt.meta_clicked.connect(func(meta): OS.shell_open(str(meta)))
+		# Allowlist web schemes only. The URL comes from an untrusted remote
+		# description; OS.shell_open is ShellExecute on Windows, so an unchecked
+		# file://, UNC (\\host\share\x.exe), or custom-scheme link could launch
+		# arbitrary handlers off a link whose visible text looks harmless.
+		desc_rt.meta_clicked.connect(func(meta):
+			var u := str(meta).strip_edges()
+			if u.to_lower().begins_with("http://") or u.to_lower().begins_with("https://"):
+				OS.shell_open(u)
+		)
 		box.add_child(desc_rt)
 
 	box.add_child(HSeparator.new())
