@@ -6,3 +6,8 @@ modloader.gd.tmp
 
 # Build script temp files
 *.tmp
+
+# Local working notes and staging -- never part of a release.
+.research/
+.fable_fixes/
+release/

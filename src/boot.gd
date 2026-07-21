@@ -4,14 +4,105 @@
 ## rewriting, pass state persistence, heartbeat + crash recovery, safe mode,
 ## and the hook-pack preload that preempts Godot's PCK-bytecode pinning for
 ## class_name scripts.
+##
+## BOOT SEQUENCE
+## =============
+## Stage 0 -- static init (this file). constants.gd initializes
+## _filescope_mounted by calling _mount_previous_session() while the
+## ModLoader autoload script itself is loading -- override.cfg lists
+## ModLoader last in [autoload_prepend] (= loaded first), so this runs
+## before any game autoload compiles a class_name script. In order:
+##   1. DISABLED_FILE / DISABLED_ONCE_FILE sentinel present -> force
+##      vanilla state (reset override.cfg autoload sections, delete pass
+##      state + pass2-dirty marker, wipe hook pack), mount nothing.
+##   2. PASS2_DIRTY_PATH present -> a previous Pass 2 crashed mid-run;
+##      same full wipe, mount nothing.
+##   3. Load PASS_STATE_PATH. Missing or empty pass state -> mount
+##      nothing. Modloader-version mismatch, changed exe mtime (game
+##      updated), or any recorded archive now missing -> reset
+##      override.cfg + delete pass state (version/mtime mismatches also
+##      wipe the hook cache), mount nothing. This launch may log
+##      autoload-load errors (Godot read override.cfg before we ran);
+##      the NEXT launch boots clean.
+##   4. Mount every archive the previous session recorded, then the hook
+##      pack on top (replace_files=true), then preempt the wrapped
+##      class_name scripts via CACHE_MODE_IGNORE + take_over_path.
+## Static init logs via _write_filescope_log to
+## user://modloader_filescope.log -- the instance log helpers do not
+## exist yet at this point.
+##
+## Stage 1 -- _ready (lifecycle.gd). Dispatch: "--modloader-restart" in
+## the user cmdline args -> _run_pass_2, else _run_pass_1.
+##
+## Pass 1 (fresh launch): _check_crash_recovery + _check_safe_mode,
+## discover mods, show the launcher UI (show_mod_ui -- the only place
+## the UI appears at boot; post-boot it reopens via reopen_mod_ui from
+## the main-menu hook), load_all_mods, then compare _compute_state_hash
+## against the stored mods_hash:
+##   - hash unchanged (and non-empty) -> no restart;
+##     _finish_with_existing_mounts rides the archives static init
+##     already mounted.
+##   - archives enabled + hash changed -> generate the hook pack
+##     (defer_activation=true), write heartbeat, override.cfg and pass
+##     state (increments restart_count), relaunch the game with
+##     --modloader-restart.
+##   - no enabled archives -> delete stale pass state / hook artifacts,
+##     _finish_single_pass.
+##
+## Pass 2 (the restarted process): archives were already mounted by THIS
+## process's static init. Writes PASS2_DIRTY_PATH first thing, restores
+## script overrides from pass state, clears restart_count, re-runs
+## discovery + load_all_mods + hook pack generate/activate, instantiates
+## autoloads, deletes the heartbeat, clears the dirty marker. Never
+## shows the UI.
+##
+## Sentinel / state files (who writes, who clears):
+##   DISABLED_FILE       exe dir; user-created. Permanent vanilla mode.
+##   DISABLED_ONCE_FILE  exe dir; written by the UI's "Launch Vanilla"
+##                       button, cleared by _ready after one vanilla boot.
+##   SAFE_MODE_FILE      exe dir; user-created. _check_safe_mode (Pass 1)
+##                       resets override.cfg + pass state, then deletes it.
+##   PASS_STATE_PATH     user://; written by Pass 1 before restarting and
+##                       by _persist_hook_pack_state; read at static init
+##                       and by Pass 2. Holds archive_paths, mods_hash,
+##                       hook_pack_path/wrapped_paths, restart_count.
+##   HEARTBEAT_PATH      user://; written right before the Pass 1 ->
+##                       Pass 2 restart, deleted by every finish path. A
+##                       survivor at the next Pass 1 means the previous
+##                       launch died between restart and finish.
+##   PASS2_DIRTY_PATH    user://; written at Pass 2 entry, cleared at
+##                       Pass 2 end. A survivor means Pass 2 crashed;
+##                       static init force-wipes everything.
+##
+## Crash at each stage:
+##   - Pass 1 before the restart branch: no heartbeat written; next
+##     launch is a normal Pass 1.
+##   - Between the restart and Pass 2's finish: heartbeat survives;
+##     _check_crash_recovery warns, and once restart_count reaches
+##     MAX_RESTART_COUNT it resets override.cfg + pass state to break
+##     the restart loop. restart_count is cleared early in Pass 2, so
+##     crashes later in Pass 2 are covered by the dirty marker instead.
+##   - Pass 2 after the dirty marker: next static init force-wipes state
+##     (step 2 above); the launch after that regenerates fresh.
+##   - While DISABLED_ONCE_FILE is pending: the sentinel persists until
+##     a _ready runs, so a crash keeps the next launch vanilla -- an
+##     intentional fail-safe.
 
 static func _is_modloader_disabled() -> bool:
-	# Check for sentinel file in the game exe directory. When present, ModLoader
-	# skips all work: no archives mount, no UI shows, no autoloads instantiate.
-	# Use this as a nuclear escape hatch when modloader itself is broken or the
-	# user wants guaranteed vanilla behavior without navigating the UI.
+	# Check for sentinel files in the game exe directory. When either is
+	# present, ModLoader skips all work: no archives mount, no UI shows, no
+	# autoloads instantiate.
+	#
+	# DISABLED_FILE: persistent escape hatch; user removes it manually.
+	# DISABLED_ONCE_FILE: written by the UI's "Launch Vanilla" button. The
+	# modloader's _ready clears it after detection so subsequent launches go
+	# through the normal flow. If the game crashes before _ready runs, the
+	# file persists and the next launch is also vanilla -- intentional
+	# fail-safe.
 	var exe_dir := OS.get_executable_path().get_base_dir()
-	return FileAccess.file_exists(exe_dir.path_join(DISABLED_FILE))
+	if FileAccess.file_exists(exe_dir.path_join(DISABLED_FILE)):
+		return true
+	return FileAccess.file_exists(exe_dir.path_join(DISABLED_ONCE_FILE))
 
 # Force all persistent state back to a vanilla baseline: clean override.cfg,
 # delete pass state, wipe the hook pack directory. Safe to call when any of
@@ -29,10 +120,64 @@ static func _static_force_vanilla_state(reason: String, log_lines: PackedStringA
 	_static_wipe_hook_cache()
 	log_lines.append("[FileScope] RESET (" + reason + "): wiped hook pack")
 
+# The canonical clean override.cfg content. Boot-order correctness depends on
+# this exact layout ([autoload_prepend] with ModLoader as the only entry, an
+# empty [autoload], then any preserved non-modloader sections) -- all three
+# reset paths must write byte-identical content.
+static func _clean_override_cfg_content(preserved: String) -> String:
+	return "[autoload_prepend]\nModLoader=\"*" + MODLOADER_RES_PATH + "\"\n\n[autoload]\n\n" + preserved
+
+# Atomic override.cfg writer for the RESET paths. Opening the live file with
+# FileAccess.WRITE truncates it instantly, so a crash/power-loss/disk-full
+# between open and close bricks the loader permanently (no override.cfg ->
+# the ModLoader autoload never loads again -> nothing can self-heal; see the
+# same invariant in _write_override_cfg). Mirror its tmp -> park .old ->
+# promote -> restore-on-failure dance; static so the static-init reset paths
+# can use it. Returns false with the live file untouched (or restored) on
+# any failure.
+static func _static_write_cfg_atomic(cfg_path: String, content: String) -> bool:
+	var tmp := cfg_path + ".tmp"
+	var f := FileAccess.open(tmp, FileAccess.WRITE)
+	if f == null:
+		return false
+	var ok := f.store_string(content)
+	var werr := f.get_error()
+	f.close()
+	if not ok or werr != OK:
+		DirAccess.remove_absolute(tmp)
+		return false
+	var bak := cfg_path + ".old"
+	var dir := DirAccess.open(cfg_path.get_base_dir())
+	if dir == null:
+		DirAccess.remove_absolute(tmp)
+		return false
+	if FileAccess.file_exists(cfg_path):
+		if FileAccess.file_exists(bak):
+			DirAccess.remove_absolute(bak)
+		if dir.rename(cfg_path.get_file(), bak.get_file()) != OK:
+			# Could not park the live cfg (AV lock?) -- leave it untouched.
+			DirAccess.remove_absolute(tmp)
+			return false
+	if dir.rename(tmp.get_file(), cfg_path.get_file()) != OK:
+		DirAccess.remove_absolute(tmp)
+		if FileAccess.file_exists(bak):
+			dir.rename(bak.get_file(), cfg_path.get_file())
+		return false
+	if FileAccess.file_exists(bak):
+		DirAccess.remove_absolute(bak)
+	return true
+
 static func _mount_previous_session() -> Dictionary:
 	var mounted: Dictionary = {}
 	var log_lines: PackedStringArray = []
 	log_lines.append("[FileScope] _mount_previous_session() starting")
+	# Log the runtime engine version unconditionally, once, at loader startup
+	# (this static init runs on every launch, on every early-return path) so
+	# every user log answers "which Godot is this game actually running"
+	# before triage starts. See GODOT_47_COMPAT.md item 7.
+	var vinfo := Engine.get_version_info()
+	log_lines.append("[FileScope] Engine: Godot %s, modloader %s, os %s" \
+			% [str(vinfo.get("string", "")), MODLOADER_VERSION, OS.get_name()])
 
 	# Nuclear escape hatch: sentinel file in game dir skips everything and
 	# resets persistent state so next launch is clean vanilla. This boot may
@@ -129,10 +274,8 @@ static func _mount_previous_session() -> Dictionary:
 		var exe_dir := OS.get_executable_path().get_base_dir()
 		var cfg_path := exe_dir.path_join("override.cfg")
 		var preserved := _read_preserved_cfg_sections(cfg_path)
-		var f := FileAccess.open(cfg_path, FileAccess.WRITE)
-		if f:
-			f.store_string("[autoload_prepend]\nModLoader=\"*" + MODLOADER_RES_PATH + "\"\n\n[autoload]\n\n" + preserved)
-			f.close()
+		if not _static_write_cfg_atomic(cfg_path, _clean_override_cfg_content(preserved)):
+			log_lines.append("[FileScope] WARNING: could not rewrite override.cfg -- live file left untouched")
 		var state_path := ProjectSettings.globalize_path(PASS_STATE_PATH)
 		if FileAccess.file_exists(state_path):
 			DirAccess.remove_absolute(state_path)
@@ -277,12 +420,9 @@ static func _static_reset_override_cfg(log_lines: PackedStringArray) -> void:
 	if not FileAccess.file_exists(cfg_path):
 		return
 	var preserved := _read_preserved_cfg_sections(cfg_path)
-	var f := FileAccess.open(cfg_path, FileAccess.WRITE)
-	if f == null:
-		log_lines.append("[FileScope] WARNING: could not rewrite override.cfg (read-only?)")
+	if not _static_write_cfg_atomic(cfg_path, _clean_override_cfg_content(preserved)):
+		log_lines.append("[FileScope] WARNING: could not rewrite override.cfg (read-only?) -- live file left untouched")
 		return
-	f.store_string("[autoload_prepend]\nModLoader=\"*" + MODLOADER_RES_PATH + "\"\n\n[autoload]\n\n" + preserved)
-	f.close()
 	log_lines.append("[FileScope] override.cfg reset to clean [autoload_prepend] state")
 
 static func _static_cleanup_orphan_hook_packs(keep_path: String, log_lines: PackedStringArray) -> void:
@@ -315,6 +455,38 @@ static func _static_cleanup_orphan_hook_packs(keep_path: String, log_lines: Pack
 	if removed > 0:
 		log_lines.append("[FileScope] Cleaned %d orphan hook pack(s) from prior session(s)" % removed)
 
+# Delete the contents of a one-level-deep directory: every top-level file, and
+# every file one level inside each immediate subdirectory, then the subdir
+# itself. Does NOT remove dir_path. No-op if dir_path is missing/unopenable.
+# Hidden-file handling follows DirAccess defaults. Only suitable for trees
+# that are guaranteed one level deep (the vanilla script cache: Scripts/*.gd);
+# deeper trees (early autoloads) use _wipe_early_autoload_tree instead.
+static func _wipe_shallow_tree(dir_path: String) -> void:
+	if not DirAccess.dir_exists_absolute(dir_path):
+		return
+	var dir := DirAccess.open(dir_path)
+	if dir == null:
+		return
+	dir.list_dir_begin()
+	while true:
+		var entry := dir.get_next()
+		if entry == "":
+			break
+		var full: String = dir_path.path_join(entry)
+		if dir.current_is_dir():
+			var sub := DirAccess.open(full)
+			if sub:
+				sub.list_dir_begin()
+				var sub_file := sub.get_next()
+				while sub_file != "":
+					DirAccess.remove_absolute(full.path_join(sub_file))
+					sub_file = sub.get_next()
+				sub.list_dir_end()
+			DirAccess.remove_absolute(full)
+		else:
+			DirAccess.remove_absolute(full)
+	dir.list_dir_end()
+
 static func _static_wipe_hook_cache() -> void:
 	# Wipe every Framework*.gd we previously generated (cheap to regenerate)
 	# and every framework_pack_*.zip (per-session hook packs). On Windows,
@@ -335,31 +507,9 @@ static func _static_wipe_hook_cache() -> void:
 				elif pname.begins_with(HOOK_PACK_PREFIX) and pname.ends_with(".zip"):
 					DirAccess.remove_absolute(pack_dir.path_join(pname))
 			pdir.list_dir_end()
+	# Shallow -- vanilla cache is only Scripts/*.gd (one level deep)
 	var cache_dir := ProjectSettings.globalize_path(VANILLA_CACHE_DIR)
-	if not DirAccess.dir_exists_absolute(cache_dir):
-		return
-	var dir := DirAccess.open(cache_dir)
-	if dir == null:
-		return
-	dir.list_dir_begin()
-	var file_name := dir.get_next()
-	while file_name != "":
-		var full := cache_dir.path_join(file_name)
-		if dir.current_is_dir():
-			# Shallow -- vanilla cache is only Scripts/*.gd (one level deep)
-			var sub := DirAccess.open(full)
-			if sub:
-				sub.list_dir_begin()
-				var sub_file := sub.get_next()
-				while sub_file != "":
-					DirAccess.remove_absolute(full.path_join(sub_file))
-					sub_file = sub.get_next()
-				sub.list_dir_end()
-			DirAccess.remove_absolute(full)
-		else:
-			DirAccess.remove_absolute(full)
-		file_name = dir.get_next()
-	dir.list_dir_end()
+	_wipe_shallow_tree(cache_dir)
 	DirAccess.remove_absolute(cache_dir)
 
 func _build_autoload_sections() -> Dictionary:
@@ -379,31 +529,38 @@ func _build_autoload_sections() -> Dictionary:
 const EARLY_AUTOLOAD_DIR := "user://modloader_early"
 
 func _clean_early_autoload_dir() -> void:
-	var dir_path := ProjectSettings.globalize_path(EARLY_AUTOLOAD_DIR)
+	# _ensure_early_autoload_on_disk mirrors each script's full res:// relative
+	# path (e.g. MyMod/Scripts/Auto.gd = depth 3), so the tree can be
+	# arbitrarily deep and a shallow wipe leaves stale scripts behind. Wipe it
+	# recursively; the helper refuses to run outside the modloader_early prefix.
+	_wipe_early_autoload_tree(ProjectSettings.globalize_path(EARLY_AUTOLOAD_DIR))
+
+# Recursive delete of everything under dir_path, restricted to the
+# modloader-managed early-autoload directory (EARLY_AUTOLOAD_DIR). Refuses any
+# path outside that prefix so a bad argument can never recurse through user
+# data. Does NOT remove the root directory itself. No-op if dir_path is
+# missing/unopenable.
+func _wipe_early_autoload_tree(dir_path: String) -> void:
+	var root := ProjectSettings.globalize_path(EARLY_AUTOLOAD_DIR)
+	if dir_path != root and not dir_path.begins_with(root + "/"):
+		_log_warning("Refusing to wipe outside the early-autoload dir: " + dir_path)
+		return
 	if not DirAccess.dir_exists_absolute(dir_path):
 		return
 	var dir := DirAccess.open(dir_path)
 	if dir == null:
 		return
-	# Simple recursive wipe -- this directory is entirely modloader-managed.
 	dir.list_dir_begin()
 	while true:
 		var entry := dir.get_next()
 		if entry == "":
 			break
+		if entry == "." or entry == "..":
+			continue
 		var full: String = dir_path.path_join(entry)
 		if dir.current_is_dir():
-			var sub := DirAccess.open(full)
-			if sub:
-				sub.list_dir_begin()
-				var sub_file := sub.get_next()
-				while sub_file != "":
-					DirAccess.remove_absolute(full.path_join(sub_file))
-					sub_file = sub.get_next()
-				sub.list_dir_end()
-			DirAccess.remove_absolute(full)
-		else:
-			DirAccess.remove_absolute(full)
+			_wipe_early_autoload_tree(full)
+		DirAccess.remove_absolute(full)
 	dir.list_dir_end()
 
 # Extract an early autoload .gd script to disk if it only exists inside a
@@ -438,19 +595,14 @@ func _ensure_early_autoload_on_disk(res_path: String, mod_name: String) -> Strin
 
 func _collect_enabled_archive_paths() -> PackedStringArray:
 	var paths := PackedStringArray()
-	var candidates: Array[Dictionary] = []
-	for entry in _ui_mod_entries:
-		if not entry["enabled"]:
-			continue
-		candidates.append(entry.duplicate())
-	candidates.sort_custom(_compare_load_order)
+	# Same pick as load_all_mods (order + dependency filter) so the file-scope
+	# mount order can never disagree with the runtime load order.
+	var candidates: Array[Dictionary] = _loadable_enabled_entries(false, true)["loadable"]
 	for c in candidates:
 		if c["ext"] == "folder":
 			# Folder mods are zipped to a temp cache during load_all_mods().
 			# Store the temp zip path -- the folder itself can't be mounted.
-			var folder_name: String = c["full_path"].get_file()
-			var tmp_zip := ProjectSettings.globalize_path(TMP_DIR).path_join(
-					folder_name + "_dev.zip")
+			var tmp_zip: String = _folder_dev_zip_path(c["full_path"])
 			if FileAccess.file_exists(tmp_zip):
 				paths.append(tmp_zip)
 			else:
@@ -484,18 +636,46 @@ func _write_override_cfg(prepend_autoloads: Array[Dictionary]) -> Error:
 	var f := FileAccess.open(tmp, FileAccess.WRITE)
 	if f == null:
 		return FileAccess.get_open_error()
-	f.store_string("\n".join(lines) + "\n" + preserved)
+	# store_string returns bool since Godot 4.3; if the write failed (e.g.
+	# disk full) the tmp is truncated and must never be promoted over the
+	# good live override.cfg below.
+	var wrote_ok := f.store_string("\n".join(lines) + "\n" + preserved)
+	var write_err := f.get_error()
 	f.close()
-	# Windows DirAccess.rename() won't overwrite -- remove target first.
-	if FileAccess.file_exists(path):
-		DirAccess.remove_absolute(path)
+	if not wrote_ok or write_err != OK:
+		DirAccess.remove_absolute(tmp)
+		return ERR_FILE_CANT_WRITE
 	var dir := DirAccess.open(exe_dir)
 	if dir == null:
 		DirAccess.remove_absolute(tmp)
 		return ERR_CANT_OPEN
+	# Never destroy the live override.cfg before the replacement is proven in
+	# place -- without override.cfg the modloader autoload never loads again,
+	# so nothing can self-heal. Windows DirAccess.rename() won't overwrite, so:
+	# park the current file as .old, promote the .tmp, then drop the .old.
+	# On any failure, restore the .old so the loader stays bootable.
+	var bak := path + ".old"
+	var had_existing := FileAccess.file_exists(path)
+	if had_existing:
+		if FileAccess.file_exists(bak):
+			DirAccess.remove_absolute(bak)
+		var park_err := dir.rename(path.get_file(), bak.get_file())
+		if park_err != OK:
+			# Could not move the live cfg aside (e.g. AV share lock). Leave it
+			# untouched and report failure; the caller falls back to single-pass.
+			DirAccess.remove_absolute(tmp)
+			return park_err
 	var err := dir.rename(tmp.get_file(), path.get_file())
 	if err != OK:
 		DirAccess.remove_absolute(tmp)
+		if had_existing:
+			# Put the previous cfg back so the next launch still loads the
+			# modloader. If the rename back fails too, fall back to a byte copy.
+			if dir.rename(bak.get_file(), path.get_file()) != OK:
+				DirAccess.copy_absolute(bak, path)
+		return err
+	if had_existing and FileAccess.file_exists(bak):
+		DirAccess.remove_absolute(bak)
 	return err
 
 func _persist_hook_pack_state(pack_path: String, wrapped_paths: PackedStringArray = PackedStringArray()) -> void:
@@ -537,6 +717,53 @@ func _write_pass_state(archive_paths: PackedStringArray, state_hash: String = ""
 		_log_critical("Failed to save pass state (error %d)" % err)
 	return err
 
+# mtime to fold into the state hash for one archive path. A folder mod is
+# re-zipped to <TMP_DIR>/<folder>_dev.zip on every launch, so the zip's own
+# mtime changes every time even when the dev edited nothing -- which made the
+# hash flap and forced a full two-pass restart EVERY launch with any folder
+# mod enabled. For those temp zips, use the SOURCE folder's newest-file mtime
+# instead, which only moves when the dev actually changes something.
+func _stable_path_mtime(p: String) -> int:
+	var tmp_dir := ProjectSettings.globalize_path(TMP_DIR)
+	if p.begins_with(tmp_dir) and p.ends_with("_dev.zip"):
+		var folder_name := p.get_file().trim_suffix("_dev.zip")
+		var folder := _mods_dir.path_join(folder_name)
+		if DirAccess.dir_exists_absolute(folder):
+			# The newest-file mtime alone misses deletions and replacing a
+			# file with an older-mtime copy, so fold in the file count and a
+			# per-file path+mtime hash gathered on the same walk. Any change
+			# to the folder's file set or timestamps moves the state hash.
+			var stats := { "count": 0, "set_hash": 0 }
+			var newest := _folder_recursive_mtime(folder, stats)
+			return hash([newest, stats["count"], stats["set_hash"]])
+	return FileAccess.get_modified_time(p)
+
+# Newest file mtime anywhere under a folder (recursive). Folder mods are small
+# dev trees, so the walk is cheap. The optional stats accumulator gathers the
+# file count and an order-independent XOR of per-file "path@mtime" hashes on
+# the same walk, so callers can detect deletions/renames/timestamp downgrades
+# that the max-mtime alone cannot see.
+func _folder_recursive_mtime(folder: String, stats: Dictionary = {}) -> int:
+	var newest := 0
+	var dir := DirAccess.open(folder)
+	if dir == null:
+		return newest
+	dir.list_dir_begin()
+	var name := dir.get_next()
+	while name != "":
+		if name != "." and name != "..":
+			var child := folder.path_join(name)
+			if dir.current_is_dir():
+				newest = maxi(newest, _folder_recursive_mtime(child, stats))
+			else:
+				var mtime := FileAccess.get_modified_time(child)
+				newest = maxi(newest, mtime)
+				stats["count"] = int(stats.get("count", 0)) + 1
+				stats["set_hash"] = int(stats.get("set_hash", 0)) ^ ("%s@%d" % [child, mtime]).hash()
+		name = dir.get_next()
+	dir.list_dir_end()
+	return newest
+
 func _compute_state_hash(archive_paths: PackedStringArray, prepend_autoloads: Array[Dictionary]) -> String:
 	if archive_paths.is_empty() and prepend_autoloads.is_empty():
 		return ""
@@ -545,7 +772,7 @@ func _compute_state_hash(archive_paths: PackedStringArray, prepend_autoloads: Ar
 	sorted_paths.sort()
 	for p in sorted_paths:
 		# Include mtime so replacing a file with the same name triggers a restart.
-		parts.append("a:%s@%d" % [p, FileAccess.get_modified_time(p)])
+		parts.append("a:%s@%d" % [p, _stable_path_mtime(p)])
 	for entry in prepend_autoloads:
 		parts.append("p:%s=%s" % [entry["name"], entry["path"]])
 	for entry in _ui_mod_entries:
@@ -623,6 +850,15 @@ func _clean_stale_cache() -> void:
 		var fname := dir.get_next()
 		if fname == "":
 			break
+		if fname.ends_with(".zip.src"):
+			# Sidecar recording the source mtime+size of a vmz cache zip
+			# (see _static_vmz_to_zip). Remove it when its zip is gone so
+			# orphans don't accumulate; sidecars whose zip gets removed
+			# below are deleted alongside it there.
+			if not FileAccess.file_exists(cache_dir.path_join(fname.trim_suffix(".src"))):
+				DirAccess.remove_absolute(cache_dir.path_join(fname))
+				_log_debug("Removed orphan cache sidecar: " + fname)
+			continue
 		if fname.get_extension().to_lower() != "zip":
 			continue
 		var base := fname.get_basename()
@@ -637,6 +873,9 @@ func _clean_stale_cache() -> void:
 			if FileAccess.file_exists(_mods_dir.path_join(vmz_name)):
 				continue
 		DirAccess.remove_absolute(cache_dir.path_join(fname))
+		var sidecar := cache_dir.path_join(fname + ".src")
+		if FileAccess.file_exists(sidecar):
+			DirAccess.remove_absolute(sidecar)
 		_log_debug("Removed stale cache: " + fname)
 	dir.list_dir_end()
 
@@ -644,12 +883,8 @@ func _restore_clean_override_cfg() -> void:
 	var exe_dir := OS.get_executable_path().get_base_dir()
 	var path := exe_dir.path_join("override.cfg")
 	var preserved := _read_preserved_cfg_sections(path)
-	var f := FileAccess.open(path, FileAccess.WRITE)
-	if f == null:
+	if not _static_write_cfg_atomic(path, _clean_override_cfg_content(preserved)):
 		_log_critical("Cannot write override.cfg -- game dir may be read-only: " + exe_dir)
-		return
-	f.store_string("[autoload_prepend]\nModLoader=\"*" + MODLOADER_RES_PATH + "\"\n\n[autoload]\n\n" + preserved)
-	f.close()
 
 func _clear_restart_counter() -> void:
 	var cfg := ConfigFile.new()

@@ -9,9 +9,15 @@ func _build_class_name_lookup() -> void:
 	var cache := ConfigFile.new()
 	var load_err := cache.load("res://.godot/global_script_class_cache.cfg")
 	if load_err == OK:
-		var class_list: Array = cache.get_value("", "list", [])
+		# A mod-shadowed cfg can define "list" as any Variant; the [] default
+		# only covers an absent key, so type-check before the typed assignment.
+		var raw_list: Variant = cache.get_value("", "list", [])
+		var class_list: Array = raw_list if raw_list is Array else []
 		var skipped := 0
 		for entry in class_list:
+			if not entry is Dictionary:
+				skipped += 1
+				continue
 			var cn: String = str(entry.get("class", ""))
 			var path: String = str(entry.get("path", ""))
 			if cn != "" and path != "":
@@ -30,6 +36,9 @@ func _build_class_name_lookup() -> void:
 		_log_warning("Could not load global_script_class_cache.cfg -- using hardcoded fallback")
 		_class_name_to_path = _get_hardcoded_class_map()
 
+# ANCHOR: snapshot of vanilla RTV's global_script_class_cache.cfg (class_name
+# -> path). Fallback only; re-capture from a fresh vanilla install when the
+# game updates.
 func _get_hardcoded_class_map() -> Dictionary:
 	return {
 		"AIWeaponData": "res://Scripts/AIWeaponData.gd",
@@ -118,9 +127,7 @@ func _enumerate_game_scripts() -> Array[String]:
 				continue
 			# Canonicalize .gdc / .gd.remap / .remap to .gd.
 			var canonical := normalized
-			if canonical.ends_with(".gd.remap"):
-				canonical = canonical.substr(0, canonical.length() - 6)
-			elif canonical.ends_with(".remap"):
+			if canonical.ends_with(".remap"):
 				canonical = canonical.substr(0, canonical.length() - 6)
 			if canonical.ends_with(".gdc"):
 				canonical = canonical.substr(0, canonical.length() - 4) + ".gd"
@@ -167,8 +174,8 @@ func _collect_module_scope_scene_preloads(source: String) -> PackedStringArray:
 func _parse_pck_file_list(pck_path: String) -> PackedStringArray:
 	const MAGIC_GDPC: int = 0x43504447  # "GDPC" little-endian
 	const PACK_DIR_ENCRYPTED := 1
-	const PACK_FORMAT_V2 := 2
-	const PACK_FORMAT_V3 := 3
+	# PACK_FORMAT_V2 / V3 / V4 bounds live in constants.gd (shared with
+	# security_scan.gd's parser).
 	var result := PackedStringArray()
 	var f := FileAccess.open(pck_path, FileAccess.READ)
 	if f == null:
@@ -184,7 +191,15 @@ func _parse_pck_file_list(pck_path: String) -> PackedStringArray:
 
 	var pack_format_version: int = f.get_32()
 	if pack_format_version < PACK_FORMAT_V2 or pack_format_version > PACK_FORMAT_V3:
-		_log_warning("[PCK] %s: unsupported format version %d" % [pck_path, pack_format_version])
+		if pack_format_version == PACK_FORMAT_V4:
+			# Godot 4.7+ export. The stamped engine version u32s follow the
+			# format version in the GDPC header, so name the offending editor.
+			var ver_major: int = f.get_32()
+			var ver_minor: int = f.get_32()
+			_log_warning("[PCK] %s: pack format v4, exported with Godot %d.%d. This game runs Godot 4.6, which cannot read v4 packs. Re-export the .pck with Godot 4.6.x, or ship the mod as a .zip (zip mods are unaffected by pack versions)." \
+					% [pck_path, ver_major, ver_minor])
+		else:
+			_log_warning("[PCK] %s: unsupported format version %d" % [pck_path, pack_format_version])
 		f.close()
 		return result
 
@@ -230,9 +245,3 @@ func _parse_pck_file_list(pck_path: String) -> PackedStringArray:
 
 	f.close()
 	return result
-
-# STABILITY canary B: probe the first readable vanilla script for its GDSC
-# tokenizer version. Returns 100 (Godot 4.0-4.4), 101 (Godot 4.5-4.6), or
-# -1 if the file isn't binary-tokenized / unreadable. Used to bail out
-# cleanly when Godot ships a new tokenizer format (v102+) rather than
-# cascading "Empty detokenized source" warnings through every script.

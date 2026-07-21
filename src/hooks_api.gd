@@ -54,6 +54,22 @@ static func _hook_base_of(hook_name: String) -> String:
 	return hook_name
 
 
+## Register a hook callback. Name grammar: "<script stem lowercase>-<method
+## lowercase>" plus an optional "-pre" / "-post" / "-callback" suffix; the
+## bare (suffixless) name is the single-owner REPLACE slot. Returns a hook
+## id usable with unhook(), or -1 when the replace slot is already owned.
+## Callbacks run in ascending `priority` order. Ties are NOT guaranteed to
+## run in registration order (Array.sort_custom is not a stable sort) --
+## use distinct priorities when order between two callbacks matters.
+##
+## IMPORTANT wrap-surface contract: registering here does NOT wrap the
+## vanilla method. The wrap surface is fixed at _generate_hook_pack time
+## from (a) [hooks] sections in mod.txt, (b) LITERAL .hook("...") string
+## calls found by the _re_hook_call source scan, (c) add_hook(), or (d) the
+## loader's own _seed_core_hooks seed (Menu.gd _ready). A hook() call whose
+## name is built at runtime (concatenation, variable) registers fine but
+## never fires unless the target method was wrapped by one of those
+## declarations.
 func hook(hook_name: String, callback: Callable, priority: int = 100) -> int:
 	var is_replace := not (hook_name.ends_with("-pre") \
 			or hook_name.ends_with("-post") \
@@ -118,8 +134,16 @@ func add_hook(script_path: String, method_name: String, callback: Callable, is_b
 	if not res_path.begins_with("res://"):
 		res_path = "res://Scripts/" + script_path.get_file()
 	if not _hooked_methods.has(res_path):
-		_hooked_methods[res_path] = {}
-	(_hooked_methods[res_path] as Dictionary)[method_name.to_lower()] = true
+		_hooked_methods[res_path] = {method_name.to_lower(): true}
+	else:
+		var mask: Dictionary = _hooked_methods[res_path] as Dictionary
+		# An existing EMPTY dict is the wildcard sentinel from a
+		# "[hooks] <path> = *" declaration -- hook_pack.gd wraps every
+		# method when the mask is empty, which already covers this method.
+		# Inserting it would narrow wrap-all to wrap-only-listed and
+		# silently kill the wildcard mod's runtime-registered hooks.
+		if not mask.is_empty():
+			mask[method_name.to_lower()] = true
 	return hook(hook_name, callback, 100)
 
 ## Batched form of hook(). `entries` is `{hook_name: callback, ...}`. Returns
@@ -157,6 +181,7 @@ func has_hooks(hook_name: String) -> bool:
 	return _hooks.has(hook_name) and (_hooks[hook_name] as Array).size() > 0
 
 ## Is a replace hook registered at this bare name (no -pre/-post/-callback)?
+## (Body is identical to has_hooks by design: suffixed names live under their own keys, so a bare-name key can only ever hold replace entries.)
 func has_replace(hook_name: String) -> bool:
 	return _hooks.has(hook_name) and (_hooks[hook_name] as Array).size() > 0
 
@@ -203,12 +228,15 @@ func has_mod(mod_id: String, min_version: String = "") -> bool:
 
 
 ## Returns the full info dict for a loaded mod, or {} if not loaded.
-## Shape: {mod_id, mod_name, version, file_name, priority}. Stable enough
-## for mods to inspect for debug prints / MCM displays.
+## Shape: {mod_id, mod_name, version, file_name, priority,
+## required_dependencies, optional_dependencies}. Stable enough for mods to
+## inspect for debug prints / MCM displays.
 func mod_info(mod_id: String) -> Dictionary:
 	var info = _loaded_mod_ids.get(mod_id, null)
 	if info is Dictionary:
-		return (info as Dictionary).duplicate()
+		# deep=true so nested dependency arrays are copies too -- a shallow
+		# duplicate would hand mods live references into the loader registry.
+		return (info as Dictionary).duplicate(true)
 	return {}
 
 
@@ -299,7 +327,9 @@ func _dispatch_post(hook_name: String, args: Array, current_result: Variant) -> 
 		else:
 			# Legacy 2-arg form (or anything else). Fire-and-forget on
 			# args only, ignore return. Warn once.
-			var warn_key: String = "%s::%d" % [hook_name, cb.get_object_id()]
+			# Key includes the method so two legacy callbacks on the SAME
+			# object (or object_id 0 statics) each get their own warning.
+			var warn_key: String = "%s::%d::%s" % [hook_name, cb.get_object_id(), str(cb.get_method())]
 			if not _post_legacy_warned.has(warn_key):
 				_post_legacy_warned[warn_key] = true
 				_log_warning("[RTVModLib] post hook '%s' callback uses legacy %d-arg signature (expected %d for non-void wrapper). Add a trailing _result param to your callback to receive + optionally mutate the return value; the legacy form will be removed in a future major version." \

@@ -6,7 +6,13 @@ Back up your saves before installing any mods.
 
 # What you get
 
-Pre-game launcher. Mod profiles. ModWorkshop update checker. Malware scanner. Crash auto-recovery. Drop `.zip` or `.vmz` straight into the mods folder.
+Pre-game launcher. Mod profiles. In-launcher ModWorkshop browser + installer. Modpacks. Dependency handling. ModWorkshop update checker. Malware scanner. Crash auto-recovery. Drop `.zip` or `.vmz` straight into the mods folder.
+
+The launcher has four tabs: **Mods**, **Browse**, **Modpacks**, and **Updates**.
+
+* **Browse** -- search ModWorkshop and install mods without leaving the launcher. Downloads land in your mods folder and show up enabled, ready to launch. Multiple installs queue and run one at a time.
+* **Modpacks** -- apply a curated loadout (mod selection + load order + MCM settings + download sources) shipped as a single `.zip`. Apply pulls down any mods you're missing and switches you to the author's exact setup; Unload puts your previous setup back. Save your own profile as a modpack to share it.
+* **Dependencies** -- mods that declare required dependencies get a clear "won't load -- needs X" warning on the Mods tab, with one-click **Enable dependency** and **Load anyway** buttons. Mods whose requirements aren't met are skipped instead of crashing.
 
 # Installation
 

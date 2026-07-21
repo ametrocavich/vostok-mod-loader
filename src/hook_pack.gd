@@ -29,15 +29,64 @@ const REGISTRY_TARGETS: Array[String] = [
 func _is_registry_target(filename: String) -> bool:
 	return filename in REGISTRY_TARGETS
 
-# Convert a list of wrapped filenames ("Controller.gd") into the full
-# res://Scripts/ paths persisted in pass_state. boot.gd's next-session
-# _mount_previous_session uses these to preempt ONLY scripts this
-# session wrapped, instead of a hardcoded pinned list.
+# Convert the list of wrapped full res:// paths into the PackedStringArray
+# persisted in pass_state. boot.gd's next-session _mount_previous_session
+# uses these to preempt ONLY scripts this session wrapped, instead of a
+# hardcoded pinned list.
 func _wrapped_paths_packed(filenames: Array[String]) -> PackedStringArray:
 	var out := PackedStringArray()
 	for fn in filenames:
-		out.append("res://Scripts/" + fn)
+		out.append(fn)
 	return out
+
+# STABILITY canary C helper. Detokenizes the first probe script that carries
+# GDSC bytes (same probe set as _probe_gdsc_version) and checks structural
+# indentation. Goes through _detokenize_script directly, NOT
+# _read_vanilla_source, so a pristine on-disk cache from an earlier session
+# cannot mask a detokenizer that is broken against the current game build.
+# Returns true when the structure checks out OR when no probe script could
+# be detokenized at all (inconclusive -- mirrors canary B's tok_version == -1
+# behavior; the per-script "Empty detokenized source" warnings downstream
+# still surface real failures).
+func _canary_detokenizer_roundtrip_ok() -> bool:
+	var probe_paths := ["res://Scripts/Camera.gd", "res://Scripts/Controller.gd",
+			"res://Scripts/Audio.gd", "res://Scripts/AI.gd"]
+	for p in probe_paths:
+		# Cheap byte pre-check (as in _probe_gdsc_version) so missing paths
+		# don't spam "Cannot read bytes" warnings from _detokenize_script.
+		var raw := FileAccess.get_file_as_bytes(p)
+		if raw.size() < 12:
+			raw = FileAccess.get_file_as_bytes(p.replace(".gd", ".gdc"))
+		if raw.size() < 12 or raw.slice(0, 4).get_string_from_ascii() != _GDSC_MAGIC:
+			continue
+		var source := _detokenize_script(p)
+		if source.is_empty():
+			continue
+		return _source_has_indented_func_body(source)
+	return true
+
+# True when at least one colon-terminated func declaration line is followed
+# by a tab-indented body line. Every vanilla RTV script satisfies this when
+# the column->tab math (_indent_from_column, tab_size=4) is correct. Under a
+# raw-offset column format a depth-1 body reconstructs at 0 tabs, so no func
+# body starts with a tab and the check fails.
+func _source_has_indented_func_body(source: String) -> bool:
+	var lines := source.split("\n")
+	for i in range(lines.size() - 1):
+		var line := lines[i]
+		if not (line.begins_with("func ") or line.begins_with("static func ")):
+			continue
+		if not line.strip_edges(false, true).ends_with(":"):
+			continue
+		# First non-empty line after the declaration is the body.
+		for j in range(i + 1, lines.size()):
+			var body := lines[j]
+			if body.strip_edges().is_empty():
+				continue
+			if body.begins_with("\t"):
+				return true
+			break  # non-empty, unindented body -- keep scanning other funcs
+	return false
 
 # Build the framework pack: enumerate res://Scripts/*.gd, detokenize each via
 # _read_vanilla_source, parse + generate wrappers, zip them, mount the zip.
@@ -79,7 +128,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	# before any rewrite work. One loud, actionable message beats a flood of
 	# "Empty detokenized source" warnings, one per hookable script.
 	var tok_version := _probe_gdsc_version()
-	if tok_version != -1 and tok_version != 100 and tok_version != 101:
+	if tok_version != -1 and tok_version != GDSC_VERSION_V100 and tok_version != GDSC_VERSION_V101:
 		_log_critical("[STABILITY] Unsupported GDSC tokenizer v%d on Godot %s. This ModLoader supports v100 (Godot 4.0-4.4) and v101 (Godot 4.5-4.6). Hook pack generation disabled -- script hooks will not fire. See README for supported Godot versions." \
 				% [tok_version, Engine.get_version_info().get("string", "unknown")])
 		return ""
@@ -88,6 +137,22 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 				% [tok_version, Engine.get_version_info().get("string", "unknown")])
 
 	if _loaded_mod_ids.is_empty():
+		return ""
+
+	# STABILITY canary C: round-trip one known vanilla script through the
+	# detokenizer and sanity-check the reconstructed indentation. Canary B
+	# above only reads the version integer, which a future engine can leave
+	# at 101 while still changing the serialized column semantics (raw string
+	# offsets instead of tab_size=4 columns -- see PR 116986 and
+	# .research/GODOT_47_COMPAT.md section 2.2). Without this check, broken
+	# column math would produce silently mis-indented rewrites; with it, the
+	# failure is one loud, diagnosable stop, exactly like canary B. Placed
+	# after the no-mods short-circuit so pure-vanilla sessions skip the
+	# detokenize cost; gated on tok_version != -1 so the renamed-probe-set
+	# edge case degrades the same way canary B does (proceed, no false stop).
+	if tok_version != -1 and not _canary_detokenizer_roundtrip_ok():
+		_log_critical("[STABILITY] Detokenized vanilla source failed the indentation sanity check on Godot %s -- the .gdc column format likely changed even though the GDSC version is still %d. Hook pack generation disabled -- script hooks will not fire. Update the ModLoader to a version that supports this game build." \
+				% [Engine.get_version_info().get("string", "unknown"), tok_version])
 		return ""
 
 	# OPT-IN GATE (v3.0.1): user mods run against unmodified vanilla unless
@@ -219,19 +284,11 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	for archive_file: String in _archive_file_sets:
 		var paths_set: Dictionary = _archive_file_sets[archive_file]
 		var zr: ZIPReader = null
-		# Resolve the archive to a readable zip path. Loose folder mods
-		# and already-zipped .zip/.pck archives use archive_file as-is;
-		# .vmz mods use a cached .zip sibling the loader materialized
-		# during discovery.
-		var zip_path := archive_file
-		var ext := archive_file.get_extension().to_lower()
-		if ext == "vmz":
-			var cache_dir := ProjectSettings.globalize_path(TMP_DIR)
-			zip_path = cache_dir.path_join(archive_file.get_file().get_basename() + ".zip")
-		elif ext == "folder":
-			var folder_zip := ProjectSettings.globalize_path(TMP_DIR).path_join(archive_file.get_file() + "_dev.zip")
-			zip_path = folder_zip
-		if FileAccess.file_exists(zip_path):
+		# Resolve to the same readable archive path the claim scan opened
+		# (folder mods: the re-zipped <TMP_DIR>/<name>_dev.zip; zip/vmz: the
+		# on-disk archive under mods/ -- ZIPReader reads .vmz content directly).
+		var zip_path: String = str(_archive_zip_paths.get(archive_file, ""))
+		if zip_path != "" and FileAccess.file_exists(zip_path):
 			zr = ZIPReader.new()
 			if zr.open(zip_path) != OK:
 				zr = null
@@ -291,16 +348,11 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	if zp.open(zip_abs) != OK:
 		_log_critical("[RTVCodegen] Failed to create framework pack zip at %s" % zip_abs)
 		return ""
+	var pack_write_failed := false
 
 	var script_count := 0
 	var hook_count := 0
-	var packed_filenames: Array[String] = []
-	# Empty allowlist = process ALL hookable vanilla scripts. Used for
-	# measuring the pre-compiled-vs-source-compiled split across the
-	# full game. After _activate_rewritten_scripts runs, we can count
-	# from COMPILE-PROOF log lines how many scripts fell into the
-	# GDScriptCache-pinned bucket vs the live-inline bucket.
-	var _step_b_allowlist: Array[String] = []
+	var packed_paths: Array[String] = []
 	var zero_byte_skipped: int = 0
 	var surface_skipped: int = 0
 	for script_path: String in script_paths:
@@ -316,8 +368,6 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		# read content that doesn't exist. Not a modloader failure.
 		if _pck_zero_byte_paths.has(script_path):
 			zero_byte_skipped += 1
-			continue
-		if not _step_b_allowlist.is_empty() and filename not in _step_b_allowlist:
 			continue
 		# Wrap-surface filter: no mod extends, take_over_paths, or hooks
 		# this script, and it's not a pinned-at-boot class_name. Skipping
@@ -360,7 +410,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			if fe["is_static"]:
 				continue
 			# Mask keys come from .hook() calls which lowercase the method
-			# name at dispatch time (rewriter.gd:211). Vanilla fn["name"]
+			# name (see add_hook() in hooks_api.gd). Vanilla fn["name"]
 			# preserves source casing (e.g. UpdateToolTip). Compare case-
 			# insensitively so mods writing "updatetooltip" match.
 			if apply_mask and not path_mask.has(fe["name"].to_lower()):
@@ -387,7 +437,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		# registry API instead.
 		var scene_preloads := _collect_module_scope_scene_preloads(source)
 		if scene_preloads.size() > 0 and not _is_registry_target(filename):
-			_scripts_with_scene_preloads[filename] = scene_preloads
+			_scripts_with_scene_preloads[script_path] = scene_preloads
 
 		var rewritten := _rtv_rewrite_vanilla_source(source, parsed, path_mask)
 		# Ship at the ORIGINAL vanilla path so class_name registration in the
@@ -396,20 +446,24 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		# global script class" errors for scripts Godot pre-compiled at
 		# startup (Camera, WeaponRig). Same-path keeps the registry
 		# consistent with what's at the path.
-		var gd_entry := "Scripts/" + filename
+		var gd_entry := script_path.trim_prefix("res://")
 		if zp.start_file(gd_entry) != OK:
 			_log_warning("[RTVCodegen] Failed to start zip entry %s" % gd_entry)
+			pack_write_failed = true
 			continue
-		zp.write_file(rewritten.to_utf8_buffer())
+		if zp.write_file(rewritten.to_utf8_buffer()) != OK:
+			pack_write_failed = true
 		zp.close_file()
 		# Self-referencing .gd.remap overrides the PCK's .gd.remap -> .gdc
 		# redirect. Godot's _path_remap reads this BEFORE GDScript loader.
-		var remap_entry := "Scripts/" + filename + ".remap"
+		var remap_entry := gd_entry + ".remap"
 		if zp.start_file(remap_entry) != OK:
 			_log_warning("[RTVCodegen] Failed to start zip entry %s" % remap_entry)
+			pack_write_failed = true
 			continue
-		var remap_body := "[remap]\npath=\"res://Scripts/%s\"\n" % filename
-		zp.write_file(remap_body.to_utf8_buffer())
+		var remap_body := "[remap]\npath=\"%s\"\n" % script_path
+		if zp.write_file(remap_body.to_utf8_buffer()) != OK:
+			pack_write_failed = true
 		zp.close_file()
 		# Empty .gdc to shadow the PCK's bytecode. Godot's GDScript loader
 		# prefers a sibling .gdc when present at the same base path -- even
@@ -417,18 +471,19 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		# .gdc at the same path defeats that preference: Godot can't parse
 		# empty bytecode, silently falls back to compiling our .gd. Verified
 		# 2026-04-17 -- no engine errors, all 5 rewrites load live.
-		var gdc_filename: String = filename.replace(".gd", ".gdc")
-		var gdc_entry := "Scripts/" + gdc_filename
+		var gdc_entry := gd_entry.substr(0, gd_entry.length() - 3) + ".gdc"
 		if zp.start_file(gdc_entry) != OK:
 			_log_warning("[RTVCodegen] Failed to start zip entry %s" % gdc_entry)
+			pack_write_failed = true
 			continue
-		zp.write_file(PackedByteArray())
+		if zp.write_file(PackedByteArray()) != OK:
+			pack_write_failed = true
 		zp.close_file()
 
 		script_count += 1
 		hook_count += hookable_count * 4  # pre/post/callback/replace per method
-		packed_filenames.append(filename)
-		_log_debug("[RTVCodegen] Rewrote Scripts/%s (%d hooks)" % [filename, hookable_count * 4])
+		packed_paths.append(script_path)
+		_log_debug("[RTVCodegen] Rewrote %s (%d hooks)" % [script_path, hookable_count * 4])
 
 	# Step C (mod-subclass rewrite) removed in v3.0.1. Mods that extend
 	# wrapped vanilla now compose via Godot's native extends resolution:
@@ -455,8 +510,10 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		var zip_rel: String = p.trim_prefix("res://")
 		if zp.start_file(zip_rel) != OK:
 			_log_warning("[Autofix] Failed to pack sibling zip entry %s" % zip_rel)
+			pack_write_failed = true
 			continue
-		zp.write_file(fixed_src.to_utf8_buffer())
+		if zp.write_file(fixed_src.to_utf8_buffer()) != OK:
+			pack_write_failed = true
 		zp.close_file()
 		if changed:
 			sibling_fixed += 1
@@ -475,17 +532,26 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		_log_debug("[Autofix] Carried %d unchanged mod sibling script(s) forward into new hook pack -- preserves VFS coverage across regen" \
 				% sibling_carried)
 
-	# STABILITY canary C: add a tiny known-content file to the hook pack so we
+	# STABILITY VFS-precedence canary: add a tiny known-content file to the hook pack so we
 	# can verify VFS mount precedence independently of the script-rewriting
 	# path. After mount, a FileAccess.get_file_as_string on this path should
 	# return the canary content -- if not, the pack mounted but isn't serving
 	# files and no rewrite will take effect this session.
-	var canary_content := "MODLOADER-VFS-CANARY-" + MODLOADER_VERSION
+	var canary_content := "MODLOADER-VFS-CANARY-" + pack_zip_rel.get_file()
 	if zp.start_file("__modloader_canary__.txt") == OK:
-		zp.write_file(canary_content.to_utf8_buffer())
+		if zp.write_file(canary_content.to_utf8_buffer()) != OK:
+			pack_write_failed = true
 		zp.close_file()
+	else:
+		pack_write_failed = true
 
-	zp.close()
+	if zp.close() != OK:
+		pack_write_failed = true
+
+	if pack_write_failed:
+		DirAccess.remove_absolute(zip_abs)
+		_log_critical("[RTVCodegen] Hook pack write failed (disk full / I/O error?) at %s -- pack discarded, hooks disabled this session, running vanilla" % zip_abs)
+		return ""
 
 	# Mount must happen BEFORE mod autoloads run so [rtvmodlib] needs= resolves
 	# and before any scene compiles against the rewritten class_name scripts.
@@ -509,22 +575,29 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			# we restart and Pass 2 gets 126/126 inline-live.
 			_log_info("[RTVCodegen] Generated %d rewritten vanilla script(s), %d hook points -- activation deferred to Pass 2 fresh engine" \
 					% [script_count, hook_count])
-			_persist_hook_pack_state(pack_zip_rel, _wrapped_paths_packed(packed_filenames))
+			_persist_hook_pack_state(pack_zip_rel, _wrapped_paths_packed(packed_paths))
 		elif ProjectSettings.load_resource_pack(pack_zip_rel, true):
-			# STABILITY canary C readback: confirm VFS mount precedence works
+			# STABILITY VFS-precedence canary readback: confirm VFS mount precedence works
 			# end-to-end. If the canary file isn't readable with expected
 			# content, the hook pack mounted but isn't serving files -- every
 			# rewrite will silently fall back to vanilla.
 			var canary_got := FileAccess.get_file_as_string("res://__modloader_canary__.txt")
-			if canary_got.begins_with("MODLOADER-VFS-CANARY-"):
-				_log_info("[STABILITY] VFS canary OK: hook pack mount precedence verified (%s)" % canary_got.strip_edges())
-			else:
-				_log_critical("[STABILITY] VFS canary FAILED (got '%s', expected MODLOADER-VFS-CANARY-*) -- hook pack mounted but files aren't served. Rewrites will not take effect this session." % canary_got.substr(0, 40))
+			if canary_got.strip_edges() != canary_content:
+				# Fail LOUD and run vanilla. Activating anyway would leave a
+				# half-modded state: cached scripts get the rewrite via direct
+				# source mutation, while lazy VFS loads fall back to vanilla.
+				# Skipping the persist means next launch regenerates a fresh
+				# pack instead of static-init remounting this broken one -- a
+				# transient failure self-heals, it does not disable modding.
+				_log_critical("[STABILITY] VFS canary FAILED (got '%s', expected '%s') -- hook pack mounted but files aren't served. Skipping activation: script hooks will not fire this session, vanilla scripts run. Pack state not persisted; next launch regenerates." % [canary_got.substr(0, 40), canary_content])
+				return ""
+			_log_info("[STABILITY] VFS canary OK: hook pack mount precedence verified (%s)" % canary_got.strip_edges())
 			_log_info("[RTVCodegen] Generated %d rewritten vanilla script(s), %d hook points -- pack mounted at res:// (%s)" \
 					% [script_count, hook_count, pack_zip_rel.get_file()])
-			_activate_rewritten_scripts(packed_filenames, pack_zip_rel)
+			_activate_rewritten_scripts(packed_paths, pack_zip_rel)
 		else:
-			_log_critical("[RTVCodegen] Failed to mount hook pack at %s -- rewrites won't load" % zip_abs)
+			_log_critical("[RTVCodegen] Failed to mount hook pack at %s -- script hooks will not fire this session, vanilla scripts run. Next launch regenerates the pack." % zip_abs)
+			return ""
 	else:
 		_log_info("[RTVCodegen] No scripts rewritten -- no pack mounted")
 	return pack_zip_rel
@@ -578,7 +651,7 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 	for fname: String in filenames:
 		if _scripts_with_scene_preloads.has(fname):
 			continue
-		var vp := "res://Scripts/" + fname
+		var vp := fname
 		var c := load(vp) as GDScript
 		if c == null:
 			pre_d += 1
@@ -611,7 +684,7 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 	for fname: String in filenames:
 		if _scripts_with_scene_preloads.has(fname):
 			continue
-		var vp := "res://Scripts/" + fname
+		var vp := fname
 		var cached := load(vp) as GDScript
 		if cached == null:
 			_log_warning("[RTVCodegen] activate %s: load returned null -- skip" % vp)
@@ -764,7 +837,7 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 	for fname: String in filenames:
 		if _scripts_with_scene_preloads.has(fname):
 			continue  # deferred to lazy-compile; compile-proof runs post-override elsewhere
-		var vp := "res://Scripts/" + fname
+		var vp := fname
 		var s := load(vp) as GDScript
 		if s == null:
 			compile_proof_fail.append(fname)
@@ -797,7 +870,7 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 			"Hitbox.gd": true, "LootContainer.gd": true, "Pickup.gd": true}
 	var critical_failures: PackedStringArray = []
 	for f in compile_proof_fail:
-		if critical_set.has(f):
+		if critical_set.has(String(f).get_file()):
 			critical_failures.append(f)
 	# Deferred scripts aren't counted against the total here -- they skipped
 	# compile-proof intentionally and will be verified via
@@ -851,7 +924,8 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 			_log_info("[RTVCodegen] AUTOLOAD-CHECK %s: script=%s script_has_rename=%s instance_has_rename=%s" \
 					% [aname, scr.resource_path, has_rename, instance_methods_has_rename])
 
-	# Registry smoke probe (runs unconditionally). Verifies tetra's
+	# Registry smoke probe (developer-mode only -- we are past the
+	# `if not _developer_mode: return` gate above). Verifies tetra's
 	# const->dict rewrite + _get() injection on Database actually
 	# executed and serves scenes at runtime. Without this, a silent
 	# regression in the Database transform would only surface when a

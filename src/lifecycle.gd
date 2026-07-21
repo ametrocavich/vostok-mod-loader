@@ -9,9 +9,17 @@ func _ready() -> void:
 		return
 	_has_loaded = true
 	# Honor disabled sentinel. Static init already cleaned persistent state,
-	# so we just sit idle for this session. User removes the file to re-enable.
+	# so we just sit idle for this session. User removes the persistent file
+	# to re-enable; the one-shot variant is auto-cleared here so the next
+	# launch goes through the normal flow.
 	if _is_modloader_disabled():
-		print("[ModLoader] disabled via sentinel file -- sitting idle")
+		var exe_dir := OS.get_executable_path().get_base_dir()
+		var once_path := exe_dir.path_join(DISABLED_ONCE_FILE)
+		if FileAccess.file_exists(once_path):
+			DirAccess.remove_absolute(once_path)
+			print("[ModLoader] one-shot vanilla launch -- sentinel cleared, next launch is normal")
+		else:
+			print("[ModLoader] disabled via sentinel file -- sitting idle")
 		return
 	await get_tree().process_frame
 	_compile_regex()
@@ -51,8 +59,20 @@ func _modloader_restart(clean_pass1: bool) -> void:
 	# launch; subsequent launches short-circuit on the mod-state hash and
 	# never restart.
 	_preserve_engine_driver_args(args)
+	# OS.get_cmdline_args() excludes everything after "--" -- those live only in
+	# OS.get_cmdline_user_args() (the same split Pass-2 detection in _ready
+	# relies on). Forward the player's original user args so restarts are
+	# command-line-transparent, stripping our own sentinel and re-appending it
+	# only for the Pass-1 -> Pass-2 bootstrap.
+	var user_args: Array = []
+	for ua in OS.get_cmdline_user_args():
+		if ua != "--modloader-restart":
+			user_args.append(ua)
 	if not clean_pass1:
-		args.append_array(["--", "--modloader-restart"])
+		user_args.append("--modloader-restart")
+	if user_args.size() > 0:
+		args.append("--")
+		args.append_array(user_args)
 	OS.set_restart_on_exit(true, args)
 	get_tree().quit()
 
@@ -80,6 +100,13 @@ func reopen_mod_ui() -> void:
 		return
 	_dirty_since_boot = false
 	await show_mod_ui()
+	# Flush a pending debounced priority save before deciding to restart --
+	# a priority edit made <0.4s before closing the reopened UI hasn't set
+	# _dirty_since_boot yet, so the restart (and the value taking effect this
+	# session) would otherwise be silently skipped.
+	if _priority_save_pending:
+		_priority_save_pending = false
+		_save_ui_config()
 	if _dirty_since_boot:
 		_log_info("[ModLoader] Post-boot mod changes detected -- restarting")
 		_modloader_restart(true)
@@ -225,7 +252,7 @@ func _run_pass_2() -> void:
 	if _pass_cfg.load(PASS_STATE_PATH) == OK:
 		var saved_overrides: Array = _pass_cfg.get_value("state", "script_overrides", [])
 		for entry in saved_overrides:
-			if entry is Dictionary and entry.has("vanilla_path") and entry.has("mod_script_path"):
+			if entry is Dictionary and entry.has("vanilla_path") and entry.has("mod_script_path") and entry.has("mod_name") and entry.has("priority"):
 				_pending_script_overrides.append(entry)
 			else:
 				_log_warning("[Overrides] Malformed entry in pass state -- skipped")
@@ -248,6 +275,22 @@ func _run_pass_2() -> void:
 	# NOTE: Godot dedupes load_resource_pack by path, so mounting the same
 	# filename twice is a no-op. Copy to a different filename each time.
 	if _load_test_pack_flag():
+		# Sweep reapply copies from prior sessions first -- each Pass 2 creates
+		# a uniquely named copy (to defeat the path dedupe above) and nothing
+		# else in the loader deletes them, so they accumulate in user:// forever.
+		# Prior sessions' mounts don't survive process restart, so removal is
+		# safe; the copy made below gets a fresh unique name.
+		var user_dir_abs := ProjectSettings.globalize_path("user://")
+		var user_dir := DirAccess.open(user_dir_abs)
+		if user_dir != null:
+			user_dir.list_dir_begin()
+			while true:
+				var stale_name := user_dir.get_next()
+				if stale_name == "":
+					break
+				if stale_name.begins_with("test_pack_reapply_") and stale_name.ends_with(".zip"):
+					DirAccess.remove_absolute(user_dir_abs.path_join(stale_name))
+			user_dir.list_dir_end()
 		var src_abs := ProjectSettings.globalize_path("user://test_pack_precedence.zip")
 		var reapply_abs := ProjectSettings.globalize_path("user://test_pack_reapply_" \
 				+ str(Time.get_ticks_msec()) + ".zip")
@@ -255,10 +298,15 @@ func _run_pass_2() -> void:
 			var src := FileAccess.open(src_abs, FileAccess.READ)
 			var dst := FileAccess.open(reapply_abs, FileAccess.WRITE)
 			if src and dst:
-				dst.store_buffer(src.get_buffer(src.get_length()))
+				# store_buffer returns success since Godot 4.3; a short write
+				# (disk full) would otherwise mount a truncated zip below.
+				var write_ok := dst.store_buffer(src.get_buffer(src.get_length()))
 				src.close()
 				dst.close()
-				if ProjectSettings.load_resource_pack(reapply_abs, true):
+				if not write_ok:
+					_log_warning("[TEST-REMAP] Pass 2: copy write failed")
+					DirAccess.remove_absolute(reapply_abs)
+				elif ProjectSettings.load_resource_pack(reapply_abs, true):
 					_log_info("[TEST-REMAP] Pass 2: re-applied test pack via copy " + reapply_abs.get_file())
 					# Verify VFS state post-reapply
 					if FileAccess.file_exists("res://ImmersiveXP/Controller.gd"):

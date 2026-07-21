@@ -71,6 +71,8 @@ func _setup_run_entry(entry: Variant) -> Dictionary:
 	if arr.is_empty():
 		return {"verb": "<empty>", "ok": false, "error": "entry is empty"}
 	var verb: String = String(arr[0])
+	# SEAM: new verbs = one match arm here + a schema line in the header
+	# docstring above (+ a _bind_* helper if it wraps a _many form).
 	match verb:
 		"register":
 			return _setup_dispatch_many("register", arr, _bind_register_many())

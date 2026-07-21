@@ -41,11 +41,12 @@ func _events_resource() -> Resource:
 	return res
 
 # Shape check: consistent with other registries' _looks_like_* helpers.
-# EventData's canonical fields are name, type, function, possibility.
+# Probes function/possibility/day -- EventData also declares name and type,
+# but those exist on too many other Resource classes to discriminate.
 func _looks_like_event_data(res: Resource) -> bool:
-	return _resource_has_property(res, "function") \
-			and _resource_has_property(res, "possibility") \
-			and _resource_has_property(res, "day")
+	return _object_has_property(res, "function") \
+			and _object_has_property(res, "possibility") \
+			and _object_has_property(res, "day")
 
 # Validates {event} payload. Returns [event, arr] or [null, null] on error.
 func _validate_event_data(id: String, verb: String, data: Variant) -> Array:
@@ -186,7 +187,7 @@ func _patch_event(id: Variant, fields: Dictionary) -> bool:
 	var stash: Dictionary = patched.get(key, {})
 	for field in fields.keys():
 		var fname := String(field)
-		if not _resource_has_property(target, fname):
+		if not _object_has_property(target, fname):
 			push_warning("[Registry] patch('events'): field '%s' doesn't exist on EventData" % fname)
 			continue
 		if not stash.has(fname):
@@ -217,6 +218,15 @@ func _remove_event(id: String) -> bool:
 				arr.remove_at(idx)
 			else:
 				push_warning("[Registry] remove('events', '%s'): event not found in array; tracking cleared" % id)
+	# Drop the handle's patch stash: the event is leaving the registry, so its
+	# stashed originals are dead state. Leaving them would poison a later
+	# re-registration under the same handle (_patch_event's first-write-wins
+	# stash at this key would keep the OLD event's values, and revert would
+	# write them onto the NEW event).
+	var patched: Dictionary = _registry_patched.get("events", {})
+	if patched.has(id):
+		patched.erase(id)
+		_registry_patched["events"] = patched
 	reg.erase(id)
 	_registry_registered["events"] = reg
 	_log_debug("[Registry] removed event '%s'" % id)

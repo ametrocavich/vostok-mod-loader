@@ -48,6 +48,12 @@ func _override_scene(id: String, data: Variant) -> bool:
 	var db := _database_node()
 	if db == null:
 		return false
+	# Same injection guard as _register_scene: without it, an id that collides
+	# with a real Node/Object property (e.g. "name") makes db.get(id) return
+	# non-null and the write below would hit the missing dict.
+	if not ("_rtv_override_scenes" in db):
+		push_warning("[Registry] override('scenes', '%s'): Database.gd is missing injected scene fields (rewriter didn't fire). Does your mod.txt include a [registry] section?" % id)
+		return false
 	# The rewriter converts Database's `const X = preload(...)` into entries
 	# in _rtv_vanilla_scenes, so db.get(id) routes through _get(); which
 	# checks _rtv_override_scenes first. Writing to that dict is enough to
@@ -75,6 +81,11 @@ func _remove_scene(id: String) -> bool:
 	var db := _database_node()
 	if db == null:
 		return false
+	# Same injection guard as _register_scene: fields only exist when the
+	# rewriter fired; otherwise .has() is an invalid property get.
+	if not ("_rtv_mod_scenes" in db):
+		push_warning("[Registry] remove('scenes', '%s'): Database.gd is missing injected scene fields (rewriter didn't fire). Does your mod.txt include a [registry] section?" % id)
+		return false
 	if not db._rtv_mod_scenes.has(id):
 		push_warning("[Registry] remove('scenes', '%s'): not registered by a mod" % id)
 		return false
@@ -88,6 +99,11 @@ func _remove_scene(id: String) -> bool:
 func _revert_scene(id: String) -> bool:
 	var db := _database_node()
 	if db == null:
+		return false
+	# Same injection guard as _register_scene: fields only exist when the
+	# rewriter fired; otherwise .has() is an invalid property get.
+	if not ("_rtv_override_scenes" in db):
+		push_warning("[Registry] revert('scenes', '%s'): Database.gd is missing injected scene fields (rewriter didn't fire). Does your mod.txt include a [registry] section?" % id)
 		return false
 	if not db._rtv_override_scenes.has(id):
 		push_warning("[Registry] revert('scenes', '%s'): no mod override to revert" % id)
