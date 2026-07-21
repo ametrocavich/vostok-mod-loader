@@ -3071,6 +3071,13 @@ func show_mod_ui() -> void:
 	# into the plate (built there). Header drag is added by hand since a
 	# borderless Window has no bar to grab. Title string kept for taskbar/alt-tab.
 	win.borderless = true
+	# Embed sub-windows (tooltips, dropdowns, dialogs) INSIDE this window's
+	# viewport instead of as separate OS windows. Separate windows aren't
+	# always_on_top, so they stranded behind this always_on_top launcher -- the
+	# tooltip-behind-window bug, and the reason dropdowns needed always_on_top
+	# hacks. Embedded, they render on top of the launcher content and can't fall
+	# behind it, fixing every tooltip at once.
+	win.gui_embed_subwindows = true
 	win.size = Vector2i(960, 640)
 	win.min_size = Vector2i(640, 420)
 	win.wrap_controls = false
