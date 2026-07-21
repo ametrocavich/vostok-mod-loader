@@ -12,9 +12,9 @@ Tour of the `src/` tree. Order follows `build.sh`'s `FILES` array, which is the 
 
 All module-scope `const`, `var`, and `signal` declarations. Everything has to land here so it's declared before any function body references it. Notable residents:
 
-- `MODLOADER_VERSION` at [constants.gd:13](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L13) -- release-please bumps this via Conventional Commits, bracketed by `x-release-please-start/end` markers
+- `MODLOADER_VERSION` at [constants.gd:20](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L20) -- release-please bumps this via Conventional Commits, bracketed by `x-release-please-start/end` markers
 - `RTV_SKIP_LIST` (7 scripts), `RTV_RESOURCE_SERIALIZED_SKIP` (11), `RTV_RESOURCE_DATA_SKIP` (25) -- scripts the rewriter refuses to touch, each with inline rationale
-- `_filescope_mounted := _mount_previous_session()` at [constants.gd:198](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L198) -- a module-scope var with a function-call initializer. This is what triggers the static-init mount before `_ready`
+- `_filescope_mounted := _mount_previous_session()` at [constants.gd:366](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L366) -- a module-scope var with a function-call initializer. This is what triggers the static-init mount before `_ready`
 
 ### [logging.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/logging.gd)
 
@@ -34,7 +34,7 @@ Includes both static functions (callable from static init before instance state 
 
 The largest domain. Owns:
 
-- `_mount_previous_session` at [boot.gd:32](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L32) -- the static-init entry point triggered by `constants.gd:198`
+- `_mount_previous_session` at [boot.gd:170](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L170) -- the static-init entry point triggered by `constants.gd:366`
 - Sentinel handling (disabled, safe mode, Pass 2 dirty marker)
 - `override.cfg` reading + writing (`_write_override_cfg`, `_restore_clean_override_cfg`)
 - Pass state persistence (`_write_pass_state`, `_compute_state_hash`)
@@ -59,22 +59,42 @@ Not a virus scanner. Catches lazy / copy-paste attacks (the dropper screenshot t
 - `.gd` / `.tscn` / `.tres` / `.gdshader` get full text scans (with GDScript line-comment stripping so docstrings mentioning API names don't false-positive); `.scn` / `.res` / `.gdc` get byte-search for binary-safe rule patterns
 - `.pck` mods scanned via local `_security_pck_list_with_offsets` that mirrors `pck_enumeration._parse_pck_file_list` but also returns offsets so individual blobs can be extracted without mounting
 
+### [mws_api.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mws_api.gd)
+
+ModWorkshop API client -- thin async wrappers over `HTTPRequest` that return a parsed JSON Variant (Dictionary or Array) or `null` on failure. Public methods are named `mws_*`, private helpers `_mws_*`.
+
+- Every request carries a User-Agent -- `api.modworkshop.net` rejects empty/default UAs with a bodyless 403
+- GETs opt into a per-URL in-memory TTL cache via `_mws_get_json`; failures are never cached, so a flake retries on the next call
+- 429-aware backoff: a 429 (or spent rate budget) arms a module-wide cooldown; calls during it fail fast, and callers wrap their error copy in `mws_error_status()` so the status reads "rate limit reached, try again in Ns"
+- `mws_list_mods` pages at `limit=50` (`MWS_PAGE_LIMIT`) -- the API 422s larger values
+- Offline grace: the discover landing payload is persisted to `user://mws_cache/discover_snapshot.json`; when a live fetch fails, the Browse tab renders the snapshot behind a cached-results banner
+
+The legacy `fetch_latest_modworkshop_versions` / `download_and_replace_mod` remain in `mod_discovery.gd` until a dedicated migration phase.
+
 ### [mod_discovery.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd)
 
 Scans `<exe>/mods/`, parses mod.txt metadata, handles ModWorkshop version checks and downloads. No mounting -- that's `mod_loading`.
 
 - `collect_mod_metadata` at [mod_discovery.gd:7](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd#L7) -- the main scanner
 - `compare_versions` -- semver-ish with `v` prefix tolerance
-- `fetch_latest_modworkshop_versions` / `download_and_replace_mod` -- chunked HTTP against `api.modworkshop.net`
+- `fetch_latest_modworkshop_versions` / `download_and_replace_mod` -- chunked HTTP against `api.modworkshop.net`; the legacy Updates-tab client -- the Browse tab's endpoints live in `mws_api.gd` (these two stay here until a dedicated migration phase)
 - `_log_security_findings` -- emits `[ModScan]` summary + per-rule lines to the boot log when `entry["security_findings"]` is non-empty
+
+### [modpacks.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/modpacks.gd)
+
+Modpack discovery, apply, unload. A modpack is a `.zip` in `<game>/mods/` with `profile.json` at its root (regular mods have `mod.txt` at root); scan time routes them to the Modpacks tab instead of the Mods tab.
+
+- An applied modpack lives as a regular profile in `mod_config.cfg` under the `modpack__<sanitized_name>` prefix, so the existing profile lifecycle machinery (switch, save, MCM snapshot) handles it without special cases. The zip is only a template, consulted on first apply or reset
+- Pre-apply state is backed up to a `_before_modpack_<sanitized_name>` profile slot plus an MCM snapshot; `[settings] active_modpack` tracks the single active pack
+- State transitions are owned by `apply_modpack`/`_apply_modpack_inner`, `unload_modpack`, the boot reconciler in `ui.gd` `_load_ui_config`, and `_restore_apply_snapshot` (the Restore backup button -- refused while a pack is active)
 
 ### [mod_loading.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_loading.gd)
 
 Runtime loading pipeline. Mounts archives, scans .gd files for safety issues, registers file-claims, instantiates autoloads, applies `[script_overrides]`.
 
 - `load_all_mods` at [mod_loading.gd:7](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_loading.gd#L7) -- entry point
-- `_process_mod_candidate` at [mod_loading.gd:102](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_loading.gd#L102) -- per-mod pipeline
-- `_apply_script_overrides` at [mod_loading.gd:309](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_loading.gd#L309) -- sorts by priority asc, `load` + `source_code` + fresh `GDScript.new()` + `reload` + `take_over_path`
+- `_process_mod_candidate` at [mod_loading.gd:123](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_loading.gd#L123) -- per-mod pipeline
+- `_apply_script_overrides` at [mod_loading.gd:403](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_loading.gd#L403) -- sorts by priority asc, `load` + `source_code` + fresh `GDScript.new()` + `reload` + `take_over_path`
 - `scan_and_register_archive_claims` -- detects Windows-backslash zip paths, Database.gd collisions, builds per-file analysis
 - `_instantiate_autoload` -- dispatches PackedScene vs GDScript vs other
 
@@ -90,13 +110,13 @@ Override verification:
 
 ### [ui.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd)
 
-Pre-game launcher window. Two tabs (Mods, Updates), dark theme, Reset-to-Vanilla action. Closing the window equals clicking Launch Game.
+Pre-game launcher window. Four tabs (Mods, Browse, Modpacks, Updates), dark theme, Launch Vanilla (one-shot) action. Closing the window equals clicking Launch Game.
 
-- `show_mod_ui` at [ui.gd:930](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L930)
-- `build_mods_tab` / `build_updates_tab` -- tab content
+- `show_mod_ui` at [ui.gd:2969](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L2969)
+- `build_mods_tab` / `build_browse_tab` / `build_modpacks_tab` / `build_updates_tab` -- tab content
 - `make_dark_theme` -- Theme resource with pure-black backgrounds
-- `refresh_launch_button_label` at [ui.gd:1063](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L1063) -- pessimistic label: switches between `"Launch with Mods (Restart)"` and `"Launch Unmodded"` depending on whether any enabled mod exists. Called on init, per-checkbox toggle, and profile/dev-mode tab rebuilds. Over-warns in the rare hash-match no-restart case
-- `_reset_to_vanilla_and_restart` at [ui.gd:479](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L479) -- unchecks every mod, calls `_static_force_vanilla_state`, strips `--modloader-restart` from cmdline so the relaunch is a clean Pass 1
+- `refresh_launch_button_label` at [ui.gd:3285](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L3285) -- counts what will actually load (not just what is checked, so dependency-blocked mods do not promise a modded session): `"Launch modded"` when at least one enabled mod is loadable, `"Launch unmodded (%d blocked)"` when everything enabled is blocked, plain `"Launch"` when nothing is enabled. Called on init, per-checkbox toggle, and tab rebuilds
+- `_launch_vanilla_once` at [ui.gd:1375](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L1375) -- one-shot vanilla launch: writes the `DISABLED_ONCE_FILE` sentinel (auto-cleared on the next launch), calls `_static_force_vanilla_state`, and strips `--modloader-restart` so the relaunch is a clean Pass 1. Mod checkboxes are left untouched -- the next normal launch is modded again
 
 ## Public API
 
@@ -117,6 +137,12 @@ Vanilla-backed slots (scenes, scene_paths, ai_types, fish_species, shelters, ran
 Slots that track state in the registry's own internal dicts (items, loot, recipes, events, sounds, inputs, trader_pools, trader_tasks, resources, scene_nodes) don't depend on vanilla rewrites to function -- `scene_nodes` specifically subscribes to `SceneTree.node_added` at `frameworks_ready` and patches live instances directly.
 
 **Limitation**: direct constant access (`Database.Potato`) bypasses the injected `_get()` override. Mods must use `Database.get("Potato")` to hit the registry.
+
+### [setup.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/setup.gd)
+
+`lib.setup(plan)` -- declarative mod-installation entry point. A plan is an Array of `[verb, ...args]` entries applied in insertion order, so register-then-patch flows work naturally. Each entry maps to an existing public verb (`register`, `override`, `patch`, `append`, `prepend`, `remove_from`, `revert`, `remove`, `hooks`) plus a meta verb `when` for conditional sub-plans.
+
+Exists so mods that lean heavily on the hook + registry systems can collapse dozens of administrative `_ready` lines into one declarative literal. `build.sh` places it after the registry handlers because it depends on the `*_many` verbs and `hook_many`.
 
 ### [framework_wrappers.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/framework_wrappers.gd)
 

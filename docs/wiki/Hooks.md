@@ -43,7 +43,7 @@ That's the whole mod. No `[hooks]` section. No framework imports. The scanner do
 
 ## Opt-in model
 
-v3.1.1 uses an opt-in model: **a modlist that declares nothing produces no wrap, no rewrite, and no hook pack** -- mods run against byte-identical vanilla scripts. Declarations turn individual subsystems on:
+The loader uses an opt-in model (introduced in v3.0.1): **a modlist that declares nothing produces no wrap, no rewrite, and no hook pack** -- mods run against byte-identical vanilla scripts. Declarations turn individual subsystems on:
 
 | Trigger | Effect |
 |---|---|
@@ -53,7 +53,7 @@ v3.1.1 uses an opt-in model: **a modlist that declares nothing produces no wrap,
 | `[registry]` in `mod.txt` | Turn on the registry (see [Registry](Registry)) |
 | `[script_extend]` in `mod.txt` | Chain-by-extends overrides |
 
-The rewrite surface equals the union of those triggers. When no user mod declares anything, the loader logs `[RTVCodegen] No user opt-in declarations ([hooks] / .hook() / [registry]) -- user mods run against unmodified vanilla (v2.1.0-equivalent). Pack contains core hooks only.` at boot. User mods' vanilla targets stay byte-identical; the pack contains only a core-owned wrap on `Menu.gd :: _ready` that injects the launcher's "Mods" button into the main menu. When no mods are loaded at all, pack generation is skipped entirely (no file written).
+The rewrite surface equals the union of those triggers. When no user mod declares anything, the loader logs `[RTVCodegen] No user opt-in declarations ([hooks] / .hook() / [registry]) -- user mods' vanilla targets run unmodified (v2.1.0-equivalent). Pack contains core hooks only.` at boot. User mods' vanilla targets stay byte-identical; the pack contains only a core-owned wrap on `Menu.gd :: _ready` that injects the launcher's "Mods" button into the main menu. When no mods are loaded at all, pack generation is skipped entirely (no file written).
 
 ### `[hooks]` escape hatch
 
@@ -62,6 +62,7 @@ Some mods can't get auto-enrolled. Examples:
 - `ModLoader.add_hook(path, method, cb, before)` called from a runtime autoload (not `!`-prefixed). Pack generation has already run by then.
 - Hook registrations that happen via a callback passed in from a different autoload -- the `.hook()` call site isn't in the registering mod's own source.
 - Hooks the mod author wants wrapped but doesn't plan to register until gameplay events fire.
+- Hook names built at runtime (string concatenation, variables, loops over a name list). The scanner only matches literal `.hook("...")` strings -- dynamic names register fine but never fire unless the target is declared in `[hooks]`.
 
 For these, declare the vanilla script path in `mod.txt`:
 
@@ -78,7 +79,7 @@ Method names in the list are case-insensitive (normalized to lowercase on write)
 
 ### `ModLoader.add_hook()` compat
 
-Mods written against [`godot-mod-loader`](https://github.com/GodotModding/godot-mod-loader) call `ModLoader.add_hook(script_path, method_name, callback, is_before)`. The loader provides a compat shim at [hooks_api.gd:89](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd#L89) that:
+Mods written against [`godot-mod-loader`](https://github.com/GodotModding/godot-mod-loader) call `ModLoader.add_hook(script_path, method_name, callback, is_before)`. The loader provides a compat shim in [hooks_api.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd), `add_hook()`, that:
 
 1. Builds the native hook name: `<stem>-<method>-<pre|post>` (all lowercase).
 2. Enrolls `script_path` into `_hooked_methods` so the wrap surface picks it up.
@@ -88,6 +89,8 @@ Mods written against [`godot-mod-loader`](https://github.com/GodotModding/godot-
 
 - Call `add_hook()` from a `!`-prefixed early autoload's `_init` (runs before pack generation).
 - Declare the path in `[hooks]` with `= *` in `mod.txt` so the wrap mask is populated statically regardless of when the autoload runs.
+
+**Path gotcha**: a bare filename is normalized to `res://Scripts/<file>`. If your target script lives anywhere else (e.g. `res://Scripts/Framework/X.gd`), pass a fully-qualified `res://` path -- otherwise the enrollment silently matches nothing and the hook never fires.
 
 ## Public API
 
@@ -113,13 +116,13 @@ lib.hook_many({
 })
 ```
 
-For mods that register hooks alongside registry mutations as a single installation step, `hook_many` is also available as a `["hooks", {...}]` entry inside `lib.setup(plan)`. See [Setup](Setup) for the declarative form.
+For mods that register hooks alongside registry mutations as a single installation step, `hook_many` is also available as a `["hooks", {...}]` entry inside `lib.setup(plan)`. See [Setup-Plans](Setup-Plans) for the declarative form.
 
 ### Methods
 
 | Method | Purpose |
 |---|---|
-| `hook(name, callback, priority=100) -> int` | Register a callback, return its id. Replace hooks are single-owner (returns -1 if already taken) |
+| `hook(name, callback, priority=100) -> int` | Register a callback, return its id. Replace hooks are single-owner (returns -1 if already taken). Callbacks run in ascending priority order; ties are NOT guaranteed to run in registration order (`sort_custom` is not stable) -- use distinct priorities when ordering between two callbacks matters |
 | `hook_many({name: callback, ...}, priority=100) -> Dictionary` | Batched register; returns `{ok, results}` where `results[name]` is the hook id or -1 |
 | `unhook(id) -> void` | Remove a hook by id (linear scan across all hook names) |
 | `add_hook(path, method, cb, before=true) -> int` | godot-mod-loader compat wrapper around `hook()` + wrap-mask enrollment |
@@ -135,6 +138,8 @@ For mods that register hooks alongside registry mutations as a single installati
 | `static major_version() -> int` | Parse major from `MODLOADER_VERSION` |
 | `static minor_version() -> int` | Same, minor |
 | `static patch_version() -> int` | Same, patch |
+
+Note: `provides=` rename aliases (see [Mod-Format](Mod-Format)) satisfy dependency resolution but are NOT matched by `has_mod()`/`mod_info()` -- these match only the mod's real `id`. Check both ids if you need to detect a renamed peer.
 
 ### Signal
 
@@ -175,11 +180,11 @@ func _on_value_post() -> void:
     print("Item.Value() ran")
 ```
 
-The dispatcher detects callback arity via `Callable.get_argument_count()`. If the count matches `vanilla_args.size() + 1`, the trailing `_result` is passed and the return value chains forward. If the count matches just `vanilla_args.size()`, the legacy 2-arg path runs (fire-and-forget) and a deprecation warning fires once per callback registration.
+The dispatcher detects callback arity via `Callable.get_argument_count()`. If the count matches `vanilla_args.size() + 1`, the trailing `_result` is passed and the return value chains forward. Any other count runs the legacy path (called with the vanilla args only, return ignored) and a deprecation warning fires once per callback registration.
 
 ### `await` inside a replace hook
 
-Only `await` inside a replace callback when the **vanilla method you replaced is itself a coroutine** (its body contains `await`). The generated wrapper mirrors the vanilla method's coroutine-ness: for a coroutine it `await`s your callback, but for a synchronous method it calls your callback synchronously and returns the value straight to the caller. If your callback suspends there, the caller receives a coroutine state object instead of the declared type -- and any typed call site (`var n: int = obj.Method()`) is a **runtime error** in the vanilla caller you cannot fix from a mod. If you need async work behind a synchronous hook, kick it off with `call_deferred` or a `-callback` suffix hook instead and return a plain value.
+Only `await` inside a replace callback when the **vanilla method you replaced is itself a coroutine** (its body contains `await`). The wrapper always `await`s your replace callback (an `await` on a value that never suspends completes immediately, so this is free for synchronous callbacks). But if the vanilla method you replaced is synchronous and your callback actually suspends, the wrapper itself suspends -- and the vanilla call site, which does not `await`, receives a coroutine state object instead of the declared type. Any typed call site (`var n: int = obj.Method()`) is then a **runtime error** in the vanilla caller you cannot fix from a mod. If you need async work behind a synchronous hook, kick it off with `call_deferred` or a `-callback` suffix hook instead and return a plain value.
 
 Multiple post hooks chain in priority-ascending order. Each hook sees the running `_result` after all prior post hooks have transformed it:
 
@@ -201,7 +206,7 @@ lib.hook("item-value-post", func(r): return min(r, 200), 100)   # priority 100, 
 
 ## Dispatch semantics
 
-The dispatch wrapper template lives at [rewriter.gd:1039 `_rtv_dispatch_inline_src`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter.gd#L1039). For every hookable vanilla method, the rewriter emits roughly this structure:
+The dispatch wrapper template lives in [rewriter.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter.gd), `_rtv_dispatch_inline_src`. For every hookable vanilla method, the rewriter emits roughly this structure:
 
 ```
 func <name>(args):
@@ -213,6 +218,10 @@ func <name>(args):
     if not _lib._any_mod_hooked:
         return _rtv_vanilla_<name>(args)
 
+    # Per-hook-base short-circuit: no hooks registered on THIS method
+    if not _lib._hooked_bases.has("<hook_base>"):
+        return _rtv_vanilla_<name>(args)
+
     # Re-entry guard: don't double-dispatch if a chained subclass wrapper
     # calls super() into vanilla's wrapper. Keyed per instance so a
     # coroutine suspended on one instance doesn't suppress dispatch on others.
@@ -221,6 +230,7 @@ func <name>(args):
         return _rtv_vanilla_<name>(args)
     _lib._wrapper_active[_rtv_wa_key] = true
 
+    var _rtv_prev_caller = _lib._caller
     _lib._caller = self
     _lib._dispatch("<hook_base>-pre", [args])
 
@@ -239,6 +249,10 @@ func <name>(args):
     else:
         _result = _rtv_vanilla_<name>(args)
 
+    # Re-set _caller: nested wrapped calls inside the body may have
+    # clobbered it, and post hooks should see the correct caller.
+    _lib._caller = self
+
     # Non-void wrapper: chained post-hook dispatch with arity detection.
     # `_dispatch_post` walks each post hook in priority order, passes the
     # running `_result` if the callback declared the trailing param, and
@@ -247,14 +261,18 @@ func <name>(args):
 
     _lib._dispatch_deferred("<hook_base>-callback", [args])
     _lib._wrapper_active.erase(_rtv_wa_key)
+    _lib._caller = _rtv_prev_caller
     return _result
 ```
 
-Three performance / correctness features:
+Four performance / correctness features:
 
 - **Null-lib fallback**: if `RTVModLib` meta isn't set (loader not finished initializing, or loader failed), the wrapper calls the vanilla body directly.
 - **Global short-circuit**: `_lib._any_mod_hooked` is a sticky bool flipped true by the first `hook()` call. Dispatch wrappers skip every dict/function call when no mod has registered anything. Same approach as godot-mod-loader's `_ModLoaderHooks.any_mod_hooked`.
+- **Per-hook-base short-circuit**: `_hooked_bases` is a refcount keyed by `<script>-<method>`, maintained by `hook()`/`unhook()`. Wrapped methods with no hooks of their own fast-path past dispatch even when other mods have hooked other methods (which makes `_any_mod_hooked` sticky-true forever).
 - **Re-entry guard**: when a mod script that extends wrapped vanilla calls `super()`, control lands back in the vanilla wrapper. Without the guard, the vanilla wrapper would dispatch hooks again. The guard flips `_wrapper_active[hook_base]` = true on entry; nested re-entry at the same `hook_base` skips dispatch and runs the body directly. One dispatch per logical call regardless of chain depth.
+
+The wrapper also saves and restores `_lib._caller` around the body (`_rtv_prev_caller`), re-setting it before the post dispatch -- so nested wrapped calls inside the body don't leak a stale caller into your post hooks.
 
 **Void methods** use a structurally similar template but call `_lib._dispatch("<hook_base>-post", [args])` (fire-and-forget, return ignored) instead of `_dispatch_post`, since there's no `_result` to mutate.
 
@@ -262,17 +280,18 @@ Three performance / correctness features:
 
 ## Hook registration, step-by-step
 
-Source: [hooks_api.gd:44-67](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd#L44).
+Source: [hooks_api.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd), `hook()`.
 
 1. Detect replace vs. aspect: `is_replace = not (name ends_with "-pre/-post/-callback")`.
 2. If replace and `_hooks[name]` is non-empty: debug-log the rejection, return `-1`.
 3. Create entry `{callback, priority, id}`, append to `_hooks[name]`, sort by priority ascending.
 4. Set `_any_mod_hooked = true` (sticky).
-5. Return `id`, increment `_next_id`.
+5. Increment the `_hooked_bases` refcount for the hook's base (`<script>-<method>`, suffix stripped) so the wrapper's per-hook-base short-circuit opens.
+6. Return `id`, increment `_next_id`.
 
 ## Dispatch internals
 
-Source: [hooks_api.gd:142](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd#L142).
+Source: [hooks_api.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd), `_dispatch()`.
 
 ```gdscript
 func _dispatch(hook_name: String, args: Array) -> void:
@@ -286,7 +305,7 @@ func _dispatch(hook_name: String, args: Array) -> void:
 
 The `.duplicate()` is load-bearing: hooks that call `hook()` or `unhook()` mid-dispatch would otherwise mutate the live array during iteration. Snapshotting means new hooks registered during dispatch don't fire in the current dispatch -- they join the next one.
 
-`_dispatch_deferred` uses `callback.bindv(args).call_deferred()` instead, for `-callback` suffix hooks. `_dispatch_post` is the chained variant used by non-void post hooks: same snapshot-then-iterate shape, but each callback receives `args + [current_result]`, threads its non-null return into `current_result`, and the final value is returned to the wrapper. See [Return mutation](#return-mutation).
+`_dispatch_deferred` uses `callback.bindv(args).call_deferred()` instead, for `-callback` suffix hooks.
 
 `_dispatch_post` is the chained variant for non-void post hooks. Same snapshot-iterate pattern as `_dispatch`, but it inspects each callback's arity before calling and threads a running result through the chain:
 
@@ -311,7 +330,7 @@ func _dispatch_post(hook_name: String, args: Array, current_result: Variant) -> 
     return current_result
 ```
 
-Per-callback warning suppression uses `_post_legacy_warned: Dictionary` keyed by `"<hook_name>::<callback_object_id>"`. First time a 2-arg callback is seen, the warning prints and the key flips. Subsequent dispatches against the same callback are silent. This is cheap enough that even a hot-path wrapped method with hundreds of dispatches per frame doesn't spam the log.
+Per-callback warning suppression uses `_post_legacy_warned: Dictionary` keyed by `"<hook_name>::<callback_object_id>::<callback_method>"` (the method is included so two legacy callbacks on the same object each get their own one-shot warning). First time a legacy callback is seen, the warning prints and the key flips. Subsequent dispatches against the same callback are silent. This is cheap enough that even a hot-path wrapped method with hundreds of dispatches per frame doesn't spam the log.
 
 ## How the code generation works
 
@@ -321,10 +340,10 @@ For every vanilla script in the opt-in wrap surface, [hook_pack.gd:`_generate_ho
 2. Parses the source via [rewriter.gd:`_rtv_parse_script`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter.gd) -- extracts function signatures, params, return types, coroutine markers.
 3. Normalizes line endings (CRLF -> LF).
 4. Runs `_rtv_autofix_legacy_syntax` -- bodyless blocks get `pass`, `tool`/`onready var`/`export var` get `@` annotations, bare `base(args)` is rewritten to `super.<enclosing>(args)`, `base().method(x)` is rewritten to `super.method(x)`.
-5. **Per-method wrap mask**: for paths declared via `[hooks]` / `.hook()` / `add_hook()`, only listed methods get wrapped. For paths declared via `[registry]` (Database.gd, Loader.gd, AISpawner.gd, FishPool.gd), every method is wrapped because registry injection needs whole-script access.
+5. **Per-method wrap mask**: for paths declared via `[hooks]` / `.hook()` / `add_hook()`, only listed methods get wrapped. For paths declared via `[registry]` (Database.gd, Loader.gd, AISpawner.gd, AI.gd, FishPool.gd, Compiler.gd), every method is wrapped because registry injection needs whole-script access.
 6. **Rename pass**: top-level `func <name>(` -> `func _rtv_vanilla_<name>(`. Inside renamed bodies, bare `super(` -> `super.<orig_name>(` so strict-reload can resolve the parent method.
 7. **Append dispatch wrappers**: one per hookable method, at the original name, calling `_rtv_vanilla_<name>(...)` internally.
-8. **Registry injection** (Database.gd / Loader.gd / AISpawner.gd / FishPool.gd only): see [Registry](Registry).
+8. **Registry injection** (Database.gd / Loader.gd / AISpawner.gd / AI.gd / FishPool.gd / Compiler.gd only): see [Registry](Registry).
 
 `_detect_indent_style` inspects the source's first indented line to decide whether to emit the wrappers with tabs or spaces. GDScript rejects mixing tabs and spaces in one file; IXP uses 4-space indent, vanilla RTV uses tabs.
 
@@ -338,7 +357,7 @@ Each rewritten vanilla script ships as three zip entries in the hook pack:
 | `Scripts/<Name>.gd.remap` | `[remap]\npath="res://Scripts/<Name>.gd"` -- overrides the PCK's `.gd.remap -> .gdc` redirect before GDScript loader runs |
 | `Scripts/<Name>.gdc` | Zero bytes -- Godot prefers a sibling `.gdc` at the same base path even after our remap; an empty `.gdc` can't parse, silently falls back to our `.gd` |
 
-This entire recipe lives in `user://modloader_hooks/framework_pack.zip`. The pack mounts with `replace_files=true`, which makes our entries win over the PCK's same-path entries in Godot's VFS layering.
+This entire recipe lives in `user://modloader_hooks/framework_pack_<session>.zip` (a per-session filename; stale packs from previous sessions are cleaned up at boot). The pack mounts with `replace_files=true`, which makes our entries win over the PCK's same-path entries in Godot's VFS layering.
 
 Under the cutover, pack generation is skipped entirely when no mods are loaded. When mods are loaded but none opt into the hook surface, the pack still ships -- but it contains only the core-owned wrap on `Menu.gd :: _ready` for the launcher's main-menu "Mods" button. `hook_pack_wrapped_paths` in pass state narrows to just `res://Scripts/Menu.gd`, so next session's static-init preempt touches that single script and nothing else. User mods' targets stay unmodified.
 
@@ -485,14 +504,14 @@ func _cap_value(current_result: int) -> int:
 
 For a vanilla item with `value=970`:
 1. Vanilla `Item.Value()` returns 970
-2. Mod A's hook fires with `current_result=970`, returns 1020 → `_result=1020`
-3. Mod B's hook fires with `current_result=1020`, returns 1000 → `_result=1000`
+2. Mod A's hook fires with `current_result=970`, returns 1020 -> `_result=1020`
+3. Mod B's hook fires with `current_result=1020`, returns 1000 -> `_result=1000`
 4. Wrapper returns 1000 to caller
 
 For a vanilla item with `value=500`:
 1. Vanilla returns 500
-2. Mod A: `current_result=500`, returns 550 → `_result=550`
-3. Mod B: `current_result=550`, returns null (no cap needed) → `_result` stays at 550
+2. Mod A: `current_result=500`, returns 550 -> `_result=550`
+3. Mod B: `current_result=550`, returns null (no cap needed) -> `_result` stays at 550
 4. Wrapper returns 550
 
 The chain composes without either mod knowing about the other. If a third mod ships and registers `item-value-post` with priority=75, it slots between Mod A and Mod B without code changes.

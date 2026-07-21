@@ -1,6 +1,6 @@
 # Registry
 
-The registry system lets mods add, replace, patch, and remove content on the vanilla game data stores, items, scenes, loot tables, sounds, recipes, events, trader pools, inputs, shelters, AI types, fish species, arbitrary `.tres` resources, and node properties inside vanilla scenes, without shipping a full `Database.gd` override or source-rewriting vanilla scripts.
+The registry system lets mods add, replace, patch, and remove content on the vanilla game data stores, items, scenes, loot tables, sounds, recipes, events, trader pools, inputs, shelters, maps, AI types, AI loadouts, fish species, arbitrary `.tres` resources, and node properties inside vanilla scenes, without shipping a full `Database.gd` override or source-rewriting vanilla scripts.
 
 Registry mutations survive across scene loads (state lives on autoloads and preloaded resources) and unwind cleanly: every `register`/`override`/`patch` is reversible via `remove`/`revert`.
 
@@ -12,13 +12,13 @@ Mods that use the registry API declare an opt-in section in `mod.txt`:
 [registry]
 ```
 
-An empty `[registry]` section is enough, the loader only checks for its presence. Adding the section forces the rewriter to wrap `Database.gd`, `Loader.gd`, `AISpawner.gd`, and `FishPool.gd` with the injected fields the registry API needs. See [hook_pack.gd:20 `REGISTRY_TARGETS`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L20).
+An empty `[registry]` section is enough, the loader only checks for its presence. Adding the section forces the rewriter to wrap `Database.gd`, `Loader.gd`, `AISpawner.gd`, `AI.gd`, `FishPool.gd`, and `Compiler.gd` with the injected fields the registry API needs. See [hook_pack.gd:20 `REGISTRY_TARGETS`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L20).
 
 Without the declaration, the rewriter doesn't inject the machinery several vanilla-backed slots rely on. Behavior splits by slot:
 
 - **Explicit failure with hint.** SCENES and SCENE_PATHS check for the injected fields on the autoload (`_rtv_mod_scenes` on Database, `_rtv_mod_scene_paths` on Loader) and emit a `push_warning` naming the missing `[registry]` section. Mod authors see the real cause immediately.
-- **Silent no-op.** AI_TYPES and FISH_SPECIES write to `Engine.set_meta(...)` that the rewriter-injected resolver/prelude on AISpawner / FishPool would normally read. Without rewriting, `register` returns true with no warning but vanilla never reads the meta entries, so the override is invisible in-game.
-- **Degraded revert.** SHELTERS and RANDOM_SCENES append to `Loader.shelters` / `Loader.randomScenes`. The rewriter converts vanilla's `const shelters = [...]` to `var` with a capture snapshot so `revert` can restore the original list; without the declaration, revert semantics are undefined (the append itself may still function within a single session).
+- **Silent no-op.** AI_TYPES, AI_LOADOUTS, and FISH_SPECIES write to `Engine.set_meta(...)` that the rewriter-injected resolver/prelude on AISpawner / AI / FishPool would normally read. Without rewriting, `register` returns true with no warning but vanilla never reads the meta entries, so the override is invisible in-game.
+- **Degraded revert.** SHELTERS, MAPS, and RANDOM_SCENES append to `Loader.shelters` / `Loader.randomScenes`. The rewriter converts vanilla's `const shelters = [...]` to `var` with a capture snapshot so `revert` can restore the original list; without the declaration, revert semantics are undefined (the append itself may still function within a single session).
 - **Works regardless.** ITEMS, LOOT, RECIPES, EVENTS, SOUNDS, INPUTS, TRADER_POOLS, TRADER_TASKS, RESOURCES, and SCENE_NODES track state in the registry's own internal dicts (or, for `scene_nodes`, a `SceneTree.node_added` listener). They don't need any vanilla rewriting.
 
 Add `[registry]` whenever you use the API. It's free if you only touch the last bucket, and necessary for anything else.
@@ -65,11 +65,11 @@ lib.revert(lib.Registry.SCENES, "Potato")
 | `list(registry, include_vanilla=true) -> Dictionary` | All `id -> entry` pairs |
 | `find(registry, predicate, include_vanilla=true) -> Array` | Filtered iteration; returns `[{id, entry}, ...]` |
 
-Every mutating verb returns a bool indicating success; failures log a `push_warning` with the reason. The read methods (`get_entry`, `has`, `keys`, `list`, `find`) never warn; they return empty / null / false for misses.
+Every mutating verb returns a bool indicating success; failures log a `push_warning` with the reason. The read methods (`get_entry`, `has`, `keys`, `list`, `find`) never warn on a missing id; they return empty / null / false. `get_entry` still warns (and returns `null`) when pointed at a registry with no readable entries -- `scene_nodes`, the aggregator-only registries -- or at an unknown registry name.
 
 ### Aggregator helpers
 
-Five high-level helpers that fan out to multiple primitive registries in one declarative call. They live alongside the standard verbs, take a `Dictionary` of `{id: data, ...}` (one entry or many), and return a wrapped granular result `{ok, results: {id: per_id_dict}}`.
+Six high-level helpers that fan out to multiple primitive registries in one declarative call. They live alongside the standard verbs, take a `Dictionary` of `{id: data, ...}` (one entry or many), and return a wrapped granular result `{ok, results: {id: per_id_dict}}`.
 
 | Method | Purpose |
 |---|---|
@@ -78,6 +78,7 @@ Five high-level helpers that fan out to multiple primitive registries in one dec
 | `register_magazine({id: dict, ...}) -> Dictionary` | Magazine + scene + fits_weapons (additive append to weapons' compatible) |
 | `register_attachment({id: dict, ...}) -> Dictionary` | Attachment + scene + fits_weapons (same shape as magazine; split for readability) |
 | `register_furniture({id: dict, ...}) -> Dictionary` | Furniture item + scene + trader_pools (default Generalist) + optional crafting recipe |
+| `register_ai_loadout({id: dict, ...}) -> Dictionary` | Weapon injection into AI spawn loadouts; thin wrapper over the `ai_loadouts` primitive (per-id result is just `{ok}`) |
 
 Aggregators are pure fan-out -- they call existing primitives under the hood. There's no separate storage; mods can drop down to primitives any time. Use the aggregators when you're shipping a complete content unit (one weapon, one furniture piece) and want all the registrations + cross-compat patches in one call. Use primitives when you need fine-grained control or you're modifying existing content rather than adding.
 
@@ -104,18 +105,19 @@ Use `lib.Registry.<NAME>` rather than raw strings so typos surface at parse time
 | `TRADER_TASKS` | `"trader_tasks"` | `TraderData.tasks` arrays | register, override, patch, append/prepend/remove_from, remove, revert |
 | `INPUTS` | `"inputs"` | `InputMap` actions | register, override, patch, remove, revert |
 | `SCENE_PATHS` | `"scene_paths"` | Named scene lookup on `Loader.gd` | register, override, patch, remove, revert |
-| `SHELTERS` | `"shelters"` | `Loader.shelters` append-only list | register, remove |
-| `RANDOM_SCENES` | `"random_scenes"` | `Loader.randomScenes` append-only list | register, remove |
-| `AI_TYPES` | `"ai_types"` | Zone → agent scene overrides on `AISpawner` | register, override, remove, revert |
+| `SHELTERS` | `"shelters"` | `Loader.shelters` append-only list | register, remove (revert = alias) |
+| `MAPS` | `"maps"` | Non-persistent named areas on `Loader`; shares the shelters storage | register, remove (revert = alias) |
+| `RANDOM_SCENES` | `"random_scenes"` | `Loader.randomScenes` append-only list | register, remove (revert = alias) |
+| `AI_TYPES` | `"ai_types"` | Zone -> agent scene overrides on `AISpawner` | register, override, remove, revert |
 | `AI_LOADOUTS` | `"ai_loadouts"` | Per-AI-category weapon injections (`AI.SelectWeapon` prelude) | register, override, remove, revert |
-| `FISH_SPECIES` | `"fish_species"` | `FishPool` extra species | register, remove |
+| `FISH_SPECIES` | `"fish_species"` | `FishPool` extra species | register, remove (revert = alias) |
 | `RESOURCES` | `"resources"` | Arbitrary `.tres` by absolute path | patch, append/prepend/remove_from, revert |
 | `SCENE_NODES` | `"scene_nodes"` | Property mutations on nodes inside any scene | patch, revert |
 | `WEAPONS` | `"weapons"` | Aggregator-only; routes to `register_weapon` | register (collapses to bool) |
 | `MAGAZINES` | `"magazines"` | Aggregator-only; routes to `register_magazine` | register (collapses to bool) |
 | `ATTACHMENTS` | `"attachments"` | Aggregator-only; routes to `register_attachment` | register (collapses to bool) |
 
-Unsupported verbs return `false` with a guidance warning (e.g. "patch on loot rejected, use override for content swaps").
+Unsupported verbs return `false` with a guidance warning that points at the right tool (e.g. patch on `loot`: loot entries are ItemData references; patch the ItemData via the `items` registry instead).
 
 Aggregator-only registries (`WEAPONS`, `MAGAZINES`, `ATTACHMENTS`) reject `override`/`patch`/`remove`/`revert` at the standard-verb dispatcher with guidance to use the underlying primitives. They exist so mods that want bool-only routing (e.g. checking `register('weapons', ...)` in a generic loop) get consistent behavior, but the dedicated `register_weapon` / etc. methods are the preferred way to call them since you get the granular result dict.
 
@@ -129,7 +131,7 @@ Aggregator-only registries (`WEAPONS`, `MAGAZINES`, `ATTACHMENTS`) reject `overr
 
 Mod autoloads load **after** vanilla autoloads and **before** the first scene. Registering inside your mod's `_ready()` is almost always early enough. If you need hooks to finish first, `await lib.frameworks_ready` before any `register` call.
 
-Runtime re-registration after scene load is invisible to systems that already cached, the registry updates the underlying store, but the cache holds the old snapshot. Covered in the source-level note at [src/registry.gd:22-26](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/registry.gd#L22).
+Runtime re-registration after scene load is invisible to systems that already cached, the registry updates the underlying store, but the cache holds the old snapshot. Covered in the source-level note at [src/registry.gd:36-40](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/registry.gd#L36).
 
 ## Verb semantics
 
@@ -162,7 +164,7 @@ lib.revert(lib.Registry.ITEMS, "Potato", ["weight"])  # restore just weight
 lib.revert(lib.Registry.ITEMS, "Potato")              # restore everything else
 ```
 
-Registries that don't support patch (loot, scenes, trader_pools, fish_species) return `false` with guidance.
+Registries that don't support patch (loot, scenes, trader_pools, shelters, maps, random_scenes, ai_types, ai_loadouts, fish_species) return `false` with guidance pointing at the right alternative.
 
 ### append / prepend / remove_from
 
@@ -185,7 +187,7 @@ lib.remove_from(lib.Registry.ITEMS, "res://Items/Magazines/AKM.tres", "compatibl
 **Semantics:**
 - **Array fields only.** Calling on a non-Array field returns `false` with a "field is not an Array" warning. For scalar fields, use `patch` instead.
 - **De-dup on append/prepend by default.** If a value is already in the array, it isn't appended again. Pass `allow_duplicates=true` to permit repeats.
-- **`remove_from` removes all matching occurrences,** not just the first. Idempotent — re-running with the same value is a no-op after the first call.
+- **`remove_from` removes all matching occurrences,** not just the first. Idempotent -- re-running with the same value is a no-op after the first call.
 - **Stash is shared with `patch`.** A `patch` on `compatible` followed by `append` to `compatible` keeps the *original* (pre-patch, pre-append) value on first-write-wins. `revert(reg, id, ["compatible"])` restores the true original.
 - **Typed-array safety.** Values that don't match the array's declared type (e.g. trying to append a non-`ItemData` Resource into `Array[ItemData]`) are rejected before any mutation, with a "rejected by typed-array constraint" warning.
 
@@ -229,7 +231,7 @@ lib.revert_many(lib.Registry.ITEMS, {
 lib.remove_many(lib.Registry.ITEMS, ["my_mod_potion", "my_mod_grenade"])
 ```
 
-**Return shape.** Each `_many` returns `{ok: bool, results: {id: bool, ...}}`. `ok` is true only when every entry succeeded. Failures are isolated — one bad id doesn't stop the others, and the per-id success bools tell you which ones landed.
+**Return shape.** Each `_many` returns `{ok: bool, results: {id: bool, ...}}`. `ok` is true only when every entry succeeded. Failures are isolated -- one bad id doesn't stop the others, and the per-id success bools tell you which ones landed.
 
 ```gdscript
 var result := lib.patch_many(lib.Registry.ITEMS, {...})
@@ -239,7 +241,7 @@ if not result.ok:
             push_warning("[mymod] failed to patch %s" % id)
 ```
 
-**One field per call** for the array verbs. `append_many` / `prepend_many` / `remove_from_many` all take a single `field` arg that applies to every entry in the dict. If you need different fields per id, make multiple calls — or use `setup` (below) which runs an ordered sequence of verbs in one call.
+**One field per call** for the array verbs. `append_many` / `prepend_many` / `remove_from_many` all take a single `field` arg that applies to every entry in the dict. If you need different fields per id, make multiple calls -- or use `setup` (below) which runs an ordered sequence of verbs in one call.
 
 ### setup -- declarative plan
 
@@ -262,7 +264,7 @@ func _ready() -> void:
     lib.setup(PLAN)
 ```
 
-See **[Setup](Setup)** for the full verb table, predicate forms, return shape, and a comprehensive example covering every supported entry.
+See **[Setup-Plans](Setup-Plans)** for the full verb table, predicate forms, return shape, and a comprehensive example covering every supported entry.
 
 ### get_entry
 
@@ -376,7 +378,7 @@ lib.remove(lib.Registry.LOOT, "mymod_fancy_in_master")
 lib.revert(lib.Registry.LOOT, "mymod_swap_bandage")
 ```
 
-**Patch is not supported** on loot; loot entries are whole `ItemData` references, not dicts of fields. Patch returns `false` with guidance ("use override for content swaps").
+**Patch is not supported** on loot; loot entries are whole `ItemData` references, not dicts of fields. Patch returns `false` with guidance: patch the `ItemData` via the `items` registry instead.
 
 **Conflicts.**
 - Two `register` calls adding the same item to the same table: rejected as a duplicate (the table would contain the same `ItemData` twice).
@@ -498,7 +500,7 @@ var potato = load("res://Items/Consumables/Potato/Potato.tres")
 # register: enable item for the Doctor trader
 lib.register(lib.Registry.TRADER_POOLS, "mymod_potato_doctor", {
     "item": potato,
-    "trader": "Doctor",  # "Generalist", "Doctor", "Gunsmith"; case-insensitive
+    "trader": "Doctor",  # "Generalist", "Doctor", "Gunsmith", "Grandma"; case-insensitive
 })
 
 # remove / revert: restore the original flag value
@@ -509,7 +511,7 @@ lib.revert(lib.Registry.TRADER_POOLS, "mymod_potato_doctor")
 
 **No `override` or `patch`**. Pool membership is binary and ungated. Trader pool entries keyed by the mod handle, not the item; two mods can independently enable the same item for the same trader (both `register` calls succeed, flag stays `true` until both remove).
 
-**Conflicts.** Mostly harmless. The underlying flag is idempotent (`true` OR `true` = `true`). The only surprise: on `remove`, the flag restores to the stashed "original", whatever the flag was when that specific `register` call fired. If mod A registered first (stash=false), mod B registered second (stash=true, because mod A already flipped it), and mod A removes first, the flag goes back to `false` despite mod B still "owning" a registration. This is a known quirk; avoid double-registering the same item/trader pair across mods.
+**Conflicts.** Mostly harmless. The underlying flag is idempotent (`true` OR `true` = `true`). Duplicate registrations share the true original: when a second mod registers the same (item, trader) pair, its stash inherits the original value from the already-live handle, so once every handle is removed the flag correctly returns to its vanilla value. The one surprise left: `remove` restores the original immediately, so removing any one handle turns the flag off even while other mods' handles are still registered (last-remove doesn't win). Avoid double-registering the same item/trader pair across mods.
 
 ---
 
@@ -577,7 +579,7 @@ lib.remove(lib.Registry.INPUTS, "mymod_quick_heal")
 
 **Conflicts.** Standard register/override rules. Two mods overriding the same action: second fails. InputMap rebinding is visible immediately; in-game key prompts update on next UI refresh.
 
-**UI caveat.** Vanilla's Settings → Keybinds panel reads from a hardcoded `inputs` dict inside `Inputs.gd`. Registering an action makes it functional in-game but it **won't appear in the rebind menu** without an additional hook on `Inputs-createactions-pre`. See `src/registry/inputs.gd:19-26` for details.
+**UI caveat.** Vanilla's Settings -> Keybinds panel reads from a hardcoded `inputs` dict inside `Inputs.gd`. Registering an action makes it functional in-game but it **won't appear in the rebind menu** without an additional hook on `Inputs-createactions-pre`. See `src/registry/inputs.gd:19-26` for details.
 
 ---
 
@@ -623,6 +625,20 @@ lib.register(lib.Registry.SHELTERS, "mymod_bunker", {
     "path": "res://mymod/scenes/bunker.tscn",
 })
 
+# full registration dict (everything but `path` optional):
+lib.register(lib.Registry.SHELTERS, "mymod_apartment", {
+    "path": "res://mymod/scenes/apartment.tscn",
+    "transition_text": "Apartment",       # loading-screen label; defaults to id
+    "exit_spawn": "Door_Apartment_Exit",  # transition node to spawn at on arrival
+    "entrance_spawn": "Door_Apartment",   # node in connected_to to spawn at when leaving
+    "connected_to": "Map01",              # vanilla map where this shelter's entrance lives
+    "connected_content": [                # spawned into /root/Map/Content on entering connected_to
+        {"path": "res://mymod/props/door_frame.tscn",
+         "position": Vector3(10, 0, 4), "rotation": Vector3(0, 90, 0)},
+    ],
+    "shelter": true,                      # default true here (false for MAPS)
+})
+
 # register without path: the name must already be a scene name resolvable
 # by Loader.LoadScene, AND must NOT already be in Loader.shelters. In practice
 # you'd only do this to promote a mod-registered SCENE_PATHS entry to a shelter:
@@ -635,9 +651,32 @@ lib.register(lib.Registry.SHELTERS, "mymod_cave", {})  # promote to shelter list
 lib.remove(lib.Registry.SHELTERS, "mymod_bunker")
 ```
 
-**No override / patch / revert**. The list is append-only. To swap a shelter's scene, `override` the corresponding `SCENE_PATHS` entry instead.
+The registration dict mirrors the B_Loader mod's `add_shelter`/`add_map` shape, so B_Loader-pattern mods migrate by changing one call site. `menu`, `permadeath`, and `tutorial` flags, if present, are forwarded to the auto-created `SCENE_PATHS` entry. Rotations in `connected_content` are degrees.
 
-**Conflicts.** Two mods registering the same shelter name: second fails. Collision with vanilla shelter list also rejected.
+**No override / patch** (revert is accepted as an alias for remove). The list is append-only. To swap a shelter's scene, `override` the corresponding `SCENE_PATHS` entry instead.
+
+**Conflicts.** Two mods registering the same shelter name: second fails. Collision with vanilla shelter list also rejected. Ids are shared with the MAPS registry: registering a map and a shelter under the same id fails loud.
+
+---
+
+## MAPS
+
+Non-persistent named areas on `Loader`. Same registration schema and storage as SHELTERS (entries are kind-tagged), differing only in the `shelter` flag default: `false` for maps. A map doesn't get the `LoadShelter`/`SaveShelter` persistence treatment (furniture, stash); a shelter does. Verbs: `register`, `remove` only.
+
+```gdscript
+var lib = Engine.get_meta("RTVModLib")
+
+lib.register(lib.Registry.MAPS, "mymod_quarry", {
+    "path": "res://mymod/scenes/quarry.tscn",
+    "connected_to": "Map01",
+})
+
+lib.remove(lib.Registry.MAPS, "mymod_quarry")
+```
+
+**No override / patch** (revert is accepted as an alias for remove).
+
+**Conflicts.** Same rules as SHELTERS -- the two registries share one id space, and id collisions across them fail loud. `remove` is cross-surface guarded: `remove('maps', X)` fails if `X` was registered as a shelter, and vice versa; use the registry it was registered under.
 
 ---
 
@@ -661,7 +700,7 @@ lib.remove(lib.Registry.RANDOM_SCENES, "mymod_wasteland_zone")
 
 ## AI_TYPES
 
-Zone → agent scene overrides on `AISpawner`. Zone is a string key (e.g. `"Area05"`). Verbs: `register`, `override`, `remove`, `revert`.
+Zone -> agent scene overrides on `AISpawner`. Zone is a string key (e.g. `"Area05"`). Verbs: `register`, `override`, `remove`, `revert`.
 
 ```gdscript
 var lib = Engine.get_meta("RTVModLib")
@@ -690,6 +729,36 @@ lib.remove(lib.Registry.AI_TYPES, "mymod_zombie_area05")
 **No patch.**
 
 **Conflicts.** Two mods registering into the same zone: second fails with `"zone 'Area05' already claimed by 'mymod_zombie_area05'"`. Use `override` to force a swap. The overridden registration is preserved internally; revert restores it.
+
+---
+
+## AI_LOADOUTS
+
+Injects mod weapons into AI spawn loadouts. Entries from all mods are additive: they're flattened into an Engine meta list that the rewritten `AI.SelectWeapon` reads when an agent picks its weapon. Verbs: `register`, `override`, `remove`, `revert`.
+
+```gdscript
+var lib = Engine.get_meta("RTVModLib")
+
+lib.register(lib.Registry.AI_LOADOUTS, "mymod_rifle_loadout", {
+    "weapon_scene": preload("res://mymod/MyRifle.tscn"),  # PackedScene, or a String id resolvable via Database
+    "ai_types": ["Bandit", "Guard"],  # subset of Bandit / Guard / Military / Punisher; case-insensitive
+    "chance": 0.5,                    # optional, default 1.0; clamped to 0..1
+    "replace": false,                 # optional, default false
+})
+
+# override replaces an EXISTING mod entry wholesale (there is no vanilla side)
+lib.override(lib.Registry.AI_LOADOUTS, "mymod_rifle_loadout", {
+    "weapon_scene": preload("res://mymod/MyRifle.tscn"),
+    "ai_types": ["Military"],
+})
+
+lib.revert(lib.Registry.AI_LOADOUTS, "mymod_rifle_loadout")  # undo the override
+lib.remove(lib.Registry.AI_LOADOUTS, "mymod_rifle_loadout")
+```
+
+`ai_types` names are canonicalized to CamelCase; an unknown name fails the whole call with a warning (so a typo surfaces at register time, not at runtime). `chance` values outside 0..1 are clamped with a warning. `replace: true` clears the agent's existing weapon options before adding this one, instead of adding to them (sharp edge: it also wipes weapons added by other mods' entries that ran earlier). The `register_ai_loadout(entries)` helper is a thin batched wrapper over this registry, and `register_weapon` can create an entry for you via its `ai_loadout` field.
+
+**No patch** (entries are flat dicts; use `override` to replace).
 
 ---
 
@@ -771,7 +840,7 @@ The loader subscribes to `SceneTree.node_added`. When a scene whose path matches
 
 ## Aggregator helpers (registries to use them with)
 
-The five `register_<thing>(entries)` methods are pure fan-out wrappers that call multiple primitive registry verbs. Use them when you're shipping a complete content unit and want one declarative call. They're also reachable from [Setup](Setup) as `["register_weapon", {...}]` etc.
+The six `register_<thing>(entries)` methods are pure fan-out wrappers that call multiple primitive registry verbs. Use them when you're shipping a complete content unit and want one declarative call. They're also reachable from [Setup-Plans](Setup-Plans) as `["register_weapon", {...}]` etc.
 
 **Always take a Dictionary**. Even a single registration goes in as a one-key dict. There is no `(id, data)` overload.
 
@@ -809,7 +878,7 @@ var result: Dictionary = lib.register_item({
         "scene_path":   "res://mymod/items/MyMedkit.tscn",     # optional
         "icon_path":    "res://mymod/icons/MyMedkit.png",      # optional, sets ItemData.icon
         "loot_tables":  ["LT_Master"],                         # optional
-        "trader_pools": ["Doctor"],                            # optional
+        "trader_pools": ["Doctor"],                            # optional; Generalist, Doctor, Gunsmith, Grandma
     },
 })
 # result.results.MyMedkit = {ok, items, scene, loot_count, trader_pool_count,
@@ -840,15 +909,19 @@ var result: Dictionary = lib.register_weapon({
         ],
         "fits_attachments": ["ACOG", "Kobra"],                    # optional
         "loot_tables": ["LT_Master"],                             # optional, weapon's own loot
+        "ai_loadout": {"ai_types": ["Bandit"], "chance": 0.5},    # optional, see AI_LOADOUTS
     },
 })
 # result.results.MyRifle = {ok, items, scene, rig,
 #                           magazines: [{id, ok, items, scene, loot_count}, ...],
 #                           fits_attachments: [String], fits_attachments_failed: [String],
-#                           loot_count: int}
+#                           loot_count: int,
+#                           ai_loadout: null|bool}  # null = not requested; bool = requested outcome
 ```
 
 The `magazines` field auto-populates the weapon's `compatible` array with each magazine's ItemData ref. `fits_attachments` resolves vanilla / mod-registered attachment ids and appends them to `compatible` too.
+
+The optional `ai_loadout` dict creates an AI_LOADOUTS entry using the weapon's own scene and id; you supply `ai_types` / `chance` / `replace`. A failed loadout is reported in `result.ai_loadout` but does not fail the weapon registration -- the weapon still spawns as loot, it just won't be carried by AI.
 
 ### register_magazine
 
@@ -900,11 +973,14 @@ var result: Dictionary = lib.register_furniture({
             "input": [<ItemData refs>],                            # required if recipe present
             "time":  10.0,
             "audio": <AudioEvent ref>,                             # optional
+            "workbench": true,                                     # optional proximity flags:
+            "shelter": true,                                       # heat, workbench, testbench, shelter
         },
     },
 })
 # result.results.MyBed = {ok, items, scene, trader_pool_count,
-#                         trader_pools: [String], trader_pools_failed: [String], recipe: bool}
+#                         trader_pools: [String], trader_pools_failed: [String],
+#                         recipe: null|bool}  # null = not requested; bool = requested outcome
 ```
 
 **`loot_tables` is rejected with a warning** -- furniture isn't loot-pool spawnable in vanilla. If the modder includes it, the field is logged as ignored.

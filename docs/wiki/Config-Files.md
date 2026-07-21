@@ -65,6 +65,7 @@ Godot's `ConfigFile` writes a blank line after every section header, quotes Stri
 | `[profile.<name>.enabled]` | `profile_key -> true\|false`. The list you see checked in the UI under that profile. One section per named profile. |
 | `[profile.<name>.priority]` | `profile_key -> int` in `[-999, 999]`. Higher number loads later -> wins file conflicts. |
 | `[profile.<name>.dep_ignore]` | `profile_key -> true`. The "Load anyway" dependency overrides for that profile. **Sparse** -- only mods you explicitly told to load past a missing/disabled requirement appear, always as `=true`; a mod that respects its dependencies is simply absent. New in 3.3. |
+| `[profile.<name>.settings]` | Per-profile launcher view settings. Currently `hide_disabled` (the Mods tab's hide-disabled-mods filter toggle). |
 
 ### Profile keys
 
@@ -73,12 +74,12 @@ The left-hand identifier for each mod. Two shapes:
 - `<mod_id>@<version>` -- mods whose `mod.txt` declares `[mod] id=...`. This is the normal case; every well-formed mod has one. Stable across `.vmz` renames. The version segment may be empty (`scantest_clean@=false`) if `mod.txt` has an `id` but no `version`.
 - `zip:<file_name>` -- fallback for mods without a declared `mod_id`. Identity is the archive filename; renaming the `.vmz` orphans the profile entry. Rare -- almost every mod in circulation has a proper `mod.txt`.
 
-See [Mod-Format](Mod-Format) for mod.txt schema. See [Profile-Format](Profile-Format) for the shareable export payload.
+See [Mod-Format](Mod-Format) for mod.txt schema. See [Profile-Format](Profile-Format) for the JSON format used inside a modpack's `profile.json`.
 
 ### `active_profile` special values
 
 - `"Default"` -- the profile materialized on first launch. Persistent like every other profile.
-- `"__vanilla__"` -- the **Reset to Vanilla** sentinel. Loads with every mod off, without touching your stored profiles. Clicking any non-Vanilla profile in the dropdown switches back.
+- `"__vanilla__"` -- a legacy value from older versions' Reset to Vanilla; on load the launcher treats it as missing and switches to your first real profile. To boot the game without mods once, use the **Launch vanilla** button in the launcher (it writes a `modloader_disabled_once` file that is auto-cleared on the next launch).
 
 ### Modpack keys and managed profiles (3.3)
 
@@ -118,10 +119,10 @@ Copy `mod_config.cfg` somewhere safe. That one file contains all profiles and se
 **Copy your setup to another install**
 Two ways:
 1. **Full config copy** -- copy `mod_config.cfg` and paste into the same path on the other machine. Carries every profile + settings.
-2. **Shareable profile payload** -- in-game, open the launcher, click **Share** on the profile, copy the `MTRPRF1....` string, paste into Discord / whatever, recipient clicks **Import** and pastes. Carries only that one profile. See [Profile-Format](Profile-Format) for the wire format.
+2. **Save as modpack** -- in the launcher's Modpacks tab, save your current profile as a modpack (a small `.zip` listing your enabled mods), send that zip to the other machine, drop it in the mods folder and click **Apply**. Mods with a ModWorkshop id are downloaded automatically; mods without one must be installed manually. See [Modpacks](Modpacks).
 
 **Reset one profile to empty**
-Delete its two sections (`[profile.<name>.enabled]` and `[profile.<name>.priority]`). Keep your other profiles.
+Delete all of its sections: `[profile.<name>.enabled]`, `[profile.<name>.priority]`, and, if present, `[profile.<name>.dep_ignore]` and `[profile.<name>.settings]`. Keep your other profiles.
 
 **Reset everything to fresh-install state**
 Delete `mod_config.cfg`. Launcher materializes a new `Default` profile with every installed mod enabled on next launch.
@@ -138,7 +139,7 @@ You generally shouldn't touch this file. It's regenerated each session. But if y
 restart_count=0
 mods_hash="d90eae97b1868a4e9051f17ced71b7a6"
 archive_paths=PackedStringArray("C:/Program Files (x86)/Steam/steamapps/common/Road to Vostok/mods/RTVCoopVMZ.vmz")
-modloader_version="3.1.1"
+modloader_version="3.3.0"
 exe_mtime=1776042534
 timestamp=1776897837.26
 script_overrides=[]
@@ -196,6 +197,7 @@ These live in the **game's install directory** (next to the `.exe`), not `user:/
 | File | Effect |
 |---|---|
 | `modloader_disabled` | Full bypass. Modloader's static-init exits early on detection; game boots 100% vanilla. No mods mount, no hook pack, nothing. Use when modloader itself is broken or you want to confirm a problem is mod-related. |
+| `modloader_disabled_once` | One-shot version of `modloader_disabled`: the next launch boots 100% vanilla, then the file is deleted automatically so the launch after that is modded again. The launcher's **Launch vanilla** button creates this for you; you can also create it by hand. |
 | `modloader_safe_mode` | Boots modloader + the UI, but skips archive mount + hook pack. Lets you change profiles / disable a bad mod without loading it. Useful when a mod is crashing at autoload time. |
 
 On Windows: right-click the game folder -> New -> Text Document -> rename to `modloader_disabled` (no extension). Or run `echo. > modloader_disabled` in `cmd`.
@@ -215,10 +217,16 @@ Everything under `user://modloader_hooks/` is regenerated on demand:
 | `user://modloader_heartbeat.txt` | Crash-detection sentinel. Written each launch, deleted at clean boot. Presence on next launch = previous session crashed. |
 | `user://modloader_pass2_dirty` | Pass-2-in-progress marker. Presence on next launch = Pass 2 was interrupted mid-execution (crash, force-quit). Next launch wipes state and retries. |
 | `user://modloader_conflicts.txt` | Developer-mode only. Dumps the conflict report (which mods claim the same `res://` paths). |
-| `user://.profile_snapshots/<profile>/` | Per-profile MCM snapshot (`MCM/` tree), restored when you switch into that profile. Modpack slots also store override snapshots + an `overrides_manifest.json` here (see [Modpacks](Modpacks)). New in 3.3. |
-| `user://mws_cache/thumbs/` | Browse-tab thumbnail / banner image cache from ModWorkshop. API JSON responses are cached in memory only, not here. New in 3.3. |
+| `user://mws_cache/thumbs/` | Browse-tab thumbnail / banner image cache from ModWorkshop. `user://mws_cache/discover_snapshot.json` holds the last successful Browse landing (popular/latest) so the offline banner view survives relaunches. Search/filter API responses are cached in memory only. New in 3.3. |
 
-**Deleting any of these is safe.** Next launch regenerates whatever it needs. The "cost" is a slower cold boot because the hook pack has to rebuild.
+**Deleting anything in the table above is safe.** Next launch regenerates whatever it needs. The "cost" is a slower cold boot because the hook pack has to rebuild.
+
+Two more `user://` directories are deliberately **not** in that table:
+
+| Path | Contents |
+|---|---|
+| `user://.profile_snapshots/<profile>/` | Per-profile MCM snapshot (`MCM/` tree), restored when you switch into that profile. While a modpack is active, the backup slot also stores the replaced files (`overrides/` + `overrides_manifest.json`) that **Unload** restores from (see [Modpacks](Modpacks)). **Not regenerable** -- deleting it permanently discards saved per-profile MCM settings and, if a modpack is active, breaks Unload's file restore. Don't delete it, especially while a modpack is applied. New in 3.3. |
+| `user://.modpack_backups/` | Automatic restore points taken right before each modpack apply (the Modpacks tab's **Restore backup** button reads these). Only the 5 newest are kept; older ones are pruned automatically. Deleting them is harmless to the game but removes your restore points. New in 3.3. |
 
 **When to delete them:**
 - Mod updates aren't taking effect -> delete the `framework_pack_*.zip`. (The 3.0.0 stale-pack bug is fixed in 3.0.1, but manual deletion is a safe workaround.)
@@ -252,7 +260,7 @@ A: `user://` is per-user state (your profiles, generated caches) -- preserved ac
 ## Related
 
 - [Mod-Format](Mod-Format) -- `mod.txt` schema (what each mod declares)
-- [Profile-Format](Profile-Format) -- the shareable `MTRPRF1....` export payload
+- [Profile-Format](Profile-Format) -- the JSON format inside a modpack's `profile.json`
 - [Browse](Browse) -- installing mods from ModWorkshop (`user://mws_cache/`)
 - [Modpacks](Modpacks) -- `active_modpack`, the managed profile slots, and `.profile_snapshots`
 - [Architecture](Architecture) -- two-pass boot flow, `override.cfg` lifecycle

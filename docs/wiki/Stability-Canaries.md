@@ -4,7 +4,7 @@ Boot-time probes that alarm loudly when something the loader depends on silently
 
 ## Canary A: COMPILE-PROOF
 
-**Location**: [hook_pack.gd:789-830](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L789)
+**Location**: [hook_pack.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd) `_activate_rewritten_scripts` (canary A summary block)
 
 **Probes**: after `_activate_rewritten_scripts` completes, inspects `get_script_method_list()` for each rewritten vanilla. The presence of any `_rtv_vanilla_*` method name confirms the rewrite compiled into the cached GDScript.
 
@@ -16,7 +16,8 @@ Boot-time probes that alarm loudly when something the loader depends on silently
   Mods will NOT work this session. Click 'Reset to Vanilla' in the UI
   or create modloader_disabled in the game folder.
   ```
-- **Any critical script failed** -> critical. The critical set ([hook_pack.gd:793-795](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L793)): `Controller.gd, Camera.gd, WeaponRig.gd, Door.gd, Trader.gd, Hitbox.gd, LootContainer.gd, Pickup.gd`
+  (The "Reset to Vanilla" wording is verbatim from the code string; the UI button is now labeled "Launch vanilla" -- see the escape hatches below.)
+- **Any critical script failed** -> critical. The critical set (defined in the same summary block): `Controller.gd, Camera.gd, WeaponRig.gd, Door.gd, Trader.gd, Hitbox.gd, LootContainer.gd, Pickup.gd`
   ```
   [STABILITY] Hook rewrites missing on critical scripts: <list>.
   Hooks on these scripts will NOT fire this session
@@ -31,9 +32,9 @@ Boot-time probes that alarm loudly when something the loader depends on silently
 
 ## Canary B: GDSC tokenizer version
 
-**Location**: [hook_pack.gd:76-90](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L76) + [gdsc_detokenizer.gd:437 `_probe_gdsc_version`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/gdsc_detokenizer.gd#L437)
+**Location**: [hook_pack.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd) canary B gate in `_generate_hook_pack` + [gdsc_detokenizer.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/gdsc_detokenizer.gd) `_probe_gdsc_version`
 
-**Probes**: reads the first 4 bytes of a known-readable vanilla `.gd`/`.gdc` (Camera, Controller, Audio, AI), confirms `"GDSC"` magic, and returns the version byte.
+**Probes**: reads the header of a known-readable vanilla `.gd`/`.gdc` (Camera, Controller, Audio, AI), confirms the `"GDSC"` magic in the first 4 bytes, and returns the u32 version at offset 4.
 
 **Alarm levels**:
 
@@ -48,9 +49,28 @@ Boot-time probes that alarm loudly when something the loader depends on silently
 
 **Why it matters**: if Godot ships a v102 tokenizer in a future release, the detokenizer would cascade "Empty detokenized source" warnings through every hookable script and silently fall back to vanilla. Canary B short-circuits at the start of hook pack generation with one actionable message.
 
-## Canary C: VFS mount precedence
+## Canary C: detokenizer round-trip
 
-**Location**: write at [hook_pack.gd:481-485](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L481), readback at [hook_pack.gd:514-520](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L514)
+**Location**: [hook_pack.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd) `_canary_detokenizer_roundtrip_ok`, invoked from `_generate_hook_pack` right after the no-mods short-circuit
+
+**Probes**: after Canary B passes, and only when mods are loaded, detokenizes the first probe script that carries GDSC bytes (same probe set as Canary B: Camera, Controller, Audio, AI) via `_detokenize_script` directly -- NOT `_read_vanilla_source`, so a pristine on-disk cache from an earlier session cannot mask a detokenizer that is broken against the current game build -- and checks that at least one colon-terminated `func` declaration is followed by a tab-indented body line.
+
+**Alarm levels**:
+
+- Inconclusive (no probe script detokenizable, or `tok_version == -1`) -> proceed, mirroring Canary B.
+- Round-trip fails the indentation check -> critical:
+  ```
+  [STABILITY] Detokenized vanilla source failed the indentation sanity check on Godot <version>
+  -- the .gdc column format likely changed even though the GDSC version is still <N>.
+  Hook pack generation disabled -- script hooks will not fire.
+  Update the ModLoader to a version that supports this game build.
+  ```
+
+**Why it matters**: a future engine can keep the GDSC version at 101 while changing the serialized column semantics (raw string offsets instead of tab_size=4 columns). Canary B only reads the version integer, so without this check broken column math would produce silently mis-indented rewrites. On failure `_generate_hook_pack` returns empty -- hook pack generation stops and vanilla runs.
+
+## VFS-precedence canary
+
+**Location**: [hook_pack.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd) `_generate_hook_pack` -- canary write just before the pack zip closes, readback right after `load_resource_pack`
 
 **Probes**: adds a tiny known-content file `__modloader_canary__.txt` to the hook pack zip, with content `"MODLOADER-VFS-CANARY-" + <pack zip filename>` (the per-call ticks-stamped pack filename, so a stale previous-session mount cannot satisfy the readback). After mounting the pack, reads the file back via `FileAccess.get_file_as_string("res://__modloader_canary__.txt")` and requires an exact match.
 
@@ -59,11 +79,19 @@ Boot-time probes that alarm loudly when something the loader depends on silently
 - Canary content missing or wrong -> critical:
   ```
   [STABILITY] VFS canary FAILED (got '<prefix>', expected '<canary content>')
-  -- hook pack mounted but files aren't served. Rewrites will not take effect this session.
+  -- hook pack mounted but files aren't served. Skipping activation: script hooks will not fire
+  this session, vanilla scripts run. Pack state not persisted; next launch regenerates.
   ```
 - Canary readable -> info: `[STABILITY] VFS canary OK: hook pack mount precedence verified (<content>)`.
 
-**Why it matters**: `ProjectSettings.load_resource_pack` can return true while the resulting mount doesn't actually serve files (stale handles, format mismatch, etc.). Canary C verifies mount precedence independently of the rewrite pipeline. If the canary fails, no script rewrite will take effect regardless of anything downstream.
+**Why it matters**: `ProjectSettings.load_resource_pack` can return true while the resulting mount doesn't actually serve files (stale handles, format mismatch, etc.). This canary verifies mount precedence independently of the rewrite pipeline. On failure the loader skips `_activate_rewritten_scripts` and runs pure vanilla -- activating anyway would leave a half-modded state (cached scripts rewritten via direct source mutation while lazy VFS loads fall back to vanilla). Pack state is deliberately not persisted, so a transient failure self-heals on the next launch instead of static-init remounting a broken pack; it does not disable modding permanently.
+
+The mount and write steps fail the same way:
+
+- If `load_resource_pack` returns false, the loader logs critical `[RTVCodegen] Failed to mount hook pack at <path> -- script hooks will not fire this session, vanilla scripts run. Next launch regenerates the pack.` and runs vanilla.
+- If writing the pack zip fails (disk full / I/O error), the partial zip is deleted and the loader logs critical `[RTVCodegen] Hook pack write failed (disk full / I/O error?) at <path> -- pack discarded, hooks disabled this session, running vanilla.`
+
+In all three cases nothing is persisted, so the next launch retries from scratch.
 
 ## Escape hatches
 
@@ -73,7 +101,7 @@ Boot-time probes that alarm loudly when something the loader depends on silently
 
 **Effect**: the loader's static init detects this file and skips everything -- no mounts, no UI, no autoloads. The game runs as if the loader weren't installed. Also force-resets persistent state (override.cfg, pass state, hook pack) for the NEXT launch.
 
-**Check**: [boot.gd:8 `_is_modloader_disabled`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L8), handled at [boot.gd:41-44](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L41).
+**Check**: [boot.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd) `_is_modloader_disabled`, handled early in `_mount_previous_session`.
 
 **When to use**: the loader itself is broken and the UI can't load. User creates this file manually, then removes it to re-enable.
 
@@ -83,19 +111,19 @@ Boot-time probes that alarm loudly when something the loader depends on silently
 
 **Effect**: on next boot, wipes pass state + resets `override.cfg` to clean baseline + deletes heartbeat + removes the sentinel file. Then normal Pass 1 proceeds, so the UI appears.
 
-**Check**: [boot.gd:605 `_check_safe_mode`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L605), runs from within Pass 1.
+**Check**: [boot.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd) `_check_safe_mode`, runs from within Pass 1.
 
 **When to use**: mods are broken but the loader itself works. User removes misbehaving mods via the UI on next launch.
 
-### UI Reset-to-Vanilla button
+### UI Launch-vanilla button
 
-**Location**: bottom bar of the launcher UI, left of Launch Game.
+**Location**: bottom bar of the launcher UI, next to Launch. Button text: "Launch vanilla"; hover hint: "Launch without mods for this session. Restarts the game."
 
-**Effect**: unchecks every mod in memory, saves config, calls `_static_force_vanilla_state` (same cleanup as the disabled sentinel), strips `--modloader-restart` from cmdline args, and restarts the game clean.
+**Effect**: writes `modloader_disabled_once` in the game folder (same effect as `modloader_disabled`, but the loader auto-clears it on that next launch), runs `_static_force_vanilla_state` (same cleanup as the disabled sentinel), strips `--modloader-restart` from cmdline args, and restarts. One-shot: the following launch is vanilla; the launch after that is modded again, with profiles and mod selections untouched.
 
-**Source**: [ui.gd:479 `_reset_to_vanilla_and_restart`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd#L479).
+**Source**: [ui.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd) `_launch_vanilla_once`.
 
-**When to use**: mods loaded but the game crashes or behaves badly. User clicks the button, gets a guaranteed vanilla next launch.
+**When to use**: mods loaded but the game crashes or behaves badly. One guaranteed vanilla launch without losing the mod setup. The `modloader_disabled_once` sentinel can also be created by hand -- it belongs to the same escape-hatch set as the two sentinels above.
 
 ## Crash recovery
 
@@ -104,30 +132,30 @@ Boot-time probes that alarm loudly when something the loader depends on silently
 **File**: `user://modloader_heartbeat.txt`
 
 **Lifecycle**:
-- Written just before the Pass-1-to-Pass-2 restart ([boot.gd:580 `_write_heartbeat`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L580))
-- Deleted at the end of Pass 2 cleanup ([boot.gd:586 `_delete_heartbeat`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L586))
+- Written just before the Pass-1-to-Pass-2 restart ([boot.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd) `_write_heartbeat`)
+- Deleted at the end of Pass 2 cleanup (boot.gd `_delete_heartbeat`)
 
-**Detection**: next launch's Pass 1 checks for the file at [boot.gd:590 `_check_crash_recovery`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L590). Presence means the previous launch didn't complete.
+**Detection**: next launch's Pass 1 checks for the file in boot.gd `_check_crash_recovery`. Presence means the previous launch didn't complete.
 
 ### Restart counter
 
 **Key**: `[state] restart_count` in `user://mod_pass_state.cfg`
 
-**Increment**: `_write_pass_state` ([boot.gd:524](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L524)) bumps on each write.
+**Increment**: boot.gd `_write_pass_state` bumps on each write.
 
 **Force-reset**: when `restart_count >= MAX_RESTART_COUNT` (2), `_check_crash_recovery` logs `"Restart loop (N crashes) -- resetting to clean state"`, restores clean `override.cfg`, deletes pass state, deletes heartbeat.
 
-**Reset to zero**: Pass 2 cleanup calls `_clear_restart_counter` ([boot.gd:658](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L658)) on successful completion.
+**Reset to zero**: Pass 2 cleanup calls boot.gd `_clear_restart_counter` on successful completion.
 
 ### Pass 2 dirty marker
 
 **File**: `user://modloader_pass2_dirty`
 
 **Lifecycle**:
-- Written first thing in `_run_pass_2` ([lifecycle.gd:217-222](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd#L217)) with current timestamp
-- Deleted after Pass 2 reaches its cleanup block ([lifecycle.gd:288-289](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd#L288))
+- Written first thing in [lifecycle.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd) `_run_pass_2` with current timestamp
+- Deleted after Pass 2 reaches its cleanup block (same file)
 
-**Detection**: static init at `_mount_previous_session` checks for the file at [boot.gd:50-53](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L50). Presence means Pass 2 was interrupted (force-quit, crash, power loss) -- hook pack may be half-written, pass state + override.cfg reference untrustworthy state. Full wipe via `_static_force_vanilla_state("pass 2 crashed mid-run", ...)`.
+**Detection**: static init checks for the file in boot.gd `_mount_previous_session`. Presence means Pass 2 was interrupted (force-quit, crash, power loss) -- hook pack may be half-written, pass state + override.cfg reference untrustworthy state. Full wipe via `_static_force_vanilla_state("pass 2 crashed mid-run", ...)`.
 
 ## Combined recovery flow
 
