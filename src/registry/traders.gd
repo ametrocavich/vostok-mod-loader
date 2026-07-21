@@ -75,6 +75,15 @@ func _register_trader_pool(id: String, data: Variant) -> bool:
 	# Stash the original flag value so remove/revert can restore it. Most
 	# items default to false for a given trader flag, but we don't assume.
 	var original_value = item.get(flag)
+	# If another live handle already covers this (item, flag) pair, inherit
+	# its stashed original: item.get(flag) here would be that handle's
+	# mutation (true), and stashing it would leave the flag stuck true after
+	# both handles are removed in registration order.
+	for existing_id in reg.keys():
+		var e: Dictionary = reg[existing_id]
+		if e["item"] == item and e["flag"] == flag:
+			original_value = e["original"]
+			break
 	item.set(flag, true)
 	reg[id] = {
 		"item": item,

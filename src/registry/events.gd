@@ -218,6 +218,15 @@ func _remove_event(id: String) -> bool:
 				arr.remove_at(idx)
 			else:
 				push_warning("[Registry] remove('events', '%s'): event not found in array; tracking cleared" % id)
+	# Drop the handle's patch stash: the event is leaving the registry, so its
+	# stashed originals are dead state. Leaving them would poison a later
+	# re-registration under the same handle (_patch_event's first-write-wins
+	# stash at this key would keep the OLD event's values, and revert would
+	# write them onto the NEW event).
+	var patched: Dictionary = _registry_patched.get("events", {})
+	if patched.has(id):
+		patched.erase(id)
+		_registry_patched["events"] = patched
 	reg.erase(id)
 	_registry_registered["events"] = reg
 	_log_debug("[Registry] removed event '%s'" % id)

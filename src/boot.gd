@@ -127,6 +127,46 @@ static func _static_force_vanilla_state(reason: String, log_lines: PackedStringA
 static func _clean_override_cfg_content(preserved: String) -> String:
 	return "[autoload_prepend]\nModLoader=\"*" + MODLOADER_RES_PATH + "\"\n\n[autoload]\n\n" + preserved
 
+# Atomic override.cfg writer for the RESET paths. Opening the live file with
+# FileAccess.WRITE truncates it instantly, so a crash/power-loss/disk-full
+# between open and close bricks the loader permanently (no override.cfg ->
+# the ModLoader autoload never loads again -> nothing can self-heal; see the
+# same invariant in _write_override_cfg). Mirror its tmp -> park .old ->
+# promote -> restore-on-failure dance; static so the static-init reset paths
+# can use it. Returns false with the live file untouched (or restored) on
+# any failure.
+static func _static_write_cfg_atomic(cfg_path: String, content: String) -> bool:
+	var tmp := cfg_path + ".tmp"
+	var f := FileAccess.open(tmp, FileAccess.WRITE)
+	if f == null:
+		return false
+	var ok := f.store_string(content)
+	var werr := f.get_error()
+	f.close()
+	if not ok or werr != OK:
+		DirAccess.remove_absolute(tmp)
+		return false
+	var bak := cfg_path + ".old"
+	var dir := DirAccess.open(cfg_path.get_base_dir())
+	if dir == null:
+		DirAccess.remove_absolute(tmp)
+		return false
+	if FileAccess.file_exists(cfg_path):
+		if FileAccess.file_exists(bak):
+			DirAccess.remove_absolute(bak)
+		if dir.rename(cfg_path.get_file(), bak.get_file()) != OK:
+			# Could not park the live cfg (AV lock?) -- leave it untouched.
+			DirAccess.remove_absolute(tmp)
+			return false
+	if dir.rename(tmp.get_file(), cfg_path.get_file()) != OK:
+		DirAccess.remove_absolute(tmp)
+		if FileAccess.file_exists(bak):
+			dir.rename(bak.get_file(), cfg_path.get_file())
+		return false
+	if FileAccess.file_exists(bak):
+		DirAccess.remove_absolute(bak)
+	return true
+
 static func _mount_previous_session() -> Dictionary:
 	var mounted: Dictionary = {}
 	var log_lines: PackedStringArray = []
@@ -234,10 +274,8 @@ static func _mount_previous_session() -> Dictionary:
 		var exe_dir := OS.get_executable_path().get_base_dir()
 		var cfg_path := exe_dir.path_join("override.cfg")
 		var preserved := _read_preserved_cfg_sections(cfg_path)
-		var f := FileAccess.open(cfg_path, FileAccess.WRITE)
-		if f:
-			f.store_string(_clean_override_cfg_content(preserved))
-			f.close()
+		if not _static_write_cfg_atomic(cfg_path, _clean_override_cfg_content(preserved)):
+			log_lines.append("[FileScope] WARNING: could not rewrite override.cfg -- live file left untouched")
 		var state_path := ProjectSettings.globalize_path(PASS_STATE_PATH)
 		if FileAccess.file_exists(state_path):
 			DirAccess.remove_absolute(state_path)
@@ -382,12 +420,9 @@ static func _static_reset_override_cfg(log_lines: PackedStringArray) -> void:
 	if not FileAccess.file_exists(cfg_path):
 		return
 	var preserved := _read_preserved_cfg_sections(cfg_path)
-	var f := FileAccess.open(cfg_path, FileAccess.WRITE)
-	if f == null:
-		log_lines.append("[FileScope] WARNING: could not rewrite override.cfg (read-only?)")
+	if not _static_write_cfg_atomic(cfg_path, _clean_override_cfg_content(preserved)):
+		log_lines.append("[FileScope] WARNING: could not rewrite override.cfg (read-only?) -- live file left untouched")
 		return
-	f.store_string(_clean_override_cfg_content(preserved))
-	f.close()
 	log_lines.append("[FileScope] override.cfg reset to clean [autoload_prepend] state")
 
 static func _static_cleanup_orphan_hook_packs(keep_path: String, log_lines: PackedStringArray) -> void:
@@ -601,8 +636,15 @@ func _write_override_cfg(prepend_autoloads: Array[Dictionary]) -> Error:
 	var f := FileAccess.open(tmp, FileAccess.WRITE)
 	if f == null:
 		return FileAccess.get_open_error()
-	f.store_string("\n".join(lines) + "\n" + preserved)
+	# store_string returns bool since Godot 4.3; if the write failed (e.g.
+	# disk full) the tmp is truncated and must never be promoted over the
+	# good live override.cfg below.
+	var wrote_ok := f.store_string("\n".join(lines) + "\n" + preserved)
+	var write_err := f.get_error()
 	f.close()
+	if not wrote_ok or write_err != OK:
+		DirAccess.remove_absolute(tmp)
+		return ERR_FILE_CANT_WRITE
 	var dir := DirAccess.open(exe_dir)
 	if dir == null:
 		DirAccess.remove_absolute(tmp)
@@ -841,12 +883,8 @@ func _restore_clean_override_cfg() -> void:
 	var exe_dir := OS.get_executable_path().get_base_dir()
 	var path := exe_dir.path_join("override.cfg")
 	var preserved := _read_preserved_cfg_sections(path)
-	var f := FileAccess.open(path, FileAccess.WRITE)
-	if f == null:
+	if not _static_write_cfg_atomic(path, _clean_override_cfg_content(preserved)):
 		_log_critical("Cannot write override.cfg -- game dir may be read-only: " + exe_dir)
-		return
-	f.store_string(_clean_override_cfg_content(preserved))
-	f.close()
 
 func _clear_restart_counter() -> void:
 	var cfg := ConfigFile.new()

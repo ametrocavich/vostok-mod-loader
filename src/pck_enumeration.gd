@@ -9,9 +9,15 @@ func _build_class_name_lookup() -> void:
 	var cache := ConfigFile.new()
 	var load_err := cache.load("res://.godot/global_script_class_cache.cfg")
 	if load_err == OK:
-		var class_list: Array = cache.get_value("", "list", [])
+		# A mod-shadowed cfg can define "list" as any Variant; the [] default
+		# only covers an absent key, so type-check before the typed assignment.
+		var raw_list: Variant = cache.get_value("", "list", [])
+		var class_list: Array = raw_list if raw_list is Array else []
 		var skipped := 0
 		for entry in class_list:
+			if not entry is Dictionary:
+				skipped += 1
+				continue
 			var cn: String = str(entry.get("class", ""))
 			var path: String = str(entry.get("path", ""))
 			if cn != "" and path != "":

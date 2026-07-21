@@ -128,6 +128,9 @@ func _patch_scene_path(id: String, fields: Dictionary) -> bool:
 	var ldr := _loader_node()
 	if ldr == null:
 		return false
+	if not ("_rtv_mod_scene_paths" in ldr) or not ("_rtv_override_scene_paths" in ldr):
+		push_warning("[Registry] patch('scene_paths', '%s'): Loader.gd is missing injected scene-path fields; rewriter didn't fire, is the hook pack installed?" % id)
+		return false
 	# Patch operates on the dict entry the mod registered/overrode. Walk
 	# override first, then mod registration.
 	var target_dict: Dictionary
@@ -182,6 +185,14 @@ func _remove_scene_path(id: String) -> bool:
 	ldr._rtv_mod_scene_paths.erase(id)
 	reg.erase(id)
 	_registry_registered["scene_paths"] = reg
+	# Drop any patch stash with the entry: the stash's first-write-wins
+	# originals belong to this (now deleted) incarnation, and leaving it
+	# would make revert-after-remove report spurious success and corrupt
+	# a later re-registration of the same id.
+	var patched: Dictionary = _registry_patched.get("scene_paths", {})
+	if patched.has(id):
+		patched.erase(id)
+		_registry_patched["scene_paths"] = patched
 	_log_debug("[Registry] removed scene_path '%s'" % id)
 	return true
 
@@ -315,15 +326,24 @@ func _register_shelter_or_map(id: String, data: Variant, default_shelter: bool, 
 	if id in ldr.shelters:
 		push_warning("[Registry] register('%s', '%s'): name already in shelters list (vanilla?)" % [label, id])
 		return false
-	# Build the full entry that the Compiler.Spawn prelude reads.
-	var is_shelter: bool = bool(d.get("shelter", default_shelter))
+	# Build the full entry that the Compiler.Spawn prelude reads. Coerce
+	# defensively: Dictionary.get's default only covers ABSENT keys, so a
+	# present-but-null/wrong-typed value would otherwise reach the String()
+	# constructor (invalid-constructor runtime error in Godot 4 -- str() is
+	# the converting form) or store a null Array the Spawn prelude chokes on.
+	var is_shelter: bool = d.get("shelter", default_shelter) == true
+	var tt = d.get("transition_text", id)
+	var cc = d.get("connected_content", [])
+	if not (cc is Array):
+		push_warning("[Registry] register('%s', '%s'): connected_content must be an Array; ignoring" % [label, id])
+		cc = []
 	var entry: Dictionary = {
 		"shelter": is_shelter,
-		"transition_text": String(d.get("transition_text", id)),
-		"exit_spawn": String(d.get("exit_spawn", "")),
-		"entrance_spawn": String(d.get("entrance_spawn", "")),
-		"connected_to": String(d.get("connected_to", "")),
-		"connected_content": d.get("connected_content", []),
+		"transition_text": tt if tt is String else str(tt) if tt != null else id,
+		"exit_spawn": str(d.get("exit_spawn", "")) if d.get("exit_spawn") != null else "",
+		"entrance_spawn": str(d.get("entrance_spawn", "")) if d.get("entrance_spawn") != null else "",
+		"connected_to": str(d.get("connected_to", "")) if d.get("connected_to") != null else "",
+		"connected_content": cc,
 	}
 	# If a `path` is given, auto-register the scene_paths entry so the
 	# shelter/map name resolves to a real scene. Forward the shelter flag

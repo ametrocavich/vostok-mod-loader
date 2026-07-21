@@ -46,7 +46,13 @@ static func _static_vmz_to_zip(vmz_path: String) -> String:
 		return ""
 	var src_len := src.get_length()
 	while src.get_position() < src_len:
-		dst.store_buffer(src.get_buffer(65536))
+		var chunk := src.get_buffer(65536)
+		# A failed read (yanked device, file shrunk under us) returns an empty
+		# buffer WITHOUT advancing the position -- break instead of spinning
+		# forever; the length re-verification below rejects the truncated copy.
+		if chunk.is_empty():
+			break
+		dst.store_buffer(chunk)
 	var copy_ok := dst.get_error() == OK
 	src.close()
 	dst.close()
@@ -388,6 +394,18 @@ func _folder_dev_zip_current(tmp_zip_path: String) -> bool:
 func zip_folder_to_temp(folder_path: String) -> String:
 	var folder_name := folder_path.get_file()
 	var tmp_zip_path := _folder_dev_zip_path(folder_path)
+	# Capture the folder-state hash BEFORE zipping (_stable_path_mtime walks
+	# the SOURCE folder for *_dev.zip paths, so this is valid even before the
+	# zip exists). Stamping the pre-zip state means an editor save landing
+	# mid-zip mismatches on the next launch and forces a rebuild, instead of
+	# vouching for content the zip never captured.
+	var pre_zip_stamp := str(_stable_path_mtime(tmp_zip_path))
+	# Drop the old sidecar before rewriting the zip so an interrupted build
+	# can never leave a stamp that vouches for mismatched content (same guard
+	# as _static_vmz_to_zip).
+	var sidecar := tmp_zip_path + ".src"
+	if FileAccess.file_exists(sidecar):
+		DirAccess.remove_absolute(sidecar)
 	var zp := ZIPPacker.new()
 	if zp.open(tmp_zip_path) != OK:
 		_log_critical("Failed to create temp zip: " + tmp_zip_path)
@@ -400,21 +418,33 @@ func zip_folder_to_temp(folder_path: String) -> String:
 	# res://MyMod/data/main.gd worked from .zip but resolved nowhere from
 	# the folder. (Pre-v3.1.2 folder mods that relied on the unwrapped
 	# layout need their mod.txt paths re-prefixed with the folder name.)
-	_zip_folder_recursive(zp, folder_path, folder_name)
-	zp.close()
-	# Record the folder-state hash at zip time so _folder_dev_zip_current can
-	# tell a current cache from a stale one. Same .zip.src sidecar convention
-	# as the vmz cache -- _clean_stale_cache removes orphans either way.
-	var sf := FileAccess.open(tmp_zip_path + ".src", FileAccess.WRITE)
+	var zip_ok := _zip_folder_recursive(zp, folder_path, folder_name)
+	zip_ok = zp.close() == OK and zip_ok
+	# Never stamp a zip that didn't fully write: a mid-zip failure can still
+	# close a structurally valid but incomplete zip, and the sidecar would
+	# vouch for it on every future launch (_folder_dev_zip_current only
+	# compares folder state, never zip integrity).
+	if not zip_ok:
+		DirAccess.remove_absolute(tmp_zip_path)
+		_log_critical("Failed writing temp zip: " + tmp_zip_path)
+		return ""
+	# Record the folder-state hash captured before zipping so
+	# _folder_dev_zip_current can tell a current cache from a stale one. Same
+	# .zip.src sidecar convention as the vmz cache -- _clean_stale_cache
+	# removes orphans either way.
+	var sf := FileAccess.open(sidecar, FileAccess.WRITE)
 	if sf != null:
-		sf.store_string(str(_stable_path_mtime(tmp_zip_path)))
+		sf.store_string(pre_zip_stamp)
 		sf.close()
 	return tmp_zip_path
 
-func _zip_folder_recursive(zp: ZIPPacker, disk_path: String, archive_prefix: String) -> void:
+# Returns false if any entry failed to read or write -- the caller must not
+# stamp (or keep) the resulting zip in that case.
+func _zip_folder_recursive(zp: ZIPPacker, disk_path: String, archive_prefix: String) -> bool:
 	var dir := DirAccess.open(disk_path)
 	if dir == null:
-		return
+		return true
+	var ok := true
 	dir.list_dir_begin()
 	while true:
 		var entry := dir.get_next()
@@ -425,10 +455,16 @@ func _zip_folder_recursive(zp: ZIPPacker, disk_path: String, archive_prefix: Str
 		var full := disk_path.path_join(entry)
 		var arc_path := entry if archive_prefix == "" else archive_prefix.path_join(entry)
 		if dir.current_is_dir():
-			_zip_folder_recursive(zp, full, arc_path)
+			ok = _zip_folder_recursive(zp, full, arc_path) and ok
 		else:
 			var data := FileAccess.get_file_as_bytes(full)
-			zp.start_file(arc_path)
-			zp.write_file(data)
-			zp.close_file()
+			# get_file_as_bytes silently returns an empty buffer for a
+			# locked/unreadable file; distinguish that from a legitimately
+			# empty file via the open error.
+			if data.is_empty() and FileAccess.get_open_error() != OK:
+				ok = false
+			ok = zp.start_file(arc_path) == OK and ok
+			ok = zp.write_file(data) == OK and ok
+			ok = zp.close_file() == OK and ok
 	dir.list_dir_end()
+	return ok

@@ -263,19 +263,18 @@ func _revert_scene_node(id: String, fields: Array) -> bool:
 	if tree != null:
 		_collect_scene_roots(tree.root, scene_path, live_roots)
 	for fname in targets:
-		if not stash_per_node.has(fname) and fields.is_empty() == false:
-			# Per-field revert for a field that was never applied to any
-			# live instance: it won't have a stashed original. We still
-			# want to drop the patch, but there's nothing to restore on
-			# live instances.
-			push_warning("[Registry] revert('scene_nodes', '%s'): field '%s' wasn't patched (or never observed on a live instance)" % [id, fname])
-			continue
 		if stash_per_node.has(fname):
 			for root in live_roots:
 				var target: Node = _resolve_scene_target(root, node_path)
 				if target != null and _object_has_property(target, fname):
 					target.set(fname, stash_per_node[fname])
 			stash_per_node.erase(fname)
+		elif not fields.is_empty() and not pat_entry.has(fname):
+			# Field was never patched at all (typo): warn, nothing to drop.
+			push_warning("[Registry] revert('scene_nodes', '%s'): field '%s' wasn't patched" % [id, fname])
+		# Always drop the patch, even if no live instance ever observed it
+		# (a pending, never-applied patch has no stash entry but must still
+		# be erased so future instantiations see vanilla).
 		props.erase(fname)
 		pat_entry.erase(fname)
 	# Prune empty nested dicts to keep state clean.

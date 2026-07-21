@@ -74,8 +74,23 @@ func _coerce_audio_event(id: String, verb: String, data: Variant) -> Resource:
 			ev.set("audioClips", d["audioClips"])
 		else:
 			ev.set("audioClips", [])
-		ev.set("volume", float(d.get("volume", 0.0)))
-		ev.set("randomPitch", bool(d.get("randomPitch", false)))
+		# .get's default only covers an ABSENT key; a present-but-null (or
+		# wrong-typed) value would hit float(null)/bool(null), which is a
+		# runtime constructor error. Type-check before converting.
+		var raw_vol = d.get("volume", 0.0)
+		if raw_vol is float or raw_vol is int:
+			ev.set("volume", float(raw_vol))
+		else:
+			if d.has("volume"):
+				push_warning("[Registry] %s('sounds', '%s'): 'volume' should be a number, got %s; using 0.0" % [verb, id, typeof(raw_vol)])
+			ev.set("volume", 0.0)
+		var raw_rp = d.get("randomPitch", false)
+		if raw_rp is bool:
+			ev.set("randomPitch", raw_rp)
+		else:
+			if d.has("randomPitch"):
+				push_warning("[Registry] %s('sounds', '%s'): 'randomPitch' should be a bool, got %s; using false" % [verb, id, typeof(raw_rp)])
+			ev.set("randomPitch", false)
 		return ev
 	push_warning("[Registry] %s('sounds', '%s', ...) expects AudioEvent / AudioStream / Dictionary, got %s" % [verb, id, typeof(data)])
 	return null

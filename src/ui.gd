@@ -114,12 +114,22 @@ func _load_ui_config() -> void:
 			has_any_profile = true
 			break
 	if not has_any_profile:
+		var migrated := false
 		if cfg.has_section("enabled"):
 			for key: String in cfg.get_section_keys("enabled"):
 				cfg.set_value("profile.Default.enabled", key, cfg.get_value("enabled", key))
+			migrated = true
 		if cfg.has_section("priority"):
 			for key: String in cfg.get_section_keys("priority"):
 				cfg.set_value("profile.Default.priority", key, cfg.get_value("priority", key))
+			migrated = true
+		# Persist immediately: _save_ui_config reloads the cfg from DISK and
+		# rebuilds profile.Default from live entries, so its preservation pass
+		# can only protect migrated keys (deleted mods, dev-hidden folder mods)
+		# if the profile.Default.* sections already exist on disk. Without this
+		# write, those keys are dropped for good on the first post-upgrade save.
+		if migrated:
+			_persist_ui_cfg(cfg)
 
 	var stored := str(cfg.get_value("settings", "active_profile", "Default"))
 	var profiles := _list_profiles_in_cfg(cfg)
@@ -546,6 +556,13 @@ func _reload_entries_for_active_profile() -> void:
 # is currently in user://MCM/ so the user's tweaks-so-far become the new
 # profile's starting state instead of getting lost.
 func _create_profile(name: String) -> void:
+	# Refresh the outgoing profile's MCM snapshot before switching, same as
+	# _switch_profile / _import_profile_from_parsed -- otherwise MCM edits made
+	# while it was active are captured only into the NEW profile's slot, and
+	# switching back later restores a stale snapshot over them.
+	var old := _active_profile
+	if old != VANILLA_PROFILE and old != name:
+		_snapshot_mcm_to(old)
 	_active_profile = name
 	_save_ui_config()
 	_snapshot_mcm_to(name)
@@ -717,9 +734,15 @@ func _copy_dir_recursive(src: String, dst: String) -> bool:
 			src_f.close()
 			var dst_f := FileAccess.open(dst_full, FileAccess.WRITE)
 			if dst_f != null:
-				dst_f.store_buffer(bytes)
+				# store_buffer returns bool since 4.3 -- a full disk can leave a
+				# truncated file behind. Log it so an incomplete MCM restore
+				# (which wipes user://MCM first) isn't silently invisible.
+				if not dst_f.store_buffer(bytes):
+					_log_warning("[MCM] Failed writing " + dst_full + " (disk full?) -- copy incomplete")
 				dst_f.close()
 				any = true
+			else:
+				_log_warning("[MCM] Cannot open " + dst_full + " for write -- copy incomplete")
 	dir.list_dir_end()
 	return any
 
@@ -1112,7 +1135,10 @@ func _write_mcm_snapshot_from_data(profile_name: String, mcm_data: Dictionary) -
 		var f := FileAccess.open(dst, FileAccess.WRITE)
 		if f == null:
 			continue
-		f.store_buffer(bytes)
+		# Same unchecked-write hazard as _copy_dir_recursive: store_buffer
+		# returns bool since 4.3, and a full disk truncates silently.
+		if not f.store_buffer(bytes):
+			_log_warning("[MCM] Failed writing " + dst + " (disk full?) -- snapshot incomplete")
 		f.close()
 
 
@@ -4517,6 +4543,13 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 					if is_instance_valid(u_btn):
 						u_btn.disabled = false
 						u_btn.text = "Update"
+					elif is_instance_valid(tabs):
+						# A mid-download rebuild freed the original button and rendered
+						# its replacement disabled at "Updating..." while the in-flight
+						# flag was set. The flag is erased now, so rebuild so the fresh
+						# row shows an actionable Update button again (same recovery the
+						# Check-for-updates handler uses).
+						_rebuild_mods_tab(tabs)
 					# Error pattern: what happened + what to do next; never a
 					# bare "unknown".
 					var err_name := str(captured_upd.get("mod_name", "this mod"))
@@ -4612,14 +4645,27 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 				_wire_hint(dl_btn, "Download this mod from ModWorkshop.")
 				var captured_mws_id := src_mws_id
 				var captured_version := src_version
+				# Reuse _mod_update_in_flight keyed by the missing entry's stored
+				# profile key (can't collide with update rows -- a missing entry
+				# has no installed row). Without this, a mid-download rebuild
+				# recreates the row with a fresh enabled button and a second
+				# click installs a duplicate archive via rename-on-collision.
+				var captured_fn := fn
+				if _mod_update_in_flight.has(fn):
+					dl_btn.disabled = true
+					dl_btn.text = "Downloading..."
 				dl_btn.pressed.connect(func():
 					if not is_instance_valid(dl_btn):
 						return
+					if _mod_update_in_flight.has(captured_fn):
+						return
+					_mod_update_in_flight[captured_fn] = true
 					dl_btn.disabled = true
 					dl_btn.text = "Downloading..."
 					# allow_rename_on_collision=true: a different version may
 					# already exist under the same filename. Dedup at scan time.
 					var r: Dictionary = await download_new_mod(captured_mws_id, captured_version, true)
+					_mod_update_in_flight.erase(captured_fn)
 					if bool(r.get("ok", false)):
 						_reload_entries_for_active_profile()
 						if is_instance_valid(tabs):
@@ -4628,6 +4674,12 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 						if is_instance_valid(dl_btn):
 							dl_btn.disabled = false
 							dl_btn.text = "Download"
+						elif is_instance_valid(tabs):
+							# A mid-download rebuild freed the original button and
+							# left its replacement disabled at "Downloading..."; the
+							# flag is erased now, so rebuild to restore an actionable
+							# button (same recovery as the Update handler).
+							_rebuild_mods_tab(tabs)
 						# Suppress the dialog if the launcher closed mid-download
 						# (Launch pressed): _attach_ui_dialog would otherwise pop an
 						# exclusive always-on-top window over the running game.
@@ -4708,7 +4760,13 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		var empty := Label.new()
 		empty.text = "No mods found.\n\nPlace .vmz or .pck files in:\n" \
 				+ ProjectSettings.globalize_path(_mods_dir)
-		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		# No autowrap inside the mods ScrollContainer (layout-oscillation bug,
+		# see the order-panel comment). Newlines still break lines; only the
+		# long path line clips, with the full text on hover.
+		empty.clip_text = true
+		empty.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		empty.tooltip_text = empty.text
+		empty.mouse_filter = Control.MOUSE_FILTER_PASS
 		empty.add_theme_color_override("font_color", COL_TEXT_DIM)
 		empty.add_theme_font_size_override("font_size", FS_EMPH)
 		list.add_child(empty)

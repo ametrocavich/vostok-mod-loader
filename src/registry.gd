@@ -800,6 +800,12 @@ func get_entry(registry: String, id: String) -> Variant:
 			if not (id is String):
 				return null
 			return load(id)
+		"scene_nodes":
+			push_warning("[Registry] get_entry: 'scene_nodes' is patch-only; there is no stored entry to read (inspect the live node in a hook instead)")
+			return null
+		"weapons", "magazines", "attachments":
+			push_warning("[Registry] get_entry: '%s' is a pure aggregator -- read the underlying primitives instead (get_entry('items', ...) / get_entry('scenes', ...))" % registry)
+			return null
 		_:
 			push_warning("[Registry] get_entry: unknown registry '%s'" % registry)
 			return null

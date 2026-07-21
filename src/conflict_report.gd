@@ -103,7 +103,13 @@ func _write_conflict_report() -> void:
 	if f == null:
 		_log_warning("Could not write report to: " + CONFLICT_REPORT_PATH)
 		return
+	# store_line returns bool since Godot 4.3 -- a mid-file failure (disk
+	# full, quota) would otherwise truncate silently while we log success.
+	var ok := true
 	for line in _report_lines:
-		f.store_line(line)
+		ok = f.store_line(line) and ok
 	f.close()
-	_log_info("Conflict report written to: " + CONFLICT_REPORT_PATH)
+	if ok:
+		_log_info("Conflict report written to: " + CONFLICT_REPORT_PATH)
+	else:
+		_log_warning("Conflict report PARTIAL/FAILED write to: " + CONFLICT_REPORT_PATH)

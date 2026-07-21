@@ -258,7 +258,11 @@ func mws_discover_snapshot() -> Dictionary:
 	var data: Dictionary = data_v
 	if not (data.get("popular") is Array) or not (data.get("latest") is Array):
 		return {}
-	if int(snap.get("saved_at_unix", 0)) <= 0:
+	# .get()'s default only covers an ABSENT key; a present-but-null value
+	# would crash int() (no int(Nil) constructor in Godot 4), so type-guard
+	# like the fields above. `is float` keeps the JSON round-trip valid.
+	var saved_v: Variant = snap.get("saved_at_unix", 0)
+	if not (saved_v is int or saved_v is float) or int(saved_v) <= 0:
 		return {}
 	_mws_discover_snapshot = snap
 	return snap

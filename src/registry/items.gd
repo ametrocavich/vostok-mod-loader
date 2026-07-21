@@ -155,7 +155,12 @@ func _revert_item(id: String, fields: Array) -> bool:
 			did_something = true
 		if ov.has(id):
 			var reg: Dictionary = _registry_registered.get("items", {})
-			reg.erase(id)
+			var original = ov[id]
+			if original != null and original != _find_vanilla_item(id):
+				# Overridden entry was a mod registration; put it back.
+				reg[id] = original
+			else:
+				reg.erase(id)
 			_registry_registered["items"] = reg
 			ov.erase(id)
 			_registry_overridden["items"] = ov

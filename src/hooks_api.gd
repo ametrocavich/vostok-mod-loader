@@ -234,7 +234,9 @@ func has_mod(mod_id: String, min_version: String = "") -> bool:
 func mod_info(mod_id: String) -> Dictionary:
 	var info = _loaded_mod_ids.get(mod_id, null)
 	if info is Dictionary:
-		return (info as Dictionary).duplicate()
+		# deep=true so nested dependency arrays are copies too -- a shallow
+		# duplicate would hand mods live references into the loader registry.
+		return (info as Dictionary).duplicate(true)
 	return {}
 
 
@@ -325,7 +327,9 @@ func _dispatch_post(hook_name: String, args: Array, current_result: Variant) -> 
 		else:
 			# Legacy 2-arg form (or anything else). Fire-and-forget on
 			# args only, ignore return. Warn once.
-			var warn_key: String = "%s::%d" % [hook_name, cb.get_object_id()]
+			# Key includes the method so two legacy callbacks on the SAME
+			# object (or object_id 0 statics) each get their own warning.
+			var warn_key: String = "%s::%d::%s" % [hook_name, cb.get_object_id(), str(cb.get_method())]
 			if not _post_legacy_warned.has(warn_key):
 				_post_legacy_warned[warn_key] = true
 				_log_warning("[RTVModLib] post hook '%s' callback uses legacy %d-arg signature (expected %d for non-void wrapper). Add a trailing _result param to your callback to receive + optionally mutate the return value; the legacy form will be removed in a future major version." \

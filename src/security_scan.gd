@@ -312,8 +312,13 @@ func _security_scan_pck(pck_path: String, findings: Array) -> void:
 		var ext := path.get_extension().to_lower()
 		if not (_TEXT_SCAN_EXTS.has(ext) or _BINARY_SCAN_EXTS.has(ext)):
 			continue
+		# Size comes from the untrusted pck directory; get_buffer() allocates
+		# the full length up front, so cap it before reading.
+		var entry_size: int = int(entry["size"])
+		if entry_size <= 0 or entry_size > _MAX_TEXT_SCAN_BYTES:
+			continue
 		f.seek(int(entry["offset"]))
-		var bytes := f.get_buffer(int(entry["size"]))
+		var bytes := f.get_buffer(entry_size)
 		if _TEXT_SCAN_EXTS.has(ext):
 			if bytes.size() > _MAX_TEXT_SCAN_BYTES:
 				continue
@@ -384,7 +389,9 @@ func _strip_line_comment(line: String) -> String:
 # marked `binary: true` -- those whose match is unique enough not to
 # false-positive on legit binary serialized content.
 func _security_scan_binary(file: String, bytes: PackedByteArray, findings: Array) -> void:
-	if bytes.is_empty():
+	# Cap here so zip (post-decompress), folder, and pck callers are all
+	# bounded -- the ascii fallback loop below is too slow for huge blobs.
+	if bytes.is_empty() or bytes.size() > _MAX_TEXT_SCAN_BYTES:
 		return
 	var as_text := bytes.get_string_from_utf8()
 	if as_text.is_empty():
@@ -442,7 +449,9 @@ func _security_pck_list_with_offsets(pck_path: String) -> Array:
 		return result
 	f.get_32(); f.get_32(); f.get_32()
 	var pack_flags: int = f.get_32()
-	f.get_64()
+	# Directory entry offsets are relative to file_base (engine reads them as
+	# file_base + ofs), so keep it to make stored offsets absolute below.
+	var file_base: int = f.get_64()
 	if version == PACK_FORMAT_V3:
 		f.seek(f.get_64())
 	else:
@@ -462,6 +471,6 @@ func _security_pck_list_with_offsets(pck_path: String) -> Array:
 		f.get_buffer(16)
 		f.get_32()
 		if not path.is_empty():
-			result.append({"path": path, "offset": offset, "size": size})
+			result.append({"path": path, "offset": file_base + offset, "size": size})
 	f.close()
 	return result

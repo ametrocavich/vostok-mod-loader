@@ -257,6 +257,15 @@ func _detokenize_script(script_path: String) -> String:
 		tokens.append([tk_type, data_idx])
 		offset += token_len
 
+	# All section loops above bail with a silent break on buffer overrun, and
+	# a failed bytes_to_var() in the constants loop desyncs the offset. Cross-
+	# check collected sizes against the header counts so truncated/desynced
+	# input fails loudly instead of reconstructing (and caching) garbage.
+	if identifiers.size() != ident_count or constants.size() != const_count or tokens.size() != token_count:
+		_log_critical("[Detokenize] Section truncation/desync in %s: idents %d/%d consts %d/%d tokens %d/%d -- refusing partial reconstruction" \
+				% [script_path, identifiers.size(), ident_count, constants.size(), const_count, tokens.size(), token_count])
+		return ""
+
 	var result := _gdsc_reconstruct(tokens, identifiers, constants, line_map, col_map)
 	if result.is_empty():
 		return ""
@@ -280,6 +289,12 @@ func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Arr
 		# Handle line changes via line_map.
 		if line_map.has(i):
 			var new_line: int = line_map[i]
+			# Line values are raw u32s from the file; a corrupt/desynced buffer
+			# can yield huge values that would spin this loop for billions of
+			# iterations. No real script has 10000 consecutive blank lines.
+			if new_line - current_line_num > 10000:
+				_log_critical("[Detokenize] Absurd line jump %d -> %d -- corrupt line map, aborting reconstruction" % [current_line_num, new_line])
+				return ""
 			while current_line_num < new_line:
 				lines.append(current_line)
 				current_line = ""
@@ -470,9 +485,16 @@ func _save_vanilla_source(script_path: String, source: String) -> void:
 	DirAccess.make_dir_recursive_absolute(
 		ProjectSettings.globalize_path(cache_file.get_base_dir()))
 	var f := FileAccess.open(cache_file, FileAccess.WRITE)
-	if f:
-		f.store_string(source)
-		f.close()
+	if f == null:
+		return
+	# store_string returns bool since Godot 4.3; a truncated cache file would
+	# be trusted as pristine vanilla forever, so remove it on any write error.
+	var ok := f.store_string(source)
+	var err := f.get_error()
+	f.close()
+	if not ok or err != OK:
+		_log_warning("[Detokenize] Vanilla cache write failed for %s (err %d) -- removing partial file" % [cache_file, err])
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(cache_file))
 
 # ANCHOR: probe_paths below assume vanilla RTV ships Camera/Controller/Audio/AI
 # under res://Scripts/. If a game update renames ALL FOUR, this returns -1,
