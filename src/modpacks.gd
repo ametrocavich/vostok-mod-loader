@@ -1301,4 +1301,10 @@ func save_profile_as_modpack(profile_name: String, modpack_name: String = "", de
 	var output := _mods_dir.path_join(safe + ".zip")
 	if FileAccess.file_exists(output):
 		return {"ok": false, "error": "A file named " + safe + ".zip already exists in /mods/"}
-	return _export_profile_to_zip(profile_name, output, description, author, pack_name)
+	var res := _export_profile_to_zip(profile_name, output, description, author, pack_name)
+	# Thread the saved file's path back so the UI can show the user exactly
+	# where it landed and how to share it.
+	if bool(res.get("ok", false)):
+		res["path"] = output
+		res["display_name"] = pack_name
+	return res

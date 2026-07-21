@@ -895,6 +895,19 @@ func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: Ta
 	box.add_theme_constant_override("separation", SP_M)
 	outer_scroll.add_child(box)
 
+	# Plain-language explanation of what saving a modpack actually does, so the
+	# feature is self-explanatory without docs: it is a shareable LIST of the
+	# enabled mods, not a bundle of the mod files; applying it elsewhere
+	# re-downloads them from ModWorkshop. Shown on both the clean and the
+	# orphan paths.
+	var intro := Label.new()
+	intro.text = "A modpack is a shareable list of your enabled mods -- not the mod files themselves. Send the saved file to anyone: when they apply it they get this exact setup, and the mods download from ModWorkshop automatically."
+	intro.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	intro.add_theme_color_override("font_color", COL_TEXT)
+	intro.add_theme_font_size_override("font_size", FS_BODY)
+	box.add_child(intro)
+	box.add_child(HSeparator.new())
+
 	# Modpack name, decoupled from the profile name -- one profile can be saved
 	# as differently-named packs. Defaults to the profile name so the old
 	# behavior is one Enter away.
@@ -1001,7 +1014,40 @@ func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: Ta
 			if not bool(result.get("ok", false)):
 				_show_error_dialog("Could not save modpack", str(result.get("error", "unknown")))
 				return
-			_rebuild_modpacks_tab(tabs),
+			_rebuild_modpacks_tab(tabs)
+			# Confirm what happened, where the file is, and how to share it --
+			# the save is otherwise silent, leaving the user unsure it worked.
+			_show_modpack_saved_dialog(
+				str(result.get("display_name", pack_name)),
+				int(result.get("mod_count", 0)),
+				str(result.get("path", ""))),
+		func(): d.queue_free())
+	d.popup_centered()
+
+# Post-save confirmation for "Save as modpack". States plainly that it worked,
+# how many mods went in, the exact file path, and the one-step way to share it,
+# so the whole create-and-share loop is understandable without documentation.
+# OK opens the mods folder (so the user can grab the file); Close dismisses.
+func _show_modpack_saved_dialog(display_name: String, mod_count: int, path: String) -> void:
+	var d := ConfirmationDialog.new()
+	d.title = "Modpack saved"
+	var count_phrase := ""
+	if mod_count == 1:
+		count_phrase = " with 1 mod"
+	elif mod_count > 1:
+		count_phrase = " with %d mods" % mod_count
+	var where := "\n\n" + path if path != "" else ""
+	d.dialog_text = "Saved \"%s\"%s to your mods folder.%s\n\nTo share it, send that file to anyone. When they drop it in their mods folder and open the Modpacks tab, they apply it in one click -- the mods download from ModWorkshop automatically." \
+			% [display_name, count_phrase, where]
+	d.ok_button_text = "Open mods folder"
+	d.get_cancel_button().text = "Close"
+	_attach_ui_dialog(d)
+	style_dialog_primary_button(d.get_ok_button())
+	_connect_dialog_exits(d,
+		func():
+			if not _mods_dir.is_empty():
+				OS.shell_open(ProjectSettings.globalize_path(_mods_dir))
+			d.queue_free(),
 		func(): d.queue_free())
 	d.popup_centered()
 
@@ -1035,9 +1081,11 @@ func _add_dir_to_zip(packer: ZIPPacker, fs_path: String, zip_prefix: String) -> 
 	dir.list_dir_end()
 
 # Build a profile zip at output_path. Includes profile.json (with sources) +
-# MCM/ snapshot of user://MCM/. Returns {"ok": true} or {"error": "..."}.
-# Cleans up partial output on any failure path so a corrupt half-zip
-# doesn't survive to confuse the user (or block a retry).
+# MCM/ snapshot of user://MCM/. Returns {"ok": true, "mod_count": int} or
+# {"error": "..."}. mod_count is how many enabled mods the pack contains, so
+# the caller's success message can be specific. Cleans up partial output on
+# any failure path so a corrupt half-zip doesn't survive to confuse the user
+# (or block a retry).
 func _export_profile_to_zip(profile_name: String, output_path: String, description: String = "", author: String = "", display_name: String = "") -> Dictionary:
 	var json_str := _profile_to_json_string(profile_name, description, author, display_name)
 	if json_str == "":
@@ -1059,7 +1107,14 @@ func _export_profile_to_zip(profile_name: String, output_path: String, descripti
 		_add_dir_to_zip(packer, MCM_SOURCE_DIR, "MCM")
 
 	packer.close()
-	return {"ok": true}
+	# Count the enabled mods from the payload we just wrote so the caller can
+	# say "saved with N mods" without re-deriving it. Parse failure is
+	# non-fatal -- the save succeeded, we just report an unknown count.
+	var mod_count := 0
+	var parsed_v: Variant = JSON.parse_string(json_str)
+	if parsed_v is Dictionary and (parsed_v as Dictionary).get("enabled") is Dictionary:
+		mod_count = ((parsed_v as Dictionary)["enabled"] as Dictionary).size()
+	return {"ok": true, "mod_count": mod_count}
 
 # Write an MCM data map (relative_path -> bytes) into a profile's snapshot
 # slot. Replaces any existing snapshot. Used by the modpack apply path
@@ -2178,7 +2233,7 @@ func build_modpacks_tab(tabs: TabContainer) -> Control:
 	# named zip; user should unload first).
 	var save_modpack_btn := Button.new()
 	save_modpack_btn.text = "Save current profile as modpack"
-	save_modpack_btn.tooltip_text = "Write a modpack zip into /mods/ with profile.json + MCM snapshot"
+	save_modpack_btn.tooltip_text = "Save your currently-enabled mods as one shareable modpack file. Anyone you send it to gets this exact setup in one click."
 	var save_disabled_reason := ""
 	if active_modpack != "":
 		save_disabled_reason = "Unload the active modpack first"
@@ -2235,8 +2290,10 @@ func build_modpacks_tab(tabs: TabContainer) -> Control:
 	list_wrap.add_child(list)
 
 	if _modpack_entries.is_empty():
+		# First thing a new user sees here, so teach the concept, not just the
+		# mechanics: what a modpack is, then the two ways to get one.
 		var empty := Label.new()
-		empty.text = "No modpacks yet.\n\nDrop a modpack zip into your mods folder, or save your current profile as one."
+		empty.text = "No modpacks yet.\n\nA modpack is a shareable list of mods -- one small file that gives someone your exact setup in one click (the mods download from ModWorkshop when they apply it).\n\nSave your current profile as a modpack above, or drop someone else's modpack zip into your mods folder."
 		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		empty.add_theme_color_override("font_color", COL_TEXT_DIM)
 		list.add_child(empty)
