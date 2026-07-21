@@ -125,6 +125,8 @@ func _rtv_compile_codegen_regex() -> void:
 	_rtv_re_static_func.compile('^static\\s+func\\s+(\\w+)\\s*\\(([^)]*)\\)(\\s*->\\s*([\\w\\[\\]]+))?\\s*:')
 	_rtv_re_var = RegEx.new()
 	_rtv_re_var.compile('^(?:@export\\s+)?var\\s+(\\w+)')
+	_rtv_re_ret_value = RegEx.new()
+	_rtv_re_ret_value.compile('(?:^|[:;])\\s*return\\b\\s*[^\\s#]')
 
 func _rtv_extract_param_names(params: String) -> Array:
 	var names: Array = []
@@ -231,7 +233,7 @@ func _rtv_parse_script(filename: String, source: String) -> Dictionary:
 			if "await " in body_line:
 				is_coroutine = true
 			# "return <something>" (not bare "return").
-			if body_line.begins_with("return ") and body_line.length() > 7:
+			if _rtv_re_ret_value.search(body_line) != null:
 				has_return_value = true
 
 		# Explicit return type override (void -> no value; anything else -> has value).
@@ -384,12 +386,12 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask
 	# LoadScene needs to consult _rtv_mod_scene_paths before the if-elif
 	# chain fires). The function was just renamed to _rtv_vanilla_<Name>,
 	# so we inject right after its signature line.
-	lines = _rtv_apply_prelude_injections(parsed.get("filename", ""), lines, "_rtv_vanilla_")
+	var indent := _detect_indent_style(src)
+	lines = _rtv_apply_prelude_injections(parsed.get("filename", ""), lines, "_rtv_vanilla_", indent)
 
 	# Pass 2: append dispatch wrappers at EOF. Match the source's indent
 	# style -- GDScript rejects tab/space mixing in a single file. IXP uses
 	# 4-space indent; vanilla RTV uses tabs.
-	var indent := _detect_indent_style(src)
 	var prefix := _rtv_script_hook_prefix(parsed["filename"])
 	var appended := "\n\n# --- Metro mod loader inline hook dispatch wrappers ---\n"
 	for fe in hookable:
@@ -536,19 +538,19 @@ func _rtv_rewrite_loader_shelters(source: String) -> String:
 # unchanged). Called after the rename pass -- the target function has
 # already been renamed to _rtv_vanilla_<Name>, so we look for the renamed
 # signature.
-func _rtv_apply_prelude_injections(filename: String, lines: PackedStringArray, rename_prefix: String) -> PackedStringArray:
+func _rtv_apply_prelude_injections(filename: String, lines: PackedStringArray, rename_prefix: String, indent_unit: String = "\t") -> PackedStringArray:
 	match filename:
 		"Loader.gd":
-			return _rtv_inject_prelude(lines, rename_prefix + "LoadScene", _rtv_loader_loadscene_prelude())
+			return _rtv_inject_prelude(lines, rename_prefix + "LoadScene", _rtv_loader_loadscene_prelude(), false, indent_unit)
 		"FishPool.gd":
-			return _rtv_inject_prelude(lines, rename_prefix + "_ready", _rtv_fishpool_ready_prelude())
+			return _rtv_inject_prelude(lines, rename_prefix + "_ready", _rtv_fishpool_ready_prelude(), false, indent_unit)
 		"AI.gd":
-			return _rtv_inject_prelude(lines, rename_prefix + "SelectWeapon", _rtv_ai_selectweapon_prelude())
+			return _rtv_inject_prelude(lines, rename_prefix + "SelectWeapon", _rtv_ai_selectweapon_prelude(), false, indent_unit)
 		"Compiler.gd":
 			# Spawn's prelude assigns to vanilla's `spawnTarget` local, which
 			# is declared on the first body line. Insert after the run of
 			# leading var decls so spawnTarget is in scope.
-			return _rtv_inject_prelude(lines, rename_prefix + "Spawn", _rtv_compiler_spawn_prelude(), true)
+			return _rtv_inject_prelude(lines, rename_prefix + "Spawn", _rtv_compiler_spawn_prelude(), true, indent_unit)
 		_:
 			return lines
 
@@ -562,7 +564,7 @@ func _rtv_apply_prelude_injections(filename: String, lines: PackedStringArray, r
 # `var ...` and blank lines at the top of the body, rather than directly
 # under the signature. Use this when the prelude needs to reference a
 # local declared by vanilla (e.g. Compiler.Spawn's `spawnTarget`).
-func _rtv_inject_prelude(lines: PackedStringArray, func_name: String, prelude_lines: PackedStringArray, after_var_decls: bool = false) -> PackedStringArray:
+func _rtv_inject_prelude(lines: PackedStringArray, func_name: String, prelude_lines: PackedStringArray, after_var_decls: bool = false, indent_unit: String = "\t") -> PackedStringArray:
 	var needle := "func " + func_name + "("
 	var sig_target := -1
 	for i in lines.size():
@@ -599,7 +601,17 @@ func _rtv_inject_prelude(lines: PackedStringArray, func_name: String, prelude_li
 		result.append(lines[i])
 		if i == insert_after:
 			for pl in prelude_lines:
-				result.append(pl)
+				if indent_unit == "\t":
+					result.append(pl)
+					continue
+				# Prelude templates are authored with tab indentation;
+				# re-indent to the target file's unit so tab/space mixing
+				# can't break a space-indented source.
+				var pls: String = pl
+				var n := 0
+				while n < pls.length() and pls[n] == "\t":
+					n += 1
+				result.append(indent_unit.repeat(n) + pls.substr(n))
 	return result
 
 # The LoadScene prelude. Checks the mod + override scene-path dicts at
@@ -1138,7 +1150,7 @@ func _rtv_autofix_legacy_syntax(source: String) -> Dictionary:
 
 		# Rewrite `base(` / `base (` to `super.<method>(` when inside a
 		# method body. Don't touch literal `.base(` calls (already qualified).
-		if not current_method.is_empty() and line.find("base(") >= 0:
+		if not current_method.is_empty() and "base" in line:
 			var rewritten := _rtv_rewrite_bare_base(line, current_method)
 			if rewritten != line:
 				line = rewritten
@@ -1245,7 +1257,7 @@ func _rtv_rewrite_bare_base(line: String, method_name: String) -> String:
 				# semantically correct (Godot 4's super() returns the
 				# parent method's value so chaining works).
 				var close_idx := _rtv_find_matching_paren(head, j)
-				if close_idx == j + 1 and close_idx > 0:
+				if close_idx > j and head.substr(j + 1, close_idx - j - 1).strip_edges().is_empty():
 					var k := close_idx + 1
 					if k < head.length() and head[k] == ".":
 						var name_start := k + 1
@@ -1468,9 +1480,10 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		# total stays meaningful even with hundreds of wrapped methods.
 		out += "%sif _lib._developer_mode:\n" % I1
 		out += "%s_lib._dispatch_counts[\"%s\"] = int(_lib._dispatch_counts.get(\"%s\", 0)) + 1\n" % [I2, hook_base, hook_base]
-		out += "%sif _lib._wrapper_active.has(\"%s\"):\n" % [I1, hook_base]
+		out += "%svar _rtv_wa_key: String = str(get_instance_id()) + \":%s\"\n" % [I1, hook_base]
+		out += "%sif _lib._wrapper_active.has(_rtv_wa_key):\n" % I1
 		out += "%sreturn %s%s\n" % [I2, aw, vanilla_call]
-		out += "%s_lib._wrapper_active[\"%s\"] = true\n" % [I1, hook_base]
+		out += "%s_lib._wrapper_active[_rtv_wa_key] = true\n" % I1
 		# Save prior _caller so nested-wrapper clobbering inside the
 		# vanilla body (or replace hook) doesn't leak stale values to
 		# whoever called us. Re-set _caller before the post-dispatch so
@@ -1484,7 +1497,7 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		out += "%sif _repl.size() > 0:\n" % I1
 		out += "%svar _prev_skip = _lib._skip_super\n" % I2
 		out += "%s_lib._skip_super = false\n" % I2
-		out += "%svar _replret = _repl[0].callv(%s)\n" % [I2, args_array]
+		out += "%svar _replret = await _repl[0].callv(%s)\n" % [I2, args_array]
 		out += "%svar _did_skip = _lib._skip_super\n" % I2
 		out += "%s_lib._skip_super = _prev_skip\n" % I2
 		out += "%sif _did_skip:\n" % I2
@@ -1502,7 +1515,7 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		# one-shot deprecation warning. See hooks_api._dispatch_post.
 		out += "%s_result = _lib._dispatch_post(\"%s-post\", %s, _result)\n" % [I1, hook_base, args_array]
 		out += "%s_lib._dispatch_deferred(\"%s-callback\", %s)\n" % [I1, hook_base, args_array]
-		out += "%s_lib._wrapper_active.erase(\"%s\")\n" % [I1, hook_base]
+		out += "%s_lib._wrapper_active.erase(_rtv_wa_key)\n" % I1
 		out += "%s_lib._caller = _rtv_prev_caller\n" % I1
 		out += "%sreturn _result\n" % I1
 	else:
@@ -1523,10 +1536,11 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		# Dev-mode-only per-method dispatch counter (see non-void branch).
 		out += "%sif _lib._developer_mode:\n" % I1
 		out += "%s_lib._dispatch_counts[\"%s\"] = int(_lib._dispatch_counts.get(\"%s\", 0)) + 1\n" % [I2, hook_base, hook_base]
-		out += "%sif _lib._wrapper_active.has(\"%s\"):\n" % [I1, hook_base]
+		out += "%svar _rtv_wa_key: String = str(get_instance_id()) + \":%s\"\n" % [I1, hook_base]
+		out += "%sif _lib._wrapper_active.has(_rtv_wa_key):\n" % I1
 		out += "%s%s%s\n" % [I2, aw, vanilla_call]
 		out += "%sreturn\n" % I2
-		out += "%s_lib._wrapper_active[\"%s\"] = true\n" % [I1, hook_base]
+		out += "%s_lib._wrapper_active[_rtv_wa_key] = true\n" % I1
 		# See non-void branch above for rationale on save/re-set/restore
 		# of _caller. Same pattern, applied to the void-return template.
 		out += "%svar _rtv_prev_caller = _lib._caller\n" % I1
@@ -1536,7 +1550,7 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		out += "%sif _repl.size() > 0:\n" % I1
 		out += "%svar _prev_skip = _lib._skip_super\n" % I2
 		out += "%s_lib._skip_super = false\n" % I2
-		out += "%s_repl[0].callv(%s)\n" % [I2, args_array]
+		out += "%sawait _repl[0].callv(%s)\n" % [I2, args_array]
 		out += "%svar _did_skip = _lib._skip_super\n" % I2
 		out += "%s_lib._skip_super = _prev_skip\n" % I2
 		out += "%sif !_did_skip:\n" % I2
@@ -1546,7 +1560,7 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		out += "%s_lib._caller = self\n" % I1
 		out += "%s_lib._dispatch(\"%s-post\", %s)\n" % [I1, hook_base, args_array]
 		out += "%s_lib._dispatch_deferred(\"%s-callback\", %s)\n" % [I1, hook_base, args_array]
-		out += "%s_lib._wrapper_active.erase(\"%s\")\n" % [I1, hook_base]
+		out += "%s_lib._wrapper_active.erase(_rtv_wa_key)\n" % I1
 		out += "%s_lib._caller = _rtv_prev_caller\n" % I1
 	return out
 

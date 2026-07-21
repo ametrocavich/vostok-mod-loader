@@ -13,6 +13,7 @@ func load_all_mods(pass_label: String = "") -> void:
 	_database_replaced_by = ""
 	_mod_script_analysis.clear()
 	_archive_file_sets.clear()
+	_archive_zip_paths.clear()
 	_hooks.clear()
 	_pending_script_overrides.clear()
 	_applied_script_overrides.clear()
@@ -184,8 +185,8 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 		"version":   String(c.get("version", "")),
 		"file_name": file_name,
 		"priority":  int(c.get("priority", 0)),
-		"required_dependencies": c.get("required_dependencies", []),
-		"optional_dependencies": c.get("optional_dependencies", []),
+		"required_dependencies": (c.get("required_dependencies", []) as Array).duplicate(),
+		"optional_dependencies": (c.get("optional_dependencies", []) as Array).duplicate(),
 	}
 
 	# [hooks] static declaration (v3.0.1 opt-in model). Escape hatch for
@@ -231,6 +232,14 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 					has_wildcard = true
 					continue
 				specific_methods.append(method_name)
+			if not has_wildcard and specific_methods.is_empty():
+				# Value had content but yielded no method names (e.g. just
+				# commas). Only a truly EMPTY value means wrap-all; don't
+				# mint a wildcard sentinel from junk.
+				if not mask_existed:
+					_hooked_methods.erase(script_path)
+				_log_warning("  [hooks] %s has no valid method names ('%s') -- entry ignored [%s]" % [script_path, methods_str, mod_name])
+				continue
 			if has_wildcard:
 				if not specific_methods.is_empty():
 					_log_warning("  [hooks] %s mixes '*' with specific methods (%s); '*' wins, all methods wrapped [%s]" \
@@ -302,6 +311,7 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 					"mod_script_path": mod_script_path,
 					"mod_name": mod_name,
 					"priority": c.get("priority", 0),
+					"seq": _pending_script_overrides.size(),
 				})
 				_log_info("  [%s] %s -> %s" % [section, vanilla_path, mod_script_path])
 
@@ -380,7 +390,12 @@ func _apply_script_overrides() -> void:
 	if _pending_script_overrides.is_empty():
 		return
 	# Sort by priority (lowest first, highest last wins take_over_path).
-	_pending_script_overrides.sort_custom(func(a, b): return a["priority"] < b["priority"])
+	# sort_custom is not stable, so break priority ties by append order (seq)
+	# -- the deterministic displayed load order.
+	_pending_script_overrides.sort_custom(func(a, b):
+		if a["priority"] != b["priority"]:
+			return a["priority"] < b["priority"]
+		return int(a.get("seq", 0)) < int(b.get("seq", 0)))
 	var applied := 0
 	for entry in _pending_script_overrides:
 		var vanilla_path: String = entry["vanilla_path"]
@@ -511,8 +526,33 @@ func scan_and_register_archive_claims(archive_path: String, mod_name: String,
 				_log_warning("    Hardcoded preload() paths may break if companion mods aren't present.")
 
 	zr.close()
-	_mod_script_analysis[mod_name] = gd_analysis
+	if _mod_script_analysis.has(mod_name):
+		# Two loaded archives share a display name (dedupe is by mod_id, not
+		# name) -- merge instead of overwrite so the first mod's .hook() scan
+		# still reaches the wrap mask and the conflict report.
+		var prev: Dictionary = _mod_script_analysis[mod_name]
+		for k: String in ["take_over_literal_paths", "extends_paths",
+				"lifecycle_no_super", "class_names", "extends_class_names",
+				"preload_paths", "hook_calls"]:
+			for v in (gd_analysis[k] as Array):
+				if v not in (prev[k] as Array):
+					(prev[k] as Array).append(v)
+		for k: String in ["uses_dynamic_override", "calls_update_tooltip",
+				"calls_base", "calls_bloader_api"]:
+			prev[k] = prev[k] or gd_analysis[k]
+		var prev_om: Dictionary = prev["override_methods"]
+		for target: String in (gd_analysis["override_methods"] as Dictionary):
+			if not prev_om.has(target):
+				prev_om[target] = gd_analysis["override_methods"][target]
+			else:
+				for m in (gd_analysis["override_methods"][target] as Array):
+					if m not in (prev_om[target] as Array):
+						(prev_om[target] as Array).append(m)
+		prev["total_gd_files"] = int(prev["total_gd_files"]) + int(gd_analysis["total_gd_files"])
+	else:
+		_mod_script_analysis[mod_name] = gd_analysis
 	_archive_file_sets[archive_file] = path_set
+	_archive_zip_paths[archive_file] = archive_path
 
 	_log_debug("  " + str(tracked_count) + " resource path(s)")
 

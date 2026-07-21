@@ -229,7 +229,7 @@ func _build_modpack_entry(file_path: String) -> Dictionary:
 	var description := str(pd.get("description", "")).strip_edges()
 	var author := str(pd.get("author", "")).strip_edges()
 	var exported_at := str(pd.get("exported_at", ""))
-	var enabled: Dictionary = pd.get("enabled", {})
+	var enabled: Dictionary = pd.get("enabled", {}) if pd.get("enabled") is Dictionary else {}
 	var enabled_count := _count_truthy(enabled)
 	return {
 		"file_path": file_path,
@@ -321,21 +321,30 @@ func get_active_modpack() -> String:
 # True when a path inside the modpack zip should be skipped during override
 # apply -- path traversal attempts and modloader-internal paths.
 func _modpack_override_path_allowed(rel: String) -> bool:
-	if rel.is_empty():
+	# Normalize before checking: zip entry names are attacker-controlled and
+	# Windows resolves paths case-insensitively with either separator, so the
+	# deny checks must run against a lowercased, forward-slash form. Callers
+	# keep using the original rel for the actual write path.
+	var norm := rel.replace("\\", "/").to_lower()
+	if norm.is_empty():
 		return false
-	if rel.contains(".."):
+	if norm.contains(".."):
 		return false
-	if rel.begins_with("/"):
+	# Blocks Windows drive-letter and NTFS alternate-data-stream tricks;
+	# legitimate zip entries never contain ":".
+	if norm.contains(":"):
+		return false
+	if norm.begins_with("/"):
 		return false
 	# MCM/ is handled by the per-profile MCM snapshot mechanic, not the
 	# generic overrides flow -- exclude it here.
-	if rel.begins_with("MCM/"):
+	if norm.begins_with("mcm/"):
 		return false
 	# profile.json is the schema, not an override.
-	if rel == "profile.json":
+	if norm == "profile.json":
 		return false
 	for prefix in MODPACK_OVERRIDE_DENY_PREFIXES:
-		if rel.begins_with(prefix):
+		if norm.begins_with(prefix):
 			return false
 	return true
 
@@ -371,14 +380,19 @@ func _apply_modpack_overrides(entry: Dictionary, backup_profile: String) -> int:
 			# Snapshot original to the backup slot's overrides/ tree.
 			var bk_path := overrides_root.path_join(f)
 			DirAccess.make_dir_recursive_absolute(bk_path.get_base_dir())
+			var backed_up := false
 			var orig := FileAccess.open(user_path, FileAccess.READ)
 			if orig != null:
 				var orig_bytes := orig.get_buffer(orig.get_length())
 				orig.close()
 				var bk_f := FileAccess.open(bk_path, FileAccess.WRITE)
 				if bk_f != null:
-					bk_f.store_buffer(orig_bytes)
+					backed_up = bk_f.store_buffer(orig_bytes)
 					bk_f.close()
+			if not backed_up:
+				_log_warning("[Modpack] could not snapshot original '" + f
+						+ "' to the backup slot -- skipping this override (user file left untouched)")
+				continue
 			(manifest["replaced"] as Array).append(f)
 		else:
 			(manifest["added"] as Array).append(f)
@@ -406,19 +420,22 @@ func _apply_modpack_overrides(entry: Dictionary, backup_profile: String) -> int:
 # backup slot. "replaced" entries are restored from the snapshot copy;
 # "added" entries are deleted. Silently no-ops if the manifest doesn't
 # exist (older modpacks or apply that wrote nothing).
-func _restore_modpack_overrides(backup_profile: String) -> void:
+func _restore_modpack_overrides(backup_profile: String) -> bool:
 	var backup_root := MCM_SNAPSHOT_BASE.path_join(backup_profile)
 	var manifest_path := backup_root.path_join("overrides_manifest.json")
 	if not FileAccess.file_exists(manifest_path):
-		return
+		# Nothing was overridden, nothing to lose.
+		return true
 	var mf := FileAccess.open(manifest_path, FileAccess.READ)
 	if mf == null:
-		return
+		# Originals may exist in overrides/ but cannot be located -- the
+		# slot must survive.
+		return false
 	var content := mf.get_as_text()
 	mf.close()
 	var parsed_v: Variant = JSON.parse_string(content)
 	if not (parsed_v is Dictionary):
-		return
+		return false
 	var manifest: Dictionary = parsed_v
 
 	var overrides_root := backup_root.path_join("overrides")
@@ -427,23 +444,32 @@ func _restore_modpack_overrides(backup_profile: String) -> void:
 	# a path that should be a directory containing replaced files) don't
 	# fight us. In practice paths are flat enough that ordering doesn't
 	# matter, but conservative is cheap here.
+	var all_ok := true
 	var replaced: Array = manifest.get("replaced", []) if manifest.get("replaced") is Array else []
 	for path_v in replaced:
 		var rel: String = str(path_v)
 		var bk_path := overrides_root.path_join(rel)
 		var user_path := "user://" + rel
 		if not FileAccess.file_exists(bk_path):
+			# The apply-time snapshot never captured it, so nothing is
+			# recoverable.
 			continue
 		var src := FileAccess.open(bk_path, FileAccess.READ)
 		if src == null:
+			all_ok = false
 			continue
 		var bytes := src.get_buffer(src.get_length())
 		src.close()
 		DirAccess.make_dir_recursive_absolute(user_path.get_base_dir())
 		var dst := FileAccess.open(user_path, FileAccess.WRITE)
 		if dst != null:
-			dst.store_buffer(bytes)
+			# A partial write (disk full / AV lock) must count as failure too,
+			# or unload wipes the backup slot with the original half-restored.
+			if not dst.store_buffer(bytes):
+				all_ok = false
 			dst.close()
+		else:
+			all_ok = false
 
 	# Delete added files.
 	var added: Array = manifest.get("added", []) if manifest.get("added") is Array else []
@@ -452,6 +478,8 @@ func _restore_modpack_overrides(backup_profile: String) -> void:
 		var user_path := "user://" + rel
 		if FileAccess.file_exists(user_path):
 			DirAccess.remove_absolute(user_path)
+
+	return all_ok
 
 # --- Independent pre-apply restore points ------------------------------------
 # The per-slot _before_modpack_ backup above exists for Unload, but its restore
@@ -832,8 +860,10 @@ func _get_missing_mods_for_modpack(entry: Dictionary) -> Array:
 # downloads any missing mods declared in `sources`, materializes the
 # modpack into a profile (creates from zip on first apply, resumes on
 # subsequent applies preserving user edits), switches to it, and marks
-# active. progress is an optional Callable(text: String) invoked at each
-# step so the UI can show what's happening during downloads. Returns
+# active. progress is an optional Callable(info: Dictionary) invoked per
+# step with {current: int, total: int, mod_name: String, action: String}
+# where action is one of "downloading" | "skipped" | "applying" (mod_name
+# is "" for "applying"), so the UI can show download progress. Returns
 # {ok, error, downloaded, failed_downloads}.
 func apply_modpack(entry: Dictionary, tabs: TabContainer, progress: Callable = Callable()) -> Dictionary:
 	# Concurrency guard. apply_modpack awaits during downloads; without this
@@ -1187,7 +1217,7 @@ func unload_modpack(tabs: TabContainer) -> Dictionary:
 	# (_modpack_override_path_allowed rejects them at apply time), so this
 	# step has no ordering dependency on the MCM swap in steps 4-5; those
 	# handle MCM via the per-profile snapshot mechanic.
-	_restore_modpack_overrides(backup_profile)
+	var overrides_ok := _restore_modpack_overrides(backup_profile)
 
 	# 4. Switch to pre-active profile. _switch_profile snapshots the
 	# (now-modpack) MCM and restores the pre-active's MCM if it has a
@@ -1199,15 +1229,20 @@ func unload_modpack(tabs: TabContainer) -> Dictionary:
 	# 5. Restore the pre-modpack MCM from backup snapshot. This overrides
 	# whatever _switch_profile did with MCM, which is what we want -- the
 	# backup IS the authoritative pre-modpack MCM.
+	var mcm_ok := true
 	if _has_mcm_snapshot(backup_profile):
-		_restore_mcm_from(backup_profile)
+		mcm_ok = _restore_mcm_from(backup_profile)
 
 	# 6. Wipe the backup slot wholesale -- MCM, overrides, manifest, all
 	# of it. _delete_mcm_snapshot only handles MCM/; the slot now also
 	# carries overrides/ and overrides_manifest.json which we wrote at
 	# apply time, so a recursive wipe of the entire profile slot is the
-	# correct cleanup.
-	_remove_dir_recursive(MCM_SNAPSHOT_BASE.path_join(backup_profile))
+	# correct cleanup. Only safe once both restores actually consumed the
+	# slot's contents -- otherwise leave the slot in place.
+	if overrides_ok and mcm_ok:
+		_remove_dir_recursive(MCM_SNAPSHOT_BASE.path_join(backup_profile))
+	else:
+		_log_warning("[Modpack] unload: backup-slot restore incomplete (overrides_ok=" + str(overrides_ok) + ", mcm_ok=" + str(mcm_ok) + ") -- leaving " + MCM_SNAPSHOT_BASE.path_join(backup_profile) + " in place; it will be cleaned up by the next apply/unload")
 
 	# 7. Refresh Mods tab (banner gone, profile dropdown back).
 	if tabs != null and is_instance_valid(tabs):

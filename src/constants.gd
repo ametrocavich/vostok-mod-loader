@@ -280,6 +280,7 @@ var _registered_autoload_names: Dictionary = {}
 var _override_registry: Dictionary = {}
 var _mod_script_analysis: Dictionary = {}
 var _archive_file_sets: Dictionary = {}
+var _archive_zip_paths: Dictionary = {}  # bare file_name -> readable zip path
 
 # Hook registry. Hook names are "<scriptname>-<methodname>[-pre|-post|-callback]",
 # lowercase. A bare name (no suffix) is a replace hook (first-wins).
@@ -324,10 +325,10 @@ var _post_legacy_warned: Dictionary = {}
 var _class_name_to_path: Dictionary = {} # "Camera" -> "res://Scripts/Camera.gd"
 var _all_game_script_paths: Array[String] = []  # populated by _enumerate_game_scripts from PCK parse; DirAccess can't list PCK contents in 4.6
 var _pck_zero_byte_paths: Dictionary = {}  # res_path -> true for entries the base game PCK ships as 0-byte (e.g. CasettePlayer.gd in RTV 4.6.1). Populated by _parse_pck_file_list; checked by detokenize + hook-gen to skip silently. These files are not hookable and any vanilla or mod preload() of them will fail at engine level -- not a modloader bug.
-var _scripts_with_scene_preloads: Dictionary = {}  # filename -> PackedStringArray of scene paths; scripts listed here are deferred from eager load+reload in _activate_rewritten_scripts. Rationale: their module-scope preload() fires at parse time; if we force-load them before mod autoloads run overrideScript(), scenes bake Script ext_resources to the pre-override vanilla. take_over_path then orphans those refs and instantiate() produces nodes with vanilla body, not mod body. Deferring to lazy-compile lets mod overrides run first -- the preload chain fires via extends resolution during mod's own overrideScript call, AFTER take_over_path took effect for prior targets. VFS mount precedence still serves our rewrite on lazy-load.
+var _scripts_with_scene_preloads: Dictionary = {}  # full res:// script path -> PackedStringArray of scene paths; scripts listed here are deferred from eager load+reload in _activate_rewritten_scripts. Rationale: their module-scope preload() fires at parse time; if we force-load them before mod autoloads run overrideScript(), scenes bake Script ext_resources to the pre-override vanilla. take_over_path then orphans those refs and instantiate() produces nodes with vanilla body, not mod body. Deferring to lazy-compile lets mod overrides run first -- the preload chain fires via extends resolution during mod's own overrideScript call, AFTER take_over_path took effect for prior targets. VFS mount precedence still serves our rewrite on lazy-load.
 
 # Script overrides
-var _pending_script_overrides: Array[Dictionary] = []  # {vanilla_path, mod_script_path, mod_name, priority}
+var _pending_script_overrides: Array[Dictionary] = []  # {vanilla_path, mod_script_path, mod_name, priority, seq}
 var _applied_script_overrides: Dictionary = {}         # vanilla_path -> true
 
 # Opt-in declarations (v3.0.1 cutover). Populated by the [hooks] parser in
@@ -353,6 +354,7 @@ var _rtv_re_class_name: RegEx
 var _rtv_re_func: RegEx
 var _rtv_re_static_func: RegEx
 var _rtv_re_var: RegEx
+var _rtv_re_ret_value: RegEx
 
 # Mounts previous session's archives at file-scope (before _ready) so autoloads
 # that load after ModLoader can resolve their res:// paths.

@@ -52,13 +52,13 @@ Boot-time probes that alarm loudly when something the loader depends on silently
 
 **Location**: write at [hook_pack.gd:481-485](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L481), readback at [hook_pack.gd:514-520](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L514)
 
-**Probes**: adds a tiny known-content file `__modloader_canary__.txt` to the hook pack zip, with content `"MODLOADER-VFS-CANARY-" + MODLOADER_VERSION`. After mounting the pack, reads the file back via `FileAccess.get_file_as_string("res://__modloader_canary__.txt")`.
+**Probes**: adds a tiny known-content file `__modloader_canary__.txt` to the hook pack zip, with content `"MODLOADER-VFS-CANARY-" + <pack zip filename>` (the per-call ticks-stamped pack filename, so a stale previous-session mount cannot satisfy the readback). After mounting the pack, reads the file back via `FileAccess.get_file_as_string("res://__modloader_canary__.txt")` and requires an exact match.
 
 **Alarm levels**:
 
 - Canary content missing or wrong -> critical:
   ```
-  [STABILITY] VFS canary FAILED (got '<prefix>', expected MODLOADER-VFS-CANARY-*)
+  [STABILITY] VFS canary FAILED (got '<prefix>', expected '<canary content>')
   -- hook pack mounted but files aren't served. Rewrites will not take effect this session.
   ```
 - Canary readable -> info: `[STABILITY] VFS canary OK: hook pack mount precedence verified (<content>)`.

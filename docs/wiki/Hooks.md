@@ -210,10 +210,12 @@ func <name>(args):
         return _rtv_vanilla_<name>(args)
 
     # Re-entry guard: don't double-dispatch if a chained subclass wrapper
-    # calls super() into vanilla's wrapper
-    if _lib._wrapper_active.has("<hook_base>"):
+    # calls super() into vanilla's wrapper. Keyed per instance so a
+    # coroutine suspended on one instance doesn't suppress dispatch on others.
+    var _rtv_wa_key: String = str(get_instance_id()) + ":<hook_base>"
+    if _lib._wrapper_active.has(_rtv_wa_key):
         return _rtv_vanilla_<name>(args)
-    _lib._wrapper_active["<hook_base>"] = true
+    _lib._wrapper_active[_rtv_wa_key] = true
 
     _lib._caller = self
     _lib._dispatch("<hook_base>-pre", [args])
@@ -223,7 +225,7 @@ func <name>(args):
     if _repl.size() > 0:
         var _prev_skip = _lib._skip_super
         _lib._skip_super = false
-        var _replret = _repl[0].callv([args])
+        var _replret = await _repl[0].callv([args])
         var _did_skip = _lib._skip_super
         _lib._skip_super = _prev_skip
         if _did_skip:
@@ -240,7 +242,7 @@ func <name>(args):
     _result = _lib._dispatch_post("<hook_base>-post", [args], _result)
 
     _lib._dispatch_deferred("<hook_base>-callback", [args])
-    _lib._wrapper_active.erase("<hook_base>")
+    _lib._wrapper_active.erase(_rtv_wa_key)
     return _result
 ```
 

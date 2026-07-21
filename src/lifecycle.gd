@@ -240,7 +240,7 @@ func _run_pass_2() -> void:
 	if _pass_cfg.load(PASS_STATE_PATH) == OK:
 		var saved_overrides: Array = _pass_cfg.get_value("state", "script_overrides", [])
 		for entry in saved_overrides:
-			if entry is Dictionary and entry.has("vanilla_path") and entry.has("mod_script_path"):
+			if entry is Dictionary and entry.has("vanilla_path") and entry.has("mod_script_path") and entry.has("mod_name") and entry.has("priority"):
 				_pending_script_overrides.append(entry)
 			else:
 				_log_warning("[Overrides] Malformed entry in pass state -- skipped")
