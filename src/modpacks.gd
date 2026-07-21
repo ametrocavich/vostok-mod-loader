@@ -130,31 +130,24 @@ func _count_truthy(d: Dictionary) -> int:
 	return count
 
 # --- profile.json (metroprofile v1) consumer map ------------------------------
-# A modpack zip's profile.json and a shared profile (zip or MTRPRF1 clipboard
-# string) carry the SAME schema, produced by a single writer. Adding a field
-# means auditing every site below; new fields must be optional with a safe
-# default on read (old parsers ignore unknown keys, new parsers must tolerate
-# absence) or the metroprofile version must be bumped. The v1 shape is locked
-# -- see the note above _profile_to_payload (ui.gd) and
-# docs/wiki/Profile-Format.md.
+# A modpack zip's profile.json carries the metroprofile v1 schema, produced by
+# a single writer. Adding a field means auditing every site below; new fields
+# must be optional with a safe default on read (old parsers ignore unknown
+# keys, new parsers must tolerate absence) or the metroprofile version must be
+# bumped. The v1 shape is locked -- see the note above _profile_to_json_string
+# (ui.gd) and docs/wiki/Profile-Format.md.
 #   WRITE:    _profile_to_json_string (ui.gd) -- sole producer; feeds
-#             _export_profile_to_zip (modpack / profile zips). NB:
-#             _profile_to_payload (share strings) is currently UNUSED -- the
-#             Modpacks tab replaced the share-profile flow (see its UNUSED
-#             marker in ui.gd); listed here only to keep the schema map whole.
-#   VALIDATE: _validate_modpack (below; modpack apply). The share-flow parsers
-#             _import_profile_from_zip and _parse_profile_payload (ui.gd) are
-#             likewise currently UNUSED (share-profile flow removed); they stay
-#             on the metroprofile-v1 schema should the flow ever return.
+#             _export_profile_to_zip (modpack zips).
+#   VALIDATE: _validate_modpack (below; modpack apply).
 #   READ:     _build_modpack_entry (name/description/author/exported_at/
 #             enabled -> Modpacks tab rows),
 #             _get_missing_mods_for_modpack (enabled + sources -> download
 #             list), _materialize_modpack_profile (enabled/priority/
-#             dep_ignore -> profile slot), _import_profile_from_parsed (ui.gd;
-#             name/enabled/priority/dep_ignore), _missing_mod_sources_combined
-#             (ui.gd; sources overlay for missing-mod stubs), and
-#             _show_modpack_detail_dialog via _read_modpack_profile_json
-#             (ui.gd; enabled + sources for the counts and detail mod list).
+#             dep_ignore -> profile slot; the state consumer),
+#             _missing_mod_sources_combined (ui.gd; sources overlay for
+#             missing-mod stubs), and _show_modpack_detail_dialog via
+#             _read_modpack_profile_json (ui.gd; enabled + sources for the
+#             counts and detail mod list).
 
 # Pre-apply validation: open the zip, parse profile.json, sanity-check the
 # schema. Catches malformed zips, missing profile.json, wrong schema version,

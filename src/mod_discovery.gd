@@ -337,7 +337,7 @@ func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, e
 	# filename is all we have and renames still orphan those profile entries.
 	# CONTRACT -- parsers live far from here; keep in sync when changing:
 	#   - The "<id>@<version>" form is split on the FIRST "@" (key.find("@"))
-	#     by ui.gd _version_from_profile_key, _import_profile_from_parsed,
+	#     by ui.gd _version_from_profile_key,
 	#     _missing_mods_in_active_profile, and by modpacks.gd
 	#     _get_missing_mods_for_modpack (rebuilds lowercased id + "@" + version
 	#     for a case-insensitive fallback match). ui.gd _apply_profile_to_entries

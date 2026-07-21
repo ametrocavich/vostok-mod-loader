@@ -557,7 +557,7 @@ func _reload_entries_for_active_profile() -> void:
 # profile's starting state instead of getting lost.
 func _create_profile(name: String) -> void:
 	# Refresh the outgoing profile's MCM snapshot before switching, same as
-	# _switch_profile / _import_profile_from_parsed -- otherwise MCM edits made
+	# _switch_profile -- otherwise MCM edits made
 	# while it was active are captured only into the NEW profile's slot, and
 	# switching back later restores a stale snapshot over them.
 	var old := _active_profile
@@ -1061,62 +1061,10 @@ func _export_profile_to_zip(profile_name: String, output_path: String, descripti
 	packer.close()
 	return {"ok": true}
 
-# UNUSED: no callers since the Modpacks tab replaced the share-profile flow.
-# Kept pending the delete-or-rewire decision (see quality plan follow-up).
-# Read a profile zip and apply it as a profile, including any MCM/ tree.
-# Returns {"ok": true, "name": "..."} on success or {"error": "..."} on
-# failure. The actual profile data is routed through the same
-# _import_profile_from_parsed path the clipboard import uses; the only
-# difference is the optional MCM payload that lands in the new profile's
-# snapshot slot before the swap completes.
-func _import_profile_from_zip(zip_path: String) -> Dictionary:
-	var reader := ZIPReader.new()
-	if reader.open(zip_path) != OK:
-		return {"error": "Cannot open file."}
-
-	var files := reader.get_files()
-	if not ("profile.json" in files):
-		reader.close()
-		return {"error": "Not a profile file (no profile.json inside)."}
-
-	var profile_bytes := reader.read_file("profile.json")
-	if profile_bytes.is_empty():
-		reader.close()
-		return {"error": "profile.json is empty."}
-
-	var parsed_v: Variant = JSON.parse_string(profile_bytes.get_string_from_utf8())
-	if not (parsed_v is Dictionary):
-		reader.close()
-		return {"error": "profile.json is not valid JSON."}
-	var parsed: Dictionary = parsed_v
-	if int(parsed.get("metroprofile", 0)) != 1:
-		reader.close()
-		return {"error": "Unsupported profile schema version."}
-	if not (parsed.get("name") is String):
-		reader.close()
-		return {"error": "Profile missing name."}
-	if not (parsed.get("enabled") is Dictionary):
-		reader.close()
-		return {"error": "Profile missing enabled data."}
-
-	# Pull MCM tree out of the zip into a {relative_path: bytes} map. Reject
-	# any entry whose path tries to escape the MCM/ subtree.
-	var mcm_data: Dictionary = {}
-	for f in files:
-		if not f.begins_with("MCM/") or f.ends_with("/"):
-			continue
-		var rel: String = f.substr(4)
-		if rel.contains("..") or rel.begins_with("/") or rel.is_empty():
-			continue
-		mcm_data[rel] = reader.read_file(f)
-	reader.close()
-
-	_import_profile_from_parsed(parsed, mcm_data)
-	return {"ok": true, "name": str(parsed["name"])}
-
 # Write an MCM data map (relative_path -> bytes) into a profile's snapshot
-# slot. Replaces any existing snapshot. Used by the zip-import path before
-# the profile swap restores from this slot. Always creates the destination
+# slot. Replaces any existing snapshot. Used by the modpack apply path
+# (_materialize_modpack_profile) before the profile swap restores from this
+# slot. Always creates the destination
 # directory even when mcm_data is empty -- otherwise _has_mcm_snapshot
 # returns false for the modpack profile and _switch_profile falls through
 # to seeding MCM from the previous profile's user://MCM/ contents (wrong,
@@ -1141,172 +1089,30 @@ func _write_mcm_snapshot_from_data(profile_name: String, mcm_data: Dictionary) -
 			_log_warning("[MCM] Failed writing " + dst + " (disk full?) -- snapshot incomplete")
 		f.close()
 
-
-# UNUSED: no callers since the Modpacks tab replaced the share-profile flow.
-# Kept pending the delete-or-rewire decision (see quality plan follow-up).
-# Parse a shared payload back into the fields needed to reconstruct a profile.
-# Returns either {"error": "..."} on failure or the parsed metroprofile dict
-# on success. Validates the MTRPRF1 magic, checksum, and JSON shape.
-func _parse_profile_payload(raw: String) -> Dictionary:
-	var parts := raw.strip_edges().split(".")
-	if parts.size() != 3:
-		return {"error": "Invalid format -- expected MTRPRF1.<body>.<checksum>"}
-	if parts[0] != "MTRPRF1":
-		return {"error": "Unknown payload type \"" + parts[0] + "\""}
-	var body: String = parts[1]
-	var check: String = parts[2]
-	var ctx := HashingContext.new()
-	ctx.start(HashingContext.HASH_SHA256)
-	ctx.update(body.to_utf8_buffer())
-	if check != ctx.finish().hex_encode().substr(0, 8):
-		return {"error": "Payload is corrupted -- checksum mismatch"}
-	var json_str := Marshalls.base64_to_utf8(body)
-	if json_str == "":
-		return {"error": "Payload body is not valid base64"}
-	var obj = JSON.parse_string(json_str)
-	if typeof(obj) != TYPE_DICTIONARY:
-		return {"error": "Payload JSON is not an object"}
-	var d: Dictionary = obj
-	if int(d.get("metroprofile", 0)) != 1:
-		return {"error": "Unsupported metroprofile schema version"}
-	if not (d.get("name") is String):
-		return {"error": "Payload missing name"}
-	if not (d.get("enabled") is Dictionary):
-		return {"error": "Payload missing enabled data"}
-	return d
-
-# Apply a parsed payload as a profile. Overwrites any existing profile with
-# the same name (caller is expected to have confirmed), switches to it, and
-# syncs in-memory entries. incoming_mcm_data is the optional MCM tree from a
-# zip import (relative_path -> bytes); empty for clipboard-string imports.
-func _import_profile_from_parsed(parsed: Dictionary, incoming_mcm_data: Dictionary = {}) -> void:
-	var name := _sanitize_profile_name(parsed["name"])
-	if name == "" or name.to_lower() == "vanilla" or name == VANILLA_PROFILE \
-			or _is_modpack_managed_profile(name):
-		return
-	# Snapshot the OUTGOING profile's MCM before any of the import logic
-	# touches state. Capturing before reassign means coming back to the
-	# previous profile later restores its MCM intact.
-	var old_profile := _active_profile
-	if old_profile != VANILLA_PROFILE and old_profile != name:
-		_snapshot_mcm_to(old_profile)
-
-	var cfg := ConfigFile.new()
-	cfg.load(UI_CONFIG_PATH)
-	var en_sec := _profile_sec(name, ".enabled")
-	var pr_sec := _profile_sec(name, ".priority")
-	if cfg.has_section(en_sec):
-		cfg.erase_section(en_sec)
-	if cfg.has_section(pr_sec):
-		cfg.erase_section(pr_sec)
-	var enabled_dict: Dictionary = parsed["enabled"]
-	for key in enabled_dict.keys():
-		cfg.set_value(en_sec, str(key), bool(enabled_dict[key]))
-	var priority_dict: Dictionary = parsed.get("priority", {})
-	for key in priority_dict.keys():
-		# Clamp defensively -- payload came from the clipboard and a crafted
-		# or corrupted entry could set an out-of-range priority that breaks
-		# load-order invariants (UI spinbox is [-999, 999]; anything outside
-		# that range couldn't have been authored through the UI anyway).
-		var pv := int(priority_dict[key])
-		cfg.set_value(pr_sec, str(key), clampi(pv, PRIORITY_MIN, PRIORITY_MAX))
-	# Materialize dep_ignore ("Load anyway") overrides from the payload. Sparse
-	# (true-only), optional field -- a payload from an older exporter simply has
-	# none, so the imported profile starts with no overrides rather than failing.
-	var ig_sec := _profile_sec(name, ".dep_ignore")
-	if cfg.has_section(ig_sec):
-		cfg.erase_section(ig_sec)
-	var dep_ignore_dict: Dictionary = parsed.get("dep_ignore", {})
-	for key in dep_ignore_dict.keys():
-		if bool(dep_ignore_dict[key]):
-			cfg.set_value(ig_sec, str(key), true)
-	# Explicit manifest: any local mod NOT in the imported payload is written
-	# as disabled. Without this, _apply_profile_to_entries falls through to
-	# its default-true branch for unknown keys (ergonomic for "newly-dropped
-	# mod in existing profile") and imports would silently enable every
-	# local mod the exporter didn't have -- including dev folders, which is
-	# the opposite of what a shared profile means. Handles id-prefix matches
-	# (foo@2.0 local resolving to foo@1.0 in payload) so version bumps
-	# inherit the payload's state rather than getting disabled.
-	var payload_mod_ids: Dictionary = {}
-	for key in enabled_dict.keys():
-		var key_str := str(key)
-		var at := key_str.find("@")
-		if at > 0:
-			payload_mod_ids[key_str.substr(0, at)] = true
-	for entry in _ui_mod_entries:
-		var pk: String = entry["profile_key"]
-		if enabled_dict.has(pk):
-			continue
-		if not pk.begins_with("zip:") and payload_mod_ids.has(entry["mod_id"]):
-			continue
-		cfg.set_value(en_sec, pk, false)
-	_active_profile = name
-	cfg.set_value("settings", "active_profile", _active_profile)
-	_persist_ui_cfg(cfg)
-	_apply_profile_to_entries(cfg, _active_profile)
-
-	# Place INCOMING MCM into this profile's snapshot slot. Two cases:
-	#   1. Zip import with MCM/ tree -- write the bytes from the zip.
-	#   2. Clipboard import (no MCM data) -- if no slot exists yet, seed
-	#      from current user://MCM/ so the new profile starts at "whatever
-	#      MCM was active when imported" rather than empty.
-	if not incoming_mcm_data.is_empty():
-		_write_mcm_snapshot_from_data(name, incoming_mcm_data)
-	elif not _has_mcm_snapshot(name):
-		_snapshot_mcm_to(name)
-	# Now restore: copy the slot we just established (or already had) into
-	# user://MCM/ so the live state matches the new profile.
-	if _has_mcm_snapshot(name):
-		_restore_mcm_from(name)
-
-	if _boot_complete:
-		_dirty_since_boot = true
-
 # Metroprofile v1 schema is LOCKED at 3.0.1. Full spec (wrapper format, JSON
 # shape, profile key format, forward-compat rules, round-trip guarantees) is
 # in the wiki: docs/wiki/Profile-Format.md. Changes to the export/import
 # shape require bumping the schema version so old parsers reject cleanly.
 
-# UNUSED: no callers since the Modpacks tab replaced the share-profile flow.
-# Kept pending the delete-or-rewire decision (see quality plan follow-up).
-# Build the shareable opaque payload for the given profile. Shape:
-#     MTRPRF1.<base64-encoded JSON>.<first 8 hex chars of SHA-256(body)>
-# The magic prefix identifies the schema version, the body is the profile's
-# JSON, and the suffix lets a future import path detect copy/paste corruption
-# without full cryptographic verification. Empty string if the profile has
-# nothing to export.
-func _profile_to_payload(profile_name: String) -> String:
-	var json := _profile_to_json_string(profile_name)
-	if json == "":
-		return ""
-	var body := Marshalls.utf8_to_base64(json)
-	var ctx := HashingContext.new()
-	ctx.start(HashingContext.HASH_SHA256)
-	ctx.update(body.to_utf8_buffer())
-	var check := ctx.finish().hex_encode().substr(0, 8)
-	return "MTRPRF1." + body + "." + check
-
 # Serialize the named profile to a JSON string. Used as the inner layer of
-# _profile_to_payload; exposed separately in case we need it for debugging
-# or tests. Empty string if the profile has no stored sections.
+# _export_profile_to_zip (modpack save); exposed separately in case we need
+# it for debugging or tests. Empty string if the profile has no stored sections.
 # CONTRACT: this is the ONE writer of the metroprofile v1 payload, but the
 # payload is parsed independently in several places. Profile-STATE fields
 # (the enabled/priority/dep_ignore family, materialized into config
-# sections) must be read by BOTH consumers -- _import_profile_from_parsed
-# (share/zip import, below) and _materialize_modpack_profile (modpacks.gd,
-# modpack apply) -- or the field silently drops on one path. Metadata
-# fields may instead need their own readers ("sources", for example, is
-# read only by _missing_mod_sources_combined, _get_missing_mods_for_modpack
-# and the modpack detail dialog, not by either consumer above), and
-# _validate_modpack (modpacks.gd) pre-checks schema/name/enabled. Keep new
-# fields optional (docs/wiki/Profile-Format.md forward-compat rules) and
-# document them there.
+# sections) must be read by the single state consumer,
+# _materialize_modpack_profile (modpacks.gd, modpack apply), or the field
+# silently drops. Metadata fields may instead need their own readers
+# ("sources", for example, is read only by _missing_mod_sources_combined,
+# _get_missing_mods_for_modpack and the modpack detail dialog, not by the
+# state consumer above), and _validate_modpack (modpacks.gd) pre-checks
+# schema/name/enabled. Keep new fields optional
+# (docs/wiki/Profile-Format.md forward-compat rules) and document them there.
 func _profile_to_json_string(profile_name: String, description: String = "", author: String = "", display_name: String = "") -> String:
 	# display_name is the modpack's own name (the payload "name" field). When
-	# empty it falls back to the profile name -- so the share-string path and any
-	# caller that doesn't name the pack keep the old behavior. profile_name still
-	# selects which profile's config sections we read.
+	# empty it falls back to the profile name -- so a caller that doesn't name
+	# the pack keeps the old behavior. profile_name still selects which
+	# profile's config sections we read.
 	var src := ConfigFile.new()
 	if src.load(UI_CONFIG_PATH) != OK:
 		return ""
