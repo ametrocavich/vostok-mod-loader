@@ -314,8 +314,10 @@ func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, e
 	if cfg:
 		mod_name = str(cfg.get_value("mod", "name", mod_name))
 		if cfg.has_section_key("mod", "id"):
-			mod_id = str(cfg.get_value("mod", "id"))
-			has_mod_id = true
+			var declared := str(cfg.get_value("mod", "id"))
+			if declared.strip_edges() != "":
+				mod_id = declared
+				has_mod_id = true
 		version = str(cfg.get_value("mod", "version", ""))
 		author = str(cfg.get_value("mod", "author", ""))
 		if cfg.has_section_key("mod", "priority"):
@@ -611,9 +613,10 @@ func _dep_is_hidden_folder(dep_key: String) -> bool:
 # violates the edge; everything else keeps its exact priority position
 # (lowest-original-index-first Kahn walk). This is what SMAPI, NeoForge,
 # and godot-mod-loader all do -- warn-only ordering pushes the fix onto
-# users. Mods in an unresolvable chain (dependency cycle) keep their
-# priority positions and are reported instead of "solved": any forced
-# order would be wrong for someone.
+# users. Mods in an unresolvable chain (dependency cycle) are reported
+# instead of "solved" -- any forced order would be wrong for someone --
+# and are emitted AFTER all resolvable mods, preserving only their
+# relative priority order.
 func _apply_dependency_ordering(candidates: Array) -> Dictionary:
 	var n := candidates.size()
 	var key_to_index: Dictionary = {}
@@ -680,11 +683,12 @@ func _apply_dependency_ordering(candidates: Array) -> Dictionary:
 			progress = true
 			break
 	# Leftovers couldn't emit: they're either IN a cycle or merely downstream
-	# of one. Emit all at priority positions, but only report nodes that are
-	# genuinely in a cycle -- a node downstream of a cycle (its dep is stuck,
-	# but it isn't itself looped) would otherwise be mislabeled "cycle in
-	# chain" when its real problem is just an unresolvable required dep, which
-	# the per-row blocker already explains.
+	# of one. Emit them all at the end (original relative order preserved),
+	# but only report nodes that are genuinely in a cycle -- a node downstream
+	# of a cycle (its dep is stuck, but it isn't itself looped) would
+	# otherwise be mislabeled "cycle in chain" when its real problem is just
+	# an unresolvable required dep, which the per-row blocker already
+	# explains.
 	var cycle_keys: Array[String] = []
 	if remaining > 0:
 		var leftover: Array[int] = []
@@ -787,6 +791,8 @@ func _dependency_display_for_id(dep_id: String) -> String:
 
 func _refresh_dependency_status() -> void:
 	var installed_by_id := _entries_by_mod_id(_ui_mod_entries)
+	var enabled_by_id := _entries_by_mod_id(_ui_mod_entries.filter(
+			func(e): return bool((e as Dictionary).get("enabled", false))))
 	for entry in _ui_mod_entries:
 		entry["dependency_warnings"] = []
 		entry["dependency_blockers"] = []
@@ -818,16 +824,20 @@ func _refresh_dependency_status() -> void:
 				continue
 			# Resolve the dep the SAME way the load filter does, so this status
 			# panel never disagrees with what actually loads. Bind the id to
-			# whichever installed mod owns it (a real id beats a provides= alias
-			# -- _entries_by_mod_id's real-id pass runs first), then treat it as
-			# satisfied only if THAT mod is loadable. Testing loadable_by_id with
+			# whichever ENABLED mod owns it first (a real id beats a provides=
+			# alias -- _entries_by_mod_id's real-id pass runs first), falling
+			# back to installed mods -- matching the loader's active-then-
+			# installed order -- then treat it as satisfied only if THAT mod is
+			# loadable. Testing loadable_by_id with
 			# the raw id instead would let a blocked real mod's id "escape" to a
 			# loadable alias provider and show a green row for a mod the loader
 			# skips. The identity check (key of the loadable entry == owner_key)
 			# rejects that escape; a pure alias with no real owner still resolves
 			# through installed_by_id to its provider and satisfies normally.
 			var owner_key := dep_key
-			if installed_by_id.has(dep_key):
+			if enabled_by_id.has(dep_key):
+				owner_key = _entry_mod_key(enabled_by_id[dep_key])
+			elif installed_by_id.has(dep_key):
 				owner_key = _entry_mod_key(installed_by_id[dep_key])
 			if loadable_by_id.has(owner_key) and _entry_mod_key(loadable_by_id[owner_key]) == owner_key:
 				continue
@@ -980,9 +990,16 @@ func fetch_latest_modworkshop_versions(ids: Array[int]) -> Dictionary:
 		var req := HTTPRequest.new()
 		req.timeout = API_CHECK_TIMEOUT
 		add_child(req)
-		var err := req.request(MODWORKSHOP_VERSIONS_URL,
-			PackedStringArray(["Content-Type: application/json", "Accept: application/json"]),
-			HTTPClient.METHOD_GET, JSON.stringify({"mod_ids": chunk_ids}))
+		# The API reads mod_ids as repeated ?mod_ids[]= query params, NOT a GET
+		# request body -- a JSON body is ignored and returns 422, silently
+		# breaking EVERY update check (verified against the live API 2026-07).
+		# Response format is identical either way: {"<id>": "<version>", ...}.
+		var qparts := PackedStringArray()
+		for mid in chunk_ids:
+			qparts.append("mod_ids[]=" + str(mid))
+		var err := req.request(MODWORKSHOP_VERSIONS_URL + "?" + "&".join(qparts),
+			PackedStringArray(["Accept: application/json"]),
+			HTTPClient.METHOD_GET)
 		if err != OK:
 			req.queue_free()
 			continue
@@ -1164,8 +1181,16 @@ func download_and_replace_mod(target_path: String, modworkshop_id: int) -> Dicti
 	if out == null:
 		failure["error"] = "Could not write to the mods folder (permissions or disk full)"
 		return failure
-	out.store_buffer(response_body)
+	var wrote := out.store_buffer(response_body)
 	out.close()
+	var verify := FileAccess.open(temp_path, FileAccess.READ)
+	var disk_len: int = verify.get_length() if verify != null else -1
+	if verify != null:
+		verify.close()
+	if not wrote or disk_len != response_body.size():
+		DirAccess.remove_absolute(temp_path)
+		failure["error"] = "Could not write the download to disk (disk full?)"
+		return failure
 
 	var new_cfg: ConfigFile = read_mod_config(temp_path)
 	if new_cfg == null:
@@ -1354,8 +1379,16 @@ func download_new_mod(modworkshop_id: int, version: String = "", allow_rename_on
 	if out == null:
 		failure["error"] = "Cannot write to mods directory"
 		return failure
-	out.store_buffer(body)
+	var wrote := out.store_buffer(body)
 	out.close()
+	var verify := FileAccess.open(temp_path, FileAccess.READ)
+	var disk_len: int = verify.get_length() if verify != null else -1
+	if verify != null:
+		verify.close()
+	if not wrote or disk_len != body.size():
+		DirAccess.remove_absolute(temp_path)
+		failure["error"] = "Could not write the download to disk (disk full?)"
+		return failure
 
 	# Validate before adopting. Mirror what collect_mod_metadata accepts:
 	# zip/vmz mods must parse a root mod.txt (read_mod_config returns null
