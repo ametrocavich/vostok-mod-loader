@@ -393,7 +393,7 @@ func _build_entry_warnings(entry: Dictionary) -> Array[String]:
 		else:
 			warnings.append("mod.txt parse error at " + detail)
 	elif status.begins_with("nested:"):
-		warnings.append("Invalid mod -- packaged incorrectly. Try re-downloading.")
+		warnings.append("Invalid mod -- mod.txt is in a subfolder, not at the zip root. Re-zip so mod.txt is at the root.")
 	return warnings
 
 func _parse_dependency_list(cfg: ConfigFile, key: String) -> Array[String]:

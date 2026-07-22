@@ -389,17 +389,25 @@ func _folder_dev_zip_current(tmp_zip_path: String) -> bool:
 		return false
 	var stored := f.get_as_text().strip_edges()
 	f.close()
-	return not stored.is_empty() and stored == str(_stable_path_mtime(tmp_zip_path))
+	return not stored.is_empty() and stored == _folder_dev_zip_stamp(tmp_zip_path)
+
+# Cache-validity stamp written to a folder's _dev.zip .src sidecar and re-checked
+# by _folder_dev_zip_current. Prefixed with a layout token so a change to the
+# zip's internal layout self-invalidates stale caches even without a
+# MODLOADER_VERSION bump: the pre-3.3.1 wrapped layout stored a bare number,
+# which can never equal "root:<n>", so any old cache forces a fresh unwrapped
+# re-zip. Bump the token if the on-disk layout ever changes again.
+func _folder_dev_zip_stamp(tmp_zip_path: String) -> String:
+	return "root:" + str(_stable_path_mtime(tmp_zip_path))
 
 func zip_folder_to_temp(folder_path: String) -> String:
-	var folder_name := folder_path.get_file()
 	var tmp_zip_path := _folder_dev_zip_path(folder_path)
 	# Capture the folder-state hash BEFORE zipping (_stable_path_mtime walks
 	# the SOURCE folder for *_dev.zip paths, so this is valid even before the
 	# zip exists). Stamping the pre-zip state means an editor save landing
 	# mid-zip mismatches on the next launch and forces a rebuild, instead of
 	# vouching for content the zip never captured.
-	var pre_zip_stamp := str(_stable_path_mtime(tmp_zip_path))
+	var pre_zip_stamp := _folder_dev_zip_stamp(tmp_zip_path)
 	# Drop the old sidecar before rewriting the zip so an interrupted build
 	# can never leave a stamp that vouches for mismatched content (same guard
 	# as _static_vmz_to_zip).
@@ -410,15 +418,18 @@ func zip_folder_to_temp(folder_path: String) -> String:
 	if zp.open(tmp_zip_path) != OK:
 		_log_critical("Failed to create temp zip: " + tmp_zip_path)
 		return ""
-	# Wrap zip entries under the folder name so res:// paths match what a
-	# conventionally-packed .zip mod produces. A folder at <mods>/MyMod/
-	# containing data/main.gd mounts as res://MyMod/data/main.gd, the same
-	# layout you'd get if MyMod/ were inside a .zip. Without this wrapper,
-	# folder mode dropped contents at res:// directly, so a mod.txt path of
-	# res://MyMod/data/main.gd worked from .zip but resolved nowhere from
-	# the folder. (Pre-v3.1.2 folder mods that relied on the unwrapped
-	# layout need their mod.txt paths re-prefixed with the folder name.)
-	var zip_ok := _zip_folder_recursive(zp, folder_path, folder_name)
+	# Zip the folder's CONTENTS at the archive root (no <folder>/ wrapper), so a
+	# dev folder mounts exactly like the mod you'll ship: a folder holding
+	# mod.txt + data/main.gd mounts as res://mod.txt + res://data/main.gd,
+	# identical to a .zip whose contents sit at its root. mod.txt paths are
+	# therefore root-relative (res://data/main.gd), the same whether the mod
+	# runs as a dev folder or as the shipped zip -- "work on the folder, zip it,
+	# upload it" with no path rewrites. (This reverses the v3.1.2 <folder>/ wrap:
+	# a mod authored against that wrap, using res://<folder>/... paths, must drop
+	# the <folder>/ prefix -- or add a real <folder>/ subfolder inside the mod if
+	# it wants that namespace. Namespacing is now the author's choice via their
+	# own folder layout, exactly like a zip mod.)
+	var zip_ok := _zip_folder_recursive(zp, folder_path, "")
 	zip_ok = zp.close() == OK and zip_ok
 	# Never stamp a zip that didn't fully write: a mid-zip failure can still
 	# close a structurally valid but incomplete zip, and the sidecar would
