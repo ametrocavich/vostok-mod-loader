@@ -42,10 +42,10 @@ const COL_ERR        := Color(0.91, 0.44, 0.38)  # errors, blocked, danger
 const COL_ERR_DIM    := Color(0.45, 0.22, 0.19)
 
 # Type scale (five sizes, no exceptions)
-const FS_META  := 10   # timestamps, counts, fine print
-const FS_BODY  := 11   # default body, buttons, rows
-const FS_EMPH  := 12   # emphasized row titles, dialog body
-const FS_HEAD  := 13   # section headings, dialog titles
+const FS_META  := 11   # timestamps, counts, fine print
+const FS_BODY  := 12   # default body, buttons, rows
+const FS_EMPH  := 13   # emphasized row titles, dialog body
+const FS_HEAD  := 14   # section headings, dialog titles
 const FS_TITLE := 16   # the window header plate only
 
 # Spacing scale
@@ -54,6 +54,9 @@ const SP_S  := 4   # intra-row gaps
 const SP_M  := 8   # between controls in a group
 const SP_L  := 12  # between groups; container padding
 const SP_XL := 16  # dialog outer padding, tab content padding
+
+# Control sizing
+const CTRL_H := 26  # uniform min height for single-line inputs (LineEdit, SpinBox)
 
 func _load_developer_mode_setting() -> void:
 	var cfg := ConfigFile.new()
@@ -920,6 +923,7 @@ func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: Ta
 	var name_input := LineEdit.new()
 	name_input.placeholder_text = "Name for this modpack"
 	name_input.text = profile_to_save
+	name_input.custom_minimum_size.y = CTRL_H
 	name_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	box.add_child(name_input)
 
@@ -938,6 +942,7 @@ func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: Ta
 	var author_input := LineEdit.new()
 	author_input.placeholder_text = "Your modder name or handle"
 	author_input.text = _load_preferred_author()
+	author_input.custom_minimum_size.y = CTRL_H
 	author_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	box.add_child(author_input)
 
@@ -1997,6 +2002,7 @@ func _show_new_profile_dialog(tabs: TabContainer) -> void:
 
 	var name_edit := LineEdit.new()
 	name_edit.custom_minimum_size.x = 280
+	name_edit.custom_minimum_size.y = CTRL_H
 	form.add_child(name_edit)
 
 	var state_lbl := Label.new()
@@ -2079,6 +2085,7 @@ func _show_rename_profile_dialog(tabs: TabContainer) -> void:
 
 	var name_edit := LineEdit.new()
 	name_edit.custom_minimum_size.x = 280
+	name_edit.custom_minimum_size.y = CTRL_H
 	name_edit.text = current
 	form.add_child(name_edit)
 
@@ -2114,9 +2121,8 @@ func _show_rename_profile_dialog(tabs: TabContainer) -> void:
 # shows up here. Apply runs the modpack's profile + MCM and backs up the
 # user's previous state; Unload restores the backup. Edits while a modpack
 # is active save into the modpack's profile slot and persist across applies.
-# The standard 8/8/6/6 outer margin shared by the top-level tab builders
-# (Profile, Browse, Updates). Divergent margins (e.g. the Mods tab's 10/10/8/10)
-# stay inline on purpose.
+# The standard 8/8/6/6 outer margin shared by ALL top-level tab builders
+# (Mods, Modpacks, Browse, Updates).
 func _make_tab_margin() -> MarginContainer:
 	var m := MarginContainer.new()
 	m.add_theme_constant_override("margin_left", 8)
@@ -2982,8 +2988,32 @@ func show_mod_ui() -> void:
 	# hacks. Embedded, they render on top of the launcher content and can't fall
 	# behind it, fixing every tooltip at once.
 	win.gui_embed_subwindows = true
-	win.size = Vector2i(960, 640)
-	win.min_size = Vector2i(640, 420)
+	# High-DPI scaling. The game runs DPI-aware, so Windows does NOT upscale it,
+	# and this launcher is its own OS Window OUTSIDE the game's scaled viewport
+	# -- with no explicit scale everything renders physically tiny on high-DPI
+	# displays. content_scale_factor scales fonts, styleboxes and scrollbars
+	# uniformly, so no per-widget changes are needed. screen_get_dpi can be
+	# unreliable on some platforms (0 or garbage), so fall back to 96 and clamp:
+	# never shrink below 1x, cap at 3x.
+	var dpi := DisplayServer.screen_get_dpi(win.current_screen)
+	if dpi <= 0:
+		dpi = 96
+	var ui_scale := clampf(float(dpi) / 96.0, 1.0, 3.0)
+	win.content_scale_factor = ui_scale
+	var want := Vector2i(roundi(960.0 * ui_scale), roundi(640.0 * ui_scale))
+	var want_min := Vector2i(roundi(640.0 * ui_scale), roundi(420.0 * ui_scale))
+	# A scaled window must still FIT the display. A 1920x1080 laptop at 200% OS
+	# scaling reports 192 dpi -> 2x -> a 1920x1280 window on a 1080-tall screen.
+	# Clamp to the usable area (minus room for taskbar/chrome), and keep
+	# min_size <= size or Godot rejects the pair.
+	var usable := DisplayServer.screen_get_usable_rect(win.current_screen).size
+	if usable.x > 0 and usable.y > 0:
+		want.x = mini(want.x, maxi(320, usable.x - 40))
+		want.y = mini(want.y, maxi(240, usable.y - 40))
+	want_min.x = mini(want_min.x, want.x)
+	want_min.y = mini(want_min.y, want.y)
+	win.size = want
+	win.min_size = want_min
 	win.wrap_controls = false
 	win.always_on_top = true
 	win.transparent = true
@@ -3277,6 +3307,9 @@ func show_mod_ui() -> void:
 	# In-flight HTTPRequests (list + thumbnail fetches) are parented to self
 	# and self-queue_free on completion, so no node-leak cleanup is needed.
 	_mws_cache.clear()
+	# Mods-tab row nodes die with the window; drop the mapping so a meta fetch
+	# resolving after close paints nothing (it still memoizes + persists).
+	_mods_meta_nodes.clear()
 	win.queue_free()
 
 # Launch button label reflects whether anything will load. Both this and
@@ -3508,18 +3541,22 @@ func make_dark_theme() -> Theme:
 	t.set_stylebox("panel", "ScrollContainer", StyleBoxEmpty.new())
 
 	# -- ScrollBars (slim dark track; stock ones glare) -------------------------
-	# Width is driven by stylebox minimum sizes: track margins (1+1) +
-	# grabber margins (3+3) = 8px nominal.
+	# Width is driven by stylebox minimum sizes: track margins (2+2) +
+	# grabber margins (6+6) = 16px nominal -- wide enough to actually hit.
+	# The along-axis grabber margins (12+12) give the grabber a minimum
+	# LENGTH so it stays grabbable on very long lists.
 	var track_v := StyleBoxFlat.new()
 	track_v.bg_color = COL_BG
 	track_v.border_color = COL_BORDER_DIM
 	track_v.border_width_left = 1
-	track_v.content_margin_left = 1
-	track_v.content_margin_right = 1
+	track_v.content_margin_left = 2
+	track_v.content_margin_right = 2
 	var grab_v := StyleBoxFlat.new()
 	grab_v.bg_color = COL_BORDER
-	grab_v.content_margin_left = 3
-	grab_v.content_margin_right = 3
+	grab_v.content_margin_left = 6
+	grab_v.content_margin_right = 6
+	grab_v.content_margin_top = 12
+	grab_v.content_margin_bottom = 12
 	var grab_v_hi: StyleBoxFlat = grab_v.duplicate()
 	grab_v_hi.bg_color = COL_TEXT_DIM
 	t.set_stylebox("scroll",            "VScrollBar", track_v)
@@ -3530,12 +3567,14 @@ func make_dark_theme() -> Theme:
 	track_h.bg_color = COL_BG
 	track_h.border_color = COL_BORDER_DIM
 	track_h.border_width_top = 1
-	track_h.content_margin_top = 1
-	track_h.content_margin_bottom = 1
+	track_h.content_margin_top = 2
+	track_h.content_margin_bottom = 2
 	var grab_h := StyleBoxFlat.new()
 	grab_h.bg_color = COL_BORDER
-	grab_h.content_margin_top = 3
-	grab_h.content_margin_bottom = 3
+	grab_h.content_margin_top = 6
+	grab_h.content_margin_bottom = 6
+	grab_h.content_margin_left = 12
+	grab_h.content_margin_right = 12
 	var grab_h_hi: StyleBoxFlat = grab_h.duplicate()
 	grab_h_hi.bg_color = COL_TEXT_DIM
 	t.set_stylebox("scroll",            "HScrollBar", track_h)
@@ -3616,10 +3655,12 @@ func make_dark_theme() -> Theme:
 	dlg_panel.bg_color = COL_SURFACE
 	dlg_panel.border_color = COL_BORDER
 	_sb_border(dlg_panel)
-	dlg_panel.content_margin_left = 10
-	dlg_panel.content_margin_right = 10
-	dlg_panel.content_margin_top = 8
-	dlg_panel.content_margin_bottom = 8
+	# Same padding tokens as _make_dialog_panel_stylebox so "dialog padding"
+	# has a single definition whether a dialog is themed or hand-styled.
+	dlg_panel.content_margin_left = SP_XL
+	dlg_panel.content_margin_right = SP_XL
+	dlg_panel.content_margin_top = SP_L
+	dlg_panel.content_margin_bottom = SP_L
 	t.set_stylebox("panel", "AcceptDialog", dlg_panel)
 	t.set_stylebox("panel", "ConfirmationDialog", dlg_panel.duplicate())
 	t.set_stylebox("embedded_border",           "Window", dlg_panel.duplicate())
@@ -3831,46 +3872,193 @@ func _mods_cached_summary_by_id(mod_id: int) -> Dictionary:
 				return row_v
 	return {}
 
+# Persisted per-mod meta sidecar. Without it, every relaunch re-fetched
+# /mods/{id} for each installed MWS mod (the memo is session-only, and the
+# thumbnail disk cache is keyed by storage filename with no mod_id mapping to
+# reach it). One JSON file, {"<mod_id>": {"mod": <mod object>, "saved_at":
+# unix}}, storing the full fetched mod object so the detail dialog stays as
+# rich offline as it was in the session that fetched it. Lives under
+# user://mws_cache/ next to the thumbnail cache (already on modpacks.gd's
+# override deny list, so packs can't poison it). Entries older than
+# _MODS_META_REFRESH_SEC soft-refresh in the background so replaced
+# thumbnails / renamed authors converge within a day.
+const _MODS_META_SIDECAR_PATH := "user://mws_cache/mods_meta.json"
+const _MODS_META_REFRESH_SEC := 86400
+
+# Lazy one-time seed of the meta memo from the sidecar. Runs BEFORE the
+# snapshot/network path consults the memo, so cached rows paint immediately
+# and offline. Every field is shape-checked: a hand-edited or truncated file
+# (wrong root type, non-dict entry, null/absent "mod", null/absent
+# "saved_at") degrades to skipping that entry, never a crash -- .get()'s
+# default only covers ABSENT keys, so present-but-null needs the `is` guards.
+func _mods_meta_sidecar_load() -> void:
+	if _mods_meta_sidecar_loaded:
+		return
+	_mods_meta_sidecar_loaded = true
+	if not FileAccess.file_exists(_MODS_META_SIDECAR_PATH):
+		return
+	var f := FileAccess.open(_MODS_META_SIDECAR_PATH, FileAccess.READ)
+	if f == null:
+		return
+	var parsed: Variant = JSON.parse_string(f.get_as_text())
+	f.close()
+	if not (parsed is Dictionary):
+		return
+	for key_v in (parsed as Dictionary):
+		var mod_id := str(key_v).to_int()
+		if mod_id <= 0:
+			continue
+		var entry_v: Variant = (parsed as Dictionary)[key_v]
+		if not (entry_v is Dictionary):
+			continue
+		var mod_v: Variant = (entry_v as Dictionary).get("mod")
+		if not (mod_v is Dictionary) or (mod_v as Dictionary).is_empty():
+			continue
+		# saved_at arrives as a float after the JSON round-trip; int() it.
+		var saved_v: Variant = (entry_v as Dictionary).get("saved_at", 0)
+		if not (saved_v is int or saved_v is float) or int(saved_v) <= 0:
+			continue
+		# Never clobber fresher data a fetch already memoized this session.
+		if not _mods_mws_meta_by_id.has(mod_id):
+			_mods_mws_meta_by_id[mod_id] = mod_v
+			_mods_mws_meta_saved_at[mod_id] = int(saved_v)
+
+# Stamp mod_id as freshly fetched and rewrite the sidecar from the memo.
+# Only ids with a saved_at stamp are persisted -- i.e. only entries that came
+# from a real /mods/{id} fetch (this session or a prior one); snapshot-sourced
+# memo entries stay session-only as before. Best-effort: a failed write just
+# means a refetch next launch, never an error the user sees.
+func _mods_meta_sidecar_store(mod_id: int) -> void:
+	_mods_mws_meta_saved_at[mod_id] = int(Time.get_unix_time_from_system())
+	var out := {}
+	for id_v in _mods_mws_meta_saved_at:
+		var d: Variant = _mods_mws_meta_by_id.get(id_v, {})
+		if d is Dictionary and not (d as Dictionary).is_empty():
+			out[str(id_v)] = {
+				"mod": d,
+				"saved_at": int(_mods_mws_meta_saved_at[id_v]),
+			}
+	DirAccess.make_dir_recursive_absolute(_MODS_META_SIDECAR_PATH.get_base_dir())
+	var f := FileAccess.open(_MODS_META_SIDECAR_PATH, FileAccess.WRITE)
+	if f == null:
+		return
+	f.store_string(JSON.stringify(out))
+	f.close()
+
+# Paint ModWorkshop meta onto the CURRENT Mods-tab row for mod_id, looked up
+# via _mods_meta_nodes at paint time -- NOT via nodes captured when the fetch
+# started, which a rebuild may have freed. No entry (row filtered out, tab
+# rebuilt without it, launcher closed) means the data is memoized for the next
+# build and nothing is painted. Idempotent per row: the author line is added
+# once (node-name guard), and a repeat thumbnail load just re-resolves the
+# same cache entry.
+func _mods_apply_mws_meta(mod_id: int, data: Dictionary) -> void:
+	# One workshop id can back several rows (e.g. a .vmz copy plus a dev-folder
+	# copy of the same mod), so the mapping holds a LIST of row-node dicts.
+	var rows_v: Variant = _mods_meta_nodes.get(mod_id)
+	if not (rows_v is Array):
+		return
+	for nodes_v in (rows_v as Array):
+		if not (nodes_v is Dictionary):
+			continue
+		var nodes: Dictionary = nodes_v
+		var holder_v: Variant = nodes.get("holder")
+		if holder_v is Dictionary:
+			(holder_v as Dictionary)["data"] = data
+		var thumb_v: Variant = nodes.get("thumb")
+		if is_instance_valid(thumb_v) and thumb_v is TextureRect:
+			var thumb_rect: TextureRect = thumb_v
+			var thumb_record: Variant = data.get("thumbnail")
+			if thumb_record is Dictionary:
+				# A soft-refresh repaint can land after a "no image" overlay
+				# went up (stale sidecar said no thumbnail, refreshed data has
+				# one); drop the overlay so the fresh texture isn't captioned
+				# missing.
+				var wrap := thumb_rect.get_parent() as Control
+				if wrap != null and is_instance_valid(wrap) and wrap.has_node("ThumbStateLabel"):
+					var stale_lbl := wrap.get_node("ThumbStateLabel")
+					wrap.remove_child(stale_lbl)
+					stale_lbl.queue_free()
+				_browse_load_thumbnail_async(thumb_rect, thumb_record)
+			else:
+				# Mod exists on MWS but has no thumbnail record -- say so
+				# instead of leaving the cell an ambiguous forever-gray panel.
+				_set_thumb_failed(thumb_rect, false)
+		var col_v: Variant = nodes.get("name_col")
+		if is_instance_valid(col_v) and col_v is VBoxContainer:
+			var name_col: VBoxContainer = col_v
+			if not name_col.has_node("MwsAuthorLabel"):
+				var user_dict: Dictionary = data.get("user", {}) if data.get("user") is Dictionary else {}
+				var author := str(user_dict.get("name", ""))
+				if author != "":
+					var author_lbl := _make_sub_label("by " + author, COL_TEXT_DIM, "")
+					author_lbl.name = "MwsAuthorLabel"
+					name_col.add_child(author_lbl)
+					name_col.move_child(author_lbl, 1)  # right under the name
+
 # Populate an installed mod row's ModWorkshop thumbnail + author, and stash the
 # mod object so the name link can open the Browse detail dialog (description +
-# file history). Cache-first (Browse snapshot), then a by-id fetch only for mods
-# the snapshot doesn't cover. All async and best-effort: offline or a failed
+# file history). Memo-first (seeded from the on-disk sidecar, so relaunches and
+# offline render instantly), then the Browse snapshot, then a by-id fetch only
+# for mods neither covers. All async and best-effort: offline or a failed
 # fetch just leaves the gray placeholder and the name link shows a gentle
-# notice -- no error, no log spam. The holder Dictionary is captured by the name
-# link's lambda, so filling it here wires the click up once data arrives (never
-# capture the mod object by value into the lambda -- it isn't known at build).
-func _mods_load_mws_meta(mod_id: int, thumb_rect: TextureRect, name_col: VBoxContainer, holder: Dictionary) -> void:
+# notice -- no error, no log spam. Painting goes through _mods_apply_mws_meta,
+# which resolves the row's CURRENT nodes from _mods_meta_nodes at paint time,
+# so a fetch that outlives a tab rebuild still lands on screen.
+func _mods_load_mws_meta(mod_id: int) -> void:
+	_mods_meta_sidecar_load()
 	var data: Dictionary = _mods_mws_meta_by_id.get(mod_id, {})
-	if data.is_empty():
-		# Skip if a recent attempt failed or is still in flight. The retry window
-		# is armed BEFORE the await, so quick racing rebuilds don't each fire a
-		# request; successes are memoed for the session below.
+	if not data.is_empty():
+		# Memoized (this session, or seeded from the sidecar): paint the row
+		# synchronously -- even when an earlier fetch for this id is still in
+		# flight, the freshly built row must not sit gray waiting on it.
+		_mods_apply_mws_meta(mod_id, data)
+		# Soft refresh: a sidecar entry older than a day re-fetches in the
+		# background so changed thumbnails/authors converge. Values in
+		# _mods_mws_meta_saved_at are ints we wrote ourselves; 0 means the
+		# entry is session-sourced (snapshot) and never soft-refreshes.
+		var saved_at := int(_mods_mws_meta_saved_at.get(mod_id, 0))
+		if saved_at <= 0 \
+				or int(Time.get_unix_time_from_system()) - saved_at < _MODS_META_REFRESH_SEC:
+			return
+		# Same retry window as the cold path, so racing rebuilds share one
+		# refresh request per mod per minute.
 		if Time.get_ticks_msec() < int(_mods_mws_meta_retry_at.get(mod_id, 0)):
 			return
 		_mods_mws_meta_retry_at[mod_id] = Time.get_ticks_msec() + 60000
-		data = _mods_cached_summary_by_id(mod_id)
-		if data.is_empty():
-			var fetched: Variant = await mws_get_mod(mod_id)
-			if fetched is Dictionary:
-				var obj: Variant = (fetched as Dictionary).get("data", fetched)
-				if obj is Dictionary:
-					data = obj
+		var refreshed: Variant = await mws_get_mod(mod_id)
+		if refreshed is Dictionary:
+			var obj_v: Variant = (refreshed as Dictionary).get("data", refreshed)
+			if obj_v is Dictionary and not (obj_v as Dictionary).is_empty():
+				_mods_mws_meta_by_id[mod_id] = obj_v
+				_mods_meta_sidecar_store(mod_id)
+				_mods_apply_mws_meta(mod_id, obj_v)
+		return
+	# Skip if a recent attempt failed or is still in flight. The retry window
+	# is armed BEFORE the await, so quick racing rebuilds don't each fire a
+	# request; successes are memoed for the session below.
+	if Time.get_ticks_msec() < int(_mods_mws_meta_retry_at.get(mod_id, 0)):
+		return
+	_mods_mws_meta_retry_at[mod_id] = Time.get_ticks_msec() + 60000
+	data = _mods_cached_summary_by_id(mod_id)
+	if data.is_empty():
+		var fetched: Variant = await mws_get_mod(mod_id)
+		if fetched is Dictionary:
+			var obj: Variant = (fetched as Dictionary).get("data", fetched)
+			if obj is Dictionary:
+				data = obj
 		if not data.is_empty():
 			_mods_mws_meta_by_id[mod_id] = data
+			# Persist real fetches so the next launch renders without a
+			# request; snapshot hits below stay session-only (the snapshot
+			# itself already persists).
+			_mods_meta_sidecar_store(mod_id)
+	else:
+		# Snapshot hit: memo for the session, exactly as before the sidecar.
+		_mods_mws_meta_by_id[mod_id] = data
 	if data.is_empty():
 		return
-	holder["data"] = data
-	if is_instance_valid(thumb_rect):
-		var thumb_record: Variant = data.get("thumbnail")
-		if thumb_record is Dictionary:
-			_browse_load_thumbnail_async(thumb_rect, thumb_record)
-	if is_instance_valid(name_col):
-		var user_dict: Dictionary = data.get("user", {}) if data.get("user") is Dictionary else {}
-		var author := str(user_dict.get("name", ""))
-		if author != "":
-			var author_lbl := _make_sub_label("by " + author, COL_TEXT_DIM, "")
-			name_col.add_child(author_lbl)
-			name_col.move_child(author_lbl, 1)  # right under the name
+	_mods_apply_mws_meta(mod_id, data)
 
 # Click handler for a Mods-row ModWorkshop name link. Opens the same detail
 # dialog the Browse tab uses (banner/thumbnail + author + description + file
@@ -3887,6 +4075,11 @@ func _open_mods_mws_detail(holder: Dictionary) -> void:
 
 func build_mods_tab(tabs: TabContainer) -> Control:
 	_refresh_dependency_status()
+	# Drop last build's row-node mapping; the row loop below re-registers each
+	# visible MWS row. An async meta fetch still in flight from the previous
+	# build then paints the row built HERE (or, for a now-filtered-out mod,
+	# finds no entry and just memoizes).
+	_mods_meta_nodes.clear()
 	var outer := VBoxContainer.new()
 	outer.size_flags_vertical = Control.SIZE_EXPAND_FILL
 
@@ -4073,6 +4266,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	var filter_edit := LineEdit.new()
 	filter_edit.placeholder_text = "Filter mods..."
 	filter_edit.text = _mods_filter_text
+	filter_edit.custom_minimum_size.y = CTRL_H
 	filter_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	filter_bar.add_child(filter_edit)
 
@@ -4705,7 +4899,19 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			name_lnk.add_theme_color_override("font_hover_color", COL_TEXT_HI)
 			name_col.add_child(name_lnk)
 			name_lnk.pressed.connect(_open_mods_mws_detail.bind(mws_holder))
-			_mods_load_mws_meta(row_mws_id, thumb_ref, name_col, mws_holder)
+			# Register the row's live nodes BEFORE kicking the meta load, so
+			# both the synchronous memo-hit paint and any async completion
+			# (including one from a fetch a PREVIOUS build started) resolve to
+			# these current nodes instead of freed ones. Appended, not
+			# assigned: several rows can share one workshop id.
+			var meta_rows: Array = _mods_meta_nodes.get(row_mws_id, [])
+			meta_rows.append({
+				"thumb": thumb_ref,
+				"name_col": name_col,
+				"holder": mws_holder,
+			})
+			_mods_meta_nodes[row_mws_id] = meta_rows
+			_mods_load_mws_meta(row_mws_id)
 			name_ctrl = name_lnk
 		else:
 			var name_lbl := Label.new()
@@ -4880,6 +5086,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		spin.max_value = PRIORITY_MAX
 		spin.value = entry["priority"]
 		spin.custom_minimum_size.x = 100
+		spin.custom_minimum_size.y = CTRL_H
 		row.add_child(spin)
 
 		# Per-row Remove. Folder mods (dev) skip the file delete because
@@ -4993,6 +5200,11 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		"mode": "discover",
 		"query": "",
 		"sort": "bumped_at",
+		# featured: true while the sort dropdown sits on item 0 ("Featured",
+		# the curated landing). The empty-input handlers key on THIS flag --
+		# not on sort == "bumped_at" -- so "Recently updated" is a real sort
+		# that routes through the filter fetch like every other sort.
+		"featured": true,
 		"category_id": 0,
 		"next_page": 1,
 		"has_more": false,
@@ -5023,17 +5235,24 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	search_input.placeholder_text = "Search mods..."
 	search_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	search_input.custom_minimum_size.x = 200
+	search_input.custom_minimum_size.y = CTRL_H
 	toolbar.add_child(search_input)
 
 	var sort_dropdown := OptionButton.new()
-	# Index -> API sort enum. Search honors this sort (no best_match override) --
-	# default "Recently bumped" keeps most-recently-updated mods on top.
+	# Index -> API sort enum. Item 0 "Featured" is NOT a sort: it represents
+	# the curated Popular+Latest discover landing. It still maps to bumped_at
+	# in sort_keys so a search typed while Featured is selected has a sane
+	# sort. The real sorts follow; search honors the chosen sort (no
+	# best_match override).
+	sort_dropdown.add_item("Featured")
 	sort_dropdown.add_item("Recently updated")
 	sort_dropdown.add_item("Most downloaded")
 	sort_dropdown.add_item("Most liked")
 	sort_dropdown.add_item("Most viewed")
 	sort_dropdown.add_item("Newest")
-	var sort_keys := ["bumped_at", "downloads", "likes", "views", "published_at"]
+	var sort_keys := ["bumped_at", "bumped_at", "downloads", "likes", "views", "published_at"]
+	# Explicit, not incidental: the resting label is the Featured landing.
+	sort_dropdown.select(0)
 	toolbar.add_child(sort_dropdown)
 
 	var category_dropdown := OptionButton.new()
@@ -5365,6 +5584,14 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			my_restore = int(state["restore_scroll"])
 			state.erase("restore_scroll")
 		state["mode"] = "discover"
+		# Rendering the landing means "Featured" is the truthful dropdown
+		# label; sync state + selection so clearing a search/category (or the
+		# initial fetch) never leaves a sort name over the curated view.
+		# OptionButton.select() does not emit item_selected, so no recursion.
+		state["featured"] = true
+		state["sort"] = "bumped_at"
+		if is_instance_valid(sort_dropdown) and sort_dropdown.selected != 0:
+			sort_dropdown.select(0)
 		state["next_page"] = 1
 		state["has_more"] = false
 		state.erase("loaded_rows")
@@ -5399,7 +5626,9 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		var install_map: Dictionary = compute_install_map.call()
 		if not popular.is_empty():
 			var pop_hdr := Label.new()
-			pop_hdr.text = "Popular"
+			# "this week" because the backing sort is ModWorkshop's
+			# weekly_score -- the label must match the parameter.
+			pop_hdr.text = "Popular this week"
 			pop_hdr.add_theme_font_size_override("font_size", FS_HEAD)
 			pop_hdr.add_theme_color_override("font_color", COL_TEXT)
 			list.add_child(pop_hdr)
@@ -5571,7 +5800,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	search_debounce.wait_time = 0.3
 	container.add_child(search_debounce)
 	search_debounce.timeout.connect(func():
-		if str(state["query"]) == "" and int(state["category_id"]) == 0 and str(state["sort"]) == "bumped_at":
+		if str(state["query"]) == "" and int(state["category_id"]) == 0 and bool(state["featured"]):
 			do_discover_fetch.call()
 		else:
 			do_filter_fetch.call(false)
@@ -5584,14 +5813,23 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	)
 	search_input.text_submitted.connect(func(_t: String):
 		search_debounce.stop()
-		do_filter_fetch.call(false)
+		# Same routing as the debounce timeout: Enter in an EMPTY box while
+		# Featured is selected must (re)render the curated landing -- an
+		# unconditional filter fetch here would show a flat sorted list under
+		# a "Featured" dropdown label.
+		if str(state["query"]) == "" and int(state["category_id"]) == 0 and bool(state["featured"]):
+			do_discover_fetch.call()
+		else:
+			do_filter_fetch.call(false)
 	)
 
 	sort_dropdown.item_selected.connect(func(idx: int):
 		state["sort"] = sort_keys[idx] if idx >= 0 and idx < sort_keys.size() else "bumped_at"
-		# A non-default sort means we're in filter mode now even with empty
-		# query; routes through list_mods with the chosen sort.
-		if str(state["query"]) == "" and int(state["category_id"]) == 0 and str(state["sort"]) == "bumped_at":
+		# Item 0 = "Featured" (the curated landing); any real sort -- including
+		# "Recently updated" (bumped_at) -- routes through list_mods with the
+		# chosen sort, even with an empty query.
+		state["featured"] = idx == 0
+		if str(state["query"]) == "" and int(state["category_id"]) == 0 and bool(state["featured"]):
 			do_discover_fetch.call()
 		else:
 			do_filter_fetch.call(false)
@@ -5600,7 +5838,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	category_dropdown.item_selected.connect(func(idx: int):
 		var cid_var = category_dropdown.get_item_metadata(idx)
 		state["category_id"] = int(cid_var) if cid_var != null else 0
-		if str(state["query"]) == "" and int(state["category_id"]) == 0 and str(state["sort"]) == "bumped_at":
+		if str(state["query"]) == "" and int(state["category_id"]) == 0 and bool(state["featured"]):
 			do_discover_fetch.call()
 		else:
 			do_filter_fetch.call(false)
@@ -5842,22 +6080,49 @@ func _browse_render_mod_row(mod_data: Dictionary, install_entry: Variant, on_get
 	return row
 
 
+# Visible terminal state for a thumbnail cell. Without this, "still loading",
+# "mod has no image" and "fetch/decode failed" all look like the same bare
+# gray panel. Overlays a centered dim label ("load failed" when a fetch or
+# decode broke, "no image" when there is nothing to fetch) into the cell's
+# parent PanelContainer -- no image asset needed, and FS_META + COL_TEXT_DIM
+# keeps it as quiet as the rest of the meta text. Safe to call after awaits
+# (guards the rect and its parent) and idempotent per cell.
+func _set_thumb_failed(rect: TextureRect, failed: bool) -> void:
+	if not is_instance_valid(rect):
+		return
+	var wrap := rect.get_parent() as Control
+	if wrap == null or not is_instance_valid(wrap):
+		return
+	if wrap.has_node("ThumbStateLabel"):
+		return
+	var lbl := Label.new()
+	lbl.name = "ThumbStateLabel"
+	lbl.text = "load failed" if failed else "no image"
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
+	lbl.add_theme_font_size_override("font_size", FS_META)
+	wrap.add_child(lbl)
+
+
 # Async thumbnail loader. Cache layout: user://mws_cache/thumbs/<storage_filename>.
 # Filenames from MWS are opaque/immutable per upload, so the storage filename
 # IS the cache key -- a thumbnail replaced by the author gets a different file
 # name and we naturally fetch fresh. No TTL needed, no manual cache busting.
-# Failures are silent: the row's gray placeholder stays visible. 1MB hard
-# cap (download_body_size_limit below) defends against malformed responses
-# without limiting real thumbnails (typical MWS thumbs are 10-80KB).
+# Failures surface via _set_thumb_failed so the cell doesn't stay an
+# ambiguous gray panel. 1MB hard cap (download_body_size_limit below) defends
+# against malformed responses without limiting real thumbnails.
 func _browse_load_thumbnail_async(rect: TextureRect, image_record: Dictionary) -> void:
 	var fn: String = str(image_record.get("file", ""))
 	if fn.is_empty():
+		_set_thumb_failed(rect, false)
 		return
 	# Server-provided name: accept only a bare basename so path_join cannot
 	# escape the cache dir (same never-trust-a-server-name posture as the
 	# _is_safe_mod_filename gate on mod download names). get_file() only
 	# splits on "/", so reject backslashes and ".." explicitly too.
 	if fn != fn.get_file() or fn.contains("\\") or fn.contains(".."):
+		_set_thumb_failed(rect, false)
 		return
 
 	var cache_dir := "user://mws_cache/thumbs"
@@ -5888,6 +6153,7 @@ func _browse_load_thumbnail_async(rect: TextureRect, image_record: Dictionary) -
 	# eat memory.
 	var url := mws_image_url(image_record, false)
 	if url.is_empty():
+		_set_thumb_failed(rect, false)
 		return
 
 	var req := HTTPRequest.new()
@@ -5900,14 +6166,17 @@ func _browse_load_thumbnail_async(rect: TextureRect, image_record: Dictionary) -
 	var err := req.request(url, headers)
 	if err != OK:
 		req.queue_free()
+		_set_thumb_failed(rect, true)
 		return
 
 	var res: Array = await req.request_completed
 	req.queue_free()
 	if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] < 200 or res[1] >= 300:
+		_set_thumb_failed(rect, true)
 		return
 	var body: PackedByteArray = res[3]
 	if body.is_empty():
+		_set_thumb_failed(rect, true)
 		return
 
 	var img := Image.new()
@@ -5915,14 +6184,41 @@ func _browse_load_thumbnail_async(rect: TextureRect, image_record: Dictionary) -
 			or img.load_jpg_from_buffer(body) == OK \
 			or img.load_png_from_buffer(body) == OK
 	if not ok:
+		_set_thumb_failed(rect, true)
 		return
 
+	# The CDN serves full-size images (100-300KB+) while the row cells render
+	# at 96x54, so downscale before caching. This ONE cache is also read by
+	# the detail dialog's banner (a ~220px-tall letterboxed band), so rather
+	# than keying a separate small variant -- which risks serving a tiny stale
+	# entry where the banner expects a large one -- cap the longest side at
+	# 640px: still crisp for the banner band, while cutting typical cached
+	# files by roughly an order of magnitude. Re-encoded as lossy WebP; the
+	# cache-hit reader above tries webp/jpg/png regardless of the stored
+	# filename's extension, so the container swap is safe.
+	var thumb_cache_max := 640
+	var cache_bytes := body
+	if maxi(img.get_width(), img.get_height()) > thumb_cache_max:
+		var scale := float(thumb_cache_max) / float(maxi(img.get_width(), img.get_height()))
+		img.resize(
+			maxi(1, int(round(img.get_width() * scale))),
+			maxi(1, int(round(img.get_height() * scale))),
+			Image.INTERPOLATE_LANCZOS
+		)
+		var resized := img.save_webp_to_buffer(true, 0.85)
+		if resized.size() > 0:
+			cache_bytes = resized
+
 	# Stash for next launch. Failure to write is non-fatal -- we still display
-	# the texture this session, just refetch next time.
+	# the texture this session, just refetch next time. store_buffer returns
+	# bool since 4.3; drop a partial file rather than leaving a truncated
+	# cache entry around.
 	var out := FileAccess.open(cache_path, FileAccess.WRITE)
 	if out != null:
-		out.store_buffer(body)
+		var wrote := out.store_buffer(cache_bytes)
 		out.close()
+		if not wrote:
+			DirAccess.remove_absolute(cache_path)
 
 	if is_instance_valid(rect):
 		rect.texture = ImageTexture.create_from_image(img)
@@ -6099,7 +6395,10 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 		box.add_child(banner_wrap)
 		var banner_rect := TextureRect.new()
 		banner_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-		banner_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+		# CENTERED, not COVERED: the whole banner letterboxes inside the
+		# 220px band (the panel's surface colour mattes it) instead of being
+		# cover-cropped. Small grid tiles / row thumbnails keep COVERED.
+		banner_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 		banner_rect.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		banner_rect.size_flags_vertical = Control.SIZE_EXPAND_FILL
 		banner_wrap.add_child(banner_rect)

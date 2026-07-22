@@ -71,7 +71,7 @@ func _mws_cache_put(url: String, data: Variant, ttl_ms: int) -> void:
 # body, otherwise null. Caller awaits this -- it spawns its own HTTPRequest as a
 # child of the modloader autoload, queue_frees on completion. Pass cache_ttl_ms
 # > 0 to read/write the in-memory response cache; 0 bypasses caching entirely.
-func _mws_get_json(url: String, cache_ttl_ms: int = 0, allow_rate_wait: bool = true) -> Variant:
+func _mws_get_json(url: String, cache_ttl_ms: int = 0, allow_rate_wait: bool = true, allow_transport_retry: bool = true) -> Variant:
 	_mws_last_transport_failed = false
 	if cache_ttl_ms > 0:
 		var cached: Variant = _mws_cache_get(url)
@@ -110,8 +110,16 @@ func _mws_get_json(url: String, cache_ttl_ms: int = 0, allow_rate_wait: bool = t
 	req.queue_free()
 
 	if res[0] != HTTPRequest.RESULT_SUCCESS:
-		# No HTTP response at all -- offline / DNS / timeout. Flag it so download
-		# callers can distinguish this from a 404 and show connection copy.
+		# No HTTP response at all -- offline / DNS / timeout.
+		if allow_transport_retry and get_tree() != null:
+			# Single retry for a transient transport flake (cold DNS/TLS often
+			# fails the very first request after launch). The retry passes
+			# allow_transport_retry=false so it can never loop: a second
+			# failure falls through to the flagged null below.
+			await get_tree().create_timer(1.0).timeout
+			return await _mws_get_json(url, cache_ttl_ms, allow_rate_wait, false)
+		# Flag it so download callers can distinguish this from a 404 and show
+		# connection copy.
 		_mws_last_transport_failed = true
 		return null
 	var status: int = res[1]
@@ -281,6 +289,13 @@ func mws_discover_snapshot() -> Dictionary:
 func mws_get_popular_and_latest() -> Variant:
 	var popular: Variant = await mws_list_mods("", "weekly_score", 0, 1)
 	var latest: Variant = await mws_list_mods("", "bumped_at", 0, 1)
+	# One flake out of two sequential requests must not kill the whole landing:
+	# re-issue only the failed leg once before giving up. The healthy leg's
+	# result is kept as-is (never re-fetched), so this adds at most one request.
+	if not (popular is Dictionary):
+		popular = await mws_list_mods("", "weekly_score", 0, 1)
+	if not (latest is Dictionary):
+		latest = await mws_list_mods("", "bumped_at", 0, 1)
 	# Treat EITHER query failing as a failed fetch. The two run sequentially,
 	# so the guest budget can expire between them (popular 2xx arms the
 	# cooldown, latest fails fast at the gate) -- returning a half payload

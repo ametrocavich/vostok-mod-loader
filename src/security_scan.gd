@@ -214,6 +214,36 @@ func _any_present(present: Dictionary, rules: Array) -> bool:
 # Compiled regex cache, indexed by rule id. Lazy-populated on first scan.
 var _security_compiled: Dictionary = {}
 
+# Scan-result cache. scan_mod re-runs on every mods-dir rescan (dev-mode
+# toggle, install/delete, modpack apply, profile refresh), and re-opening
+# every archive to run 13 regexes over every script/resource made those
+# rescans freeze the UI. Key: the mod's full_path. Value:
+# {"stamp": String, "findings": Array}. The stamp covers everything that
+# can change the scanned bytes (see _security_scan_stamp), so any content
+# change misses the cache and rescans. Process-lifetime only, never
+# persisted; bounded by the number of mods on disk.
+var _security_scan_cache: Dictionary = {}
+
+# Cheap change-detection stamp for a mod path. Archives: mtime + size.
+# Folder mods: the same recursive walk boot.gd's _stable_path_mtime uses
+# for folder-mod state hashing -- newest mtime alone misses deletions and
+# renames, so fold in the file count and the per-file path@mtime set hash
+# gathered on the same pass. Returns "" when the path can't be stat'd;
+# callers treat that as uncacheable so a vanished file never pins a stale
+# result.
+func _security_scan_stamp(full_path: String, ext: String) -> String:
+	if ext == "folder":
+		var stats := {"count": 0, "set_hash": 0}
+		var newest := _folder_recursive_mtime(full_path, stats)
+		return "f:%d:%d:%d" % [newest, int(stats["count"]), int(stats["set_hash"])]
+	var mtime := FileAccess.get_modified_time(full_path)
+	var f := FileAccess.open(full_path, FileAccess.READ)
+	if f == null:
+		return ""
+	var size := f.get_length()
+	f.close()
+	return "a:%d:%d" % [mtime, size]
+
 func _security_compile_rules() -> void:
 	if not _security_compiled.is_empty():
 		return
@@ -229,6 +259,14 @@ func _security_compile_rules() -> void:
 #   {rule, file, line, preview, description}
 func scan_mod(full_path: String, ext: String) -> Array:
 	_security_compile_rules()
+	var stamp := _security_scan_stamp(full_path, ext)
+	if not stamp.is_empty():
+		var cached: Dictionary = _security_scan_cache.get(full_path, {})
+		if not cached.is_empty() and str(cached.get("stamp", "")) == stamp:
+			# duplicate(true) so every caller owns its findings array, same
+			# as the uncached path -- mod entries must never alias each
+			# other's (or the cache's) finding dicts.
+			return (cached.get("findings", []) as Array).duplicate(true)
 	var findings: Array = []
 	match ext:
 		"vmz", "zip":
@@ -238,6 +276,11 @@ func scan_mod(full_path: String, ext: String) -> Array:
 		"folder":
 			_security_scan_folder(full_path, "", findings)
 	findings.sort_custom(_security_sort_findings)
+	if not stamp.is_empty():
+		_security_scan_cache[full_path] = {
+			"stamp": stamp,
+			"findings": findings.duplicate(true),
+		}
 	return findings
 
 # Sort by file then line so the log reads top-to-bottom.
