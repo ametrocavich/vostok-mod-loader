@@ -1,5 +1,66 @@
 # Changelog
 
+## [3.3.0](https://github.com/ametrocavich/vostok-mod-loader/compare/v3.2.1...v3.3.0) (2026-07-21)
+
+
+### Features
+
+* add mod dependency declarations ([3ff7a9d](https://github.com/ametrocavich/vostok-mod-loader/commit/3ff7a9d436da57e800ea300227ce0014613890ee))
+* dependency UX -- truthful launch, auto-ordering, one-click fixes ([4cf6448](https://github.com/ametrocavich/vostok-mod-loader/commit/4cf64483c0b94e53edfdd2f691396cfc0d18b051))
+* godot 4.7 guardrails (v4 pck messaging, detokenizer canary, centralized format versions) ([8a7996e](https://github.com/ametrocavich/vostok-mod-loader/commit/8a7996ecd28f7318d7728ca947a029d3f9ccf1e9))
+* link installed mods to their ModWorkshop page from the Mods tab ([5bef644](https://github.com/ametrocavich/vostok-mod-loader/commit/5bef6449c4a96551eddd02fc8975be32f83ecf0d))
+* make the modpack create/share flow self-explanatory ([686e8f8](https://github.com/ametrocavich/vostok-mod-loader/commit/686e8f8602152eec6c3484257ddfd6e91db058d7))
+* modpack apply safety net (auto restore points + crash-window hardening) ([fc7c145](https://github.com/ametrocavich/vostok-mod-loader/commit/fc7c145f78edb023a3c499d1782adb6ff80f704b))
+* name a modpack independently of its source profile ([bd4a580](https://github.com/ametrocavich/vostok-mod-loader/commit/bd4a580443f162eb7fd28b0880dc3f68062e402f))
+* offline cached results banner with last-refreshed and retry ([7ff4c28](https://github.com/ametrocavich/vostok-mod-loader/commit/7ff4c28b0ffcd68ac9774db46719620c25a862be))
+* plain-language sweep of user-facing copy ([b6c6e0b](https://github.com/ametrocavich/vostok-mod-loader/commit/b6c6e0bbe58acbbb8180908ac6c7ac0b73f56cae))
+* provides= rename aliases for mod ids ([7ce5a06](https://github.com/ametrocavich/vostok-mod-loader/commit/7ce5a0620ec284ad3a2adcc435178112590bead8))
+* rate-limit aware backoff for ModWorkshop requests ([e646949](https://github.com/ametrocavich/vostok-mod-loader/commit/e646949157808f6ba55276b454ca9d0e947ae74c))
+* render mod descriptions as formatted text; fix Browse search sort ([3cb2c6f](https://github.com/ametrocavich/vostok-mod-loader/commit/3cb2c6ffc43e01161956353135d5ffa2d2d89139))
+* show ModWorkshop thumbnail, author, and details on Mods-tab rows ([90c5615](https://github.com/ametrocavich/vostok-mod-loader/commit/90c56154213e34dd80b82454284476557c722443))
+* skip startup mod manager ([21c0049](https://github.com/ametrocavich/vostok-mod-loader/commit/21c004920c175fec3d6185f8f2b0c3994530b3db))
+* **ui:** apply design system across all tabs -- token sweep, de-jank, copy pass ([1f878cd](https://github.com/ametrocavich/vostok-mod-loader/commit/1f878cd7dbddb679317d9e56e939df0cc2818968))
+* **ui:** design-token layer + theme coverage (focus, scrollbars, tooltips, progress, checkbox glyphs) ([53612e4](https://github.com/ametrocavich/vostok-mod-loader/commit/53612e4b636f6748b2743b95db34aeccac808d1c))
+* **ui:** sweep security-findings dialog onto the design tokens ([f6dce42](https://github.com/ametrocavich/vostok-mod-loader/commit/f6dce424b4c1b601af9aa83d01c05d93c458ce3b))
+
+
+### Bug Fixes
+
+* apply chunk-2 engine stabilization (verified safe) ([f526365](https://github.com/ametrocavich/vostok-mod-loader/commit/f526365960293df0950544f938a6faf73e3681a3))
+* apply stabilization findings (10 confirmed bugs + readability) ([ee5fb8f](https://github.com/ametrocavich/vostok-mod-loader/commit/ee5fb8f7a636aa28b50b96e806a134a79d1c7d3f))
+* audit-wave hardening (config persist guard, wildcard hooks, boot/vfs edges, registry read API) ([6789238](https://github.com/ametrocavich/vostok-mod-loader/commit/6789238ba3765911e0d27823b94b48d3cb7cf617))
+* chunk-3 stabilization -- 40 verified findings across 21 files ([ee22cbb](https://github.com/ametrocavich/vostok-mod-loader/commit/ee22cbb2411462f899808bc65dcb99ef5c10936c))
+* collapse the duplicate window title bar into the header plate ([3e03fdf](https://github.com/ametrocavich/vostok-mod-loader/commit/3e03fdfc0f77521e789b693344a80c38917e4bd6))
+* compose discover landing from working list queries ([76c3f3f](https://github.com/ametrocavich/vostok-mod-loader/commit/76c3f3f796a60fefb0d5c8a47d8ea78825da5057))
+* critical compile error + .pck downloads + close-mid-download crash ([c22795b](https://github.com/ametrocavich/vostok-mod-loader/commit/c22795b5372fb5aad86c01b16f3d793efb9a659e))
+* darken launcher scrim 0.6 -&gt; 0.92 alpha for readability ([573f454](https://github.com/ametrocavich/vostok-mod-loader/commit/573f454d49a1fdfd6774472d3d92aef08d360683))
+* dependency PR review follow-ups ([6fe09de](https://github.com/ametrocavich/vostok-mod-loader/commit/6fe09debaffc7894c708972c7f8458188dcaedf2))
+* dev-folder restart loop + debounce priority saves ([3e26aaa](https://github.com/ametrocavich/vostok-mod-loader/commit/3e26aaa2563c0c5304b6e6c1002821d850746bc7))
+* embed launcher sub-windows so tooltips/popups render on top ([42f85d6](https://github.com/ametrocavich/vostok-mod-loader/commit/42f85d6aac8fa3d35fef34e976dc7f0d173edb28))
+* enlarge save-modpack dialog so the name field doesn't hide the description ([363a3de](https://github.com/ametrocavich/vostok-mod-loader/commit/363a3de0579389d8f9bcd677a539536ff8ddfec3))
+* final audit pass -- correctness, UX, and consistency fixes ([38e0780](https://github.com/ametrocavich/vostok-mod-loader/commit/38e0780d11decbe2ce31623b877fc2b26feaf20b))
+* flow-readiness follow-ups -- null-safe list parsing, unload guard, resource-pack downloads ([55d433d](https://github.com/ametrocavich/vostok-mod-loader/commit/55d433d23d219a6cc40ca38bd5847cec29b121b0))
+* flow-readiness round 2 -- broken Browse download queue + filter caret + author key ([cf49992](https://github.com/ametrocavich/vostok-mod-loader/commit/cf499922f8a5c31fddc004198808930e8ee00050))
+* flush pending priority edit before switching profiles ([5a8fbcb](https://github.com/ametrocavich/vostok-mod-loader/commit/5a8fbcb041cabe28c41d4e95f602958458eaa458))
+* guard all in-place tab rebuilds against re-entrant tab_changed ([037e14c](https://github.com/ametrocavich/vostok-mod-loader/commit/037e14c4b99d6316eea52c8e8f30a464c8434d60))
+* harden deferred engine edges + Browse cross-page sort ([aef7c00](https://github.com/ametrocavich/vostok-mod-loader/commit/aef7c0097f585a8c79df2cab7a12568d863b4809))
+* harden profile share round-trip (preserve dep_ignore, reject managed-prefix names) ([072e7ac](https://github.com/ametrocavich/vostok-mod-loader/commit/072e7acd2e1b53bda0e904977557a295b9abc063))
+* header close-button hint uses status line, not a stranded tooltip ([c8af42d](https://github.com/ametrocavich/vostok-mod-loader/commit/c8af42dd68cbfe4995e533d8736aef8b3efc2fe2))
+* keep the mods-list scroll position across tab rebuilds ([552d79f](https://github.com/ametrocavich/vostok-mod-loader/commit/552d79ff7e6b6c1361d060c4a2c8789fb3f15515))
+* modpack-state recovery + dependency ordering + download robustness ([a33f5a3](https://github.com/ametrocavich/vostok-mod-loader/commit/a33f5a31fd7442748c9b651ae36f5ef809b88fee))
+* modpacks include only enabled mods, not disabled-but-installed ones ([19a38a1](https://github.com/ametrocavich/vostok-mod-loader/commit/19a38a1148ecb786862d755bfe0177d555f65274))
+* order-panel hints use the status line, not stranded tooltips ([f780ced](https://github.com/ametrocavich/vostok-mod-loader/commit/f780ced055c5a373a3708405958fd3d7b7faf31c))
+* panel-sized dependency messages + ellipsis trimming ([e69fe4d](https://github.com/ametrocavich/vostok-mod-loader/commit/e69fe4d0fc503627ea62d77904dd1e237a8ca54f))
+* pin order-panel scrollbar + clip order labels to stop layout oscillation crash ([a7128ca](https://github.com/ametrocavich/vostok-mod-loader/commit/a7128ca75c5a794f7ad9d068cd62b65aac40bfcc))
+* post-review hardening for 3.3 (config durability, content-mod save guard, update path, tooltip) ([ca40ea5](https://github.com/ametrocavich/vostok-mod-loader/commit/ca40ea5dada2113b44c1c8af11ba9feb4a69e3d3))
+* readiness hardening (restore-point edges, honest apply/cancel, update feedback) ([a3dcc97](https://github.com/ametrocavich/vostok-mod-loader/commit/a3dcc97c475b3c71f8030f8e3e90162c43577c86))
+* reopen-path persistence + download timeout ([b375b8d](https://github.com/ametrocavich/vostok-mod-loader/commit/b375b8d24c9354dbe49a5f52c42993155f365029))
+* sort Browse search results client-side (MWS ignores sort with a query) ([be05945](https://github.com/ametrocavich/vostok-mod-loader/commit/be05945357533b5386ab7f5e569fc43ce3443fe4))
+* type ordered_keys as Array[String] -- untyped loop var breaks := inference on Godot 4.6.2 ([eceb7fb](https://github.com/ametrocavich/vostok-mod-loader/commit/eceb7fb27d92cefd05bdc050e1ddd4fac68874fd))
+* **ui:** audit-wave hardening (update flows, browse edges, profile state preservation, restore-point honesty) ([73beffd](https://github.com/ametrocavich/vostok-mod-loader/commit/73beffd8b935fd223a468d511d3bb75f705e85ac))
+* untype the cycle-walk stack -- Array[int] assignment from plain Array is a runtime error ([59e5638](https://github.com/ametrocavich/vostok-mod-loader/commit/59e56389f11082f864b347f2fe101d35da492cc9))
+* update check uses ?mod_ids[]= query params + chunk-2 discovery fixes ([52d69fb](https://github.com/ametrocavich/vostok-mod-loader/commit/52d69fb930ece7b34c76e478e843414e0ce5ba4c))
+
 ## [3.2.1](https://github.com/ametrocavich/vostok-mod-loader/compare/v3.2.0...v3.2.1) (2026-05-05)
 
 

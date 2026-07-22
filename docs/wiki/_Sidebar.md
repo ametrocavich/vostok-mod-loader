@@ -7,15 +7,18 @@
 - [Modpacks](Modpacks)
 - [Limitations](Limitations)
 
-**For mod authors / developers**
-- [Mod-Format](Mod-Format)
-- [Profile-Format](Profile-Format)
-- [Config-Files](Config-Files)
-- [Architecture](Architecture)
-- [Modules](Modules)
+**Writing a mod**
 - [Hooks](Hooks)
 - [Registry](Registry)
+- [Dependencies](Dependencies)
+- [Mod-Format](Mod-Format)
 - [Setup-Plans](Setup-Plans)
+- [Config-Files](Config-Files)
+- [Profile-Format](Profile-Format)
+
+**Internals**
+- [Architecture](Architecture)
+- [Modules](Modules)
 - [GDSC-Detokenizer](GDSC-Detokenizer)
 - [Stability-Canaries](Stability-Canaries)
 - [Build](Build)
