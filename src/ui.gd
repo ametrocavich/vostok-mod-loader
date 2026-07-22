@@ -548,6 +548,15 @@ func _live_entry_for_profile_key(profile_key: String, fallback: Dictionary) -> D
 # file so _ui_mod_entries reflects on-disk reality before the Mods tab rebuilds.
 # Callers keep their own (divergent) _rebuild_mods_tab guard after this returns.
 func _reload_entries_for_active_profile() -> void:
+	# Flush a pending debounced priority edit BEFORE reloading. A load-order
+	# drag arms the 0.4s _schedule_priority_save timer and the edit lives only
+	# in _ui_mod_entries until it fires; the reload below replaces those dicts
+	# from the on-disk config, so an async download completing mid-window would
+	# silently revert the edit -- and the late timer would then persist the
+	# reverted state. Same flush _switch_profile does for the same race.
+	if _priority_save_pending:
+		_priority_save_pending = false
+		_save_ui_config()
 	_ui_mod_entries = collect_mod_metadata()
 	var cfg := ConfigFile.new()
 	cfg.load(UI_CONFIG_PATH)
@@ -884,8 +893,9 @@ func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: Ta
 	d.title = "Save partial modpack?" if has_orphans else "Save as modpack"
 	# Sized so name + author + description all fit without the outer scroll
 	# swallowing the description (the name field pushed content past the old
-	# 220px). Still capped to sit inside the 640-tall launcher.
-	d.min_size = Vector2i(600, 520 if has_orphans else 420)
+	# 220px). Clamped to the live launcher size -- the fixed 600x520 was
+	# taller than the launcher's 640x420 minimum and got clipped.
+	d.min_size = _dialog_fit_size(Vector2i(600, 520 if has_orphans else 420))
 	d.max_size = Vector2i(780, 600)
 
 	var outer_scroll := ScrollContainer.new()
@@ -996,6 +1006,19 @@ func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: Ta
 			list.add_child(lbl)
 
 	d.ok_button_text = "Save anyway" if has_orphans else "Save modpack"
+	# Keep the dialog open until the save actually succeeds: freeing the
+	# form BEFORE validating meant a name collision (or invalid name)
+	# destroyed the typed name/author/description and the user had to
+	# retype everything. Same inline-error pattern as New/Rename profile.
+	d.dialog_hide_on_ok = false
+	# Error label OUTSIDE the scroll (sibling of it) so it is always
+	# visible above the button bar regardless of scroll position.
+	var err_lbl := Label.new()
+	err_lbl.add_theme_color_override("font_color", COL_ERR)
+	err_lbl.add_theme_font_size_override("font_size", FS_BODY)
+	err_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	err_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	d.add_child(err_lbl)
 	_attach_ui_dialog(d)
 	# "Save anyway" is a caution (this modpack cannot fully auto-download),
 	# not an encouraged action -- keep the danger voice on the orphan path.
@@ -1008,17 +1031,21 @@ func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: Ta
 			var pack_name := name_input.text.strip_edges()
 			var desc := desc_input.text
 			var author := author_input.text.strip_edges()
-			d.queue_free()
 			if pack_name == "":
 				pack_name = profile_to_save
 			# Remember author across saves -- avoids forcing the user to
 			# retype their handle every modpack. Cleared if they explicitly
 			# blank it out.
 			_save_preferred_author(author)
+			# Validate/save BEFORE freeing the dialog (dialog_hide_on_ok is
+			# false): on any failure -- name collision, invalid name, export
+			# error -- the form survives with everything typed and the error
+			# shows inline instead of in a dialog over a destroyed form.
 			var result := save_profile_as_modpack(profile_to_save, pack_name, desc, author)
 			if not bool(result.get("ok", false)):
-				_show_error_dialog("Could not save modpack", str(result.get("error", "unknown")))
+				err_lbl.text = str(result.get("error", "unknown"))
 				return
+			d.queue_free()
 			_rebuild_modpacks_tab(tabs)
 			# Confirm what happened, where the file is, and how to share it --
 			# the save is otherwise silent, leaving the user unsure it worked.
@@ -1458,6 +1485,12 @@ func _rebuild_updates_tab(tabs: TabContainer) -> void:
 	var old := tabs.get_node_or_null(UI_TAB_UPDATES)
 	if old == null:
 		return
+	# Carry the list scroll across the teardown (same pattern as
+	# _rebuild_mods_tab) -- without this, switching away and back snapped a
+	# long list back to the top.
+	var saved_scroll := 0
+	if is_instance_valid(_ui_updates_scroll):
+		saved_scroll = _ui_updates_scroll.scroll_vertical
 	_rebuilding_tab_in_place = true
 	var idx := old.get_index()
 	var current_tab_node := tabs.get_tab_control(tabs.current_tab) if tabs.get_tab_count() > 0 else null
@@ -1474,6 +1507,17 @@ func _rebuild_updates_tab(tabs: TabContainer) -> void:
 			tabs.current_tab = i
 			break
 	_rebuilding_tab_in_place = false
+	if saved_scroll > 0:
+		_restore_updates_scroll(saved_scroll)
+
+# Restore one frame later: the fresh rows haven't been laid out yet when
+# _rebuild_updates_tab returns, so setting scroll_vertical immediately clamps
+# against a zero-height list and lands back at the top (same as
+# _restore_mods_scroll).
+func _restore_updates_scroll(saved_scroll: int) -> void:
+	await get_tree().process_frame
+	if is_instance_valid(_ui_updates_scroll):
+		_ui_updates_scroll.scroll_vertical = saved_scroll
 
 # Modpack-apply failure summary with per-mod rows. Each failure shows the
 # profile_key + reason + an "Open MWS page" button (when an mws_id is
@@ -1486,7 +1530,9 @@ func _show_modpack_failure_dialog(downloaded: int, failures: Array, tabs: TabCon
 	var d := AcceptDialog.new()
 	d.title = "Modpack applied with issues"
 	d.ok_button_text = "Close"
-	d.min_size = Vector2i(540, 420)
+	# Clamped to the launcher: at the 640x420 window minimum a fixed
+	# 540x420 dialog was clipped by the embedder (button bar cut off).
+	d.min_size = _dialog_fit_size(Vector2i(540, 420))
 
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", SP_M)
@@ -1497,7 +1543,9 @@ func _show_modpack_failure_dialog(downloaded: int, failures: Array, tabs: TabCon
 	box.add_child(hdr)
 
 	var scroll := ScrollContainer.new()
-	scroll.custom_minimum_size = Vector2(520, 280)
+	# Track the (possibly clamped) dialog size, keeping the original
+	# 20x140 chrome allowance (540x420 dialog held a 520x280 scroll).
+	scroll.custom_minimum_size = Vector2(d.min_size - Vector2i(20, 140))
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	box.add_child(scroll)
@@ -1575,26 +1623,27 @@ func _show_modpack_failure_dialog(downloaded: int, failures: Array, tabs: TabCon
 # dialog during, then re-shows the failure dialog if anything still failed
 # (with one fewer entry typically -- successfully retried mods drop off).
 func _run_modpack_retry(failures: Array, tabs: TabContainer) -> void:
-	var pd := AcceptDialog.new()
-	pd.title = "Retrying failed downloads"
-	pd.min_size = Vector2i(440, 120)
-	# Build content BEFORE _attach so the helper reparents it into the
-	# root VBox with the injected title -- adding after _attach would
-	# leave the status label outside the layout.
-	var status_lbl := Label.new()
-	status_lbl.text = "Preparing..."
-	status_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	status_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	status_lbl.custom_minimum_size.x = 400
-	pd.add_child(status_lbl)
-	_attach_ui_dialog(pd)
-	# Swallow ESC while downloads run, same as the apply progress dialog:
-	# a hidden (not cancelled) exclusive dialog would lift the input block
-	# and let the user Launch / apply another modpack mid-retry.
-	pd.dialog_close_on_escape = false
-	var pd_ok := pd.get_ok_button()
-	if pd_ok != null:
-		pd_ok.visible = false
+	# Reuse the apply progress dialog so the retry pass gets the same
+	# ProgressBar + Cancel affordance. The old hand-rolled dialog swallowed
+	# ESC (correctly -- a hidden exclusive dialog lifts the input block) but
+	# offered NO cancel control, trapping the user for the whole sequential
+	# download run (up to 300s per item on a bad connection). Cancel sets
+	# the shared _modpack_apply_cancelled flag, which
+	# retry_failed_downloads checks at each loop top.
+	_modpack_apply_cancelled = false
+	var progress_ui := _build_modpack_progress_dialog("", "Retrying failed downloads")
+	var pd: AcceptDialog = progress_ui["dialog"]
+	var pd_bar: ProgressBar = progress_ui["bar"]
+	var status_lbl: Label = progress_ui["status"]
+	var pd_cancel: Button = progress_ui["cancel"]
+	pd_cancel.pressed.connect(func():
+		if is_instance_valid(status_lbl):
+			status_lbl.text = "Cancelling after current download..."
+		if is_instance_valid(pd_cancel):
+			pd_cancel.disabled = true
+			pd_cancel.text = "Cancelling..."
+		_modpack_apply_cancelled = true
+	)
 	pd.popup_centered()
 
 	var progress_cb := func(p: Dictionary):
@@ -1603,6 +1652,12 @@ func _run_modpack_retry(failures: Array, tabs: TabContainer) -> void:
 		var cur := int(p.get("current", 0))
 		var tot := int(p.get("total", 0))
 		var nm := str(p.get("mod_name", ""))
+		var act := str(p.get("action", ""))
+		if is_instance_valid(pd_bar) and tot > 0:
+			pd_bar.value = float(cur) / float(tot) * 100.0
+		if act == "rate_wait":
+			status_lbl.text = "Rate limited by ModWorkshop -- resuming in %ds" % int(p.get("wait_s", 0))
+			return
 		if nm != "":
 			status_lbl.text = "Retrying %d of %d:\n%s" % [cur, tot, nm]
 		else:
@@ -1667,6 +1722,21 @@ func _show_error_dialog(title: String, message: String) -> void:
 func _show_info_toast(message: String) -> void:
 	_show_accept_dialog("Mod Loader", message, "Close")
 
+
+# Clamp a dialog's desired min_size to fit inside the live launcher window.
+# Dialogs are embedded sub-windows (gui_embed_subwindows) so they can never
+# be larger than the launcher: a fixed min_size above the launcher's own
+# minimum size (640x420 logical) gets clipped by the embedder near that
+# minimum, cutting off content and the bottom button bar with no way to
+# resize the borderless dialog. Sizes here are in the launcher's LOGICAL
+# (content-scaled) coordinates -- the same space embedded windows are laid
+# out in -- so divide the physical window size by content_scale_factor.
+func _dialog_fit_size(desired: Vector2i) -> Vector2i:
+	if _ui_window == null or not is_instance_valid(_ui_window):
+		return desired
+	var scale: float = maxf(_ui_window.content_scale_factor, 0.001)
+	var avail := Vector2i(Vector2(_ui_window.size) / scale) - Vector2i(24, 24)
+	return Vector2i(mini(desired.x, maxi(avail.x, 200)), mini(desired.y, maxi(avail.y, 150)))
 
 # All launcher dialogs flow through this. Renders as a borderless dark
 # card: theme applied, OS chrome dropped, title + dialog_text consumed
@@ -2520,6 +2590,12 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 				var act := str(p.get("action", ""))
 				if is_instance_valid(pd_bar) and tot > 0:
 					pd_bar.value = float(cur) / float(tot) * 100.0
+				# Rate-limit pause: the apply loop is waiting out the MWS
+				# cooldown, not downloading -- show the live countdown so
+				# the dialog doesn't look hung. Cancel stays available.
+				if act == "rate_wait":
+					pd_status.text = "Rate limited by ModWorkshop -- resuming in %ds" % int(p.get("wait_s", 0))
+					return
 				var prefix := "Downloading"
 				if act == "skipped": prefix = "Skipping (manual install)"
 				elif act == "applying": prefix = "Applying modpack"
@@ -2597,9 +2673,11 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 # Cancel button. Returns the dialog plus references to the controls so
 # callers can wire signals + update them. Build content BEFORE _attach_ui_dialog
 # so the helper's reparent-children step folds them into the root VBox.
-func _build_modpack_progress_dialog(raw_name: String) -> Dictionary:
+# title_override lets the retry pass reuse the same dialog (same Cancel
+# affordance) under its own title.
+func _build_modpack_progress_dialog(raw_name: String, title_override: String = "") -> Dictionary:
 	var pd := AcceptDialog.new()
-	pd.title = "Applying modpack \"" + raw_name + "\""
+	pd.title = title_override if title_override != "" else "Applying modpack \"" + raw_name + "\""
 	pd.min_size = Vector2i(520, 200)
 	pd.ok_button_text = "Close"
 
@@ -2671,10 +2749,14 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 	var d := AcceptDialog.new()
 	d.title = str(entry.get("raw_name", "?"))
 	d.ok_button_text = "Close"
-	d.min_size = Vector2i(660, 540)
+	# Clamped to the launcher: the fixed 660x540 exceeded the launcher's
+	# 640x420 minimum in BOTH axes and got clipped by the embedder.
+	d.min_size = _dialog_fit_size(Vector2i(660, 540))
 
 	var scroll := ScrollContainer.new()
-	scroll.custom_minimum_size = Vector2(640, 480)
+	# Track the (possibly clamped) dialog size, keeping the original
+	# 20x60 chrome allowance (660x540 dialog held a 640x480 scroll).
+	scroll.custom_minimum_size = Vector2(d.min_size - Vector2i(20, 60))
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	d.add_child(scroll)
@@ -3299,6 +3381,8 @@ func show_mod_ui() -> void:
 	_ui_update_alert_btn = null
 	_ui_mods_scroll = null
 	_ui_modpacks_scroll = null
+	_ui_updates_scroll = null
+	_ui_updates_check_btn = null
 	# Drop the Browse-tab API response cache. It's a session optimization,
 	# not durable state -- the modloader autoload survives across launcher
 	# open/close (rare in practice) and we don't want the dict to accumulate
@@ -3996,15 +4080,82 @@ func _mods_apply_mws_meta(mod_id: int, data: Dictionary) -> void:
 					name_col.add_child(author_lbl)
 					name_col.move_child(author_lbl, 1)  # right under the name
 
+# Paint the "load failed" overlay onto every current Mods-tab row for mod_id
+# when its meta fetch failed outright (offline, mod gone). Same paint-time
+# _mods_meta_nodes lookup as _mods_apply_mws_meta, so a rebuild mid-fetch is
+# safe. Without this the cell stayed a permanently ambiguous gray panel --
+# indistinguishable from still-loading. Callers must only invoke this when no
+# memoized data exists for the id (a failed soft refresh must not caption an
+# already-painted texture).
+func _mods_paint_meta_failed(mod_id: int) -> void:
+	var rows_v: Variant = _mods_meta_nodes.get(mod_id)
+	if not (rows_v is Array):
+		return
+	for nodes_v in (rows_v as Array):
+		if not (nodes_v is Dictionary):
+			continue
+		var thumb_v: Variant = (nodes_v as Dictionary).get("thumb")
+		if is_instance_valid(thumb_v) and thumb_v is TextureRect:
+			_set_thumb_failed(thumb_v as TextureRect, true)
+
+# Serialized background meta fetches (rate-budget guard). A first launch with
+# an empty sidecar used to fire one parallel mws_get_mod per MWS-linked row at
+# window open -- on top of the Browse landing's list + categories calls --
+# which could drain the guest 90 req/min budget and arm the rate cooldown
+# through no user action. Ids queue here instead; one drain loop fetches them
+# sequentially and stops while a cooldown is armed (the per-id 60s retry
+# window in _mods_load_mws_meta lets a later rebuild re-enqueue them).
+var _mods_meta_fetch_queue: Array[int] = []
+var _mods_meta_fetch_active := false
+
+func _mods_meta_fetch_enqueue(mod_id: int) -> void:
+	# No dedupe needed: enqueue points sit behind _mods_mws_meta_retry_at,
+	# which is armed before the enqueue, so the same id can't queue twice
+	# within its retry window.
+	_mods_meta_fetch_queue.append(mod_id)
+	if _mods_meta_fetch_active:
+		return
+	_mods_meta_fetch_active = true
+	while not _mods_meta_fetch_queue.is_empty():
+		if mws_rate_cooldown_seconds() > 0:
+			# Don't spend the recovery window on background meta -- user-facing
+			# surfaces (Browse, downloads) need the budget more.
+			_mods_meta_fetch_queue.clear()
+			break
+		var next_id: int = int(_mods_meta_fetch_queue.pop_front())
+		var fetched: Variant = await mws_get_mod(next_id)
+		var fetch_ok := false
+		if fetched is Dictionary:
+			var obj: Variant = (fetched as Dictionary).get("data", fetched)
+			if obj is Dictionary and not (obj as Dictionary).is_empty():
+				fetch_ok = true
+				_mods_mws_meta_by_id[next_id] = obj
+				# Persist real fetches so the next launch renders without a
+				# request.
+				_mods_meta_sidecar_store(next_id)
+				# Paint-time node lookup -- safe even if the row (or the whole
+				# launcher) is gone by now; it just memoizes.
+				_mods_apply_mws_meta(next_id, obj)
+		if not fetch_ok:
+			# Cold-path failure (no memo to fall back on): caption the cell
+			# "load failed" instead of leaving it ambiguous gray. A failed
+			# SOFT refresh keeps its already-painted memoized texture -- no
+			# overlay there.
+			var memo_v: Variant = _mods_mws_meta_by_id.get(next_id)
+			if not (memo_v is Dictionary) or (memo_v as Dictionary).is_empty():
+				_mods_paint_meta_failed(next_id)
+	_mods_meta_fetch_active = false
+
 # Populate an installed mod row's ModWorkshop thumbnail + author, and stash the
 # mod object so the name link can open the Browse detail dialog (description +
 # file history). Memo-first (seeded from the on-disk sidecar, so relaunches and
-# offline render instantly), then the Browse snapshot, then a by-id fetch only
-# for mods neither covers. All async and best-effort: offline or a failed
-# fetch just leaves the gray placeholder and the name link shows a gentle
-# notice -- no error, no log spam. Painting goes through _mods_apply_mws_meta,
-# which resolves the row's CURRENT nodes from _mods_meta_nodes at paint time,
-# so a fetch that outlives a tab rebuild still lands on screen.
+# offline render instantly), then the Browse snapshot, then a QUEUED by-id
+# fetch only for mods neither covers. All async and best-effort: offline or a
+# failed fetch just leaves the gray placeholder and the name link shows a
+# gentle notice -- no error, no log spam. Painting goes through
+# _mods_apply_mws_meta, which resolves the row's CURRENT nodes from
+# _mods_meta_nodes at paint time, so a fetch that outlives a tab rebuild still
+# lands on screen.
 func _mods_load_mws_meta(mod_id: int) -> void:
 	_mods_meta_sidecar_load()
 	var data: Dictionary = _mods_mws_meta_by_id.get(mod_id, {})
@@ -4022,42 +4173,30 @@ func _mods_load_mws_meta(mod_id: int) -> void:
 				or int(Time.get_unix_time_from_system()) - saved_at < _MODS_META_REFRESH_SEC:
 			return
 		# Same retry window as the cold path, so racing rebuilds share one
-		# refresh request per mod per minute.
+		# refresh request per mod per minute. The queue serializes the actual
+		# fetch (memo + sidecar + repaint happen on completion there).
 		if Time.get_ticks_msec() < int(_mods_mws_meta_retry_at.get(mod_id, 0)):
 			return
 		_mods_mws_meta_retry_at[mod_id] = Time.get_ticks_msec() + 60000
-		var refreshed: Variant = await mws_get_mod(mod_id)
-		if refreshed is Dictionary:
-			var obj_v: Variant = (refreshed as Dictionary).get("data", refreshed)
-			if obj_v is Dictionary and not (obj_v as Dictionary).is_empty():
-				_mods_mws_meta_by_id[mod_id] = obj_v
-				_mods_meta_sidecar_store(mod_id)
-				_mods_apply_mws_meta(mod_id, obj_v)
+		_mods_meta_fetch_enqueue(mod_id)
 		return
-	# Skip if a recent attempt failed or is still in flight. The retry window
-	# is armed BEFORE the await, so quick racing rebuilds don't each fire a
-	# request; successes are memoed for the session below.
+	# Skip if a recent attempt failed or is still queued/in flight. The retry
+	# window is armed BEFORE the enqueue, so quick racing rebuilds don't each
+	# queue a request; successes are memoed by the drain loop.
 	if Time.get_ticks_msec() < int(_mods_mws_meta_retry_at.get(mod_id, 0)):
 		return
 	_mods_mws_meta_retry_at[mod_id] = Time.get_ticks_msec() + 60000
 	data = _mods_cached_summary_by_id(mod_id)
 	if data.is_empty():
-		var fetched: Variant = await mws_get_mod(mod_id)
-		if fetched is Dictionary:
-			var obj: Variant = (fetched as Dictionary).get("data", fetched)
-			if obj is Dictionary:
-				data = obj
-		if not data.is_empty():
-			_mods_mws_meta_by_id[mod_id] = data
-			# Persist real fetches so the next launch renders without a
-			# request; snapshot hits below stay session-only (the snapshot
-			# itself already persists).
-			_mods_meta_sidecar_store(mod_id)
-	else:
-		# Snapshot hit: memo for the session, exactly as before the sidecar.
-		_mods_mws_meta_by_id[mod_id] = data
-	if data.is_empty():
+		# Cold path: no memo, no snapshot. Queue the network fetch instead of
+		# firing it inline -- N uncached rows used to spawn N parallel requests
+		# in one build loop (see _mods_meta_fetch_enqueue). The queue memoizes,
+		# persists to the sidecar, and paints on completion; snapshot hits
+		# below stay session-only (the snapshot itself already persists).
+		_mods_meta_fetch_enqueue(mod_id)
 		return
+	# Snapshot hit: memo for the session, exactly as before the sidecar.
+	_mods_mws_meta_by_id[mod_id] = data
 	_mods_apply_mws_meta(mod_id, data)
 
 # Click handler for a Mods-row ModWorkshop name link. Opens the same detail
@@ -4348,12 +4487,29 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			_show_info_toast(msg)
 	)
 
+	# Debounce the filter rebuild: text_changed fires per keystroke, and every
+	# _rebuild_mods_tab is a full tear-down with synchronous disk work (config
+	# loads, modpack zip parse, thumbnail decodes) -- typing a word used to
+	# cost one full rebuild per letter. Same pattern as the Browse search box:
+	# keystrokes only store the text and restart the timer; the timeout does
+	# the one rebuild. The timer lives in the tab, so a rebuild from another
+	# surface frees it mid-wait -- harmless, since that rebuild already renders
+	# the stored _mods_filter_text.
+	var filter_debounce := Timer.new()
+	filter_debounce.one_shot = true
+	filter_debounce.wait_time = 0.25
+	filter_bar.add_child(filter_debounce)
+	filter_debounce.timeout.connect(func():
+		# Restore focus after the rebuild so the user can keep typing.
+		# Flag is consumed on the next build below.
+		_mods_filter_focus_pending = true
+		if is_instance_valid(tabs):
+			_rebuild_mods_tab(tabs)
+	)
 	filter_edit.text_changed.connect(func(t: String):
 		_mods_filter_text = t
-		# Each text_changed rebuilds the tab; restore focus afterward so the
-		# user can keep typing. Flag is consumed on the next build below.
-		_mods_filter_focus_pending = true
-		_rebuild_mods_tab(tabs)
+		filter_debounce.stop()
+		filter_debounce.start()
 	)
 	all_btn.pressed.connect(func():
 		for entry in _ui_mod_entries:
@@ -4449,13 +4605,16 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 
 	# Rebuilds the right-side order list from current entry state.
 	var refresh_order := func():
-		_refresh_dependency_status()
+		# _refresh_dependency_status already ran the full resolution pipeline
+		# (priority sort + topological order + blocked-set fixpoint) and hands
+		# back the same pick the loader itself uses -- the panel shows the
+		# EFFECTIVE order, so what you see is what mounts. Reusing it matters
+		# here: this closure fires per step while a load-order spin arrow is
+		# held, and a second _loadable_enabled_entries call per tick doubled
+		# the whole pipeline.
+		var pick: Dictionary = _refresh_dependency_status()
 		for child in order_list.get_children():
 			child.queue_free()
-		# Same pick the loader itself uses -- the panel shows the EFFECTIVE
-		# order (priority sort + dependency hoist), so what you see is what
-		# mounts.
-		var pick := _loadable_enabled_entries()
 		var loadable: Array = pick["loadable"]
 		var enabled_count := int(pick["enabled_count"])
 		if enabled_count == 0:
@@ -4831,6 +4990,11 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	# Track whether any row passed the filter so we can show a hint when a
 	# search or hide-disabled toggle narrows the list to zero rows.
 	var rendered_any := false
+	# Hoisted once per build for _dependency_display_for_id: its fallback
+	# rebuilds this whole map per call, and the row loop below calls it per
+	# dependency for both the visible "needs:" line and the tooltip --
+	# O(rows x deps x mods) rebuilds per keystroke without the hoist.
+	var dep_names_by_id := _entries_by_mod_id(_ui_mod_entries)
 	for entry in _ui_mod_entries:
 		if not _mods_entry_visible(entry):
 			continue
@@ -4948,7 +5112,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		if required_deps.size() > 0 or optional_deps.size() > 0:
 			var named := PackedStringArray()
 			for d in required_deps:
-				named.append(_dependency_display_for_id(str(d)))
+				named.append(_dependency_display_for_id(str(d), dep_names_by_id))
 			var dep_line := ""
 			if named.size() > 0:
 				dep_line = "needs: " + ", ".join(named)
@@ -4959,9 +5123,9 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 					dep_line = "%d optional integration(s)" % optional_deps.size()
 			var tip := PackedStringArray()
 			for d in required_deps:
-				tip.append("requires %s (%s)" % [_dependency_display_for_id(str(d)), str(d)])
+				tip.append("requires %s (%s)" % [_dependency_display_for_id(str(d), dep_names_by_id), str(d)])
 			for d in optional_deps:
-				tip.append("optional: %s (%s)" % [_dependency_display_for_id(str(d)), str(d)])
+				tip.append("optional: %s (%s)" % [_dependency_display_for_id(str(d), dep_names_by_id), str(d)])
 			name_col.add_child(_make_sub_label(dep_line, COL_TEXT_DIM, "\n".join(tip)))
 		for warn_text: String in entry.get("warnings", []):
 			name_col.add_child(_make_sub_label(warn_text, COL_AMBER, warn_text))
@@ -5138,7 +5302,12 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			_after_dep_action(tabs)
 		)
 		spin.value_changed.connect(func(val: float):
-			e["priority"] = int(val)
+			# Write through the LIVE entry like the checkbox handler above: a
+			# mid-drag rescan (e.g. a background download finishing) replaces
+			# _ui_mod_entries with fresh dicts, orphaning the captured `e` --
+			# later ticks written into it would never be saved.
+			var live_spin := _live_entry_for_profile_key(str(e.get("profile_key", "")), e)
+			live_spin["priority"] = int(val)
 			# No rebuild here: value_changed fires per step while the arrows
 			# are held, and rebuilding would destroy the SpinBox under the
 			# cursor. refresh_order recomputes dependency status for the
@@ -5224,6 +5393,18 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		# download_queue: Array of {mod_data, get_btn} dicts awaiting their
 		# turn. on_get drains this FIFO once the current download completes.
 		"download_queue": [],
+		# queue_failures / queue_done_total: per-batch failure report. A failed
+		# item's status line is synchronously overwritten while the queue
+		# drains (next item's "Downloading...", then the success re-fetch), so
+		# failures accumulate here and are summarized once the queue empties.
+		"queue_failures": [],
+		"queue_done_total": 0,
+		# categories_loaded / categories_loading: the category dropdown is
+		# populated by a one-shot fetch at tab build. These gate the retry
+		# paths (banner Retry, next successful list fetch) so the dropdown can
+		# recover from a failed first fetch without ever double-populating.
+		"categories_loaded": false,
+		"categories_loading": false,
 	}
 
 	# -- Toolbar: search + sort + category --
@@ -5308,6 +5489,28 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		status_lbl.text = text
 		status_lbl.add_theme_color_override("font_color", color)
 
+	# Mirror of set_status for downloads started from the detail dialog. The
+	# dialog is exclusive and covers the tab's status label, so failures and
+	# already-downloading/queued notices were invisible behind it -- the
+	# dialog's button just flipped back to "Download" with no explanation.
+	# _show_browse_mod_detail_dialog tags its Download button with an
+	# in-dialog status Label (meta "browse_dialog_status"); when the button
+	# that initiated the download carries that tag, render the message there
+	# too. No-op for list-row buttons and freed dialogs.
+	var set_dl_status := func(get_btn: Variant, text: String, color: Color):
+		if not is_instance_valid(get_btn):
+			return
+		var btn := get_btn as Button
+		if btn == null or not btn.has_meta("browse_dialog_status"):
+			return
+		var lbl_v: Variant = btn.get_meta("browse_dialog_status")
+		if is_instance_valid(lbl_v) and lbl_v is Label:
+			var lbl := lbl_v as Label
+			lbl.visible = true
+			lbl.text = text
+			lbl.tooltip_text = text
+			lbl.add_theme_color_override("font_color", color)
+
 	# Failure reason for the offline banner. The 429 cooldown owns the copy
 	# while it is armed (rate-limited is actionable-by-waiting, unreachable
 	# is not); otherwise the generic unreachable line.
@@ -5352,6 +5555,10 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		retry_btn.text = "Retry"
 		banner_row.add_child(retry_btn)
 		retry_btn.pressed.connect(func():
+			# The category dropdown's one-shot fetch may have failed in the
+			# same outage that raised this banner; Retry is the tab's recovery
+			# affordance, so repopulate it too (guarded no-op once loaded).
+			(state["fn_populate_categories"] as Callable).call()
 			if str(state["mode"]) == "discover":
 				(state["fn_discover_fetch"] as Callable).call()
 			else:
@@ -5457,6 +5664,26 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		var queue: Array = state["download_queue"]
 		var qsuffix := (" (" + str(queue.size()) + " queued)") if not queue.is_empty() else ""
 		set_status.call("Downloading " + str(mod_data.get("name", "?")) + qsuffix + "...", COL_AMBER)
+		set_dl_status.call(get_btn, "Downloading " + str(mod_data.get("name", "?")) + "...", COL_AMBER)
+
+		# Rate-limit pause, same as the modpack apply loop: once a 429 arms
+		# the cooldown, every remaining queued item's metadata lookup would
+		# fail fast in milliseconds and the whole batch would mass-fail.
+		# Wait it out with a visible countdown instead; the Browse tab stays
+		# interactive (no modal here). Bail if the launcher closes mid-wait.
+		var rate_waited := false
+		while mws_rate_cooldown_seconds() > 0:
+			rate_waited = true
+			if not is_instance_valid(status_lbl) or get_tree() == null:
+				state["downloading_id"] = -1
+				return
+			var wait_s := mws_rate_cooldown_seconds()
+			set_status.call("Rate limited by ModWorkshop -- resuming in %ds" % wait_s, COL_AMBER)
+			set_dl_status.call(get_btn, "Rate limited by ModWorkshop -- resuming in %ds" % wait_s, COL_AMBER)
+			await get_tree().create_timer(1.0).timeout
+		if rate_waited and is_instance_valid(status_lbl):
+			set_status.call("Downloading " + str(mod_data.get("name", "?")) + "...", COL_AMBER)
+			set_dl_status.call(get_btn, "Downloading " + str(mod_data.get("name", "?")) + "...", COL_AMBER)
 
 		var result: Dictionary = await download_new_mod(mws_id)
 		state["downloading_id"] = -1
@@ -5468,18 +5695,22 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		if not is_instance_valid(status_lbl):
 			return
 
+		# Count every completed item (success or failure) so the drain summary
+		# below can say "N of M downloads failed".
+		state["queue_done_total"] = int(state.get("queue_done_total", 0)) + 1
+
 		if bool(result.get("ok", false)):
-			# Remember that this queued batch installed at least one mod, so
-			# the drain below can still sync duplicate rows when a LATER item
-			# in the batch fails (the re-fetch is gated on the last result).
+			# Remember that this batch installed at least one mod; the drain
+			# below keys the one-shot rescan and row sync on it. The full
+			# mods-dir rescan + Mods-tab rebuild happen at drain, NOT here:
+			# per-item they re-opened every installed archive and rebuilt the
+			# hidden Mods tab once per queued download.
 			state["queue_any_success"] = true
-			_reload_entries_for_active_profile()
-			if is_instance_valid(tabs):
-				_rebuild_mods_tab(tabs)
 			if is_instance_valid(get_btn):
 				get_btn.text = "Installed"
 				get_btn.disabled = true
 			set_status.call("Installed " + str(result.get("file_name", "")), COL_OK)
+			set_dl_status.call(get_btn, "Installed " + str(result.get("file_name", "")), COL_OK)
 		else:
 			if is_instance_valid(get_btn):
 				get_btn.disabled = false
@@ -5490,15 +5721,22 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			var err_detail := str(result.get("error", "")).strip_edges()
 			if err_detail.is_empty():
 				err_detail = "Check your connection and try again."
-			set_status.call("Could not download " + str(mod_data.get("name", "mod")) + ". " + err_detail, COL_ERR)
+			var fail_line := "Could not download " + str(mod_data.get("name", "mod")) + ". " + err_detail
+			set_status.call(fail_line, COL_ERR)
+			set_dl_status.call(get_btn, fail_line, COL_ERR)
+			# Remember the failure: while a queued batch drains, the status
+			# line above is synchronously overwritten by the next item's
+			# "Downloading...", so the drain summary below is the only report
+			# of mid-batch casualties that survives.
+			(state["queue_failures"] as Array).append(str(mod_data.get("name", "mod")) + " (" + err_detail + ")")
 
-		# Drain queue or re-render. Re-rendering frees button refs in the
-		# queue, so we only re-render once the queue is empty -- otherwise
+		# Drain queue or settle the batch. Re-rendering frees button refs in
+		# the queue, so we only re-render once the queue is empty -- otherwise
 		# subsequent items lose their "Queued" button state mid-flight.
 		#
 		# Call through `state`, NOT the captured locals. GDScript lambdas
 		# capture locals BY VALUE at creation time; this lambda was created
-		# (line ~4015) before perform_download_for_item / do_discover_fetch /
+		# before perform_download_for_item / do_discover_fetch /
 		# do_filter_fetch were assigned, so the captured copies are empty
 		# Callables. `state` is a Dictionary (reference type), so the bindings
 		# stored on it at the end of build_browse_tab are visible here.
@@ -5506,33 +5744,58 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		if not remaining.is_empty():
 			var next_item: Dictionary = remaining.pop_front()
 			(state["fn_perform_download"] as Callable).call(next_item)
-		elif bool(result.get("ok", false)):
-			# Re-render only after a SUCCESS. The re-fetch exists to flip
-			# duplicate Get buttons to Installed; on failure it would
-			# synchronously overwrite the "Download failed: ..." status with
-			# "Loading..." before it ever rendered a frame, and nothing
-			# changed on disk anyway -- so keep the failure visible instead.
-			#
-			# Carry the scroll position across the re-render: the full
-			# re-render resets the ScrollContainer to the top. The fetch
-			# lambdas consume restore_scroll and re-apply it one frame after
-			# rendering.
-			state["queue_any_success"] = false
-			if is_instance_valid(scroll):
-				state["restore_scroll"] = int(scroll.scroll_vertical)
-			if str(state["mode"]) == "discover":
-				(state["fn_discover_fetch"] as Callable).call()
-			else:
-				(state["fn_filter_fetch"] as Callable).call(false)
-		elif bool(state.get("queue_any_success", false)):
-			# Mixed batch: earlier queued downloads installed but the FINAL
-			# one failed, so the success-only re-fetch above is skipped and
-			# duplicate rows (same mod in popular AND latest) of the installed
-			# mods would keep a live Download button. Sync those rows in place
-			# -- no re-fetch, so the failure status text stays visible.
-			state["queue_any_success"] = false
-			if is_instance_valid(scroll):
-				_refresh_browse_installed_rows(scroll)
+			return
+
+		# Queue drained -- settle the whole batch at once.
+		var any_success := bool(state.get("queue_any_success", false))
+		var failures: Array = state["queue_failures"]
+		var batch_total := int(state.get("queue_done_total", 0))
+		state["queue_any_success"] = false
+		state["queue_failures"] = []
+		state["queue_done_total"] = 0
+
+		# ONE mods-dir rescan + hidden Mods-tab rebuild for the whole batch
+		# (previously per successful item -- a main-thread stall proportional
+		# to installed-mod count, multiplied by the queue length).
+		if any_success:
+			_reload_entries_for_active_profile()
+			if is_instance_valid(tabs):
+				_rebuild_mods_tab(tabs)
+
+		if failures.is_empty():
+			if any_success:
+				# Re-render only after an all-success batch. The re-fetch
+				# exists to flip duplicate Get buttons to Installed; after a
+				# failure it would synchronously overwrite the failure report
+				# with "Loading..." before it ever rendered a frame.
+				#
+				# Carry the scroll position across the re-render: the full
+				# re-render resets the ScrollContainer to the top. The fetch
+				# lambdas consume restore_scroll and re-apply it one frame
+				# after rendering.
+				if is_instance_valid(scroll):
+					state["restore_scroll"] = int(scroll.scroll_vertical)
+				if str(state["mode"]) == "discover":
+					(state["fn_discover_fetch"] as Callable).call()
+				else:
+					(state["fn_filter_fetch"] as Callable).call(false)
+			return
+
+		# At least one item failed. Skip the re-fetch (its completion would
+		# wipe the failure report with "N popular, M latest"); sync duplicate
+		# rows of installed mods in place instead -- same mod can appear in
+		# popular AND latest -- so the failure text stays visible.
+		if any_success and is_instance_valid(scroll):
+			_refresh_browse_installed_rows(scroll)
+		# Persistent batch summary: for a lone download the full error set
+		# above is already on screen and stays; for a real batch it names
+		# every failed mod, since only the LAST item's outcome survived the
+		# drain before.
+		if batch_total > 1:
+			var fail_strs := PackedStringArray()
+			for f_v in failures:
+				fail_strs.append(str(f_v))
+			set_status.call("%d of %d downloads failed: %s" % [failures.size(), batch_total, ", ".join(fail_strs)], COL_ERR)
 
 	var on_get: Callable
 	on_get = func(mod_data: Dictionary, get_btn: Button):
@@ -5542,17 +5805,21 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			# same mod already in-flight or already queued -- silent dedup).
 			if int(state["downloading_id"]) == mws_id:
 				set_status.call("Already downloading this mod", COL_TEXT_DIM)
+				set_dl_status.call(get_btn, "Already downloading this mod", COL_TEXT_DIM)
 				return
 			var queue: Array = state["download_queue"]
 			for q_v in queue:
 				if int((q_v as Dictionary).get("mod_data", {}).get("id", 0)) == mws_id:
 					set_status.call("Already queued", COL_TEXT_DIM)
+					set_dl_status.call(get_btn, "Already queued", COL_TEXT_DIM)
 					return
 			queue.append({"mod_data": mod_data, "get_btn": get_btn})
 			if is_instance_valid(get_btn):
 				get_btn.disabled = true
 				get_btn.text = "Queued"
-			set_status.call("Queued " + str(mod_data.get("name", "?")) + " (" + str(queue.size()) + " in queue)", COL_TEXT_DIM)
+			var queued_line := "Queued " + str(mod_data.get("name", "?")) + " (" + str(queue.size()) + " in queue)"
+			set_status.call(queued_line, COL_TEXT_DIM)
+			set_dl_status.call(get_btn, queued_line, COL_TEXT_DIM)
 			return
 		perform_download_for_item.call({"mod_data": mod_data, "get_btn": get_btn})
 
@@ -5659,6 +5926,12 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			show_browse_banner.call("Showing cached results. " + str(browse_fail_reason.call()), cached_at, COL_AMBER)
 		else:
 			clear_browse_banner.call()
+			# A live fetch landing proves connectivity is back: recover a
+			# category dropdown whose one-shot populate failed earlier
+			# (guarded no-op once loaded). Snapshot fallback proves nothing,
+			# hence the live-only branch. Through `state`: this lambda was
+			# created before populate_categories was assigned.
+			(state["fn_populate_categories"] as Callable).call()
 		set_status.call("%d popular, %d latest" % [popular.size(), latest.size()], COL_TEXT_DIM)
 		# Restore the pre-refetch scroll position one frame later: the fresh
 		# rows have no layout yet on this frame, so setting scroll_vertical
@@ -5760,6 +6033,9 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		state["next_page"] = current_page + 1
 		state["has_more"] = current_page < last_page
 		clear_browse_banner.call()
+		# Successful live fetch: recover the category dropdown if its one-shot
+		# populate failed earlier (guarded no-op once loaded).
+		(state["fn_populate_categories"] as Callable).call()
 		# Full re-render of the accumulated set. On Load more this replaces
 		# the old per-page append -- required for the global re-sort above to
 		# actually show -- so carry the current scroll position across the
@@ -5854,10 +6130,25 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	# dropdown is already a stretch UX-wise, so we surface only top-level
 	# (parent_id == null) and rely on search to find sub-category mods.
 	var populate_categories := func():
+		# Retry-able, not one-shot: the banner Retry and every successful list
+		# fetch re-invoke this until it lands, so a failed first fetch
+		# (offline launch, rate-limit cooldown) no longer leaves an
+		# "All categories"-only dropdown for the whole session. The two flags
+		# make re-invocation safe: loaded = success is permanent for the
+		# session, loading = don't stack a second in-flight fetch (which
+		# would double-populate the items on a race).
+		if bool(state.get("categories_loaded", false)) or bool(state.get("categories_loading", false)):
+			return
+		state["categories_loading"] = true
 		var data: Variant = await mws_get_categories()
+		# Bookkeeping BEFORE the validity guard so a freed dropdown can't
+		# leave the loading flag stuck true forever.
+		state["categories_loading"] = false
 		if not is_instance_valid(category_dropdown):
 			return
 		if not (data is Dictionary):
+			# Leave categories_loaded false so the next Retry / successful
+			# list fetch attempts again.
 			return
 		var rows: Array = _mws_data_rows(data)
 		for cat in rows:
@@ -5874,6 +6165,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			category_dropdown.add_item(cat_name)
 			var idx := category_dropdown.item_count - 1
 			category_dropdown.set_item_metadata(idx, cat_id)
+		state["categories_loaded"] = true
 	populate_categories.call()
 
 	# Bind the forward-referenced lambdas onto `state` so the
@@ -5883,6 +6175,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	state["fn_perform_download"] = perform_download_for_item
 	state["fn_discover_fetch"] = do_discover_fetch
 	state["fn_filter_fetch"] = do_filter_fetch
+	state["fn_populate_categories"] = populate_categories
 
 	# Initial fetch is the curated landing page.
 	do_discover_fetch.call()
@@ -5950,6 +6243,16 @@ func _refresh_browse_installed_rows(root: Node) -> void:
 				btn.disabled = true
 
 
+# Guarded int() for API JSON fields. Dictionary.get()'s default only covers
+# an ABSENT key -- a present-but-null value flows through and int(null) is a
+# runtime error (the search sort comparator and the snapshot loader already
+# guard this way). JSON numbers parse as float, so accept int/float and
+# coerce anything else (null, string junk) to the fallback.
+func _json_int(d: Dictionary, key: String, fallback: int = 0) -> int:
+	var v: Variant = d.get(key)
+	return int(v) if (v is int or v is float) else fallback
+
+
 # Render one row in the Browse tab list. Pulls from a ModSummary dict (live
 # response shape from /games/{id}/mods or /games/{id}/popular-and-latest).
 # Thumbnail loads asynchronously via _browse_load_thumbnail_async; the row
@@ -5988,13 +6291,19 @@ func _browse_render_mod_row(mod_data: Dictionary, install_entry: Variant, on_get
 	info_col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	row.add_child(info_col)
 
-	# Mod name doubles as the click target for the detail modal. LinkButton
-	# matches the bottom-bar self-update affordance: text by default, underlines
-	# on hover. Discoverable without crowding the row with a separate "Details"
-	# button next to Get.
-	var name_lnk := LinkButton.new()
+	# Mod name doubles as the click target for the detail modal. Flat Button,
+	# not LinkButton: LinkButton has no clip_text/overrun support, so its min
+	# width equals the full text width and one long ModWorkshop name inflated
+	# the row past the list, forcing a horizontal scrollbar and pushing the
+	# Download/Enabled control out of view. Same recipe as the Mods-tab name
+	# link (hover color is the click cue in place of underline).
+	var name_lnk := Button.new()
+	name_lnk.flat = true
 	name_lnk.text = str(mod_data.get("name", "?"))
-	name_lnk.underline = LinkButton.UNDERLINE_MODE_ON_HOVER
+	name_lnk.clip_text = true
+	name_lnk.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	name_lnk.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	name_lnk.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	name_lnk.add_theme_font_size_override("font_size", FS_EMPH)
 	name_lnk.add_theme_color_override("font_color", COL_TEXT)
 	name_lnk.add_theme_color_override("font_hover_color", COL_TEXT_HI)
@@ -6009,8 +6318,8 @@ func _browse_render_mod_row(mod_data: Dictionary, install_entry: Variant, on_get
 	var category_dict: Dictionary = mod_data.get("category", {}) if mod_data.get("category") is Dictionary else {}
 	var author: String = str(user_dict.get("name", ""))
 	var version: String = str(mod_data.get("version", "")).strip_edges()
-	var downloads: int = int(mod_data.get("downloads", 0))
-	var likes: int = int(mod_data.get("likes", 0))
+	var downloads: int = _json_int(mod_data, "downloads")
+	var likes: int = _json_int(mod_data, "likes")
 	var category: String = str(category_dict.get("name", ""))
 	var bumped_raw: String = str(mod_data.get("bumped_at", ""))
 	var bumped_short: String = _format_iso_datetime(bumped_raw)
@@ -6105,6 +6414,21 @@ func _set_thumb_failed(rect: TextureRect, failed: bool) -> void:
 	wrap.add_child(lbl)
 
 
+# Session memo of decoded thumbnail textures keyed by storage filename.
+# Without it every Mods-tab rebuild (per filter keystroke) and every Browse
+# re-render re-read the disk cache and re-decoded the image into a fresh
+# ImageTexture per row -- a visible hitch that grew with each "Load more"
+# page. FIFO-bounded so a long Browse session can't hold hundreds of
+# 640px textures forever (Dictionary preserves insertion order).
+var _thumb_texture_cache: Dictionary = {}
+const _THUMB_TEXTURE_CACHE_MAX := 256
+
+func _thumb_texture_cache_store(fn: String, tex: Texture2D) -> void:
+	while _thumb_texture_cache.size() >= _THUMB_TEXTURE_CACHE_MAX:
+		_thumb_texture_cache.erase(_thumb_texture_cache.keys()[0])
+	_thumb_texture_cache[fn] = tex
+
+
 # Async thumbnail loader. Cache layout: user://mws_cache/thumbs/<storage_filename>.
 # Filenames from MWS are opaque/immutable per upload, so the storage filename
 # IS the cache key -- a thumbnail replaced by the author gets a different file
@@ -6125,6 +6449,13 @@ func _browse_load_thumbnail_async(rect: TextureRect, image_record: Dictionary) -
 		_set_thumb_failed(rect, false)
 		return
 
+	# Memory hit: already decoded this session -- no disk read, no decode.
+	var memo_tex_v: Variant = _thumb_texture_cache.get(fn)
+	if memo_tex_v is Texture2D:
+		if is_instance_valid(rect):
+			rect.texture = memo_tex_v as Texture2D
+		return
+
 	var cache_dir := "user://mws_cache/thumbs"
 	DirAccess.make_dir_recursive_absolute(cache_dir)
 	var cache_path := cache_dir.path_join(fn)
@@ -6142,8 +6473,10 @@ func _browse_load_thumbnail_async(rect: TextureRect, image_record: Dictionary) -
 				if img.load_webp_from_buffer(bytes) == OK \
 						or img.load_jpg_from_buffer(bytes) == OK \
 						or img.load_png_from_buffer(bytes) == OK:
+					var disk_tex := ImageTexture.create_from_image(img)
+					_thumb_texture_cache_store(fn, disk_tex)
 					if is_instance_valid(rect):
-						rect.texture = ImageTexture.create_from_image(img)
+						rect.texture = disk_tex
 					return
 
 	# Cache miss: fetch from CDN. The /mods/images/thumbs/ path returns 404
@@ -6220,8 +6553,10 @@ func _browse_load_thumbnail_async(rect: TextureRect, image_record: Dictionary) -
 		if not wrote:
 			DirAccess.remove_absolute(cache_path)
 
+	var net_tex := ImageTexture.create_from_image(img)
+	_thumb_texture_cache_store(fn, net_tex)
 	if is_instance_valid(rect):
-		rect.texture = ImageTexture.create_from_image(img)
+		rect.texture = net_tex
 
 
 # Format a byte count as a compact human-readable string. Used by the mod
@@ -6359,13 +6694,41 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 	var d := AcceptDialog.new()
 	d.title = str(mod_data.get("name", "?"))
 	d.ok_button_text = "Close"
-	d.min_size = Vector2i(660, 540)
+	# Clamped to the launcher: the fixed 660x540 exceeded the launcher's
+	# 640x420 minimum in BOTH axes and got clipped by the embedder.
+	d.min_size = _dialog_fit_size(Vector2i(660, 540))
+
+	# Single content child for the AcceptDialog (it stacks added children over
+	# the same rect): scroll on top, a download-status line pinned below it so
+	# feedback stays visible regardless of scroll position.
+	var outer := VBoxContainer.new()
+	outer.add_theme_constant_override("separation", SP_S)
+	d.add_child(outer)
 
 	var scroll := ScrollContainer.new()
-	scroll.custom_minimum_size = Vector2(640, 480)
+	# Track the (possibly clamped) dialog size, keeping the original
+	# 20x60 chrome allowance (660x540 dialog held a 640x480 scroll).
+	scroll.custom_minimum_size = Vector2(d.min_size - Vector2i(20, 60))
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	d.add_child(scroll)
+	outer.add_child(scroll)
+
+	# In-dialog download status. This modal is exclusive and covers the Browse
+	# tab's status label, so a download started HERE used to fail (or dedupe)
+	# with no visible feedback -- the button just flipped back to "Download".
+	# The Download button below carries this Label in its
+	# "browse_dialog_status" meta; build_browse_tab's set_dl_status mirror
+	# fills it. Hidden until the first message so it costs no height. clip
+	# + ellipsis, never autowrap: a long error must not inflate the dialog's
+	# min width (the tooltip carries the full text, set by the mirror).
+	var dl_status := Label.new()
+	dl_status.visible = false
+	dl_status.add_theme_font_size_override("font_size", FS_BODY)
+	dl_status.add_theme_color_override("font_color", COL_TEXT_DIM)
+	dl_status.clip_text = true
+	dl_status.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	dl_status.mouse_filter = Control.MOUSE_FILTER_PASS
+	outer.add_child(dl_status)
 
 	# Right-margin wrap so content doesn't sit under the scrollbar -- same
 	# trick the Browse tab's main list uses.
@@ -6414,8 +6777,8 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 	var version := str(mod_data.get("version", "")).strip_edges()
 	if version != "":
 		parts.append("v" + version)
-	parts.append(str(int(mod_data.get("downloads", 0))) + " downloads")
-	parts.append(str(int(mod_data.get("likes", 0))) + " likes")
+	parts.append(str(_json_int(mod_data, "downloads")) + " downloads")
+	parts.append(str(_json_int(mod_data, "likes")) + " likes")
 	if category_dict.has("name"):
 		parts.append(str(category_dict["name"]))
 	var bumped := _format_iso_datetime(str(mod_data.get("bumped_at", "")))
@@ -6505,12 +6868,15 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 		# The dialog's one primary action (spec section 6). List rows keep
 		# bare-theme Download buttons -- primary is at most one per surface.
 		style_primary_button(get_btn)
+		# Tag the button with the in-dialog status label so the Browse tab's
+		# download paths (set_dl_status) render feedback inside this dialog.
+		get_btn.set_meta("browse_dialog_status", dl_status)
 		var captured_data := mod_data
 		get_btn.pressed.connect(func():
 			on_get.call(captured_data, get_btn)
 		)
 
-	var primary_file_id := int(mod_data.get("download_id", 0))
+	var primary_file_id := _json_int(mod_data, "download_id")
 	var load_files := func():
 		var files_resp: Variant = await mws_list_files(mod_id)
 		if not is_instance_valid(files_status):
@@ -6534,14 +6900,14 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 
 			var v_lbl := Label.new()
 			var v_str: String = "v" + str(fd.get("version", ""))
-			if int(fd.get("id", 0)) == primary_file_id and primary_file_id > 0:
+			if _json_int(fd, "id") == primary_file_id and primary_file_id > 0:
 				v_str += " (primary)"
 			v_lbl.text = v_str
 			v_lbl.custom_minimum_size.x = 140
 			f_row.add_child(v_lbl)
 
 			var size_lbl := Label.new()
-			size_lbl.text = _format_size(int(fd.get("size", 0)))
+			size_lbl.text = _format_size(_json_int(fd, "size"))
 			size_lbl.custom_minimum_size.x = 80
 			size_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
 			f_row.add_child(size_lbl)
@@ -6559,6 +6925,185 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 	_wire_accept_dismiss(d)
 	d.popup_centered()
 
+
+# -- Updates-tab session state -------------------------------------------------
+# The Updates tab is torn down and rebuilt on every show (tab_changed ->
+# _rebuild_updates_tab), which used to wipe a completed check's per-row
+# statuses, the Activity log, and the scroll position -- forcing the user to
+# re-run the check (spending rate budget) just to see results again. This
+# state survives rebuilds at module scope, same as _mod_updates_state does for
+# the Mods-tab badges.
+#   _updates_tab_status: profile_key -> {text, tooltip, color} snapshot of a
+#     row's TERMINAL Status text ("Up to date", "Check failed", "Updated --
+#     restart to apply", "Download failed"). Rows with an update AVAILABLE are
+#     not stored here -- they re-arm from _mod_updates_state so a mod updated
+#     from the Mods tab never shows a stale "Update: vX" here.
+#   _updates_tab_log: already-timestamped Activity lines, re-rendered on build.
+#   _updates_tab_dl_in_flight: count of this tab's row downloads currently
+#     awaiting; "Check for updates" only re-enables when it reaches zero (a
+#     single completion used to re-enable it while a second download was still
+#     running, letting a fresh check reset the downloading row).
+var _updates_tab_status: Dictionary = {}
+var _updates_tab_log: Array[String] = []
+var _updates_tab_dl_in_flight: int = 0
+# Live references to the current build's list scroller / check button so the
+# rebuild can carry scroll position and download completions can re-enable the
+# CURRENT check button even after the one they captured was freed. Cleared on
+# launcher close with the other _ui_* node refs.
+var _ui_updates_scroll: ScrollContainer = null
+var _ui_updates_check_btn: Button = null
+
+# Arm an Updates-tab row for an available update: amber status, visible
+# Download button, wired download handler. Shared by check_updates_for_ui (a
+# fresh check result) and build_updates_tab (re-arming from _mod_updates_state
+# after the on-show rebuild). State writes happen unconditionally; UI touches
+# are guarded per node because the row may have been freed by a mid-check
+# rebuild.
+func _updates_arm_row_update(info: Dictionary, latest_v: String, add_log: Callable) -> void:
+	var pre_entry: Dictionary = info.get("entry", {})
+	var pk: String = str(pre_entry.get("profile_key", "")) if not pre_entry.is_empty() else ""
+	# Surface state via _mod_updates_state so the Mods tab can show the
+	# per-row badge without re-querying, and so the on-show rebuild of this
+	# tab re-arms the row instead of wiping the result.
+	if pk != "":
+		_mod_updates_state[pk] = {
+			"latest_version": latest_v,
+			"current_version": str(info["version"]),
+			"mw_id": int(info["mw_id"]),
+			"full_path": str(info["full_path"]),
+			"mod_name": str(info["mod_name"]),
+		}
+		# An available update supersedes any stored terminal status.
+		_updates_tab_status.erase(pk)
+	var lbl: Label = info["label"]
+	var dl_btn: Button = info["dl_btn"]
+	if is_instance_valid(lbl):
+		# Amber = the update signal. Tooltip mirrors the text: long prerelease
+		# strings ellipsize in the 160px column (label is MOUSE_FILTER_PASS at
+		# creation).
+		lbl.text = "Update: v" + latest_v
+		lbl.tooltip_text = lbl.text
+		lbl.add_theme_color_override("font_color", COL_AMBER)
+	if not is_instance_valid(dl_btn):
+		return
+	dl_btn.modulate.a = 1.0
+	dl_btn.disabled = false
+	dl_btn.mouse_filter = Control.MOUSE_FILTER_STOP
+	var full_path: String = str(info["full_path"])
+	var mw_id: int = int(info["mw_id"])
+	var mod_name: String = str(info["mod_name"])
+	var new_ver: String = latest_v
+	# Guard key for _mod_update_in_flight -- the SAME dictionary the Mods-tab
+	# badge path uses, because both surfaces target the same mod file (and the
+	# same .download temp / .bak rollback paths). Path fallback only for the
+	# unexpected entry-less row.
+	var guard_key: String = pk if pk != "" else full_path
+	# Disconnect previous connections so repeated checks don't stack callbacks.
+	for c in dl_btn.pressed.get_connections():
+		dl_btn.pressed.disconnect(c["callable"])
+	dl_btn.pressed.connect(func():
+		# Refuse a second concurrent download of the same mod: the Mods-tab
+		# badge, or this same row on a pre-rebuild Updates tab, may already be
+		# running one -- two concurrent runs delete each other's temp/backup
+		# files mid-flight and corrupt the rollback.
+		if _mod_update_in_flight.has(guard_key):
+			return
+		_mod_update_in_flight[guard_key] = true
+		_updates_tab_dl_in_flight += 1
+		dl_btn.disabled = true
+		dl_btn.text = "Downloading..."
+		if is_instance_valid(lbl):
+			lbl.text = "Downloading..."
+			lbl.tooltip_text = lbl.text
+			lbl.add_theme_color_override("font_color", COL_AMBER)
+		if is_instance_valid(_ui_updates_check_btn):
+			_ui_updates_check_btn.disabled = true
+		# Re-resolve live: the Mods-tab badge may have updated/renamed this
+		# file since the Updates tab was built, orphaning the captured path.
+		var live_path: String = _live_full_path(pk, full_path)
+		var result: Dictionary = await download_and_replace_mod(live_path, mw_id)
+		# -- State bookkeeping FIRST, unconditionally. The on-show rebuild can
+		# free every node this closure captured while the download is in
+		# flight; an early return on node validity here used to silently drop
+		# ALL of it, leaving the tab offering an update that was already
+		# installed (whose retry then hits the file-collision error until a
+		# rescan). UI touches are guarded individually below instead.
+		_mod_update_in_flight.erase(guard_key)
+		_updates_tab_dl_in_flight = maxi(0, _updates_tab_dl_in_flight - 1)
+		# Only re-enable the (current) check button when NO downloads remain --
+		# the first of two completions used to re-enable it mid-download.
+		if _updates_tab_dl_in_flight == 0 and is_instance_valid(_ui_updates_check_btn):
+			_ui_updates_check_btn.disabled = false
+		if result.get("ok", false):
+			# Update cached version so next Check won't re-flag this mod.
+			info["version"] = new_ver
+			# Reflect the on-disk rename in the in-memory entry so the next
+			# discovery pass (and any subsequent UI rebuild before relaunch)
+			# point at the right archive instead of the old filename that no
+			# longer exists. Write through the LIVE entry dict: a rescan may
+			# have replaced _ui_mod_entries since this row was built.
+			var new_path: String = str(result.get("new_path", full_path))
+			var new_fn: String = str(result.get("new_file_name", full_path.get_file()))
+			info["full_path"] = new_path
+			var entry_ref: Dictionary = _live_entry_for_profile_key(pk, pre_entry)
+			if not entry_ref.is_empty():
+				entry_ref["full_path"] = new_path
+				entry_ref["file_name"] = new_fn
+			if pk != "":
+				# Drop the shared badge state so the Mods tab stops offering an
+				# update that was just installed, and persist the terminal
+				# status so a rebuilt tab shows the outcome.
+				_mod_updates_state.erase(pk)
+				_updates_tab_status[pk] = {
+					"text": "Updated -- restart to apply",
+					"tooltip": "Updated -- restart to apply",
+					"color": COL_OK,
+				}
+			# The badge state changed while the Mods tab may be off-screen.
+			_mods_badges_dirty = true
+			var rename_note: String = (" (renamed to " + new_fn + ")") if new_fn != full_path.get_file() else ""
+			add_log.call(mod_name + " -- updated to v" + new_ver + rename_note + ". Restart game to apply.")
+			if is_instance_valid(lbl):
+				lbl.text = "Updated -- restart to apply"
+				lbl.tooltip_text = lbl.text
+				lbl.add_theme_color_override("font_color", COL_OK)
+			if is_instance_valid(dl_btn):
+				dl_btn.modulate.a = 0.0
+				dl_btn.disabled = true
+				dl_btn.mouse_filter = Control.MOUSE_FILTER_IGNORE
+				dl_btn.text = "Update"
+			var ver_lbl_v: Variant = info.get("ver_lbl")
+			if ver_lbl_v is Label and is_instance_valid(ver_lbl_v):
+				(ver_lbl_v as Label).text = "v" + new_ver
+				(ver_lbl_v as Label).tooltip_text = "v" + new_ver
+		else:
+			# Surface the REAL failure cause ("A different file named X is
+			# already in the mods folder", "file may be locked", rate-limit
+			# copy) instead of always blaming the connection -- retrying a
+			# non-network problem forever is the trap the old copy set.
+			var err_detail := str(result.get("error", ""))
+			var log_line := "Could not download " + mod_name + ". Check your connection and try again."
+			if err_detail != "" and err_detail != "unknown":
+				log_line = "Could not download " + mod_name + " -- " + err_detail
+			if pk != "":
+				_updates_tab_status[pk] = {"text": "Download failed", "tooltip": log_line, "color": COL_ERR}
+			add_log.call(log_line)
+			if is_instance_valid(lbl):
+				lbl.text = "Download failed"
+				lbl.tooltip_text = log_line
+				lbl.add_theme_color_override("font_color", COL_ERR)
+			if is_instance_valid(dl_btn):
+				dl_btn.disabled = false
+				dl_btn.text = "Retry"
+	)
+
+# Scroll the restored Activity log to its newest line one frame later -- the
+# fresh labels have no layout on the build frame, so an immediate
+# scroll_vertical set clamps against a zero content height.
+func _updates_scroll_log_to_bottom(sc: ScrollContainer) -> void:
+	await get_tree().process_frame
+	if is_instance_valid(sc):
+		sc.scroll_vertical = 999999
 
 func build_updates_tab() -> Control:
 	var margin := _make_tab_margin()
@@ -6579,7 +7124,13 @@ func build_updates_tab() -> Control:
 	var check_btn := Button.new()
 	check_btn.text = "Check for updates"
 	style_primary_button(check_btn)
+	# A tab rebuilt mid-download must not offer a check that would reset the
+	# downloading row; the last completing download re-enables this via the
+	# _ui_updates_check_btn member.
+	if _updates_tab_dl_in_flight > 0:
+		check_btn.disabled = true
 	toolbar.add_child(check_btn)
+	_ui_updates_check_btn = check_btn
 
 	container.add_child(HSeparator.new())
 
@@ -6620,6 +7171,7 @@ func build_updates_tab() -> Control:
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	container.add_child(scroll)
+	_ui_updates_scroll = scroll
 
 	var list := VBoxContainer.new()
 	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -6693,8 +7245,13 @@ func build_updates_tab() -> Control:
 			# there is no Download button instead of offering one that misfires.
 			status_lbl.text = "Dev folder"
 			status_lbl.tooltip_text = "Dev folders load straight from your mods folder, so there is nothing to download. Update downloads only apply to mods installed as archives."
+		elif mw_id == 0 or version == "":
+			# Explain WHY this row cannot be checked (the adjacent Dev-folder
+			# state already explains itself; this one used to sit unexplained).
+			status_lbl.text = "No update info"
+			status_lbl.tooltip_text = "This mod's mod.txt has no ModWorkshop update info ([updates] modworkshop= plus [mod] version=), so it cannot be checked. Add both fields to enable update checks."
 		else:
-			status_lbl.text = "No update info" if mw_id == 0 or version == "" else "--"
+			status_lbl.text = "--"
 		row.add_child(status_lbl)
 
 		# Always add dl_btn to preserve column width. Use modulate.a to
@@ -6756,15 +7313,70 @@ func build_updates_tab() -> Control:
 	log_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	log_scroll.add_child(log_list)
 
-	var add_log := func(msg: String):
-		var t := Time.get_time_string_from_system()
+	var log_label := func(line: String) -> Label:
 		var lbl := Label.new()
-		lbl.text = "[" + t + "] " + msg
+		lbl.text = line
 		lbl.add_theme_font_size_override("font_size", FS_BODY)
 		lbl.add_theme_color_override("font_color", COL_TEXT)
 		lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		log_list.add_child(lbl)
+		return lbl
+
+	var add_log := func(msg: String):
+		var t := Time.get_time_string_from_system()
+		var line := "[" + t + "] " + msg
+		# Persist FIRST: a download can finish after this tab was rebuilt
+		# (freeing log_list); the line must survive into the restored log.
+		_updates_tab_log.append(line)
+		if not is_instance_valid(log_list):
+			return
+		log_list.add_child(log_label.call(line))
 		log_scroll.scroll_vertical = 999999
+
+	# Restore Activity lines from earlier checks/downloads this session -- the
+	# tab is rebuilt on every show and used to wipe the log. Scroll to the
+	# newest line one frame later: the restored labels have no layout yet, so
+	# an immediate set would clamp to 0.
+	for line in _updates_tab_log:
+		log_list.add_child(log_label.call(line))
+	if not _updates_tab_log.is_empty():
+		_updates_scroll_log_to_bottom(log_scroll)
+
+	# Restore per-row results from earlier checks this session (the rebuild
+	# used to reset every row to "--", forcing a re-check -- and a re-spend of
+	# rate budget -- just to re-see results). Precedence: a download in flight
+	# renders the row inert (a fresh live Update button here would allow a
+	# second concurrent download of the same file); then an available update
+	# re-arms from _mod_updates_state; then any stored terminal status.
+	for fn in status_info:
+		var info: Dictionary = status_info[fn]
+		var entry_d: Dictionary = info.get("entry", {})
+		var pk := str(entry_d.get("profile_key", ""))
+		if pk == "":
+			continue
+		var row_lbl: Label = info["label"]
+		if _mod_update_in_flight.has(pk):
+			row_lbl.text = "Downloading..."
+			row_lbl.tooltip_text = row_lbl.text
+			row_lbl.add_theme_color_override("font_color", COL_AMBER)
+			var b: Button = info["dl_btn"]
+			b.modulate.a = 1.0
+			b.disabled = true
+			b.text = "Downloading..."
+			continue
+		if _mod_updates_state.has(pk):
+			var upd: Dictionary = _mod_updates_state[pk]
+			var latest_known := str(upd.get("latest_version", ""))
+			# Re-verify against the row's CURRENT version -- the file may have
+			# been updated through another surface since the check ran.
+			if latest_known != "" and compare_versions(str(info["version"]), latest_known) < 0:
+				_updates_arm_row_update(info, latest_known, add_log)
+				continue
+		if _updates_tab_status.has(pk):
+			var st: Dictionary = _updates_tab_status[pk]
+			row_lbl.text = str(st.get("text", ""))
+			row_lbl.tooltip_text = str(st.get("tooltip", row_lbl.text))
+			var col_v: Variant = st.get("color")
+			row_lbl.add_theme_color_override("font_color", col_v if col_v is Color else COL_TEXT_DIM)
 
 	check_btn.pressed.connect(func():
 		check_btn.disabled = true
@@ -6860,17 +7472,18 @@ func _run_updates_check_for_mods() -> Dictionary:
 	return summary
 
 
-func check_updates_for_ui(status_info: Dictionary, add_log: Callable, check_btn: Button) -> void:
+func check_updates_for_ui(status_info: Dictionary, add_log: Callable, _check_btn: Button) -> void:
 	var ids: Array[int] = []
 	for fn in status_info:
 		ids.append(status_info[fn]["mw_id"])
 	if ids.is_empty():
+		# With only dev-folder or id-less mods installed the button used to
+		# flash "Checking for updates..." and revert with zero feedback; say
+		# why nothing happened (same copy as the Mods-tab toast).
+		add_log.call("No installed mods have ModWorkshop update info, so there is nothing to check.")
 		return
 
 	var latest := await fetch_latest_modworkshop_versions(ids)
-
-	if not is_instance_valid(check_btn):
-		return
 
 	# A check just ran, so _mod_updates_state may have gained or lost entries.
 	# This function runs from the Updates tab, where the Mods tab isn't visible
@@ -6878,112 +7491,47 @@ func check_updates_for_ui(status_info: Dictionary, add_log: Callable, check_btn:
 	# rebuilds and shows the promised per-row update badges.
 	_mods_badges_dirty = true
 
+	# State bookkeeping below must survive a mid-check tab rebuild (switching
+	# away and back frees every node captured in status_info): persisted state
+	# is written unconditionally, UI touches are guarded per node. The old
+	# whole-function bail on a freed button silently dropped the completed
+	# check's results; the rebuilt tab now re-renders them from
+	# _mod_updates_state / _updates_tab_status.
 	for fn: String in status_info:
 		var info: Dictionary = status_info[fn]
 		var lbl: Label = info["label"]
-		var dl_btn: Button = info["dl_btn"]
+		var pre_entry: Dictionary = info.get("entry", {})
+		var pk: String = str(pre_entry.get("profile_key", "")) if not pre_entry.is_empty() else ""
 		var latest_v = latest.get(str(info["mw_id"]), null)
 		if latest_v == null:
-			lbl.text = "Check failed"
 			# Rate-limit hint (spec section 7: what happened + what to do)
 			# lives in the tooltip -- the full sentence would ellipsize in
 			# this narrow column. Falls back to the plain text when no MWS
 			# cooldown is armed.
-			lbl.tooltip_text = mws_error_status(lbl.text)
-			lbl.add_theme_color_override("font_color", COL_ERR)
+			var fail_tip := mws_error_status("Check failed")
+			if pk != "":
+				_updates_tab_status[pk] = {"text": "Check failed", "tooltip": fail_tip, "color": COL_ERR}
+			if is_instance_valid(lbl):
+				lbl.text = "Check failed"
+				lbl.tooltip_text = fail_tip
+				lbl.add_theme_color_override("font_color", COL_ERR)
 			continue
 
-		# Also surface state via _mod_updates_state so the Mods tab can show
-		# the per-row badge without re-querying.
-		var pre_entry: Dictionary = info.get("entry", {})
-		var pk: String = str(pre_entry.get("profile_key", "")) if not pre_entry.is_empty() else ""
 		var cmp := compare_versions(info["version"], str(latest_v))
 		if cmp >= 0:
 			# Local is same version or newer than what's on the server.
-			lbl.text = "Up to date"
-			lbl.tooltip_text = lbl.text
-			lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
 			if pk != "":
 				_mod_updates_state.erase(pk)
-		else:
-			# Server has a newer version. Amber = the update signal. Tooltip
-			# mirrors the text: long prerelease strings ellipsize in the
-			# 160px column (label is MOUSE_FILTER_PASS at creation).
-			lbl.text = "Update: v" + str(latest_v)
-			lbl.tooltip_text = lbl.text
-			lbl.add_theme_color_override("font_color", COL_AMBER)
-			dl_btn.modulate.a = 1.0
-			dl_btn.disabled = false
-			dl_btn.mouse_filter = Control.MOUSE_FILTER_STOP
-			if pk != "":
-				_mod_updates_state[pk] = {
-					"latest_version": str(latest_v),
-					"current_version": str(info["version"]),
-					"mw_id": int(info["mw_id"]),
-					"full_path": str(info["full_path"]),
-					"mod_name": str(info["mod_name"]),
-				}
-			var full_path: String = info["full_path"]
-			var mw_id: int = info["mw_id"]
-			var mod_name: String = info["mod_name"]
-			var new_ver: String = str(latest_v)
-			# Disconnect previous connections so repeated checks don't stack callbacks.
-			for c in dl_btn.pressed.get_connections():
-				dl_btn.pressed.disconnect(c["callable"])
-			dl_btn.pressed.connect(func():
-				dl_btn.disabled = true
-				dl_btn.text = "Downloading..."
-				lbl.text = "Downloading..."
+				_updates_tab_status[pk] = {"text": "Up to date", "tooltip": "Up to date", "color": COL_TEXT_DIM}
+			if is_instance_valid(lbl):
+				lbl.text = "Up to date"
 				lbl.tooltip_text = lbl.text
-				lbl.add_theme_color_override("font_color", COL_AMBER)
-				check_btn.disabled = true
-				# Re-resolve live: the Mods-tab badge may have updated/renamed this
-				# file since the Updates tab was built, orphaning the captured path.
-				var live_path: String = _live_full_path(pk, full_path)
-				var result: Dictionary = await download_and_replace_mod(live_path, mw_id)
-				if not is_instance_valid(check_btn):
-					return
-				if not is_instance_valid(dl_btn):
-					return
-				check_btn.disabled = false
-				if result.get("ok", false):
-					lbl.text = "Updated -- restart to apply"
-					lbl.tooltip_text = lbl.text
-					lbl.add_theme_color_override("font_color", COL_OK)
-					dl_btn.modulate.a = 0.0
-					dl_btn.disabled = true
-					dl_btn.mouse_filter = Control.MOUSE_FILTER_IGNORE
-					dl_btn.text = "Update"
-					# Update cached version so next Check won't re-flag this mod.
-					info["version"] = new_ver
-					(info["ver_lbl"] as Label).text = "v" + new_ver
-					(info["ver_lbl"] as Label).tooltip_text = "v" + new_ver
-					# Drop the shared badge state so the Mods tab stops
-					# offering an update that was just installed (mirrors the
-					# badge-path erase after a successful download).
-					if pk != "":
-						_mod_updates_state.erase(pk)
-					# Reflect the on-disk rename in the in-memory entry so the
-					# next discovery pass (and any subsequent UI rebuild before
-					# relaunch) point at the right archive instead of the old
-					# filename that no longer exists.
-					var new_path: String = result.get("new_path", full_path)
-					var new_fn: String = result.get("new_file_name", full_path.get_file())
-					info["full_path"] = new_path
-					var entry_ref: Dictionary = info.get("entry", {})
-					if not entry_ref.is_empty():
-						entry_ref["full_path"] = new_path
-						entry_ref["file_name"] = new_fn
-					var rename_note: String = (" (renamed to " + new_fn + ")") if new_fn != full_path.get_file() else ""
-					add_log.call(mod_name + " -- updated to v" + new_ver + rename_note + ". Restart game to apply.")
-				else:
-					lbl.text = "Download failed"
-					lbl.tooltip_text = lbl.text
-					lbl.add_theme_color_override("font_color", COL_ERR)
-					dl_btn.disabled = false
-					dl_btn.text = "Retry"
-					add_log.call("Could not download " + mod_name + ". Check your connection and try again.")
-			)
+				lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
+		else:
+			# Server has a newer version -- paint the row and wire its Download
+			# button through the shared helper (also used by the on-show
+			# rebuild to re-arm rows from _mod_updates_state).
+			_updates_arm_row_update(info, str(latest_v), add_log)
 
 # ----- modloader self-update check ----------------------------------------
 

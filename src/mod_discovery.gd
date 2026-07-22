@@ -781,15 +781,23 @@ func _enable_required_deps(entry: Dictionary) -> Dictionary:
 	return {"enabled_names": enabled_names, "unfixed": unfixed}
 
 # Display name for a dependency id: the installed mod's name when we have
-# it, the raw id otherwise.
-func _dependency_display_for_id(dep_id: String) -> String:
+# it, the raw id otherwise. Callers in a loop should pass a prebuilt
+# _entries_by_mod_id map -- the null fallback rebuilds the whole map
+# (O(installed mods) inserts) on every call.
+func _dependency_display_for_id(dep_id: String, installed_by_id: Variant = null) -> String:
 	var dep_key := dep_id.strip_edges().to_lower()
-	var installed_by_id := _entries_by_mod_id(_ui_mod_entries)
-	if installed_by_id.has(dep_key):
-		return str((installed_by_id[dep_key] as Dictionary).get("mod_name", dep_id))
+	var by_id: Dictionary = installed_by_id if installed_by_id is Dictionary \
+			else _entries_by_mod_id(_ui_mod_entries)
+	if by_id.has(dep_key):
+		return str((by_id[dep_key] as Dictionary).get("mod_name", dep_id))
 	return dep_id
 
-func _refresh_dependency_status() -> void:
+# Returns the _loadable_enabled_entries pick it computed mid-pass, so hot
+# callers (the order panel's refresh_order, fired per held spin-arrow step)
+# can reuse it instead of running the sort + topological-order + blocked-set
+# pipeline a second time. Callers that only want the entry-side effects can
+# ignore the return value.
+func _refresh_dependency_status() -> Dictionary:
 	var installed_by_id := _entries_by_mod_id(_ui_mod_entries)
 	var enabled_by_id := _entries_by_mod_id(_ui_mod_entries.filter(
 			func(e): return bool((e as Dictionary).get("enabled", false))))
@@ -866,6 +874,7 @@ func _refresh_dependency_status() -> void:
 		else:
 			entry["dependency_blockers"] = blockers
 			entry["dependencies_satisfied"] = blockers.is_empty()
+	return pick
 
 # Returns -1/0/1 for version comparison (a < b, equal, a > b).
 func compare_versions(a: String, b: String) -> int:
