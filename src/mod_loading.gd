@@ -178,7 +178,7 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 		if cfg == null and ext != "pck":
 			var status: String = c.get("mod_txt_status", "none")
 			if status.begins_with("nested:"):
-				_log_warning("  Invalid mod -- packaged incorrectly (nested mod.txt at " + status.substr(7) + ")")
+				_log_warning("  Invalid mod -- mod.txt is inside a subfolder (" + status.substr(7) + "), not at the zip root. Zip the mod's CONTENTS so mod.txt sits at the zip root, not the folder that holds them.")
 			elif status == "parse_error":
 				var detail: String = c.get("mod_txt_error", "")
 				if detail.is_empty():

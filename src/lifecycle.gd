@@ -340,4 +340,16 @@ func _run_pass_2() -> void:
 		if err != OK:
 			_log_critical("reload_current_scene() failed with error " + str(err))
 			return
+	# Windows hands foreground away when the Pass-1 process dies, so the
+	# relaunched window comes up behind whatever grabbed it (nothing in the
+	# boot path ever asks for it back). Wait a couple of frames so the OS has
+	# mapped the window, then ask for focus once. grab_focus can be denied by
+	# Windows foreground-activation rules; request_attention is the fallback
+	# (flashes the taskbar button instead).
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var win := get_window()
+	if win != null:
+		win.grab_focus()
+		win.request_attention()
 

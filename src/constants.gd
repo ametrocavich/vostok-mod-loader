@@ -97,6 +97,11 @@ const MWS_API_BASE := "https://api.modworkshop.net"
 const MWS_STORAGE_BASE := "https://storage.modworkshop.net"
 const MWS_RTV_GAME_ID := 864
 const MWS_PAGE_LIMIT := 50
+# Buffer cap for JSON API responses (list pages run ~100KB at limit=50).
+const MWS_JSON_BODY_LIMIT := 8 * 1024 * 1024
+# The API caps the search query at 150 chars and answers longer values with a
+# 422, which our non-2xx handling would report as a connection problem.
+const MWS_QUERY_MAX_LEN := 150
 const MWS_USER_AGENT_TEMPLATE := "vostok-mod-loader/%s (+https://github.com/ametrocavich/vostok-mod-loader)"
 
 # --- Profile / modpack snapshot storage ---
@@ -462,3 +467,22 @@ var _rebuilding_tab_in_place: bool = false
 # window so it's at most one attempt per mod per minute regardless of churn.
 var _mods_mws_meta_by_id: Dictionary = {}       # mod_id -> mod object (successes only)
 var _mods_mws_meta_retry_at: Dictionary = {}    # mod_id -> ticks_msec before which not to refetch
+
+# Persisted-meta bookkeeping for the memo above. _mods_mws_meta_saved_at maps
+# mod_id -> unix time the entry was last confirmed by a real /mods/{id} fetch;
+# only ids present here are written to the on-disk sidecar (snapshot-sourced
+# memo entries stay session-only, matching their pre-sidecar behavior), and a
+# stale stamp (> _MODS_META_REFRESH_SEC) triggers the background soft refresh.
+# _mods_meta_sidecar_loaded gates the lazy one-time disk read.
+var _mods_mws_meta_saved_at: Dictionary = {}
+var _mods_meta_sidecar_loaded: bool = false
+
+# Live Mods-tab row nodes for MWS meta painting, keyed by mod_id. Each value is
+# an Array of {thumb: TextureRect, name_col: VBoxContainer, holder: Dictionary}
+# -- an Array because several installed rows can declare the same workshop id.
+# Rebuilt from scratch by build_mods_tab on every (re)build, so an async meta
+# fetch that completes AFTER a rebuild paints the CURRENT row via
+# _mods_apply_mws_meta instead of writing into the freed nodes it captured at
+# call time (which memoized the result but never displayed it). Cleared on
+# launcher close.
+var _mods_meta_nodes: Dictionary = {}

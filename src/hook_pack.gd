@@ -962,7 +962,7 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 		var fa: Dictionary = Engine.get_meta("_rtv_probe_first_args", {})
 		# Dispatch counts (dev mode only). Show top 20 hot methods. No generic
 		# threshold -- hud/interface/character _physics_process legitimately
-		# hit 90K+ calls/sec × 30s instance counts, a count-based RUNAWAY
+		# hit 90K+ calls/sec x 30s instance counts, a count-based RUNAWAY
 		# flag would drown real anomalies in expected noise.
 		#
 		# Instead, call out _ready / _enter_tree / _init specifically: those
