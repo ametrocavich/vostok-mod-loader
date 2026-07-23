@@ -195,6 +195,9 @@ func read_mod_config(path: String) -> ConfigFile:
 	# _parse_mod_txt, so without this reset the prior mod's error message
 	# would leak into the next mod's launcher warning.
 	_last_mod_txt_error = ""
+	# Same leak rationale as _last_mod_txt_error: every early return below
+	# would otherwise leave the previous mod's file list in place.
+	_last_mod_txt_files.clear()
 	var zr := ZIPReader.new()
 	if zr.open(path) != OK:
 		return null
@@ -208,6 +211,12 @@ func read_mod_config(path: String) -> ConfigFile:
 		zr.close()
 		return null
 	var raw := zr.read_file("mod.txt")
+	# Capture the file list while the reader is still open -- the warning
+	# builder checks declared autoload paths against it so a path that resolves
+	# nowhere shows on the row before launch, instead of only as a boot-log
+	# line after the mod mounted and quietly did nothing.
+	for zf: String in zr.get_files():
+		_last_mod_txt_files["res://" + zf] = true
 	zr.close()
 	if raw.size() == 0:
 		_last_mod_txt_status = "parse_error"
@@ -223,6 +232,7 @@ func read_mod_config(path: String) -> ConfigFile:
 func read_mod_config_folder(folder_path: String) -> ConfigFile:
 	_last_mod_txt_status = "none"
 	_last_mod_txt_error = ""  # see read_mod_config for rationale
+	_last_mod_txt_files.clear()  # folder mods carry no captured file list
 	var mod_txt_path := folder_path.path_join("mod.txt")
 	if not FileAccess.file_exists(mod_txt_path):
 		return null

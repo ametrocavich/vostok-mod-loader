@@ -6,8 +6,23 @@ The hook system lets mods intercept vanilla method calls -- run code before/afte
 
 If your mod calls `.hook("controller-jump-pre", my_callback)` directly in its own source, **you don't need any `mod.txt` declaration**. The loader scans your `.gd` files at load time, sees the `.hook()` call, and enrolls `Controller.gd :: jump` in the wrap surface automatically. At pack generation the vanilla `Controller.jump` gets a dispatch wrapper, and your callback fires.
 
+Package it like this -- `mod.txt` at the archive ROOT, your code in a subfolder
+next to it:
+
+```
+BigJump.vmz            (a .zip renamed to .vmz)
+  mod.txt              <- must be at the root, NOT inside BigJump/
+  BigJump/Main.gd      <- mounts as res://BigJump/Main.gd
+```
+
+`mod.txt` at the root is what makes it a mod -- if it is inside a subfolder the
+loader rejects the archive as packaged incorrectly. Everything else mounts
+verbatim, so the subfolder is what your `res://` paths are relative to. Give it
+your mod's name: `res://` is shared with the game, and a bare `res://Main.gd`
+can collide with another mod.
+
 ```gdscript
-# res://MyMod/Main.gd
+# res://BigJump/Main.gd
 extends Node
 
 var _lib = null
@@ -29,17 +44,30 @@ func _on_jump(_delta):
 ```
 
 ```ini
-# res://MyMod/mod.txt
+# mod.txt, at the archive root
 [mod]
 name="Big Jump"
 id="big_jump"
 version="1.0.0"
 
 [autoload]
-BigJump="res://MyMod/Main.gd"
+BigJump="res://BigJump/Main.gd"
 ```
 
 That's the whole mod. No `[hooks]` section. No framework imports. The scanner does the enrollment.
+
+Working from an unpacked folder in [Developer Mode](Developer-Mode)? Use the same
+layout and the same `mod.txt` -- a folder's contents mount at `res://` exactly
+like the zip you'll ship, so `mods/BigJump/` holds `mod.txt` and `BigJump/Main.gd`
+and no paths change when you zip it up. (Before 3.3.1 a dev folder was wrapped
+under its own name, so folder mods needed an extra prefix that broke the moment
+you zipped them. If you have a folder mod authored against that, drop the extra
+prefix.)
+
+If the mod loads but nothing happens in game, check the console log: an
+`Autoload path not found in archive` line means the `mod.txt` path does not match
+where the file actually landed, and the loader prints the similar paths it did
+find so you can see the correct prefix.
 
 ## Opt-in model
 

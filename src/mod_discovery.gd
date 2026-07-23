@@ -91,6 +91,7 @@ func _build_archive_entry(mods_dir: String, file_name: String, ext: String) -> D
 	var full_path := mods_dir.path_join(file_name)
 	if ext == "pck":
 		_last_mod_txt_status = "pck"
+		_last_mod_txt_files.clear()  # no read_mod_config call to reset it
 	var cfg: ConfigFile = read_mod_config(full_path) if ext != "pck" else null
 	var entry := _entry_from_config(cfg, file_name, full_path, ext)
 	entry["warnings"] = _build_entry_warnings(entry)
@@ -394,6 +395,41 @@ func _build_entry_warnings(entry: Dictionary) -> Array[String]:
 			warnings.append("mod.txt parse error at " + detail)
 	elif status.begins_with("nested:"):
 		warnings.append("Invalid mod -- mod.txt is in a subfolder, not at the zip root. Re-zip so mod.txt is at the root.")
+	elif status == "ok":
+		warnings.append_array(_autoload_path_warnings(entry))
+	return warnings
+
+# Catch autoload paths that point nowhere inside the mod. Such a mod mounts,
+# reports success, and then does absolutely nothing -- the most confusing
+# failure an author can hit, and until now the only trace was an
+# "Autoload path not found in archive" line in the boot log they had no reason
+# to open.
+#
+# Reads the _last_mod_txt_files side channel, which is why this must stay
+# immediately downstream of the entry's own read_mod_config (see constants.gd).
+#
+# Deliberately conservative: warns ONLY when the same filename exists at a
+# different path inside the archive, i.e. the prefix is wrong and we can name
+# the right one. A path with no counterpart is left alone, since pointing an
+# autoload at a vanilla res:// script (or at a file another mod provides) is
+# legitimate and must not be flagged.
+func _autoload_path_warnings(entry: Dictionary) -> Array[String]:
+	var warnings: Array[String] = []
+	var cfg: ConfigFile = entry.get("cfg")
+	if cfg == null or not cfg.has_section("autoload") or _last_mod_txt_files.is_empty():
+		return warnings
+	for autoload_name: String in cfg.get_section_keys("autoload"):
+		# Strip the early-load marker; it is not part of the path.
+		var res_path := str(cfg.get_value("autoload", autoload_name, "")).lstrip("!")
+		if res_path.is_empty() or _last_mod_txt_files.has(res_path):
+			continue
+		var target := res_path.get_file().to_lower()
+		for p: String in _last_mod_txt_files:
+			if p.get_file().to_lower() == target:
+				warnings.append("Autoload \"" + autoload_name + "\" points at "
+					+ res_path + ", which is not in this mod -- did you mean "
+					+ p + "?")
+				break
 	return warnings
 
 func _parse_dependency_list(cfg: ConfigFile, key: String) -> Array[String]:

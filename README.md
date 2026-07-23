@@ -43,6 +43,22 @@ This is **not** a virus scanner. It catches lazy / copy-paste attacks; a determi
 
 Package your mod as a `.vmz` archive (rename a `.zip` to `.vmz`) with a `mod.txt` at the root. All string values must be quoted.
 
+Zip the mod's **contents**, not the folder that holds them -- `mod.txt` has to be
+at the top level of the archive, and a `mod.txt` buried one folder down is the
+most common reason a mod is rejected as packaged incorrectly. Put your code in a
+subfolder beside it, named after your mod, so your `res://` paths can't collide
+with the game or another mod:
+
+```
+MyMod.vmz
+  mod.txt              <- at the root
+  MyMod/Main.gd        <- mounts as res://MyMod/Main.gd
+```
+
+Developer Mode folders use the same layout and the same `mod.txt` -- a folder's
+contents mount at `res://` just like the zip, so nothing changes when you package
+it up.
+
 ```ini
 [mod]
 name="My Mod"

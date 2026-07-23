@@ -247,6 +247,13 @@ var _last_mod_txt_status := "none"
 # see *which* line/section broke instead of a generic "Invalid mod" prompt.
 # Empty when status != "parse_error".
 var _last_mod_txt_error := ""
+# Side channel: the archive's full file list as res:// paths, captured by
+# read_mod_config while the ZIPReader is still open. Read ONLY by
+# _build_entry_warnings, which mod_discovery calls immediately after the
+# matching read_mod_config, so it always describes the entry being built.
+# Deliberately not copied into the entry -- a big mod has thousands of paths
+# and every entry is held for the session. Empty for .pck and folder mods.
+var _last_mod_txt_files := {}
 var _database_replaced_by := ""
 # Post-boot UI re-open state. _boot_complete flips true once Pass 1 / Pass 2 /
 # single-pass finish paths finalize. Once true, any mutation of mod_config.cfg
