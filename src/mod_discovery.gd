@@ -998,6 +998,7 @@ func fetch_latest_modworkshop_versions(ids: Array[int]) -> Dictionary:
 	for chunk_ids in _chunk_int_array(ids, MODWORKSHOP_BATCH_SIZE):
 		var req := HTTPRequest.new()
 		req.timeout = API_CHECK_TIMEOUT
+		req.download_body_size_limit = MWS_JSON_BODY_LIMIT
 		add_child(req)
 		# The API reads mod_ids as repeated ?mod_ids[]= query params, NOT a GET
 		# request body -- a JSON body is ignored and returns 422, silently
@@ -1007,7 +1008,7 @@ func fetch_latest_modworkshop_versions(ids: Array[int]) -> Dictionary:
 		for mid in chunk_ids:
 			qparts.append("mod_ids[]=" + str(mid))
 		var err := req.request(MODWORKSHOP_VERSIONS_URL + "?" + "&".join(qparts),
-			PackedStringArray(["Accept: application/json"]),
+			_mws_default_headers(),
 			HTTPClient.METHOD_GET)
 		if err != OK:
 			req.queue_free()
@@ -1155,7 +1156,12 @@ func download_and_replace_mod(target_path: String, modworkshop_id: int) -> Dicti
 	req.timeout = API_DOWNLOAD_TIMEOUT
 	req.download_body_size_limit = 256 * 1024 * 1024
 	add_child(req)
-	var err := req.request(MODWORKSHOP_DOWNLOAD_URL_TEMPLATE % str(modworkshop_id))
+	# The API answers a default/empty User-Agent with a bodyless 403 (see the
+	# note at the top of mws_api.gd), so this legacy route needs the same UA
+	# the _mws_get_json chokepoint sends. No Accept header -- this is a file
+	# download, not a JSON route.
+	var err := req.request(MODWORKSHOP_DOWNLOAD_URL_TEMPLATE % str(modworkshop_id),
+		PackedStringArray(["User-Agent: " + (MWS_USER_AGENT_TEMPLATE % MODLOADER_VERSION)]))
 	if err != OK:
 		req.queue_free()
 		failure["error"] = "Could not start the download request (error %d)" % err
@@ -1318,12 +1324,17 @@ func download_new_mod(modworkshop_id: int, version: String = "", allow_rename_on
 	var err := req.request(download_url, headers)
 	if err != OK:
 		req.queue_free()
-		failure["error"] = "Failed to start download"
+		failure["error"] = "Could not start the download request (error %d)" % err
 		return failure
 	var res: Array = await req.request_completed
 	req.queue_free()
 	if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] < 200 or res[1] >= 300:
-		failure["error"] = "Download failed (HTTP " + str(res[1]) + ")"
+		# Transport failures never produce a status code -- res[1] is 0 there, so
+		# formatting it would report a meaningless "HTTP 0". Split the branches.
+		if res[0] != HTTPRequest.RESULT_SUCCESS:
+			failure["error"] = "Download failed (connection error or timeout) -- check your network and retry"
+		else:
+			failure["error"] = mws_error_status("Download failed (HTTP %d)" % int(res[1]))
 		return failure
 	var resp_headers: PackedStringArray = res[2]
 	var body: PackedByteArray = res[3]

@@ -98,6 +98,10 @@ func _mws_get_json(url: String, cache_ttl_ms: int = 0, allow_rate_wait: bool = t
 
 	var req := HTTPRequest.new()
 	req.timeout = API_CHECK_TIMEOUT
+	# JSON list responses run ~100KB at limit=50. Cap the buffer so a captive
+	# portal or a misbehaving proxy streaming a huge 2xx body can't grow
+	# unbounded for the whole timeout window.
+	req.download_body_size_limit = MWS_JSON_BODY_LIMIT
 	add_child(req)
 
 	var err := req.request(url, _mws_default_headers(), HTTPClient.METHOD_GET)
@@ -235,11 +239,20 @@ func _mws_discover_snapshot_store(data: Dictionary) -> void:
 	# Best-effort disk write-through: a failed write just means the grace
 	# window is memory-only this session, never an error the user sees.
 	DirAccess.make_dir_recursive_absolute(_MWS_DISCOVER_SNAPSHOT_PATH.get_base_dir())
-	var f := FileAccess.open(_MWS_DISCOVER_SNAPSHOT_PATH, FileAccess.WRITE)
+	# Write-then-rename: a crash mid-write would otherwise truncate the live
+	# snapshot in place, losing the offline grace window in exactly the crash
+	# case it exists to cover.
+	var tmp_path := _MWS_DISCOVER_SNAPSHOT_PATH + ".tmp"
+	var f := FileAccess.open(tmp_path, FileAccess.WRITE)
 	if f == null:
 		return
-	f.store_string(JSON.stringify(_mws_discover_snapshot))
+	var wrote := f.store_string(JSON.stringify(_mws_discover_snapshot))
+	var werr := f.get_error()
 	f.close()
+	if not wrote or werr != OK:
+		DirAccess.remove_absolute(tmp_path)
+		return
+	DirAccess.rename_absolute(tmp_path, _MWS_DISCOVER_SNAPSHOT_PATH)
 
 # Last-good discover payload: {"data": {popular, latest}, "saved_at_unix":
 # int}, or {} when none exists yet. Memory first, then a lazy one-time disk
@@ -340,7 +353,9 @@ func _mws_data_rows(resp: Variant) -> Array:
 func mws_list_mods(query: String = "", sort: String = "bumped_at", category_id: int = 0, page: int = 1) -> Variant:
 	var params := PackedStringArray()
 	if query != "":
-		params.append("query=" + query.uri_encode())
+		# Clamp rather than let the API 422 -- an over-limit query would surface
+		# as "check your connection", a diagnosis no retry can ever fix.
+		params.append("query=" + query.substr(0, MWS_QUERY_MAX_LEN).uri_encode())
 	params.append("sort=" + sort)
 	params.append("limit=" + str(MWS_PAGE_LIMIT))
 	params.append("page=" + str(page))

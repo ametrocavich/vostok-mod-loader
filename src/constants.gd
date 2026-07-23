@@ -97,6 +97,11 @@ const MWS_API_BASE := "https://api.modworkshop.net"
 const MWS_STORAGE_BASE := "https://storage.modworkshop.net"
 const MWS_RTV_GAME_ID := 864
 const MWS_PAGE_LIMIT := 50
+# Buffer cap for JSON API responses (list pages run ~100KB at limit=50).
+const MWS_JSON_BODY_LIMIT := 8 * 1024 * 1024
+# The API caps the search query at 150 chars and answers longer values with a
+# 422, which our non-2xx handling would report as a connection problem.
+const MWS_QUERY_MAX_LEN := 150
 const MWS_USER_AGENT_TEMPLATE := "vostok-mod-loader/%s (+https://github.com/ametrocavich/vostok-mod-loader)"
 
 # --- Profile / modpack snapshot storage ---

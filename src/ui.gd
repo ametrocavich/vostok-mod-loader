@@ -1414,6 +1414,10 @@ func _launch_vanilla_once(win: Window) -> void:
 		f.close()
 	else:
 		_log_warning("[LaunchVanilla] Could not write sentinel at %s -- aborting" % sentinel)
+		# Without this the button just looks dead: the window stays open and
+		# nothing else changes.
+		_show_error_dialog("Could not launch vanilla",
+			"Could not write " + sentinel + "\n\nCheck the game folder's permissions and try again.")
 		return
 	var log_lines := PackedStringArray()
 	_static_force_vanilla_state("UI Launch Vanilla button", log_lines)
@@ -2415,6 +2419,14 @@ func _modpacks_render_row(entry: Dictionary, active_modpack: String, tabs: TabCo
 	name_lbl.text = str(entry.get("raw_name", "?"))
 	name_lbl.add_theme_font_size_override("font_size", FS_HEAD)
 	name_lbl.add_theme_color_override("font_color", COL_TEXT_HI)
+	# raw_name comes straight from the modpack zip, so it can be arbitrarily
+	# long. Clip it instead of letting it inflate the row's min width and push
+	# the Details/Apply/Unload buttons out of the scroll viewport.
+	name_lbl.clip_text = true
+	name_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	name_lbl.tooltip_text = name_lbl.text
+	name_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
+	name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	name_row.add_child(name_lbl)
 
 	var author: String = str(entry.get("author", "")).strip_edges()
@@ -4720,6 +4732,12 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			u_ver.add_theme_color_override("font_color", COL_TEXT)
 			u_ver.add_theme_font_size_override("font_size", FS_BODY)
 			u_ver.custom_minimum_size.x = 160
+			# A long prerelease string must not widen the column and push the
+			# Update button out of alignment.
+			u_ver.clip_text = true
+			u_ver.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+			u_ver.tooltip_text = u_ver.text
+			u_ver.mouse_filter = Control.MOUSE_FILTER_PASS
 			upd_row.add_child(u_ver)
 
 			var u_btn := Button.new()
@@ -5417,6 +5435,9 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	search_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	search_input.custom_minimum_size.x = 200
 	search_input.custom_minimum_size.y = CTRL_H
+	# The API 422s on a query over 150 chars, which our non-2xx handling would
+	# report as a connection problem no retry could fix. Stop it at the input.
+	search_input.max_length = MWS_QUERY_MAX_LEN
 	toolbar.add_child(search_input)
 
 	var sort_dropdown := OptionButton.new()
@@ -6904,6 +6925,10 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 				v_str += " (primary)"
 			v_lbl.text = v_str
 			v_lbl.custom_minimum_size.x = 140
+			v_lbl.clip_text = true
+			v_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+			v_lbl.tooltip_text = v_lbl.text
+			v_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
 			f_row.add_child(v_lbl)
 
 			var size_lbl := Label.new()
@@ -6945,6 +6970,8 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 #     running, letting a fresh check reset the downloading row).
 var _updates_tab_status: Dictionary = {}
 var _updates_tab_log: Array[String] = []
+# Oldest lines drop off past this many; see add_log in build_updates_tab.
+const _UPDATES_LOG_MAX := 200
 var _updates_tab_dl_in_flight: int = 0
 # Live references to the current build's list scroller / check button so the
 # rebuild can carry scroll position and download completions can re-enable the
@@ -7326,11 +7353,19 @@ func build_updates_tab() -> Control:
 		var line := "[" + t + "] " + msg
 		# Persist FIRST: a download can finish after this tab was rebuilt
 		# (freeing log_list); the line must survive into the restored log.
+		# Capped: the log now survives every rebuild, and each rebuild
+		# re-renders one Label per stored line, so an unbounded array would
+		# make repeated checks/downloads cost more on every tab switch.
 		_updates_tab_log.append(line)
+		while _updates_tab_log.size() > _UPDATES_LOG_MAX:
+			_updates_tab_log.remove_at(0)
 		if not is_instance_valid(log_list):
 			return
 		log_list.add_child(log_label.call(line))
-		log_scroll.scroll_vertical = 999999
+		# Defer by a frame: the label just added has no layout yet, so an
+		# immediate set clamps against the pre-append content height and the
+		# view lags one message behind.
+		_updates_scroll_log_to_bottom(log_scroll)
 
 	# Restore Activity lines from earlier checks/downloads this session -- the
 	# tab is rebuilt on every show and used to wipe the log. Scroll to the
