@@ -5848,6 +5848,25 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		if not append:
 			for child in list.get_children():
 				child.queue_free()
+			# Give this view the same heading treatment the landing's sections
+			# get. Sits above the empty state too, so "no results" still says
+			# what was searched for.
+			var cat_name := ""
+			if is_instance_valid(category_dropdown) and int(state["category_id"]) > 0:
+				cat_name = category_dropdown.get_item_text(category_dropdown.selected)
+			var hdr := Label.new()
+			hdr.text = _browse_results_header_text(
+				str(state["query"]), str(state["sort"]), cat_name)
+			hdr.add_theme_font_size_override("font_size", FS_HEAD)
+			hdr.add_theme_color_override("font_color", COL_TEXT)
+			# A long search string must not widen the list and force a
+			# horizontal scrollbar.
+			hdr.clip_text = true
+			hdr.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+			hdr.tooltip_text = hdr.text
+			hdr.mouse_filter = Control.MOUSE_FILTER_PASS
+			list.add_child(hdr)
+			list.add_child(HSeparator.new())
 		var install_map: Dictionary = compute_install_map.call()
 		for mod_data in mods:
 			if not (mod_data is Dictionary):
@@ -6281,6 +6300,31 @@ func _json_int(d: Dictionary, key: String, fallback: int = 0) -> int:
 # button for a disabled "Installed" indicator -- update detection (delta vs
 # MWS' current version) lives in the Updates tab for now and isn't surfaced
 # here in this iteration.
+# Title for a filtered / searched / category Browse view. The curated landing
+# titles its own two sections ("Popular this week" / "Latest") but every other
+# view rendered a bare row list, so the only heading in the whole tab belonged
+# to Popular -- it read as if that were a permanent title rather than one
+# section among several.
+#
+# Derived from the sort key actually sent to the API, not the dropdown index:
+# picking a category while the dropdown still reads "Featured" sends bumped_at,
+# and the header has to describe the results, not the control.
+func _browse_results_header_text(query: String, sort_key: String, category_name: String) -> String:
+	var sort_labels := {
+		"bumped_at": "Recently updated",
+		"downloads": "Most downloaded",
+		"likes": "Most liked",
+		"views": "Most viewed",
+		"published_at": "Newest",
+	}
+	var q := query.strip_edges()
+	var head: String = ("Results for \"" + q + "\"") if not q.is_empty() \
+			else str(sort_labels.get(sort_key, "Results"))
+	var cat := category_name.strip_edges()
+	if not cat.is_empty():
+		head += " in " + cat
+	return head
+
 func _browse_render_mod_row(mod_data: Dictionary, install_entry: Variant, on_get: Callable, on_toggle: Callable) -> Control:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", SP_L)
