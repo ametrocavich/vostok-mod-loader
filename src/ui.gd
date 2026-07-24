@@ -74,6 +74,40 @@ func _load_developer_mode_setting() -> void:
 	if _developer_mode:
 		_log_info("Developer mode: ON")
 
+# User-chosen launcher zoom, as a content_scale_factor. 1.0 = native (the
+# 3.3.0 look). Read straight from the config rather than cached in a var so the
+# reopen path picks up a change made in an earlier session. Clamped because a
+# hand-edited config could otherwise produce a window nobody can click out of.
+func _ui_scale_setting() -> float:
+	var cfg := ConfigFile.new()
+	if cfg.load(UI_CONFIG_PATH) != OK:
+		return 1.0
+	return clampf(float(cfg.get_value("settings", "ui_scale", 1.0)), 1.0, 2.0)
+
+# Apply a launcher zoom to the window: content scale plus a matching window
+# size. Also used when the user changes the setting live, so it must be safe to
+# call on an already-sized window -- min_size is dropped to zero first, since
+# shrinking the scale while the old (larger) minimum is still in force would
+# clamp the new size back up.
+func _apply_ui_scale(win: Window, ui_scale: float) -> void:
+	if not is_instance_valid(win):
+		return
+	win.content_scale_factor = ui_scale
+	var want := Vector2i(roundi(960.0 * ui_scale), roundi(640.0 * ui_scale))
+	var want_min := Vector2i(roundi(640.0 * ui_scale), roundi(420.0 * ui_scale))
+	# A scaled window must still FIT the display: clamp to the usable area
+	# (minus room for taskbar/chrome) so the Launch bar can never land
+	# off-screen, and keep min_size <= size or Godot rejects the pair.
+	var usable := DisplayServer.screen_get_usable_rect(win.current_screen).size
+	if usable.x > 0 and usable.y > 0:
+		want.x = mini(want.x, maxi(320, usable.x - 40))
+		want.y = mini(want.y, maxi(240, usable.y - 40))
+	want_min.x = mini(want_min.x, want.x)
+	want_min.y = mini(want_min.y, want.y)
+	win.min_size = Vector2i.ZERO
+	win.size = want
+	win.min_size = want_min
+
 func _load_ui_config() -> void:
 	_active_profile = "Default"
 	var cfg := ConfigFile.new()
@@ -3082,32 +3116,20 @@ func show_mod_ui() -> void:
 	# hacks. Embedded, they render on top of the launcher content and can't fall
 	# behind it, fixing every tooltip at once.
 	win.gui_embed_subwindows = true
-	# High-DPI scaling. The game runs DPI-aware, so Windows does NOT upscale it,
-	# and this launcher is its own OS Window OUTSIDE the game's scaled viewport
-	# -- with no explicit scale everything renders physically tiny on high-DPI
-	# displays. content_scale_factor scales fonts, styleboxes and scrollbars
-	# uniformly, so no per-widget changes are needed. screen_get_dpi can be
-	# unreliable on some platforms (0 or garbage), so fall back to 96 and clamp:
-	# never shrink below 1x, cap at 3x.
-	var dpi := DisplayServer.screen_get_dpi(win.current_screen)
-	if dpi <= 0:
-		dpi = 96
-	var ui_scale := clampf(float(dpi) / 96.0, 1.0, 3.0)
-	win.content_scale_factor = ui_scale
-	var want := Vector2i(roundi(960.0 * ui_scale), roundi(640.0 * ui_scale))
-	var want_min := Vector2i(roundi(640.0 * ui_scale), roundi(420.0 * ui_scale))
-	# A scaled window must still FIT the display. A 1920x1080 laptop at 200% OS
-	# scaling reports 192 dpi -> 2x -> a 1920x1280 window on a 1080-tall screen.
-	# Clamp to the usable area (minus room for taskbar/chrome), and keep
-	# min_size <= size or Godot rejects the pair.
-	var usable := DisplayServer.screen_get_usable_rect(win.current_screen).size
-	if usable.x > 0 and usable.y > 0:
-		want.x = mini(want.x, maxi(320, usable.x - 40))
-		want.y = mini(want.y, maxi(240, usable.y - 40))
-	want_min.x = mini(want_min.x, want.x)
-	want_min.y = mini(want_min.y, want.y)
-	win.size = want
-	win.min_size = want_min
+	# UI scale. Do NOT derive this from screen DPI. The launcher is a subwindow
+	# of the game's root viewport, and RTV's project.godot sets
+	# stretch/mode="canvas_items" against a 1920x1080 base -- so the root
+	# ALREADY scales everything we draw by (window size / 1920x1080). A
+	# DPI-derived factor multiplies on top of that: a 4K display gave roughly
+	# 2x from the root and another 1.7x from DPI, and the launcher came out
+	# unusably large. Deriving it from DPI also can't be right for both a dense
+	# 1080p laptop and a 4K desktop, because the root scale differs between
+	# them in the opposite direction.
+	#
+	# So: 1.0 by default (identical to 3.3.0 proportions), with an explicit
+	# user setting for anyone who wants it bigger. Readability at 1.0 is the
+	# job of the type scale and the scrollbar metrics, not of a global zoom.
+	_apply_ui_scale(win, _ui_scale_setting())
 	win.wrap_controls = false
 	win.always_on_top = true
 	win.transparent = true
@@ -4360,6 +4382,39 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	toolbar.add_child(spacer)
 
+	# Launcher zoom, user-owned. Auto-detecting it from screen DPI compounded
+	# with the game's own canvas_items stretch and blew the window up on
+	# high-res displays (see _show_mod_ui), and no single formula fits every
+	# monitor -- so this is an explicit choice that applies immediately.
+	var scale_lbl := Label.new()
+	scale_lbl.text = "UI scale"
+	scale_lbl.add_theme_font_size_override("font_size", FS_BODY)
+	scale_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
+	toolbar.add_child(scale_lbl)
+
+	var scale_values := [1.0, 1.25, 1.5, 1.75, 2.0]
+	var scale_opt := OptionButton.new()
+	for sv: float in scale_values:
+		scale_opt.add_item("%d%%" % int(round(sv * 100.0)))
+	var cur_scale_idx := scale_values.find(_ui_scale_setting())
+	scale_opt.select(cur_scale_idx if cur_scale_idx >= 0 else 0)
+	scale_opt.custom_minimum_size.y = CTRL_H
+	scale_opt.add_theme_font_size_override("font_size", FS_BODY)
+	toolbar.add_child(scale_opt)
+	_wire_hint(scale_opt, "Scale the launcher window. Applies immediately.")
+
+	scale_opt.item_selected.connect(func(idx: int):
+		var sv: float = scale_values[idx] if idx >= 0 and idx < scale_values.size() else 1.0
+		# Written straight through rather than via _save_ui_config: this is a
+		# display preference, and the full save rewrites profile state we have
+		# no reason to touch here.
+		var scfg := ConfigFile.new()
+		scfg.load(UI_CONFIG_PATH)
+		scfg.set_value("settings", "ui_scale", sv)
+		_persist_ui_cfg(scfg)
+		_apply_ui_scale(_ui_window, sv)
+	)
+
 	var dev_check := CheckBox.new()
 	dev_check.text = "Developer mode"
 	dev_check.tooltip_text = "Enables verbose logging, conflict report, and loose folder loading"
@@ -5037,25 +5092,29 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			row_mws_id = int(str(row_cfg.get_value("updates", "modworkshop", "0")))
 		var mws_holder: Dictionary = {}
 		var thumb_ref: TextureRect = null
+		# EVERY row gets a real thumbnail cell, captioned "no thumbnail" from
+		# the moment it is built. Previously a non-MWS mod got a bare invisible
+		# spacer -- so a modlist of hand-installed mods showed nothing at all
+		# where a thumbnail belongs -- and an MWS row sat as an unlabelled gray
+		# panel until its meta fetch resolved, which is indistinguishable from
+		# still-loading and never resolves at all while offline. A texture that
+		# arrives later clears the caption (_set_thumb_ready).
+		var thumb_wrap := PanelContainer.new()
+		thumb_wrap.custom_minimum_size = Vector2(96, 54)
+		thumb_wrap.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		var thumb_style := StyleBoxFlat.new()
+		thumb_style.bg_color = COL_SURFACE_2
+		thumb_wrap.add_theme_stylebox_override("panel", thumb_style)
+		row.add_child(thumb_wrap)
+		var thumb_rect := TextureRect.new()
+		thumb_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		thumb_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+		thumb_rect.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		thumb_rect.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		thumb_wrap.add_child(thumb_rect)
+		_set_thumb_failed(thumb_rect, false)
 		if row_mws_id > 0:
-			var thumb_wrap := PanelContainer.new()
-			thumb_wrap.custom_minimum_size = Vector2(96, 54)
-			thumb_wrap.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-			var thumb_style := StyleBoxFlat.new()
-			thumb_style.bg_color = COL_SURFACE_2
-			thumb_wrap.add_theme_stylebox_override("panel", thumb_style)
-			row.add_child(thumb_wrap)
-			var thumb_rect := TextureRect.new()
-			thumb_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-			thumb_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
-			thumb_rect.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			thumb_rect.size_flags_vertical = Control.SIZE_EXPAND_FILL
-			thumb_wrap.add_child(thumb_rect)
 			thumb_ref = thumb_rect
-		else:
-			var thumb_gap := Control.new()
-			thumb_gap.custom_minimum_size.x = 96
-			row.add_child(thumb_gap)
 
 		var name_col := VBoxContainer.new()
 		name_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -6471,12 +6530,26 @@ func _set_thumb_failed(rect: TextureRect, failed: bool) -> void:
 		return
 	var lbl := Label.new()
 	lbl.name = "ThumbStateLabel"
-	lbl.text = "load failed" if failed else "no image"
+	lbl.text = "load failed" if failed else "no thumbnail"
 	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
 	lbl.add_theme_font_size_override("font_size", FS_META)
 	wrap.add_child(lbl)
+
+# Paint a loaded texture into a thumbnail cell, clearing any state caption
+# first. Every texture-setting path goes through here: cells now start
+# captioned "no thumbnail", so a path that assigned .texture directly would
+# leave the caption sitting on top of a perfectly good image.
+func _set_thumb_ready(rect: TextureRect, tex: Texture2D) -> void:
+	if not is_instance_valid(rect):
+		return
+	var wrap := rect.get_parent() as Control
+	if wrap != null and is_instance_valid(wrap) and wrap.has_node("ThumbStateLabel"):
+		var stale := wrap.get_node("ThumbStateLabel")
+		wrap.remove_child(stale)
+		stale.queue_free()
+	rect.texture = tex
 
 
 # Session memo of decoded thumbnail textures keyed by storage filename.
@@ -6517,8 +6590,7 @@ func _browse_load_thumbnail_async(rect: TextureRect, image_record: Dictionary) -
 	# Memory hit: already decoded this session -- no disk read, no decode.
 	var memo_tex_v: Variant = _thumb_texture_cache.get(fn)
 	if memo_tex_v is Texture2D:
-		if is_instance_valid(rect):
-			rect.texture = memo_tex_v as Texture2D
+		_set_thumb_ready(rect, memo_tex_v as Texture2D)
 		return
 
 	var cache_dir := "user://mws_cache/thumbs"
@@ -6540,8 +6612,7 @@ func _browse_load_thumbnail_async(rect: TextureRect, image_record: Dictionary) -
 						or img.load_png_from_buffer(bytes) == OK:
 					var disk_tex := ImageTexture.create_from_image(img)
 					_thumb_texture_cache_store(fn, disk_tex)
-					if is_instance_valid(rect):
-						rect.texture = disk_tex
+					_set_thumb_ready(rect, disk_tex)
 					return
 
 	# Cache miss: fetch from CDN. The /mods/images/thumbs/ path returns 404
@@ -6620,8 +6691,7 @@ func _browse_load_thumbnail_async(rect: TextureRect, image_record: Dictionary) -
 
 	var net_tex := ImageTexture.create_from_image(img)
 	_thumb_texture_cache_store(fn, net_tex)
-	if is_instance_valid(rect):
-		rect.texture = net_tex
+	_set_thumb_ready(rect, net_tex)
 
 
 # Format a byte count as a compact human-readable string. Used by the mod
