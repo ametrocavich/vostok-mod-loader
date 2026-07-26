@@ -138,7 +138,14 @@ func _load_ui_config() -> void:
 			# bad in this branch, so there is nothing good left to lose, and it
 			# matches the recovery branch above.
 			if FileAccess.file_exists(UI_CONFIG_PATH):
-				DirAccess.copy_absolute(UI_CONFIG_PATH, UI_CONFIG_PATH + ".corrupt")
+				if DirAccess.copy_absolute(UI_CONFIG_PATH, UI_CONFIG_PATH + ".corrupt") == OK:
+					# The unreadable file is preserved as .corrupt; REMOVE the
+					# live copy so the fresh-Default save below is not refused
+					# by _load_ui_cfg_for_write's unreadable-file guard. Without
+					# this, the save silently no-ops here AND every later save
+					# this session refuses too -- the user's toggles would never
+					# persist again until they deleted the file by hand.
+					DirAccess.remove_absolute(UI_CONFIG_PATH)
 			_save_ui_config()
 			return
 
@@ -560,11 +567,23 @@ func _get_ui_cfg_value(section: String, key: String, default: Variant) -> Varian
 #
 # Returns null in that case; callers skip the write and keep the change
 # in-memory for the session.
+#
+# The refusal must not stay console-only: a player whose config goes
+# unreadable mid-session (file lock, sync tool, disk fault) would otherwise
+# toggle mods all evening and only discover at next launch that nothing
+# stuck. Tell them ONCE, in the launcher, that changes are session-only.
+# Next boot self-heals via _load_ui_config's .bak/.corrupt recovery.
+var _ui_cfg_refusal_notified := false
+
 func _load_ui_cfg_for_write() -> ConfigFile:
 	var cfg := ConfigFile.new()
 	var err := cfg.load(UI_CONFIG_PATH)
 	if err != OK and err != ERR_FILE_NOT_FOUND:
 		_log_warning("mod_config.cfg exists but could not be read (error %d) -- refusing to overwrite it. This change is not saved." % err)
+		if not _ui_cfg_refusal_notified and _ui_window != null and is_instance_valid(_ui_window):
+			_ui_cfg_refusal_notified = true
+			_show_error_dialog("Settings cannot be saved",
+					"Your settings file (mod_config.cfg) cannot be read right now, so changes made in this session will not be saved. Your existing profiles are untouched. Restart the game to recover.")
 		return null
 	return cfg
 

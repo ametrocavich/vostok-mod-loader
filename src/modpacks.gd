@@ -1082,7 +1082,10 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 		# nothing. Abort before mutating anything.
 		var cfg_err := cfg.load(UI_CONFIG_PATH)
 		if cfg_err != OK and cfg_err != ERR_FILE_NOT_FOUND:
-			return {"ok": false, "error": "Cannot read your mod settings file (mod_config.cfg, error %d) -- nothing was changed. Restart the game and try again." % cfg_err}
+			# NOT "nothing was changed": the download phase runs before this
+			# guard, so mod files may already have landed in /mods/ (additive,
+			# harmless). Only profiles/settings are untouched.
+			return {"ok": false, "error": "Cannot read your mod settings file (mod_config.cfg, error %d) -- the modpack was not applied and your profiles are unchanged. Any downloaded mods remain in your mods folder. Restart the game and try again." % cfg_err}
 
 		var src_en := _profile_sec(pre_active, ".enabled")
 		var src_pr := _profile_sec(pre_active, ".priority")
@@ -1242,7 +1245,13 @@ func _materialize_modpack_profile(entry: Dictionary, profile_name: String) -> Di
 # re-applying picks up where they left off.
 func unload_modpack(tabs: TabContainer) -> Dictionary:
 	var cfg := ConfigFile.new()
-	cfg.load(UI_CONFIG_PATH)
+	# A hard read failure leaves cfg EMPTY, which the check below would
+	# misreport as "No modpack is active" -- false and confusing when the
+	# banner clearly shows one. (The empty cfg cannot reach the persist:
+	# active == "" aborts first. This guard exists for the honest message.)
+	var cfg_err := cfg.load(UI_CONFIG_PATH)
+	if cfg_err != OK and cfg_err != ERR_FILE_NOT_FOUND:
+		return {"ok": false, "error": "Cannot read your mod settings file (mod_config.cfg, error %d) -- nothing was unloaded. Restart the game and try again." % cfg_err}
 	var active := str(cfg.get_value("settings", "active_modpack", ""))
 	if active == "":
 		return {"ok": false, "error": "No modpack is active"}

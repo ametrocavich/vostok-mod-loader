@@ -906,5 +906,10 @@ func _restore_clean_override_cfg() -> void:
 func _clear_restart_counter() -> void:
 	var cfg := ConfigFile.new()
 	if cfg.load(PASS_STATE_PATH) == OK:
+		# Skip the save when already 0 -- this runs on the hash-match fast
+		# path every launch, and an unconditional save would add a disk write
+		# to a path that otherwise does no writes.
+		if int(cfg.get_value("state", "restart_count", 0)) == 0:
+			return
 		cfg.set_value("state", "restart_count", 0)
 		cfg.save(PASS_STATE_PATH)

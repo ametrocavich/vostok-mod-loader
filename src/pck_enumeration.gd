@@ -156,7 +156,11 @@ func _enumerate_game_scripts() -> Array[String]:
 		return scripts
 	return []
 
-# Script-index disk cache: "<exe mtime>\n<path>\n<path>..." .
+# Script-index disk cache: "<exe mtime>\n<path>\n<path>..." . Lines prefixed
+# "!" carry the PCK's zero-byte .gd entries (the _pck_zero_byte_paths side
+# channel _parse_pck_file_list normally populates) -- a cache hit skips that
+# parse, so the cache must restore the side channel too or downstream
+# detokenize/hook-gen misdiagnose zero-byte scripts as "game build mismatch".
 #
 # Stamped with the game executable's mtime so a game update invalidates it
 # automatically -- the same key boot.gd checks to wipe hook artifacts. A
@@ -181,6 +185,15 @@ func _load_script_index_cache() -> Array[String]:
 	var out: Array[String] = []
 	for i in range(1, lines.size()):
 		var p := lines[i].strip_edges()
+		# Zero-byte side channel ("!"-prefixed): restore into
+		# _pck_zero_byte_paths instead of the script list. Same shape filter
+		# as the plain lines (minus the Scripts/ restriction -- the parser
+		# records zero-byte .gd entries anywhere in the PCK).
+		if p.begins_with("!"):
+			var zb := p.substr(1)
+			if zb.begins_with("res://") and zb.ends_with(".gd"):
+				_pck_zero_byte_paths[zb] = true
+			continue
 		# Only ever hand back paths of the shape the parser itself produces --
 		# a hand-edited or truncated cache must not widen the wrap surface.
 		if p.begins_with("res://Scripts/") and p.ends_with(".gd"):
@@ -196,7 +209,13 @@ func _save_script_index_cache(scripts: Array[String]) -> void:
 	var f := FileAccess.open(tmp, FileAccess.WRITE)
 	if f == null:
 		return
-	var wrote := f.store_string(_script_index_stamp() + "\n" + "\n".join(scripts))
+	var body := _script_index_stamp() + "\n" + "\n".join(scripts)
+	# Persist the zero-byte side channel so a cache hit restores it (see the
+	# format comment above). Populated by the _parse_pck_file_list call that
+	# immediately precedes every save, so it reflects THIS parse.
+	for zb: String in _pck_zero_byte_paths:
+		body += "\n!" + zb
+	var wrote := f.store_string(body)
 	var werr := f.get_error()
 	f.close()
 	if not wrote or werr != OK:
