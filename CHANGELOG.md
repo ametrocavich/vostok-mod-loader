@@ -1,5 +1,26 @@
 # Changelog
 
+## [3.3.1](https://github.com/ametrocavich/vostok-mod-loader/compare/v3.3.0...v3.3.1) (2026-07-26)
+
+
+### Bug Fixes
+
+* 3.3.1 -- rendering, flow, and error-message fixes ([64f3bcd](https://github.com/ametrocavich/vostok-mod-loader/commit/64f3bcd98f6e22f450216dad90d5d1e10dda9bb6))
+* 3.3.1 -- repair the 3.3.0 hook regression, and make it untestable-no-more ([91c14c8](https://github.com/ametrocavich/vostok-mod-loader/commit/91c14c850b8e05eeb739e73c997dc6fe5e236d07))
+* 3.3.1 issue sweep -- rebuild perf, thumbnails, Browse, Updates, modpacks ([f738e2e](https://github.com/ametrocavich/vostok-mod-loader/commit/f738e2e8e0eb55f74524116c112f4e5f1f7d6335))
+* a second instance of the 3.3.0 coroutine bug, plus startup cost ([af3ee52](https://github.com/ametrocavich/vostok-mod-loader/commit/af3ee526fe0ef4d7bf6aa3a8eed71445196543dc))
+* dev-mode folder mods mount at res:// root, like the shipped zip ([3fde97a](https://github.com/ametrocavich/vostok-mod-loader/commit/3fde97afa173b8c71233bc791345794468030c9c))
+* don't make every wrapped vanilla method a coroutine ([0476e6c](https://github.com/ametrocavich/vostok-mod-loader/commit/0476e6c692b14e67ae3534e3ba430b21d2796a4b))
+* final pre-release pass -- repair two bugs this cycle introduced ([226bb63](https://github.com/ametrocavich/vostok-mod-loader/commit/226bb63073cca857507f57a6f8a110fdcbfe04fb))
+* hardening sweep -- data loss, path traversal, and poisoned caches ([7947bcf](https://github.com/ametrocavich/vostok-mod-loader/commit/7947bcf0f7d0b69ec374a236b674d643d2cb7982))
+* honest transport errors, API hardening, and UI clipping polish ([2170bb9](https://github.com/ametrocavich/vostok-mod-loader/commit/2170bb99cd36d7acd0d54fb621fc6e17b1c89720))
+* make wrong autoload paths visible, and correct the packaging docs ([c4c2332](https://github.com/ametrocavich/vostok-mod-loader/commit/c4c23322d9599ff3a2d4a9da6bf013e060c7731c))
+* prove declared hooks actually got wrapped, and cut per-launch work ([82b816f](https://github.com/ametrocavich/vostok-mod-loader/commit/82b816f8f38ed3d5ab32597e8350bee7a221ca5f))
+* stop auto-scaling the launcher from DPI; caption every thumbnail cell ([2c49a72](https://github.com/ametrocavich/vostok-mod-loader/commit/2c49a72679521e8011c67b0d2a5c0f9fc79ffafc))
+* stop showing users developer diagnostics ([652bbc2](https://github.com/ametrocavich/vostok-mod-loader/commit/652bbc2bec80c1850d7024c1ec9340a7d7e4fe13))
+* title every Browse view, not just the curated landing ([5b67a5a](https://github.com/ametrocavich/vostok-mod-loader/commit/5b67a5ae4b2b1c9d4cc3eba3ab8908c2a0f42f3f))
+* UI polish pass -- DPI scaling, thumbnails, browse UX, dev-mode perf ([2cf5e79](https://github.com/ametrocavich/vostok-mod-loader/commit/2cf5e793e73e22ff8cbcfd9cb0ee619c19bfa1da))
+
 ## [3.3.0](https://github.com/ametrocavich/vostok-mod-loader/compare/v3.2.1...v3.3.0) (2026-07-21)
 
 
