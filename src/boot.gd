@@ -161,7 +161,12 @@ static func _static_write_cfg_atomic(cfg_path: String, content: String) -> bool:
 	if dir.rename(tmp.get_file(), cfg_path.get_file()) != OK:
 		DirAccess.remove_absolute(tmp)
 		if FileAccess.file_exists(bak):
-			dir.rename(bak.get_file(), cfg_path.get_file())
+			# If the rename back fails too (same lock that broke the promote),
+			# fall back to a byte copy so a live cfg always exists -- mirrors
+			# _write_override_cfg's restore path. Losing override.cfg entirely
+			# means the ModLoader autoload never loads again (no self-heal).
+			if dir.rename(bak.get_file(), cfg_path.get_file()) != OK:
+				DirAccess.copy_absolute(bak, cfg_path)
 		return false
 	if FileAccess.file_exists(bak):
 		DirAccess.remove_absolute(bak)
@@ -585,8 +590,16 @@ func _ensure_early_autoload_on_disk(res_path: String, mod_name: String) -> Strin
 	if f == null:
 		_log_critical("Cannot write early autoload to disk: " + target + " [" + mod_name + "]")
 		return res_path
-	f.store_string(script.source_code)
+	var wrote_ok := f.store_string(script.source_code)
+	var werr := f.get_error()
 	f.close()
+	if not wrote_ok or werr != OK:
+		# Disk full / IO error: a truncated script here would be handed to
+		# Godot via [autoload_prepend] and compiled next boot. Drop the partial
+		# file and fall back to the archive path instead.
+		DirAccess.remove_absolute(target)
+		_log_critical("Failed writing early autoload to disk: " + target + " [" + mod_name + "]")
+		return res_path
 
 	# Return as user:// path so Godot finds it without archive mounting.
 	var user_path := EARLY_AUTOLOAD_DIR.path_join(rel)
@@ -688,9 +701,13 @@ func _persist_hook_pack_state(pack_path: String, wrapped_paths: PackedStringArra
 	cfg.load(PASS_STATE_PATH)  # OK if missing; we populate below
 	cfg.set_value("state", "hook_pack_path", pack_path)
 	cfg.set_value("state", "hook_pack_wrapped_paths", wrapped_paths)
-	# Store exe mtime alongside so _mount_previous_session's existing
-	# exe-mtime check also invalidates the hook pack on game updates.
-	cfg.set_value("state", "hook_pack_exe_mtime", FileAccess.get_modified_time(OS.get_executable_path()))
+	# The game-update check in _mount_previous_session reads state/exe_mtime
+	# (a "hook_pack_exe_mtime" key written by earlier versions was never read
+	# anywhere). Seed exe_mtime only when missing -- Pass 1 persists the hook
+	# pack BEFORE _write_pass_state runs, and when _write_pass_state did run
+	# its value is authoritative.
+	if int(cfg.get_value("state", "exe_mtime", 0)) == 0:
+		cfg.set_value("state", "exe_mtime", FileAccess.get_modified_time(OS.get_executable_path()))
 	if cfg.get_value("state", "modloader_version", "") == "":
 		cfg.set_value("state", "modloader_version", MODLOADER_VERSION)
 	if cfg.save(PASS_STATE_PATH) == OK:

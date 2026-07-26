@@ -70,6 +70,11 @@ func _setup_run_entry(entry: Variant) -> Dictionary:
 	var arr: Array = entry
 	if arr.is_empty():
 		return {"verb": "<empty>", "ok": false, "error": "entry is empty"}
+	# String() is the non-converting constructor: a non-String verb (e.g. a
+	# stray int) would be a runtime error that aborts the WHOLE plan mid-run
+	# instead of isolating to this entry per the contract above.
+	if not (arr[0] is String or arr[0] is StringName):
+		return {"verb": "<malformed>", "ok": false, "error": "verb (1st element) must be a String"}
 	var verb: String = String(arr[0])
 	# SEAM: new verbs = one match arm here + a schema line in the header
 	# docstring above (+ a _bind_* helper if it wraps a _many form).
@@ -92,6 +97,8 @@ func _setup_run_entry(entry: Variant) -> Dictionary:
 			# remove takes an Array of ids, not a {id: ...} dict.
 			if arr.size() != 3:
 				return {"verb": verb, "ok": false, "error": "expected [\"remove\", reg, [ids]]"}
+			if not (arr[1] is String or arr[1] is StringName):
+				return {"verb": verb, "ok": false, "error": "registry name (2nd element) must be a String"}
 			if not (arr[2] is Array):
 				return {"verb": verb, "ok": false, "error": "expected ids Array as 3rd arg"}
 			var rm: Dictionary = remove_many(String(arr[1]), arr[2])
@@ -126,6 +133,10 @@ func _setup_run_entry(entry: Variant) -> Dictionary:
 func _setup_dispatch_many(verb: String, arr: Array, many_fn: Callable) -> Dictionary:
 	if arr.size() != 3:
 		return {"verb": verb, "ok": false, "error": "expected [\"%s\", reg, {id: payload}]" % verb}
+	# Non-String reg would be a String()-constructor runtime error that kills
+	# the whole plan; reject per-entry instead (same rationale as the verb check).
+	if not (arr[1] is String or arr[1] is StringName):
+		return {"verb": verb, "ok": false, "error": "registry name (2nd element) must be a String"}
 	if not (arr[2] is Dictionary):
 		return {"verb": verb, "ok": false, "error": "expected payload dict as 3rd arg"}
 	var res: Dictionary = many_fn.call(String(arr[1]), arr[2])
@@ -137,6 +148,11 @@ func _setup_dispatch_many(verb: String, arr: Array, many_fn: Callable) -> Dictio
 func _setup_dispatch_array_op(verb: String, arr: Array) -> Dictionary:
 	if arr.size() < 4 or arr.size() > 5:
 		return {"verb": verb, "ok": false, "error": "expected [\"%s\", reg, field, {id: values}, allow_duplicates?]" % verb}
+	# Same String()-constructor guard as _setup_dispatch_many.
+	if not (arr[1] is String or arr[1] is StringName):
+		return {"verb": verb, "ok": false, "error": "registry name (2nd element) must be a String"}
+	if not (arr[2] is String or arr[2] is StringName):
+		return {"verb": verb, "ok": false, "error": "field name (3rd element) must be a String"}
 	if not (arr[3] is Dictionary):
 		return {"verb": verb, "ok": false, "error": "expected payload dict as 4th arg"}
 	var reg: String = String(arr[1])

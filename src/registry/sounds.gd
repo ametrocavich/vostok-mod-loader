@@ -240,6 +240,12 @@ func _remove_sound(id: String) -> bool:
 	# anything in reg is a plain register.
 	reg.erase(id)
 	_registry_registered["sounds"] = reg
+	# Drop the id's patch stash with the entry (mirrors _remove_event): stale
+	# originals would poison a later re-registration under the same id.
+	var patched: Dictionary = _registry_patched.get("sounds", {})
+	if patched.has(id):
+		patched.erase(id)
+		_registry_patched["sounds"] = patched
 	_log_debug("[Registry] removed sound '%s'" % id)
 	return true
 

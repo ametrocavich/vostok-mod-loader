@@ -208,8 +208,10 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	var needed_paths: Dictionary = {}
 	# Per-path per-method mask. Keyed by res_path -> Dictionary[method_name, true].
 	# Populated from _hooked_methods (static [hooks] section + scanned .hook()).
-	# Empty inner dict = all methods (fallback used only for REGISTRY_TARGETS
-	# where the wrap contract is whole-script, not per-method).
+	# Empty inner dict = wrap ALL methods. Two producers read identically:
+	# the user-facing "[hooks] <path> = *" wildcard sentinel (mod_loading.gd
+	# mints {} for it), and REGISTRY_TARGETS below, whose mask is ERASED so
+	# path_mask.get's {} default yields the same whole-script wrap.
 	var hook_mask: Dictionary = {}
 	for path: String in _hooked_methods:
 		# Normalize + validate the declared path. Reject anything outside
@@ -220,9 +222,10 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			continue
 		if not vanilla_path_set.has(path):
 			_log_warning("[RTVCodegen] [hooks] declared path '%s' doesn't match any vanilla script -- check for typos or stale paths; entry will no-op" % path)
-			# Still enroll it so the path_mask iteration below logs per-method
-			# "declared method not found" diagnostics against the empty set --
-			# no wrapper will be generated but the logging chain stays consistent.
+			# Still enroll it so the rewrite loop surfaces it a second time:
+			# detokenize fails for the nonexistent path and logs "Empty
+			# detokenized source -- skipped" (the per-method mask check is
+			# never reached for such a path). No wrapper is generated.
 		needed_paths[path] = true
 		hook_mask[path] = (_hooked_methods[path] as Dictionary).duplicate()
 	# Gate Database.gd on explicit [registry] opt-in. REGISTRY_TARGETS are
@@ -453,7 +456,10 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			continue
 		if zp.write_file(rewritten.to_utf8_buffer()) != OK:
 			pack_write_failed = true
-		zp.close_file()
+		# close_file flushes the entry; a deferred I/O error surfaces here,
+		# not in write_file -- unchecked, it would ship a truncated entry.
+		if zp.close_file() != OK:
+			pack_write_failed = true
 		# Self-referencing .gd.remap overrides the PCK's .gd.remap -> .gdc
 		# redirect. Godot's _path_remap reads this BEFORE GDScript loader.
 		var remap_entry := gd_entry + ".remap"
@@ -464,7 +470,8 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		var remap_body := "[remap]\npath=\"%s\"\n" % script_path
 		if zp.write_file(remap_body.to_utf8_buffer()) != OK:
 			pack_write_failed = true
-		zp.close_file()
+		if zp.close_file() != OK:
+			pack_write_failed = true
 		# Empty .gdc to shadow the PCK's bytecode. Godot's GDScript loader
 		# prefers a sibling .gdc when present at the same base path -- even
 		# after our self-referencing remap redirects to .gd. A zero-byte
@@ -478,7 +485,8 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			continue
 		if zp.write_file(PackedByteArray()) != OK:
 			pack_write_failed = true
-		zp.close_file()
+		if zp.close_file() != OK:
+			pack_write_failed = true
 
 		script_count += 1
 		hook_count += hookable_count * 4  # pre/post/callback/replace per method
@@ -514,7 +522,8 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			continue
 		if zp.write_file(fixed_src.to_utf8_buffer()) != OK:
 			pack_write_failed = true
-		zp.close_file()
+		if zp.close_file() != OK:
+			pack_write_failed = true
 		if changed:
 			sibling_fixed += 1
 			sibling_total_bodyless += int(af["bodyless"])
@@ -541,7 +550,8 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	if zp.start_file("__modloader_canary__.txt") == OK:
 		if zp.write_file(canary_content.to_utf8_buffer()) != OK:
 			pack_write_failed = true
-		zp.close_file()
+		if zp.close_file() != OK:
+			pack_write_failed = true
 	else:
 		pack_write_failed = true
 

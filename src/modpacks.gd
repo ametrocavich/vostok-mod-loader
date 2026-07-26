@@ -121,11 +121,14 @@ func _is_modpack_managed_profile(profile_name: String) -> bool:
 			or profile_name.begins_with(MODPACK_BACKUP_PREFIX)
 
 # Count the truthy values in a dictionary -- used to tally how many mods a
-# modpack's `enabled` map turns on.
+# modpack's `enabled` map turns on. Values come from third-party profile.json,
+# so type-check before coercing: bool(null) is a runtime constructor error in
+# Godot 4, and a hand-edited pack can carry null/String values.
 func _count_truthy(d: Dictionary) -> int:
 	var count := 0
 	for k in d.keys():
-		if bool(d[k]):
+		var v = d[k]
+		if (v is bool and v) or ((v is int or v is float) and v != 0):
 			count += 1
 	return count
 
@@ -174,7 +177,11 @@ func _validate_modpack(entry: Dictionary) -> Dictionary:
 	if not (parsed_v is Dictionary):
 		return {"ok": false, "error": "This modpack file is damaged (its mod list is unreadable). Get a fresh copy and try again."}
 	var pd: Dictionary = parsed_v
-	if int(pd.get("metroprofile", 0)) != 1:
+	# Type-check before int(): the key can be present-but-null (or a String)
+	# in a hand-edited pack, and int(null) is a runtime constructor error.
+	var mp_raw = pd.get("metroprofile", 0)
+	var mp_ver: int = int(mp_raw) if (mp_raw is int or mp_raw is float) else 0
+	if mp_ver != 1:
 		return {"ok": false, "error": "This modpack was made for a newer version of the mod loader -- update the mod loader and try again"}
 	if not (pd.get("name") is String):
 		return {"ok": false, "error": "This modpack file is damaged (it has no name). Get a fresh copy and try again."}
@@ -399,13 +406,24 @@ func _apply_modpack_overrides(entry: Dictionary, backup_profile: String) -> int:
 
 	reader.close()
 
-	# Persist the manifest. Unload reads this to know what to revert.
+	# Persist the manifest. Unload reads this to know what to revert. A failed
+	# write is LOUD: without a fresh manifest, unload either restores per a
+	# stale manifest from an earlier apply (wrong files) or treats the apply as
+	# "nothing overridden" and wipes the backup slot with the snapshots inside
+	# -- both lose the user's originals. The pre-apply restore point still
+	# covers recovery, so we warn rather than abort.
 	DirAccess.make_dir_recursive_absolute(backup_root)
 	var manifest_path := backup_root.path_join("overrides_manifest.json")
 	var mf := FileAccess.open(manifest_path, FileAccess.WRITE)
 	if mf != null:
-		mf.store_string(JSON.stringify(manifest, "  "))
+		if not mf.store_string(JSON.stringify(manifest, "  ")):
+			_log_warning("[Modpack] FAILED writing overrides manifest " + manifest_path
+					+ " (disk full?) -- Unload may not restore overridden files; use the Restore button if needed")
 		mf.close()
+	else:
+		_log_warning("[Modpack] could NOT write overrides manifest " + manifest_path
+				+ " -- Unload will not restore the " + str(applied)
+				+ " override file(s) just applied; use the Restore button if needed")
 
 	return applied
 
@@ -824,7 +842,10 @@ func _get_missing_mods_for_modpack(entry: Dictionary) -> Array:
 			if installed_id_ver.has(src_id_l + "@" + src_ver):
 				continue
 		var src_data: Dictionary = sources.get(src_key, {}) if sources.get(src_key) is Dictionary else {}
-		var mws_id := int(src_data.get("modworkshop_id", 0))
+		# JSON numbers arrive as float; a hand-edited pack can carry null.
+		# int(null) is a runtime constructor error, so type-check first.
+		var mws_raw = src_data.get("modworkshop_id", 0)
+		var mws_id: int = int(mws_raw) if (mws_raw is int or mws_raw is float) else 0
 		# Version is OPTIONAL and only used when explicit. Earlier revision
 		# fell back to parsing the suffix off the profile_key, but that
 		# silently turned legacy modpacks (which only have modworkshop_id
@@ -832,7 +853,10 @@ func _get_missing_mods_for_modpack(entry: Dictionary) -> Array:
 		# versions that have since been replaced upstream -- mass failures.
 		# Now: only honor the version when the modpack author chose to
 		# include it (modloader-produced modpacks do; legacy ones don't).
-		var version := str(src_data.get("version", ""))
+		# Present-but-null (or non-String) degrades to "" = primary download,
+		# not a bogus "<null>" pin.
+		var ver_raw = src_data.get("version", "")
+		var version: String = str(ver_raw) if ver_raw is String else ""
 		# Cache the source so a missing-mod stub on this profile (or a
 		# future profile referencing the same key) can offer Download
 		# without re-reading the modpack zip.
@@ -1052,7 +1076,13 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 		# unload, but we capture the current name explicitly for restore_to.
 		var pre_active := _active_profile
 		var cfg := ConfigFile.new()
-		cfg.load(UI_CONFIG_PATH)
+		# A missing file is fine (fresh install; the persist below creates it),
+		# but any other load failure means we'd be working from an EMPTY cfg --
+		# the persist below would then replace every profile the user has with
+		# nothing. Abort before mutating anything.
+		var cfg_err := cfg.load(UI_CONFIG_PATH)
+		if cfg_err != OK and cfg_err != ERR_FILE_NOT_FOUND:
+			return {"ok": false, "error": "Cannot read your mod settings file (mod_config.cfg, error %d) -- nothing was changed. Restart the game and try again." % cfg_err}
 
 		var src_en := _profile_sec(pre_active, ".enabled")
 		var src_pr := _profile_sec(pre_active, ".priority")
@@ -1103,10 +1133,17 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 		_switch_profile(modpack_profile)
 
 		# 5. Mark active in cfg (after switch, since _switch_profile rewrites
-		# active_profile in cfg too).
-		cfg.load(UI_CONFIG_PATH)
-		cfg.set_value("settings", "active_modpack", sanitized)
-		_persist_ui_cfg(cfg)
+		# active_profile in cfg too). Re-assert only when the reload succeeded:
+		# persisting after a failed load would write a cfg containing ONLY the
+		# active_modpack flag, destroying every profile. The flag is already on
+		# disk from step 1 (and preserved by the step-4 switch), so skipping the
+		# re-assert on a transient read failure is safe.
+		var cfg5_err := cfg.load(UI_CONFIG_PATH)
+		if cfg5_err == OK:
+			cfg.set_value("settings", "active_modpack", sanitized)
+			_persist_ui_cfg(cfg)
+		else:
+			_log_warning("[Modpack] could not re-read mod_config.cfg after profile switch (error %d) -- skipping the active-flag re-assert (already set at step 1)" % cfg5_err)
 
 	# 6. Refresh the Mods tab so the modpack's selection + banner show
 	# (or, in the re-apply path, so any newly-downloaded mods appear).
@@ -1142,7 +1179,13 @@ func _materialize_modpack_profile(entry: Dictionary, profile_name: String) -> Di
 	var pd: Dictionary = parsed_v
 
 	var cfg := ConfigFile.new()
-	cfg.load(UI_CONFIG_PATH)
+	# Same guard as apply step 1: a hard read failure would leave cfg empty and
+	# the persist below would replace the user's whole config with just this
+	# modpack's sections. Missing file is fine (persist creates it).
+	var cfg_err := cfg.load(UI_CONFIG_PATH)
+	if cfg_err != OK and cfg_err != ERR_FILE_NOT_FOUND:
+		reader.close()
+		return {"ok": false, "error": "Cannot read your mod settings file (mod_config.cfg, error %d) -- modpack profile not created. Restart the game and try again." % cfg_err}
 	var en_sec := _profile_sec(profile_name, ".enabled")
 	var pr_sec := _profile_sec(profile_name, ".priority")
 	if cfg.has_section(en_sec):
@@ -1150,12 +1193,19 @@ func _materialize_modpack_profile(entry: Dictionary, profile_name: String) -> Di
 	if cfg.has_section(pr_sec):
 		cfg.erase_section(pr_sec)
 
+	# Values come from third-party profile.json: type-check before bool()/int()
+	# -- both are runtime constructor errors on a present-but-null value, and a
+	# crash HERE is mid-MUTATING (flag set, profile half-written). Junk values
+	# degrade to disabled / default priority instead of aborting the apply.
 	var enabled_dict: Dictionary = pd.get("enabled", {}) if pd.get("enabled") is Dictionary else {}
 	for k in enabled_dict.keys():
-		cfg.set_value(en_sec, str(k), bool(enabled_dict[k]))
+		var ev = enabled_dict[k]
+		var en_on: bool = (ev is bool and ev) or ((ev is int or ev is float) and ev != 0)
+		cfg.set_value(en_sec, str(k), en_on)
 	var priority_dict: Dictionary = pd.get("priority", {}) if pd.get("priority") is Dictionary else {}
 	for k in priority_dict.keys():
-		var pv := int(priority_dict[k])
+		var pv_raw = priority_dict[k]
+		var pv: int = int(pv_raw) if (pv_raw is int or pv_raw is float) else 0
 		cfg.set_value(pr_sec, str(k), clampi(pv, PRIORITY_MIN, PRIORITY_MAX))
 	# dep_ignore ("Load anyway") overrides travel with the pack (the export
 	# writes them into profile.json); materialize them like the profile-import
@@ -1166,7 +1216,9 @@ func _materialize_modpack_profile(entry: Dictionary, profile_name: String) -> Di
 		cfg.erase_section(ig_sec)
 	var dep_ignore_dict: Dictionary = pd.get("dep_ignore", {}) if pd.get("dep_ignore") is Dictionary else {}
 	for k in dep_ignore_dict.keys():
-		if bool(dep_ignore_dict[k]):
+		# Same present-but-null guard as the enabled/priority loops above.
+		var iv = dep_ignore_dict[k]
+		if (iv is bool and iv) or ((iv is int or iv is float) and iv != 0):
 			cfg.set_value(ig_sec, str(k), true)
 	_persist_ui_cfg(cfg)
 
@@ -1281,6 +1333,12 @@ func unload_modpack(tabs: TabContainer) -> Dictionary:
 # {downloaded, failures, cancelled} where failures has the same shape as
 # apply's (still-failed items only).
 func retry_failed_downloads(failures: Array, progress: Callable = Callable()) -> Dictionary:
+	# Same serialization guard as apply_modpack: retry awaits downloads too,
+	# so without it a concurrent Apply click would race on download_new_mod
+	# and the _ui_mod_entries re-scan.
+	if _modpack_apply_in_progress:
+		return {"downloaded": 0, "failures": failures, "cancelled": false}
+	_modpack_apply_in_progress = true
 	var still_failed: Array = []
 	var newly_downloaded: int = 0
 	for i in range(failures.size()):
@@ -1326,6 +1384,7 @@ func retry_failed_downloads(failures: Array, progress: Callable = Callable()) ->
 		var cfg := ConfigFile.new()
 		cfg.load(UI_CONFIG_PATH)
 		_apply_profile_to_entries(cfg, _active_profile)
+	_modpack_apply_in_progress = false
 	return {"downloaded": newly_downloaded, "failures": still_failed, "cancelled": _modpack_apply_cancelled}
 
 

@@ -92,6 +92,9 @@ func _build_archive_entry(mods_dir: String, file_name: String, ext: String) -> D
 	if ext == "pck":
 		_last_mod_txt_status = "pck"
 		_last_mod_txt_files.clear()  # no read_mod_config call to reset it
+		# Same reason: without a read_mod_config call the PREVIOUS mod's
+		# parse-error detail would leak onto this entry's mod_txt_error.
+		_last_mod_txt_error = ""
 	var cfg: ConfigFile = read_mod_config(full_path) if ext != "pck" else null
 	var entry := _entry_from_config(cfg, file_name, full_path, ext)
 	entry["warnings"] = _build_entry_warnings(entry)
@@ -1124,6 +1127,13 @@ func _extract_disposition_param(header_value: String, param: String) -> String:
 func _is_safe_mod_filename(name: String) -> bool:
 	if name.is_empty():
 		return false
+	# get_file() only splits on "/", so a Windows-style "..\evil.zip" passes
+	# the basename check below yet escapes the mods dir when the OS resolves
+	# the backslash. Reject both separators and drive/ADS colons outright,
+	# plus dot-prefixed names ("..zip" and friends are traversal-shaped and
+	# never legitimate mod filenames).
+	if "\\" in name or "/" in name or ":" in name or name.begins_with("."):
+		return false
 	if name != name.get_file():
 		return false
 	return name.get_extension().to_lower() in ["vmz", "zip", "pck"]
@@ -1139,6 +1149,12 @@ func _derive_updated_filename(old_file_name: String, headers: PackedStringArray,
 	if server_name != "":
 		return server_name
 	if new_version.is_empty():
+		return old_file_name
+	# new_version comes from the downloaded archive's own mod.txt -- untrusted.
+	# Spliced into a rename target, a version containing separators ("..\x")
+	# would land the archive outside the mods dir. Renaming is best-effort and
+	# must never block the update, so just keep the old filename.
+	if not new_version.lstrip("vV").is_valid_filename():
 		return old_file_name
 	var ext := old_file_name.get_extension()
 	var stem := old_file_name.get_basename()
@@ -1415,6 +1431,12 @@ func download_new_mod(modworkshop_id: int, version: String = "", allow_rename_on
 			failure["error"] = "Already have a file named " + derived_name
 			return failure
 		var meta_version := str((file_meta as Dictionary).get("version", "")).strip_edges().lstrip("vV")
+		# Server-controlled string headed into an on-disk filename: a version
+		# like "..\x" would traverse out of the mods dir on Windows, and a JSON
+		# null stringifies to "<null>". is_valid_filename() rejects the whole
+		# : / \ ? * " | % < > class; fall through to the mod-id suffix instead.
+		if not meta_version.is_empty() and not meta_version.is_valid_filename():
+			meta_version = ""
 		if meta_version.is_empty():
 			# Last-ditch: append the mod ID so we can at least install
 			# something distinguishable. Better than dropping the apply.

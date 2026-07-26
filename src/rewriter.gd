@@ -349,7 +349,8 @@ func _rtv_parse_script(filename: String, source: String) -> Dictionary:
 func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask: Dictionary = {}) -> String:
 	# method_mask (v3.0.1): Dictionary[method_name, true] restricting which
 	# methods get renamed + wrapped. Empty = wrap every non-static method
-	# (used for REGISTRY_TARGETS where whole-script injection is needed).
+	# (REGISTRY_TARGETS needing whole-script injection, and the user-facing
+	# "[hooks] <path> = *" wildcard sentinel).
 	# Non-empty = wrap only declared methods; matches godot-mod-loader's
 	# per-path method_mask. Other methods stay vanilla, no dispatch
 	# overhead, no rename.
@@ -552,7 +553,9 @@ func _rtv_rewrite_database_constants(source: String) -> String:
 	# comment. Captures the name and the full preload expression verbatim so
 	# we don't disturb whitespace/quoting.
 	var re := RegEx.new()
-	re.compile('^const\\s+(\\w+)\\s*=\\s*(preload\\s*\\(\\s*"[^"]+"\\s*\\))\\s*$')
+	# Detokenized source never carries comments (the tokenizer drops them),
+	# but the plain-text fallback path in _detokenize_script can.
+	re.compile('^const\\s+(\\w+)\\s*=\\s*(preload\\s*\\(\\s*"[^"]+"\\s*\\))\\s*(?:#.*)?$')
 	for line: String in lines:
 		var m := re.search(line)
 		if m != null:
@@ -1072,9 +1075,12 @@ func _rtv_inject_aispawner_registry(indent: String) -> String:
 	return out
 
 # Rewrite bare `super(` / `super (` in a line to `super.<method>(`. Preserves
-# the rest of the line verbatim. Skips `super.<something>(` (already explicit),
-# and skips occurrences inside strings or comments by stopping at the first
-# `#` or quote. Called per-line within a renamed method's body.
+# the rest of the line verbatim. Skips `super.<something>(` (already explicit)
+# and anything at/after the first `#` (comment heuristic). String literals are
+# NOT tracked: a "super(" inside a string before any `#` would be rewritten,
+# altering that string's text (never code structure). Detokenized vanilla input
+# makes this a non-case; add real quote tracking if a script ever hits it.
+# Called per-line within a renamed method's body.
 func _rewrite_bare_super(line: String, method_name: String) -> String:
 	# Strip inline comment/string content before matching to avoid false hits.
 	# Simple heuristic: search the part of the line before the first # (not in
