@@ -108,6 +108,17 @@ func _enumerate_game_scripts() -> Array[String]:
 	# call free without forcing the caller to track lookup state.
 	if not _all_game_script_paths.is_empty():
 		return _all_game_script_paths
+	# Disk cache. The in-memory memo above only survives the session, so
+	# without this EVERY launch re-parses the PCK's 17k-entry directory --
+	# including the "mod state unchanged" fast path, which otherwise does
+	# almost no work. The result is a list of ~176 paths that can only change
+	# when the game itself changes, so stamp it with the exe's mtime (the same
+	# key boot.gd uses to invalidate hook artifacts) and skip the parse.
+	var cached := _load_script_index_cache()
+	if not cached.is_empty():
+		_all_game_script_paths = cached
+		_log_debug("[RTVCodegen] script index: %d path(s) from cache (PCK parse skipped)" % cached.size())
+		return _all_game_script_paths
 	var exe_dir := OS.get_executable_path().get_base_dir()
 	var candidates := ["RTV.pck", OS.get_executable_path().get_file().get_basename() + ".pck"]
 	for cand in candidates:
@@ -118,6 +129,10 @@ func _enumerate_game_scripts() -> Array[String]:
 		if paths.is_empty():
 			continue
 		var scripts: Array[String] = []
+		# Membership via Dictionary, not `in scripts`. The array form is a
+		# linear scan per candidate, so de-duplicating N script paths out of a
+		# 17k-entry directory was quadratic in the number of scripts.
+		var seen: Dictionary = {}
 		for p in paths:
 			# Packed paths lack the res:// prefix; Godot adds it on load.
 			var normalized := p
@@ -131,13 +146,82 @@ func _enumerate_game_scripts() -> Array[String]:
 				canonical = canonical.substr(0, canonical.length() - 6)
 			if canonical.ends_with(".gdc"):
 				canonical = canonical.substr(0, canonical.length() - 4) + ".gd"
-			if canonical.ends_with(".gd") and canonical not in scripts:
+			if canonical.ends_with(".gd") and not seen.has(canonical):
+				seen[canonical] = true
 				scripts.append(canonical)
 		_log_info("[RTVCodegen] parsed %s -- %d total file(s), %d .gd script(s) under res://Scripts/" \
 				% [cand, paths.size(), scripts.size()])
 		_all_game_script_paths = scripts
+		_save_script_index_cache(scripts)
 		return scripts
 	return []
+
+# Script-index disk cache: "<exe mtime>\n<path>\n<path>..." . Lines prefixed
+# "!" carry the PCK's zero-byte .gd entries (the _pck_zero_byte_paths side
+# channel _parse_pck_file_list normally populates) -- a cache hit skips that
+# parse, so the cache must restore the side channel too or downstream
+# detokenize/hook-gen misdiagnose zero-byte scripts as "game build mismatch".
+#
+# Stamped with the game executable's mtime so a game update invalidates it
+# automatically -- the same key boot.gd checks to wipe hook artifacts. A
+# mismatched, missing or unreadable stamp simply falls through to a fresh PCK
+# parse, so the cache can never serve a stale script list; the worst case is
+# the cost we were paying before.
+const _SCRIPT_INDEX_CACHE := "user://modloader_hooks/script_index.txt"
+
+func _script_index_stamp() -> String:
+	return str(FileAccess.get_modified_time(OS.get_executable_path()))
+
+func _load_script_index_cache() -> Array[String]:
+	var empty: Array[String] = []
+	var f := FileAccess.open(_SCRIPT_INDEX_CACHE, FileAccess.READ)
+	if f == null:
+		return empty
+	var text := f.get_as_text()
+	f.close()
+	var lines := text.split("\n", false)
+	if lines.size() < 2 or lines[0].strip_edges() != _script_index_stamp():
+		return empty
+	var out: Array[String] = []
+	for i in range(1, lines.size()):
+		var p := lines[i].strip_edges()
+		# Zero-byte side channel ("!"-prefixed): restore into
+		# _pck_zero_byte_paths instead of the script list. Same shape filter
+		# as the plain lines (minus the Scripts/ restriction -- the parser
+		# records zero-byte .gd entries anywhere in the PCK).
+		if p.begins_with("!"):
+			var zb := p.substr(1)
+			if zb.begins_with("res://") and zb.ends_with(".gd"):
+				_pck_zero_byte_paths[zb] = true
+			continue
+		# Only ever hand back paths of the shape the parser itself produces --
+		# a hand-edited or truncated cache must not widen the wrap surface.
+		if p.begins_with("res://Scripts/") and p.ends_with(".gd"):
+			out.append(p)
+	return out
+
+func _save_script_index_cache(scripts: Array[String]) -> void:
+	DirAccess.make_dir_recursive_absolute(
+		ProjectSettings.globalize_path(_SCRIPT_INDEX_CACHE.get_base_dir()))
+	# Write-then-rename: a truncated index would silently shrink the wrap
+	# surface on the next launch, and every stamp check would still pass.
+	var tmp := _SCRIPT_INDEX_CACHE + ".tmp"
+	var f := FileAccess.open(tmp, FileAccess.WRITE)
+	if f == null:
+		return
+	var body := _script_index_stamp() + "\n" + "\n".join(scripts)
+	# Persist the zero-byte side channel so a cache hit restores it (see the
+	# format comment above). Populated by the _parse_pck_file_list call that
+	# immediately precedes every save, so it reflects THIS parse.
+	for zb: String in _pck_zero_byte_paths:
+		body += "\n!" + zb
+	var wrote := f.store_string(body)
+	var werr := f.get_error()
+	f.close()
+	if not wrote or werr != OK:
+		DirAccess.remove_absolute(tmp)
+		return
+	DirAccess.rename_absolute(tmp, _SCRIPT_INDEX_CACHE)
 
 # Collect module-scope `preload("...tscn|scn")` paths from source. Module-scope
 # = line starts at column 0 (no leading whitespace). Such preloads fire at

@@ -187,6 +187,19 @@ func _run_pass_1() -> void:
 	if FileAccess.file_exists(PASS_STATE_PATH):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(PASS_STATE_PATH))
 		_restore_clean_override_cfg()
+	else:
+		# Pass state can be missing while override.cfg still carries stale mod
+		# [autoload_prepend] entries (e.g. a _write_pass_state save failure in
+		# a prior session, after override.cfg was already written). Gating the
+		# reset purely on pass state would leave Godot trying to load those
+		# mod autoloads on every future launch with all mods disabled. Compare
+		# against the clean baseline so the common no-mods launch does not
+		# rewrite the file every time.
+		var cfg_path := OS.get_executable_path().get_base_dir().path_join("override.cfg")
+		if FileAccess.file_exists(cfg_path):
+			var cur := FileAccess.get_file_as_string(cfg_path)
+			if cur != _clean_override_cfg_content(_read_preserved_cfg_sections(cfg_path)):
+				_restore_clean_override_cfg()
 	if DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(HOOK_PACK_DIR)):
 		_static_wipe_hook_cache()
 		_log_info("[Hooks] Cleaned up unused hook artifacts")
@@ -211,6 +224,12 @@ func _finish_with_existing_mounts() -> void:
 		_write_conflict_report()
 	_emit_frameworks_ready()
 	_delete_heartbeat()
+	# This session came up fine without a restart -- clear any restart_count
+	# left over from a previously crashed restart cycle (only Pass 2 cleared
+	# it before). A stale count of 1 would otherwise survive every hash-match
+	# session, and the next legitimate restart cycle's single crash would put
+	# the counter at MAX_RESTART_COUNT and trip the breaker one crash early.
+	_clear_restart_counter()
 	if not _filescope_mounted.is_empty() or not _archive_file_sets.is_empty() or _pending_autoloads.size() > 0:
 		var err := get_tree().reload_current_scene()
 		if err != OK:
@@ -229,6 +248,10 @@ func _finish_single_pass() -> void:
 		_write_conflict_report()
 	_emit_frameworks_ready()
 	_delete_heartbeat()
+	# Same rationale as _finish_with_existing_mounts: session finished, so a
+	# leftover restart_count from a crashed cycle is stale. No-op when pass
+	# state was already deleted (_clear_restart_counter skips a missing file).
+	_clear_restart_counter()
 	if not _archive_file_sets.is_empty() or _pending_autoloads.size() > 0:
 		var err := get_tree().reload_current_scene()
 		if err != OK:
@@ -340,4 +363,16 @@ func _run_pass_2() -> void:
 		if err != OK:
 			_log_critical("reload_current_scene() failed with error " + str(err))
 			return
+	# Windows hands foreground away when the Pass-1 process dies, so the
+	# relaunched window comes up behind whatever grabbed it (nothing in the
+	# boot path ever asks for it back). Wait a couple of frames so the OS has
+	# mapped the window, then ask for focus once. grab_focus can be denied by
+	# Windows foreground-activation rules; request_attention is the fallback
+	# (flashes the taskbar button instead).
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var win := get_window()
+	if win != null:
+		win.grab_focus()
+		win.request_attention()
 

@@ -152,7 +152,9 @@ func _register_aggregator_batch(kind: String, entries: Dictionary) -> Dictionary
 	var results: Dictionary = {}
 	var all_ok := true
 	for id in entries.keys():
-		var sid := String(id)
+		# str(), not String(): a non-String key must not abort the batch (see
+		# remove_many).
+		var sid := str(id)
 		var per: Dictionary
 		match kind:
 			"item":       per = _register_item_bundle(sid, entries[id])
@@ -620,7 +622,10 @@ func register_many(registry: String, entries: Dictionary) -> Dictionary:
 	var results: Dictionary = {}
 	var all_ok := true
 	for id in entries.keys():
-		var ok: bool = register(registry, id, entries[id])
+		# register() takes a String id; a non-String dict key would be a
+		# runtime argument-type error that aborts the batch mid-way (entries
+		# before it committed, the rest never ran). str() isolates it instead.
+		var ok: bool = register(registry, str(id), entries[id])
 		results[id] = ok
 		if not ok:
 			all_ok = false
@@ -632,7 +637,8 @@ func override_many(registry: String, entries: Dictionary) -> Dictionary:
 	var results: Dictionary = {}
 	var all_ok := true
 	for id in entries.keys():
-		var ok: bool = override(registry, id, entries[id])
+		# str(): same batch-abort guard as register_many.
+		var ok: bool = override(registry, str(id), entries[id])
 		results[id] = ok
 		if not ok:
 			all_ok = false
@@ -720,7 +726,10 @@ func remove_many(registry: String, ids: Array) -> Dictionary:
 	var results: Dictionary = {}
 	var all_ok := true
 	for id in ids:
-		var sid := String(id)
+		# str(), not String(): String() is the non-converting constructor and a
+		# non-String id (typo'd int) would be a runtime error that aborts the
+		# batch mid-way -- entries before it committed, the rest never ran.
+		var sid := str(id)
 		var ok: bool = remove(registry, sid)
 		results[sid] = ok
 		if not ok:

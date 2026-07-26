@@ -1,23 +1,23 @@
-# Setup -- declarative plans
+# Setup plans
 
-`lib.setup(plan)` runs an ordered list of `[verb, ...args]` entries that map to the existing registry and hook APIs. It's designed for mods whose `_ready` is mostly administrative -- one line per hook, one per registration. With `setup`, the entire installation phase becomes one literal that can sit at module scope or be built locally in `_ready`.
+`lib.setup(plan)` runs an ordered list of `[verb, ...args]` entries that map to the existing registry and hook APIs. It's designed for mods whose `_ready` is mostly administrative -- one line per hook, one per registration. With `setup`, the entire installation phase becomes one literal.
 
 ```gdscript
-const PLAN = [
-    ["register", lib.Registry.ITEMS,   {...}],
-    ["patch",    lib.Registry.ITEMS,   {...}],
-    ["append",   lib.Registry.ITEMS, "compatible", {...}],
-    ["hooks",    {...}],
-    ["when", _is_hardcore_mode, [
-        ["patch", lib.Registry.ITEMS, {...}],
-    ]],
-]
-
 func _ready() -> void:
     var lib = Engine.get_meta("RTVModLib")
     await lib.frameworks_ready
-    lib.setup(PLAN)
+    lib.setup([
+        ["register", lib.Registry.ITEMS,   {...}],
+        ["patch",    lib.Registry.ITEMS,   {...}],
+        ["append",   lib.Registry.ITEMS, "compatible", {...}],
+        ["hooks",    {...}],
+        ["when", func(): return _hardcore_mode, [
+            ["patch", lib.Registry.ITEMS, {...}],
+        ]],
+    ])
 ```
+
+A plan can also live at module scope as a `const` -- but a `const` initializer resolves at script-parse time, before the loader object exists, so use the plain string registry names there (`"items"` instead of `lib.Registry.ITEMS`) and Callable predicates in `when` entries (see [Predicates](#predicates-for-when)).
 
 `setup` doesn't introduce new behavior -- it dispatches each entry to the existing public verbs. Anything you can do with `register` / `override` / `patch` / `append` / `prepend` / `remove_from` / `revert` / `remove` / `hook_many` you can do here, plus a meta verb `when` for conditional sub-plans.
 
@@ -98,7 +98,7 @@ if not result.ok:
                     % [i, r.get("verb", "?"), r.get("error", "see log")])
 ```
 
-## Comprehensive example
+## Full example
 
 A plan exercising every verb shape and predicate variant:
 

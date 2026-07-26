@@ -240,7 +240,24 @@ func _rtv_parse_script(filename: String, source: String) -> Dictionary:
 
 	for line_num in lines.size():
 		var line: String = lines[line_num]
+		# Top-level lines only (column 0, no leading indent). EVERYTHING this
+		# pass records -- extends, class_name, vars, funcs -- is module-scope
+		# syntax. Two reasons to skip indented lines up front:
+		#   1. Correctness: an inner class's own indented `extends X` /
+		#      `class_name` / `func` would otherwise clobber or pollute the
+		#      script-level record. For funcs specifically, a wrap-mask
+		#      (especially the wildcard "*") would then emit a top-level
+		#      dispatch wrapper for a method that only exists inside the
+		#      inner class -- a rewritten script that cannot compile.
+		#   2. Startup cost: indented body lines are ~80% of a script; the
+		#      per-line strip_edges + two regex searches they used to get
+		#      (extends + class_name ran on EVERY line) were pure overhead,
+		#      repeated across every wrapped script on every generation.
+		if line.begins_with("\t") or line.begins_with(" "):
+			continue
 		var trimmed := line.strip_edges()
+		if trimmed.is_empty():
+			continue
 
 		var m_ext := _rtv_re_extends.search(trimmed)
 		if m_ext != null:
@@ -250,38 +267,42 @@ func _rtv_parse_script(filename: String, source: String) -> Dictionary:
 		if m_cn != null:
 			script["class_name"] = m_cn.get_string(1)
 
-		# Top-level declarations only (column 0, no leading indent). Inner-class
-		# members are indented; capturing an inner-class `func` / `static func`
-		# here would register a method that is NOT on the script's own top-level
-		# interface. A wrap-mask -- especially the wildcard "*" -- would then emit
-		# a dispatch wrapper for it at column 0, producing a rewritten vanilla
-		# script that cannot compile (the wrapper references a method that only
-		# exists inside the inner class). var_names already had this guard.
-		if not line.begins_with("\t") and not line.begins_with(" "):
-			var m_var := _rtv_re_var.search(trimmed)
-			if m_var != null:
-				(script["var_names"] as Array).append(m_var.get_string(1))
+		var m_var := _rtv_re_var.search(trimmed)
+		if m_var != null:
+			(script["var_names"] as Array).append(m_var.get_string(1))
 
-			var m_sfunc := _rtv_re_static_func.search(trimmed)
-			if m_sfunc != null:
-				var sig_s := _rtv_scan_signature(trimmed, m_sfunc.get_end(0))
-				if not sig_s.is_empty():
-					func_starts.append([
-						line_num, m_sfunc.get_string(1), sig_s["params"],
-						_rtv_extract_param_names(sig_s["params"]), true,
-						sig_s["return_type"],
-					])
-				continue
+		var m_sfunc := _rtv_re_static_func.search(trimmed)
+		if m_sfunc != null:
+			var sig_s := _rtv_scan_signature(trimmed, m_sfunc.get_end(0))
+			if not sig_s.is_empty():
+				func_starts.append([
+					line_num, m_sfunc.get_string(1), sig_s["params"],
+					_rtv_extract_param_names(sig_s["params"]), true,
+					sig_s["return_type"],
+				])
+			else:
+				# Parse-internal detail; the user-facing consequence (a
+				# declared hook that can't fire) is warned about in
+				# _rtv_rewrite_vanilla_source's mask validation.
+				_log_debug("[RTVCodegen] %s: static func %s at line %d: signature unparseable (multi-line or malformed) -- invisible to the wrap surface" \
+						% [filename, m_sfunc.get_string(1), line_num + 1])
+			continue
 
-			var m_func := _rtv_re_func.search(trimmed)
-			if m_func != null:
-				var sig_f := _rtv_scan_signature(trimmed, m_func.get_end(0))
-				if not sig_f.is_empty():
-					func_starts.append([
-						line_num, m_func.get_string(1), sig_f["params"],
-						_rtv_extract_param_names(sig_f["params"]), false,
-						sig_f["return_type"],
-					])
+		var m_func := _rtv_re_func.search(trimmed)
+		if m_func != null:
+			var sig_f := _rtv_scan_signature(trimmed, m_func.get_end(0))
+			if not sig_f.is_empty():
+				func_starts.append([
+					line_num, m_func.get_string(1), sig_f["params"],
+					_rtv_extract_param_names(sig_f["params"]), false,
+					sig_f["return_type"],
+				])
+			else:
+				# Parse-internal detail (dev-mode only). If a mod declared
+				# a hook on this method, the mask validation in
+				# _rtv_rewrite_vanilla_source emits the user-facing warning.
+				_log_debug("[RTVCodegen] %s: func %s at line %d: signature unparseable (multi-line or malformed) -- NOT hookable, will not be wrapped" \
+						% [filename, m_func.get_string(1), line_num + 1])
 
 	# Second pass: extract function bodies to detect await + return-with-value.
 	for idx in func_starts.size():
@@ -303,7 +324,27 @@ func _rtv_parse_script(filename: String, source: String) -> Dictionary:
 		for i in range(body_start, body_end):
 			if i >= lines.size():
 				break
-			var body_line := lines[i].strip_edges()
+			var raw_body := lines[i]
+			var body_line := raw_body.strip_edges()
+			if body_line.is_empty():
+				continue
+			# A top-level (unindented) line between this func and the next one
+			# is NOT part of this body -- it's module scope (e.g. Database.gd's
+			# const preload block sits after _ready) or an inner `class` header
+			# whose indented methods would otherwise be scanned as OUR body.
+			# Stop here: an `await` past this point would falsely mark the
+			# method a coroutine, the wrapper would gain `await`, and every
+			# caller of the wrapped method would then fail at PARSE time
+			# ("must be called with await") -- the exact 3.3.0 bug class.
+			# Column-0 comments inside a body are legal GDScript; skip those.
+			if raw_body[0] != "\t" and raw_body[0] != " ":
+				if body_line.begins_with("#"):
+					continue
+				break
+			# Comment lines can contain the words "await" / "return" without
+			# meaning either; never let them set the flags.
+			if body_line.begins_with("#"):
+				continue
 			if "await " in body_line:
 				is_coroutine = true
 			# "return <something>" (not bare "return").
@@ -349,7 +390,8 @@ func _rtv_parse_script(filename: String, source: String) -> Dictionary:
 func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask: Dictionary = {}) -> String:
 	# method_mask (v3.0.1): Dictionary[method_name, true] restricting which
 	# methods get renamed + wrapped. Empty = wrap every non-static method
-	# (used for REGISTRY_TARGETS where whole-script injection is needed).
+	# (REGISTRY_TARGETS needing whole-script injection, and the user-facing
+	# "[hooks] <path> = *" wildcard sentinel).
 	# Non-empty = wrap only declared methods; matches godot-mod-loader's
 	# per-path method_mask. Other methods stay vanilla, no dispatch
 	# overhead, no rename.
@@ -364,6 +406,31 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask
 		if apply_mask and not method_mask.has(fe["name"].to_lower()):
 			continue
 		hookable.append(fe)
+
+	# LOUD mask validation: every declared hook method must correspond to a
+	# non-static vanilla method, or the mod's hook silently never fires --
+	# the "declared a hook, nothing happened, no log" failure mode. (When the
+	# WHOLE mask misses, _generate_hook_pack already warns and skips; this
+	# covers the partial case where some declared methods match and the rest
+	# would previously vanish without a trace.)
+	if apply_mask:
+		var _mask_nonstatic: Dictionary = {}
+		var _mask_static: Dictionary = {}
+		for fe in parsed["functions"]:
+			if fe["is_static"]:
+				_mask_static[str(fe["name"]).to_lower()] = true
+			else:
+				_mask_nonstatic[str(fe["name"]).to_lower()] = true
+		for mk in method_mask:
+			if _mask_nonstatic.has(mk):
+				continue
+			if _mask_static.has(mk):
+				_log_warning("[RTVCodegen] Hook on %s::%s will NEVER fire: it is a static function, and static functions cannot be hooked." \
+						% [parsed.get("filename", "?"), mk])
+			else:
+				_log_warning("[RTVCodegen] Hook on %s::%s will NEVER fire: no such method in vanilla. Check the spelling, or the game update renamed/removed it." \
+						% [parsed.get("filename", "?"), mk])
+
 	if hookable.is_empty():
 		return source
 
@@ -431,6 +498,7 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask
 	# and `super.OtherMethod()` are already explicit and pass through untouched.
 	var lines: PackedStringArray = src.split("\n")
 	var current_hooked_method: String = ""
+	var renamed_methods: Dictionary = {}
 	for i in lines.size():
 		var line: String = lines[i]
 		# Top-level line (no indent): may open or close a method block.
@@ -446,6 +514,7 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask
 					if hookable_names.has(method_name):
 						lines[i] = "func _rtv_vanilla_" + method_name + line.substr(name_end)
 						current_hooked_method = method_name
+						renamed_methods[method_name] = true
 			continue
 		# Indented line: inside some block. If inside a renamed method, rewrite
 		# bare super( / super ( to super.<orig_name>( so it still resolves.
@@ -454,6 +523,20 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask
 		if not ("super" in line):
 			continue
 		lines[i] = _rewrite_bare_super(line, current_hooked_method)
+
+	# Rename invariant: every hookable method MUST have been renamed to
+	# _rtv_vanilla_<name> by the pass above (renamed_methods records each
+	# rename as it happens -- an O(1) check instead of re-scanning every
+	# line per method). If the rename missed one (formatting drift between
+	# the parse and the rename scan -- e.g. extra spaces in the
+	# declaration), the wrapper appended below DUPLICATES the still-
+	# unrenamed vanilla method and the whole rewritten script fails to
+	# compile, taking every hook on this script down with it. Scream at
+	# generation time, with the cause, instead of a bare engine parse error.
+	for fe in hookable:
+		if not renamed_methods.has(fe["name"]):
+			_log_critical("[RTVCodegen] %s: internal rename failure on method '%s' -- the rewritten script will fail to compile and ALL hooks on this script are disabled. Please report this modloader bug (include game version)." \
+					% [parsed.get("filename", "?"), str(fe["name"])])
 
 	# Pass 1.5: function-body prelude injection. Some registries need a
 	# check at the TOP of a specific vanilla function body (e.g., Loader's
@@ -552,7 +635,9 @@ func _rtv_rewrite_database_constants(source: String) -> String:
 	# comment. Captures the name and the full preload expression verbatim so
 	# we don't disturb whitespace/quoting.
 	var re := RegEx.new()
-	re.compile('^const\\s+(\\w+)\\s*=\\s*(preload\\s*\\(\\s*"[^"]+"\\s*\\))\\s*$')
+	# Detokenized source never carries comments (the tokenizer drops them),
+	# but the plain-text fallback path in _detokenize_script can.
+	re.compile('^const\\s+(\\w+)\\s*=\\s*(preload\\s*\\(\\s*"[^"]+"\\s*\\))\\s*(?:#.*)?$')
 	for line: String in lines:
 		var m := re.search(line)
 		if m != null:
@@ -560,6 +645,11 @@ func _rtv_rewrite_database_constants(source: String) -> String:
 			continue
 		out_lines.append(line)
 	if entries.is_empty():
+		# Not survivable silently: the registry appendix appended later
+		# references _rtv_vanilla_scenes, which only this transform declares.
+		# Without it the rewritten Database.gd fails to compile, killing
+		# Database hooks AND the scenes registry in one stroke.
+		_log_critical("[RTVCodegen] Database.gd: vanilla const layout changed (no 'const X = preload(...)' found) -- the scenes registry and Database hooks will NOT work. Update the modloader.")
 		return source
 	# Inject the dict var right after the extends/script-annotation preamble.
 	# Safe place: before any function. Walk until we find the first `func ` or
@@ -605,6 +695,14 @@ func _rtv_rewrite_loader_shelters(source: String) -> String:
 		lines[i] = m.get_string(1) + "var shelters " + m.get_string(2)
 		changed = true
 	if not changed:
+		# `shelters` stays const, so the appended add_shelter()/registry
+		# appends will fail at runtime. Only user-impacting when a mod
+		# actually uses the registry/B_Loader surface -- which is gated by
+		# _any_mod_declared_registry.
+		if _any_mod_declared_registry:
+			_log_critical("[RTVCodegen] Loader.gd: vanilla 'const shelters' declaration not found (game update?) -- mod shelters/maps will NOT work. Update the modloader.")
+		else:
+			_log_debug("[RTVCodegen] Loader.gd: 'const shelters' not found; const-to-var transform skipped (inert, no [registry] declared)")
 		return source
 	return "\n".join(lines)
 
@@ -615,16 +713,16 @@ func _rtv_rewrite_loader_shelters(source: String) -> String:
 func _rtv_apply_prelude_injections(filename: String, lines: PackedStringArray, rename_prefix: String, indent_unit: String = "\t") -> PackedStringArray:
 	match filename:
 		"Loader.gd":
-			return _rtv_inject_prelude(lines, rename_prefix + "LoadScene", _rtv_loader_loadscene_prelude(), false, indent_unit)
+			return _rtv_inject_prelude(lines, rename_prefix + "LoadScene", _rtv_loader_loadscene_prelude(), false, indent_unit, filename)
 		"FishPool.gd":
-			return _rtv_inject_prelude(lines, rename_prefix + "_ready", _rtv_fishpool_ready_prelude(), false, indent_unit)
+			return _rtv_inject_prelude(lines, rename_prefix + "_ready", _rtv_fishpool_ready_prelude(), false, indent_unit, filename)
 		"AI.gd":
-			return _rtv_inject_prelude(lines, rename_prefix + "SelectWeapon", _rtv_ai_selectweapon_prelude(), false, indent_unit)
+			return _rtv_inject_prelude(lines, rename_prefix + "SelectWeapon", _rtv_ai_selectweapon_prelude(), false, indent_unit, filename)
 		"Compiler.gd":
 			# Spawn's prelude assigns to vanilla's `spawnTarget` local, which
 			# is declared on the first body line. Insert after the run of
 			# leading var decls so spawnTarget is in scope.
-			return _rtv_inject_prelude(lines, rename_prefix + "Spawn", _rtv_compiler_spawn_prelude(), true, indent_unit)
+			return _rtv_inject_prelude(lines, rename_prefix + "Spawn", _rtv_compiler_spawn_prelude(), true, indent_unit, filename)
 		_:
 			return lines
 
@@ -638,7 +736,7 @@ func _rtv_apply_prelude_injections(filename: String, lines: PackedStringArray, r
 # `var ...` and blank lines at the top of the body, rather than directly
 # under the signature. Use this when the prelude needs to reference a
 # local declared by vanilla (e.g. Compiler.Spawn's `spawnTarget`).
-func _rtv_inject_prelude(lines: PackedStringArray, func_name: String, prelude_lines: PackedStringArray, after_var_decls: bool = false, indent_unit: String = "\t") -> PackedStringArray:
+func _rtv_inject_prelude(lines: PackedStringArray, func_name: String, prelude_lines: PackedStringArray, after_var_decls: bool = false, indent_unit: String = "\t", context_file: String = "") -> PackedStringArray:
 	var needle := "func " + func_name + "("
 	var sig_target := -1
 	for i in lines.size():
@@ -647,7 +745,24 @@ func _rtv_inject_prelude(lines: PackedStringArray, func_name: String, prelude_li
 			sig_target = i
 			break
 	if sig_target < 0:
-		_log_info("[RTVCodegen] prelude injection: func %s not found (was it not parsed as hookable?)" % func_name)
+		# Two very different situations land here:
+		#   (a) A mod declared [registry], so this script was wrapped whole-
+		#       script and the target method SHOULD have been renamed. Its
+		#       absence means the registry feature this prelude feeds is dead
+		#       (game update removed/changed the method, or its signature
+		#       failed to parse). That is user-impacting: registrations
+		#       silently stop applying. CRITICAL.
+		#   (b) No mod declared [registry]: the script entered the wrap
+		#       surface via [hooks]/.hook() with a per-method mask that does
+		#       not include this method, so it was never renamed. The prelude
+		#       is inert scaffolding in that session -- nothing a user or mod
+		#       author needs to act on. Dev-mode debug only.
+		if _any_mod_declared_registry:
+			_log_critical("[RTVCodegen] %s: registry code for %s could not be installed (method missing from the wrapped script -- game update?). Mod content registered against it will NOT appear." \
+					% [context_file, func_name])
+		else:
+			_log_debug("[RTVCodegen] %s: prelude target %s not in this script's hook mask and no [registry] declared -- prelude skipped (inert this session)" \
+					% [context_file, func_name])
 		return lines
 	var insert_after := sig_target
 	if after_var_decls:
@@ -670,6 +785,9 @@ func _rtv_inject_prelude(lines: PackedStringArray, func_name: String, prelude_li
 				j += 1
 				continue
 			break
+		if insert_after == sig_target:
+			_log_warning("[RTVCodegen] %s: %s no longer starts with the expected 'var' declarations (game update?) -- the injected registry code may not compile; registry features on this script may not work." \
+					% [context_file, func_name])
 	var result := PackedStringArray()
 	for i in lines.size():
 		result.append(lines[i])
@@ -836,6 +954,7 @@ func _rtv_rewrite_aispawner_agent_assignments(source: String) -> String:
 	# preloaded name) with optional trailing comment/whitespace.
 	var re := RegEx.new()
 	re.compile('^(\\s*)agent\\s*=\\s*(\\w+)\\s*(#.*)?$')
+	var rewrites := 0
 	for i in lines.size():
 		var line: String = lines[i]
 		var m := re.search(line)
@@ -847,6 +966,15 @@ func _rtv_rewrite_aispawner_agent_assignments(source: String) -> String:
 		if name in ["true", "false", "null"]:
 			continue
 		lines[i] = "%sagent = _rtv_resolve_ai_type(zone, %s)" % [indent, name]
+		rewrites += 1
+	if rewrites == 0:
+		# The ai_types override resolver was not wired into any assignment;
+		# registered AI overrides would silently never spawn. Only user-
+		# impacting when the registry surface is actually in use.
+		if _any_mod_declared_registry:
+			_log_critical("[RTVCodegen] AISpawner.gd: vanilla 'agent = <name>' assignments not found (game update?) -- AI type overrides will NOT work. Update the modloader.")
+		else:
+			_log_debug("[RTVCodegen] AISpawner.gd: no 'agent = <name>' assignments matched; ai_types resolver not wired (inert, no [registry] declared)")
 	return "\n".join(lines)
 
 # FishPool._ready() prelude: appends mod-registered species to the local
@@ -1072,9 +1200,12 @@ func _rtv_inject_aispawner_registry(indent: String) -> String:
 	return out
 
 # Rewrite bare `super(` / `super (` in a line to `super.<method>(`. Preserves
-# the rest of the line verbatim. Skips `super.<something>(` (already explicit),
-# and skips occurrences inside strings or comments by stopping at the first
-# `#` or quote. Called per-line within a renamed method's body.
+# the rest of the line verbatim. Skips `super.<something>(` (already explicit)
+# and anything at/after the first `#` (comment heuristic). String literals are
+# NOT tracked: a "super(" inside a string before any `#` would be rewritten,
+# altering that string's text (never code structure). Detokenized vanilla input
+# makes this a non-case; add real quote tracking if a script ever hits it.
+# Called per-line within a renamed method's body.
 func _rewrite_bare_super(line: String, method_name: String) -> String:
 	# Strip inline comment/string content before matching to avoid false hits.
 	# Simple heuristic: search the part of the line before the first # (not in
@@ -1571,7 +1702,21 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		out += "%sif _repl.size() > 0:\n" % I1
 		out += "%svar _prev_skip = _lib._skip_super\n" % I2
 		out += "%s_lib._skip_super = false\n" % I2
-		out += "%svar _replret = await _repl[0].callv(%s)\n" % [I2, args_array]
+		# Gated on is_coro via `aw`, NOT unconditional. In GDScript any function
+		# whose body contains `await` IS a coroutine -- so an unconditional
+		# await here turned every wrapped vanilla method into a coroutine, and
+		# every existing caller then failed at PARSE time with "Function X is a
+		# coroutine, so it must be called with await". Runtime cost was nil
+		# (awaiting a non-coroutine Callable returns immediately); the damage
+		# was entirely the coroutine marking, and it scaled with the wrap
+		# surface -- 384 hook points across 35 scripts in the reported case.
+		#
+		# This does not change the hook contract. docs/wiki/Hooks.md has always
+		# told authors to suspend inside a replace callback ONLY when the
+		# vanilla method they replaced is itself a coroutine -- the wrapper
+		# just failed to enforce it, and marked every wrapped method as a
+		# coroutine to no benefit. Coroutine targets keep full async support.
+		out += "%svar _replret = %s_repl[0].callv(%s)\n" % [I2, aw, args_array]
 		out += "%svar _did_skip = _lib._skip_super\n" % I2
 		out += "%s_lib._skip_super = _prev_skip\n" % I2
 		out += "%sif _did_skip:\n" % I2
@@ -1624,7 +1769,10 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		out += "%sif _repl.size() > 0:\n" % I1
 		out += "%svar _prev_skip = _lib._skip_super\n" % I2
 		out += "%s_lib._skip_super = false\n" % I2
-		out += "%sawait _repl[0].callv(%s)\n" % [I2, args_array]
+		# Void path -- same gating and same contract as the value-returning
+		# branch above; see the comment there for why this must not be an
+		# unconditional await.
+		out += "%s%s_repl[0].callv(%s)\n" % [I2, aw, args_array]
 		out += "%svar _did_skip = _lib._skip_super\n" % I2
 		out += "%s_lib._skip_super = _prev_skip\n" % I2
 		out += "%sif !_did_skip:\n" % I2

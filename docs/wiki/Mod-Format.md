@@ -9,26 +9,53 @@ A mod is an archive (`.vmz`, `.zip`, or `.pck`, plus unpacked folders in develop
 | `.vmz` | Copied to `user://vmz_mount_cache/<name>.zip` then `ProjectSettings.load_resource_pack` | Yes | Yes | Yes |
 | `.zip` | `ProjectSettings.load_resource_pack` directly | Yes | Yes | Yes |
 | `.pck` | `ProjectSettings.load_resource_pack` directly | No | No | No |
-| folder | Zipped to `user://vmz_mount_cache/<name>_dev.zip` then mounted. Zip entries are wrapped under the folder name (see [Folder mode wrapper](#folder-mode-wrapper)). **Developer mode only** | Yes | Yes | Yes |
+| folder | Zipped to `user://vmz_mount_cache/<name>_dev.zip` then mounted. The folder's *contents* are zipped at the archive root, so it mounts identically to the zip you would ship (see [Folder mode layout](#folder-mode-layout)). **Developer mode only** | Yes | Yes | Yes |
 
 `.vmz` is the historical community convention -- Godot's ZIPReader won't open files with `.vmz` extension directly, so the loader copies them to `<name>.zip` in the cache dir first (see [fs_archive.gd `_static_vmz_to_zip`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/fs_archive.gd)). Re-extraction triggers when the source `.vmz` mtime is newer than the cache. `.zip` archives skip the cache step and mount directly.
 
-### Folder mode wrapper
+### Packaging layout
 
-A folder mod at `<game>/mods/MyMod/` containing `data/main.gd` mounts as `res://MyMod/data/main.gd` -- the folder name is added as a wrapper so the layout matches what a conventionally-packed `.zip` produces. Without this, the same source files would mount at `res://data/main.gd` from the folder but at `res://MyMod/data/main.gd` from a `.zip` of the same mod, and a single `mod.txt` could not satisfy both.
+`mod.txt` must sit at the **root** of the archive. An archive whose `mod.txt` is
+buried in a subfolder is rejected as packaged incorrectly -- this is the single
+most common packaging mistake, and it happens when you zip the folder that holds
+the mod instead of the mod's contents.
 
-The rule, in one line: **the path inside `mod.txt` is whatever it would be inside the equivalent `.zip` -- prefix with the folder name.**
+Everything else mounts verbatim, so put your code in a subfolder named after your
+mod: `res://` is shared with the game and every other mod, and a bare
+`res://Main.gd` invites a collision.
+
+```
+MyMod.vmz                    Resulting res:// paths after mount
+  mod.txt                    (read at the root; not a path you reference)
+  MyMod/Main.gd              res://MyMod/Main.gd
+  MyMod/data/items.json      res://MyMod/data/items.json
+```
+
+A matching `mod.txt` autoload entry: `MyModMain="res://MyMod/Main.gd"`.
+
+### Folder mode layout
+
+A dev-mode folder mod uses the **same layout and the same `mod.txt`**: the
+folder's contents are zipped at the archive root, so `<game>/mods/MyMod/` holding
+`mod.txt` and `MyMod/Main.gd` mounts exactly like the `.zip` above. Work on the
+folder, zip its contents, upload it -- no path rewrites at any step.
 
 ```
 mods/MyMod/                  Resulting res:// paths after mount
-  mod.txt                    (n/a -- mod.txt is read once, not mounted)
-  Main.gd                    res://MyMod/Main.gd
-  data/items.json            res://MyMod/data/items.json
+  mod.txt                    (read at the root; not a path you reference)
+  MyMod/Main.gd              res://MyMod/Main.gd
+  MyMod/data/items.json      res://MyMod/data/items.json
 ```
 
-A matching `mod.txt` autoload entry: `MyMod="res://MyMod/Main.gd"`.
-
-**Breaking change in 3.1.2**: pre-3.1.2 folder mode dropped contents at `res://` directly with no wrapper, so existing folder mods that relied on that layout need their `mod.txt` paths re-prefixed with the folder name. Folder mode is dev-only (gated behind the developer-mode toggle in the launcher) and the prior unwrapped behavior was undocumented; the inconsistency between folder and `.zip` was the actual bug.
+**Breaking change in 3.3.1**: 3.1.2 through 3.3.0 wrapped a dev folder's entries
+under the folder name, so a folder mod needed an extra `res://<folder>/` prefix
+that stopped working the moment the mod was zipped and shipped. 3.3.1 removes the
+wrapper so folder and `.zip` agree. A folder mod authored against the wrap must
+drop the extra prefix (or add a real subfolder inside the mod if it wants that
+namespace, same as a zip). A stale path is not silent: the loader logs
+`Autoload path not found in archive` along with the similar paths it did find.
+The `_dev.zip` cache self-invalidates on upgrade, so no manual cache clear is
+needed. Folder mode is dev-only, gated behind the developer-mode toggle.
 
 ## mod.txt
 
@@ -79,7 +106,7 @@ Only `[mod]` is required. `[autoload]`, `[updates]`, `[dependencies]`, `[hooks]`
 
 ### `[dependencies]` section
 
-Declares other mods by `[mod] id` so the launcher can identify missing requirements and the runtime loader can avoid starting mods that cannot work.
+Declares other mods by their `[mod] id`. Required dependencies load before your mod automatically and block it (with an actionable explanation in the Mods tab) when missing; optional ones affect load order only. The full behavior -- automatic ordering, cycles, skip rules, the blocked-row UI -- is on [Dependencies](Dependencies).
 
 ```ini
 [dependencies]
@@ -87,14 +114,12 @@ required=["mod_configuration_menu", "rtv_shared_lib"]
 optional=["happy_fireplace"]
 ```
 
-Use Godot `ConfigFile` string arrays. Bare CSV (`required=a, b`) is not valid `ConfigFile` syntax and causes the whole `mod.txt` parse to fail. A quoted whole-value string also parses (`required="foo, bar"` splits on commas) as a fallback for older author tools, but string arrays are the recommended form.
-
 | Key | Type | Meaning |
 |---|---|---|
-| `required` | string array | Mods that must be installed and enabled. If any required dependency is missing, disabled, or not loadable, this mod is skipped. |
-| `optional` | string array | Soft integrations. Parsed and displayed by the launcher; absence does not block loading. |
+| `required` | string array | Mods that must be installed and enabled. If any required dependency is unmet, this mod is skipped. |
+| `optional` | string array | Soft integrations: ordered before yours when present; absence never blocks. |
 
-Required dependencies load before the dependent mod automatically: if the priority/name ordering would load a dependency later than its dependent, the loader applies a minimal stable reorder (hoisting the dependency) and notes the adjustment in the launcher's order panel -- no author or user action needed. Dependency cycles are the exception: they are reported as a warning and the involved mods keep their priority order. Explicit priorities still work; the automatic adjustment only kicks in when a required dependency would otherwise load too late.
+Use Godot `ConfigFile` string arrays. Bare CSV (`required=a, b`) is not valid `ConfigFile` syntax and fails the **whole** `mod.txt` parse. Accepted value shapes: [Dependencies#value-syntax](Dependencies#value-syntax-required-optional-provides).
 
 ### Renaming a mod: `[mod] provides` (added 3.3.0)
 
@@ -107,13 +132,7 @@ id="better_ai"
 provides=["betterai_legacy", "old_better_ai"]
 ```
 
-Rules:
-
-- Any `required=` or `optional=` entry naming a provided id resolves to this mod -- it satisfies the requirement, is hoisted by the automatic load ordering, and participates in cycle detection exactly as if it still had the old id. Matching is case-insensitive, like all id handling.
-- A provided id **never shadows an installed and enabled real mod**: if a mod whose actual `id` matches one of your aliases is installed and enabled, that real mod wins for dependency resolution and the loader logs that your alias is inert. If that real mod is installed but disabled, your alias satisfies dependents in its place.
-- If two installed mods provide the same alias, only one of them resolves it (which one depends on load order) and a warning is logged.
-- Use Godot `ConfigFile` string array syntax, same as `[dependencies]`. A malformed `provides` value is ignored with a log line; it never blocks the mod from loading.
-- Declare the alias **in the release that renames the mod** (and keep it): dependents update on their own schedule.
+Ship the alias in the same release that renames the id, and keep it -- dependents update on their own schedule. Resolution rules (shadowing, duplicate aliases, malformed values) are on [Dependencies#renaming-your-mod-provides](Dependencies#renaming-your-mod-provides).
 
 ### `[autoload]` section
 
@@ -149,7 +168,7 @@ Version compare uses [mod_discovery.gd `compare_versions`](https://github.com/am
 
 ### `[hooks]` section
 
-Enrolls specific vanilla methods (or whole scripts) in the rewrite surface so your hook callbacks can fire. **Most mods don't need this** -- if your mod calls `.hook("stem-method-variant", cb)` directly in its own source, the scanner picks the call up and enrolls the method automatically. See [Hooks#opt-in-model](Hooks#opt-in-model).
+Enrolls specific vanilla methods (or whole scripts) in the rewrite surface so your hook callbacks can fire. **Most mods don't need this** -- if your mod calls `.hook("stem-method-variant", cb)` directly in its own source, the scanner picks the call up and enrolls the method automatically. See [Hooks#wrap-surface](Hooks#wrap-surface----why-hook-alone-is-not-enough).
 
 Use `[hooks]` when auto-enrollment can't see your registration:
 

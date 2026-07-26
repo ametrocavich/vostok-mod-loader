@@ -260,6 +260,13 @@ func _remove_recipe(id: String) -> bool:
 				push_warning("[Registry] remove('recipes', '%s'): recipe not found in %s; tracking cleared" % [id, category])
 	reg.erase(id)
 	_registry_registered["recipes"] = reg
+	# Drop the handle's patch stash with the entry (mirrors _remove_event).
+	# Ref-keyed stashes ("ref:<iid>") are left alone -- they track the Resource
+	# identity, which outlives the handle.
+	var patched: Dictionary = _registry_patched.get("recipes", {})
+	if patched.has(id):
+		patched.erase(id)
+		_registry_patched["recipes"] = patched
 	_log_debug("[Registry] removed recipe '%s'" % id)
 	return true
 

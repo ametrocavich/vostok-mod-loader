@@ -326,6 +326,12 @@ func _remove_trader_task(id: String) -> bool:
 				push_warning("[Registry] remove('trader_tasks', '%s'): task not found in %s.tasks; tracking cleared" % [id, trader])
 	reg.erase(id)
 	_registry_registered["trader_tasks"] = reg
+	# Drop the handle's patch stash with the entry (mirrors _remove_event).
+	# Ref-keyed stashes are left alone -- they track the Resource identity.
+	var patched: Dictionary = _registry_patched.get("trader_tasks", {})
+	if patched.has(id):
+		patched.erase(id)
+		_registry_patched["trader_tasks"] = patched
 	_log_debug("[Registry] removed trader_task '%s'" % id)
 	return true
 

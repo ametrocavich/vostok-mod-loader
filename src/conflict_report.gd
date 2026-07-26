@@ -42,7 +42,18 @@ func _verify_script_overrides() -> void:
 		if targets.is_empty():
 			continue
 		if not printed_header:
-			_log_info("[OverrideVerify] === Post-autoload cache check ===")
+			# Debug, not info: this block is an operator diagnostic ("did
+			# take_over_path land?"), and a player can do nothing with it. The
+			# FAIL branch below stays a warning -- that one means a mod's
+			# override did not apply, which is worth surfacing to anyone.
+			#
+			# NOTE: only the LOGGING is gated. The load() below is left running
+			# unconditionally on purpose -- it may be load-bearing for the
+			# override mechanism (it populates the ResourceCache at the moment
+			# mod autoloads have just finished), and proving otherwise needs a
+			# runtime test. If it turns out to be purely diagnostic, the whole
+			# function should be skipped when not in developer mode.
+			_log_debug("[OverrideVerify] === Post-autoload cache check ===")
 			printed_header = true
 		for vanilla_path in targets:
 			var vp: String = String(vanilla_path)
@@ -52,7 +63,7 @@ func _verify_script_overrides() -> void:
 				continue
 			var src: String = scr.source_code
 			var src_head: String = src.substr(0, 60).replace("\n", " | ").replace("\t", " ")
-			_log_info("[OverrideVerify] %s | %s | resource_path=%s src_head=[%s]" \
+			_log_debug("[OverrideVerify] %s | %s | resource_path=%s src_head=[%s]" \
 					% [mod_name, vp, scr.resource_path, src_head])
 
 # Conflict summary + report output (developer mode; called from every

@@ -50,7 +50,7 @@ func _on_menu_ready() -> void:
 func _inject_mods_button(menu_root: Node) -> void:
 	var buttons := menu_root.get_node_or_null("Main/Buttons")
 	if buttons == null:
-		_log_warning("[ModLoader] Main menu has no Main/Buttons container skipping Mods button injection")
+		_log_warning("[ModLoader] Main menu has no Main/Buttons container -- skipping Mods button injection")
 		return
 	if buttons.get_node_or_null(_MODS_BUTTON_NAME) != null:
 		return
