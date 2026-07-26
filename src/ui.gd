@@ -4088,15 +4088,10 @@ func _mods_apply_mws_meta(mod_id: int, data: Dictionary) -> void:
 			var thumb_rect: TextureRect = thumb_v
 			var thumb_record: Variant = data.get("thumbnail")
 			if thumb_record is Dictionary:
-				# A soft-refresh repaint can land after a "no image" overlay
-				# went up (stale sidecar said no thumbnail, refreshed data has
-				# one); drop the overlay so the fresh texture isn't captioned
-				# missing.
-				var wrap := thumb_rect.get_parent() as Control
-				if wrap != null and is_instance_valid(wrap) and wrap.has_node("ThumbStateLabel"):
-					var stale_lbl := wrap.get_node("ThumbStateLabel")
-					wrap.remove_child(stale_lbl)
-					stale_lbl.queue_free()
+				# Leave the caption in place: _set_thumb_ready clears it the
+				# instant a texture actually lands, so the cell reads
+				# "no thumbnail" while the fetch is in flight rather than
+				# reverting to a bare gray panel that means nothing.
 				_browse_load_thumbnail_async(thumb_rect, thumb_record)
 			else:
 				# Mod exists on MWS but has no thumbnail record -- say so
@@ -5099,20 +5094,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		# panel until its meta fetch resolved, which is indistinguishable from
 		# still-loading and never resolves at all while offline. A texture that
 		# arrives later clears the caption (_set_thumb_ready).
-		var thumb_wrap := PanelContainer.new()
-		thumb_wrap.custom_minimum_size = Vector2(96, 54)
-		thumb_wrap.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		var thumb_style := StyleBoxFlat.new()
-		thumb_style.bg_color = COL_SURFACE_2
-		thumb_wrap.add_theme_stylebox_override("panel", thumb_style)
-		row.add_child(thumb_wrap)
-		var thumb_rect := TextureRect.new()
-		thumb_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-		thumb_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
-		thumb_rect.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		thumb_rect.size_flags_vertical = Control.SIZE_EXPAND_FILL
-		thumb_wrap.add_child(thumb_rect)
-		_set_thumb_failed(thumb_rect, false)
+		var thumb_rect := _make_thumb_cell(row, Vector2(96, 54), true, true)
 		if row_mws_id > 0:
 			thumb_ref = thumb_rect
 
@@ -6388,23 +6370,10 @@ func _browse_render_mod_row(mod_data: Dictionary, install_entry: Variant, on_get
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", SP_L)
 
-	# Thumbnail wrapper. PanelContainer gives us a solid background so the
-	# placeholder looks intentional rather than "missing image" before the
-	# texture loads. ColorRect would also work but PanelContainer composes
-	# better with the dark theme's stylebox conventions.
-	var thumb_wrap := PanelContainer.new()
-	thumb_wrap.custom_minimum_size = Vector2(96, 54)
-	var thumb_style := StyleBoxFlat.new()
-	thumb_style.bg_color = COL_SURFACE_2
-	thumb_wrap.add_theme_stylebox_override("panel", thumb_style)
-	row.add_child(thumb_wrap)
-
-	var thumb_rect := TextureRect.new()
-	thumb_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	thumb_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
-	thumb_rect.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	thumb_rect.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	thumb_wrap.add_child(thumb_rect)
+	# Same cell the Mods tab builds, so a Browse mod with no image reads
+	# "no thumbnail" exactly like an installed one instead of sitting as a
+	# bare gray panel.
+	var thumb_rect := _make_thumb_cell(row, Vector2(96, 54))
 
 	var thumb_record = mod_data.get("thumbnail")
 	if thumb_record is Dictionary:
@@ -6526,7 +6495,13 @@ func _set_thumb_failed(rect: TextureRect, failed: bool) -> void:
 	var wrap := rect.get_parent() as Control
 	if wrap == null or not is_instance_valid(wrap):
 		return
+	# Cells are captioned "no thumbnail" the moment they are built, so an
+	# existing label is the normal case, not a duplicate to skip: update it, or
+	# a fetch that actually broke would keep reading "no thumbnail".
 	if wrap.has_node("ThumbStateLabel"):
+		var existing := wrap.get_node("ThumbStateLabel") as Label
+		if existing != null:
+			existing.text = "load failed" if failed else "no thumbnail"
 		return
 	var lbl := Label.new()
 	lbl.name = "ThumbStateLabel"
@@ -6550,6 +6525,38 @@ func _set_thumb_ready(rect: TextureRect, tex: Texture2D) -> void:
 		wrap.remove_child(stale)
 		stale.queue_free()
 	rect.texture = tex
+
+# Build an image cell: a surface-coloured PanelContainer holding a TextureRect,
+# captioned "no thumbnail" until an image lands. This is the single source of
+# truth for every image cell in the launcher. The Mods rows, the Browse rows
+# and the detail banner each grew their own copy of this construction, and that
+# is exactly how they drifted -- only one of the three ever got a placeholder.
+#
+# cover=true crops to fill, for small row tiles. cover=false letterboxes inside
+# the band so the whole image stays visible, which is what the detail banner
+# wants. shrink_center keeps the cell at its natural height instead of
+# stretching to the row.
+#
+# Returns the TextureRect to paint into (via _set_thumb_ready).
+func _make_thumb_cell(parent: Control, min_size: Vector2, cover: bool = true,
+		shrink_center: bool = false) -> TextureRect:
+	var wrap := PanelContainer.new()
+	wrap.custom_minimum_size = min_size
+	if shrink_center:
+		wrap.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	var style := StyleBoxFlat.new()
+	style.bg_color = COL_SURFACE_2
+	wrap.add_theme_stylebox_override("panel", style)
+	parent.add_child(wrap)
+	var rect := TextureRect.new()
+	rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED if cover \
+			else TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	rect.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	rect.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	wrap.add_child(rect)
+	_set_thumb_failed(rect, false)
+	return rect
 
 
 # Session memo of decoded thumbnail textures keyed by storage filename.
@@ -6884,22 +6891,12 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 	var banner_record = mod_data.get("banner")
 	var thumb_record = mod_data.get("thumbnail")
 	var img_record = banner_record if banner_record is Dictionary else thumb_record
+	# cover=false so the whole banner letterboxes inside the 220px band (the
+	# cell's surface colour mattes it) instead of being cover-cropped; row
+	# tiles keep the crop. Built only when there IS an image: unlike a 96x54
+	# row tile, a 220px band captioned "no thumbnail" is worse than no band.
 	if img_record is Dictionary:
-		var banner_wrap := PanelContainer.new()
-		banner_wrap.custom_minimum_size = Vector2(0, 220)
-		var banner_style := StyleBoxFlat.new()
-		banner_style.bg_color = COL_SURFACE_2
-		banner_wrap.add_theme_stylebox_override("panel", banner_style)
-		box.add_child(banner_wrap)
-		var banner_rect := TextureRect.new()
-		banner_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-		# CENTERED, not COVERED: the whole banner letterboxes inside the
-		# 220px band (the panel's surface colour mattes it) instead of being
-		# cover-cropped. Small grid tiles / row thumbnails keep COVERED.
-		banner_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-		banner_rect.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		banner_rect.size_flags_vertical = Control.SIZE_EXPAND_FILL
-		banner_wrap.add_child(banner_rect)
+		var banner_rect := _make_thumb_cell(box, Vector2(0, 220), false)
 		_browse_load_thumbnail_async(banner_rect, img_record)
 
 	var user_dict: Dictionary = mod_data.get("user", {}) if mod_data.get("user") is Dictionary else {}
