@@ -4,6 +4,16 @@
 ## [script_overrides] from mod.txt. Runs after mod_discovery has built the
 ## ordered list.
 
+# Attribution side-channel for the hook reconciliation in hook_pack.gd:
+# res_path -> Dictionary[mod_name, true] for every mod that declared a hook
+# on that path (via [hooks] or a scanned .hook() call). _hooked_methods
+# cannot carry this itself -- its inner dict IS the per-method wrap mask and
+# an empty dict is the wildcard sentinel, so the shape can't be extended.
+# Purely diagnostic: never read for wrap decisions. Entries added by
+# hooks_api.add_hook() are not attributed (runtime callers) and report as
+# such in the reconciliation.
+var _hook_declared_by: Dictionary = {}
+
 func load_all_mods(pass_label: String = "") -> void:
 	_pending_autoloads.clear()
 	_loaded_mod_ids.clear()
@@ -18,6 +28,7 @@ func load_all_mods(pass_label: String = "") -> void:
 	_pending_script_overrides.clear()
 	_applied_script_overrides.clear()
 	_hooked_methods.clear()
+	_hook_declared_by.clear()
 	_any_mod_declared_registry = false
 
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(TMP_DIR))
@@ -44,6 +55,24 @@ func load_all_mods(pass_label: String = "") -> void:
 					+ "' -- archives '" + candidates[i - 1]["file_name"]
 					+ "' and '" + candidates[i]["file_name"]
 					+ "'. Load order tie broken by archive filename.")
+
+	# Account for every mod found on disk, and name the active profile.
+	#
+	# Without this the log jumps straight from "Found 9 mod(s)" to a two-entry
+	# load order with nothing explaining the other seven. That gap cost a full
+	# triage session once already: the answer turned out to be an inactive test
+	# profile in which the mod under investigation was simply disabled, which
+	# no log line anywhere would have revealed. Disabled mods are a normal,
+	# silent state -- so state it.
+	var found_total: int = _ui_mod_entries.size()
+	var enabled_total: int = int(pick["enabled_count"])
+	var loading_total: int = candidates.size()
+	var blocked_total: int = enabled_total - loading_total
+	var accounting := "Found %d mod(s) -- %d enabled, %d loading" % [found_total, enabled_total, loading_total]
+	if blocked_total > 0:
+		accounting += ", %d blocked by dependencies" % blocked_total
+	accounting += ", %d disabled (profile \"%s\")" % [maxi(0, found_total - enabled_total), _active_profile]
+	_log_info(accounting)
 
 	var header := "=== Load Order" + (" (" + pass_label + ")" if pass_label != "" else "") + " ==="
 	_log_info(header)
@@ -79,8 +108,23 @@ func _merge_hook_calls_into_wrap_mask() -> void:
 		var key := sp.get_file().get_basename().to_lower()
 		if not prefix_to_path.has(key):
 			prefix_to_path[key] = sp
+	# Root-cause guard: when BOTH enumeration sources are empty (PCK parse
+	# failed AND no class_name lookup), no prefix can ever resolve. Without
+	# this, every scanned .hook() call below fires its own misleading
+	# "check spelling" warning; the truth is the loader couldn't enumerate
+	# the game's scripts at all, so say that ONCE and stop.
+	if prefix_to_path.is_empty():
+		var any_hook_calls := false
+		for mod_name: String in _mod_script_analysis:
+			if not ((_mod_script_analysis[mod_name] as Dictionary).get("hook_calls", []) as Array).is_empty():
+				any_hook_calls = true
+				break
+		if any_hook_calls:
+			_log_critical("[Hooks] Game script enumeration is empty -- no .hook() call can be resolved to a vanilla script, so ALL scanned hooks are dropped this session (PCK parse failed or game layout changed). This is a loader/game problem, not a mod problem.")
+		return
 	for mod_name: String in _mod_script_analysis:
 		var analysis: Dictionary = _mod_script_analysis[mod_name]
+		var resolved_count := 0
 		for entry: Dictionary in (analysis.get("hook_calls", []) as Array):
 			var prefix: String = entry["prefix"]
 			var method: String = entry["method"]
@@ -94,6 +138,11 @@ func _merge_hook_calls_into_wrap_mask() -> void:
 						% [mod_name, prefix, method, prefix])
 				continue
 			var path: String = prefix_to_path[prefix]
+			# Attribution for the reconciliation report (diagnostic only).
+			if not _hook_declared_by.has(path):
+				_hook_declared_by[path] = {}
+			(_hook_declared_by[path] as Dictionary)[mod_name] = true
+			resolved_count += 1
 			# Mask keys lowercase (hook_pack.gd compares fe["name"].to_lower()).
 			# Hook names are lowercase by convention but mods occasionally
 			# write mixed case like .hook("Interface-UpdateToolTip-pre", ...);
@@ -110,6 +159,8 @@ func _merge_hook_calls_into_wrap_mask() -> void:
 			if mask.is_empty():
 				continue
 			mask[method.to_lower()] = true
+		if resolved_count > 0:
+			_log_debug("[Hooks] %d scanned .hook() call(s) resolved to vanilla scripts [%s]" % [resolved_count, mod_name])
 
 # One mod, one call: mount its archive, scan + register file claims, then
 # apply its mod.txt sections. SEAM: mod.txt section handlers are the
@@ -217,6 +268,12 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 	# method. Method names are lowercased on write because hook_pack.gd
 	# compares vanilla fn names via .to_lower() against the mask.
 	if cfg != null and cfg.has_section("hooks"):
+		# Per-mod tallies for the ONE summary line below. The per-method /
+		# per-path detail is developer-only (_log_debug): a real mod declares
+		# hundreds of hook points and per-line INFO buried the whole log.
+		var hooks_scripts_declared := 0
+		var hooks_methods_declared := 0
+		var hooks_wildcards := 0
 		for key in cfg.get_section_keys("hooks"):
 			var script_path := str(key).strip_edges()
 			var methods_str := str(cfg.get_value("hooks", key, "")).strip_edges()
@@ -254,28 +311,42 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 					_hooked_methods.erase(script_path)
 				_log_warning("  [hooks] %s has no valid method names ('%s') -- entry ignored [%s]" % [script_path, methods_str, mod_name])
 				continue
+			# Valid entry -- record attribution for the reconciliation report
+			# so a lost hook target can name the mod that declared it.
+			if not _hook_declared_by.has(script_path):
+				_hook_declared_by[script_path] = {}
+			(_hook_declared_by[script_path] as Dictionary)[mod_name] = true
+			hooks_scripts_declared += 1
 			if has_wildcard:
+				hooks_wildcards += 1
 				if not specific_methods.is_empty():
 					_log_warning("  [hooks] %s mixes '*' with specific methods (%s); '*' wins, all methods wrapped [%s]" \
 							% [script_path, ", ".join(specific_methods), mod_name])
 				else:
-					_log_info("  Hooks declared: %s :: * (all methods) [%s]" % [script_path, mod_name])
+					_log_debug("  Hooks declared: %s :: * (all methods) [%s]" % [script_path, mod_name])
 				# "*" wins across mods too: drop any methods earlier mods
 				# listed for this path so the empty wrap-all sentinel applies.
 				# Wrap-all is a superset, so those methods stay wrapped.
 				if not script_mask.is_empty():
-					_log_info("  Hooks: '*' widens earlier method list for %s -- all methods wrapped" % script_path)
+					# Cross-mod interaction worth one user-visible line: this
+					# mod's wildcard supersedes another mod's method list.
+					_log_info("  Hooks: '*' from %s widens the earlier method list for %s -- all methods wrapped" % [mod_name, script_path])
 					script_mask.clear()
 				# Leave the inner dict empty; hook_pack.gd treats that as wrap-all.
 				continue
+			hooks_methods_declared += specific_methods.size()
 			if wildcard_already:
 				if not specific_methods.is_empty():
-					_log_info("  Hooks declared: %s :: %s [%s] -- already covered by an earlier wildcard (*), all methods wrapped" \
+					_log_debug("  Hooks declared: %s :: %s [%s] -- already covered by an earlier wildcard (*), all methods wrapped" \
 							% [script_path, ", ".join(specific_methods), mod_name])
 				continue
 			for method_name in specific_methods:
 				script_mask[method_name.to_lower()] = true
-				_log_info("  Hook declared: %s :: %s [%s]" % [script_path, method_name, mod_name])
+				_log_debug("  Hook declared: %s :: %s [%s]" % [script_path, method_name, mod_name])
+		if hooks_scripts_declared > 0:
+			var wc_tag := (", %d wildcard (all methods)" % hooks_wildcards) if hooks_wildcards > 0 else ""
+			_log_info("  Hooks: %d method(s) across %d script(s)%s [%s]" \
+					% [hooks_methods_declared, hooks_scripts_declared, wc_tag, mod_name])
 
 	# [registry] opt-in (v3.0.1). Gates Database.gd wrapping + const-to-dict
 	# transform on explicit mod declaration. Without this, Database.gd stays
