@@ -6489,6 +6489,33 @@ func _browse_render_mod_row(mod_data: Dictionary, install_entry: Variant, on_get
 # parent PanelContainer -- no image asset needed, and FS_META + COL_TEXT_DIM
 # keeps it as quiet as the rest of the meta text. Safe to call after awaits
 # (guards the rect and its parent) and idempotent per cell.
+# Decode an image buffer by SNIFFING its magic bytes rather than trying every
+# decoder in turn.
+#
+# The old try-webp-then-jpg-then-png chain pushed nine engine ERROR lines into
+# the console for every buffer that was not an image -- an HTML error page, a
+# 404 body, a truncated download. Those lines are indistinguishable from real
+# failures at a glance, so a perfectly healthy launch log read as catastrophic
+# and genuine errors got buried in the noise.
+#
+# Returns null when the buffer is not a format we support; every caller already
+# treats that as "load failed".
+func _decode_image_buffer(bytes: PackedByteArray) -> Image:
+	if bytes.size() < 12:
+		return null
+	var img := Image.new()
+	# PNG: 89 'P' 'N' 'G'
+	if bytes[0] == 0x89 and bytes[1] == 0x50 and bytes[2] == 0x4E and bytes[3] == 0x47:
+		return img if img.load_png_from_buffer(bytes) == OK else null
+	# JPEG: FF D8 FF
+	if bytes[0] == 0xFF and bytes[1] == 0xD8 and bytes[2] == 0xFF:
+		return img if img.load_jpg_from_buffer(bytes) == OK else null
+	# WebP: "RIFF" <4-byte size> "WEBP"
+	if bytes[0] == 0x52 and bytes[1] == 0x49 and bytes[2] == 0x46 and bytes[3] == 0x46 \
+			and bytes[8] == 0x57 and bytes[9] == 0x45 and bytes[10] == 0x42 and bytes[11] == 0x50:
+		return img if img.load_webp_from_buffer(bytes) == OK else null
+	return null
+
 func _set_thumb_failed(rect: TextureRect, failed: bool) -> void:
 	if not is_instance_valid(rect):
 		return
@@ -6613,10 +6640,8 @@ func _browse_load_thumbnail_async(rect: TextureRect, image_record: Dictionary) -
 			var bytes := f.get_buffer(f.get_length())
 			f.close()
 			if bytes.size() > 0:
-				var img := Image.new()
-				if img.load_webp_from_buffer(bytes) == OK \
-						or img.load_jpg_from_buffer(bytes) == OK \
-						or img.load_png_from_buffer(bytes) == OK:
+				var img := _decode_image_buffer(bytes)
+				if img != null:
 					var disk_tex := ImageTexture.create_from_image(img)
 					_thumb_texture_cache_store(fn, disk_tex)
 					_set_thumb_ready(rect, disk_tex)
@@ -6655,11 +6680,8 @@ func _browse_load_thumbnail_async(rect: TextureRect, image_record: Dictionary) -
 		_set_thumb_failed(rect, true)
 		return
 
-	var img := Image.new()
-	var ok := img.load_webp_from_buffer(body) == OK \
-			or img.load_jpg_from_buffer(body) == OK \
-			or img.load_png_from_buffer(body) == OK
-	if not ok:
+	var img := _decode_image_buffer(body)
+	if img == null:
 		_set_thumb_failed(rect, true)
 		return
 
