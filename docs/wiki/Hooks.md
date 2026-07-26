@@ -8,8 +8,23 @@ Use hooks when you want to react to or change vanilla *behavior*. If you want to
 
 A working hook mod needs exactly two things: an `[autoload]` entry in `mod.txt`, and a literal `.hook("...")` call in your own source. No `[hooks]` section, no framework import. The loader scans your `.gd` files for literal `.hook("<stem>-<method>[-pre|-post|-callback]")` strings and wraps those vanilla methods automatically.
 
+Package it like this -- `mod.txt` at the archive ROOT, your code in a subfolder
+next to it:
+
+```
+BigJump.vmz            (a .zip renamed to .vmz)
+  mod.txt              <- must be at the root, NOT inside BigJump/
+  BigJump/Main.gd      <- mounts as res://BigJump/Main.gd
+```
+
+`mod.txt` at the root is what makes it a mod -- if it is inside a subfolder the
+loader rejects the archive as packaged incorrectly. Everything else mounts
+verbatim, so the subfolder is what your `res://` paths are relative to. Give it
+your mod's name: `res://` is shared with the game, and a bare `res://Main.gd`
+can collide with another mod.
+
 ```gdscript
-# res://MyMod/Main.gd
+# res://BigJump/Main.gd
 extends Node
 
 var _lib = null
@@ -31,14 +46,14 @@ func _on_jump(_delta):
 ```
 
 ```ini
-# res://MyMod/mod.txt
+# mod.txt, at the archive root
 [mod]
 name="Big Jump"
 id="big_jump"
 version="1.0.0"
 
 [autoload]
-BigJump="res://MyMod/Main.gd"
+BigJump="res://BigJump/Main.gd"
 ```
 
 That's the whole mod. The scanner sees `.hook("controller-jump-pre", ...)`, resolves `controller` to `res://Scripts/Controller.gd`, and wraps `jump`. Your callback receives the same arguments the vanilla method received.
@@ -47,6 +62,10 @@ Two rules to keep out of trouble:
 
 1. **Hook names must be a literal string, fully lowercase.** A name built at runtime (concatenation, variable) registers fine but never fires, because the scanner can only enroll literal strings (see [Wrap surface](#wrap-surface----why-hook-alone-is-not-enough)). Mixed-case names enroll the wrap but the runtime key never matches -- write them lowercase.
 2. **Register from `_ready` or later** using the readiness pattern above. Calling `hook()` from `_ready` directly also works (the API exists before mod autoloads run); waiting for `frameworks_ready` additionally guarantees every other mod's autoload has finished, which you need for peer integration (`has_mod`) and registry-backed state. You can also just `await Engine.get_meta("RTVModLib").frameworks_ready`.
+
+Working from an unpacked folder in [Developer Mode](Developer-Mode)? Use the same layout and the same `mod.txt` -- a folder's contents mount at `res://` exactly like the zip you'll ship, so `mods/BigJump/` holds `mod.txt` and `BigJump/Main.gd`, and no paths change when you zip it up. (Before 3.3.1 a dev folder was wrapped under its own name, so folder mods needed an extra prefix that broke the moment you zipped them. If you have a folder mod authored against that, drop the extra prefix.)
+
+If the mod loads but nothing happens in game, check the console log. An `Autoload path not found in archive` line means the `mod.txt` path does not match where the file actually landed -- the loader prints the similar paths it did find, so you can see the correct prefix.
 
 ## Hook names
 

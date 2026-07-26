@@ -91,6 +91,7 @@ func _build_archive_entry(mods_dir: String, file_name: String, ext: String) -> D
 	var full_path := mods_dir.path_join(file_name)
 	if ext == "pck":
 		_last_mod_txt_status = "pck"
+		_last_mod_txt_files.clear()  # no read_mod_config call to reset it
 	var cfg: ConfigFile = read_mod_config(full_path) if ext != "pck" else null
 	var entry := _entry_from_config(cfg, file_name, full_path, ext)
 	entry["warnings"] = _build_entry_warnings(entry)
@@ -393,7 +394,42 @@ func _build_entry_warnings(entry: Dictionary) -> Array[String]:
 		else:
 			warnings.append("mod.txt parse error at " + detail)
 	elif status.begins_with("nested:"):
-		warnings.append("Invalid mod -- packaged incorrectly. Try re-downloading.")
+		warnings.append("Invalid mod -- mod.txt is in a subfolder, not at the zip root. Re-zip so mod.txt is at the root.")
+	elif status == "ok":
+		warnings.append_array(_autoload_path_warnings(entry))
+	return warnings
+
+# Catch autoload paths that point nowhere inside the mod. Such a mod mounts,
+# reports success, and then does absolutely nothing -- the most confusing
+# failure an author can hit, and until now the only trace was an
+# "Autoload path not found in archive" line in the boot log they had no reason
+# to open.
+#
+# Reads the _last_mod_txt_files side channel, which is why this must stay
+# immediately downstream of the entry's own read_mod_config (see constants.gd).
+#
+# Deliberately conservative: warns ONLY when the same filename exists at a
+# different path inside the archive, i.e. the prefix is wrong and we can name
+# the right one. A path with no counterpart is left alone, since pointing an
+# autoload at a vanilla res:// script (or at a file another mod provides) is
+# legitimate and must not be flagged.
+func _autoload_path_warnings(entry: Dictionary) -> Array[String]:
+	var warnings: Array[String] = []
+	var cfg: ConfigFile = entry.get("cfg")
+	if cfg == null or not cfg.has_section("autoload") or _last_mod_txt_files.is_empty():
+		return warnings
+	for autoload_name: String in cfg.get_section_keys("autoload"):
+		# Strip the early-load marker; it is not part of the path.
+		var res_path := str(cfg.get_value("autoload", autoload_name, "")).lstrip("!")
+		if res_path.is_empty() or _last_mod_txt_files.has(res_path):
+			continue
+		var target := res_path.get_file().to_lower()
+		for p: String in _last_mod_txt_files:
+			if p.get_file().to_lower() == target:
+				warnings.append("Autoload \"" + autoload_name + "\" points at "
+					+ res_path + ", which is not in this mod -- did you mean "
+					+ p + "?")
+				break
 	return warnings
 
 func _parse_dependency_list(cfg: ConfigFile, key: String) -> Array[String]:
@@ -781,15 +817,23 @@ func _enable_required_deps(entry: Dictionary) -> Dictionary:
 	return {"enabled_names": enabled_names, "unfixed": unfixed}
 
 # Display name for a dependency id: the installed mod's name when we have
-# it, the raw id otherwise.
-func _dependency_display_for_id(dep_id: String) -> String:
+# it, the raw id otherwise. Callers in a loop should pass a prebuilt
+# _entries_by_mod_id map -- the null fallback rebuilds the whole map
+# (O(installed mods) inserts) on every call.
+func _dependency_display_for_id(dep_id: String, installed_by_id: Variant = null) -> String:
 	var dep_key := dep_id.strip_edges().to_lower()
-	var installed_by_id := _entries_by_mod_id(_ui_mod_entries)
-	if installed_by_id.has(dep_key):
-		return str((installed_by_id[dep_key] as Dictionary).get("mod_name", dep_id))
+	var by_id: Dictionary = installed_by_id if installed_by_id is Dictionary \
+			else _entries_by_mod_id(_ui_mod_entries)
+	if by_id.has(dep_key):
+		return str((by_id[dep_key] as Dictionary).get("mod_name", dep_id))
 	return dep_id
 
-func _refresh_dependency_status() -> void:
+# Returns the _loadable_enabled_entries pick it computed mid-pass, so hot
+# callers (the order panel's refresh_order, fired per held spin-arrow step)
+# can reuse it instead of running the sort + topological-order + blocked-set
+# pipeline a second time. Callers that only want the entry-side effects can
+# ignore the return value.
+func _refresh_dependency_status() -> Dictionary:
 	var installed_by_id := _entries_by_mod_id(_ui_mod_entries)
 	var enabled_by_id := _entries_by_mod_id(_ui_mod_entries.filter(
 			func(e): return bool((e as Dictionary).get("enabled", false))))
@@ -866,6 +910,7 @@ func _refresh_dependency_status() -> void:
 		else:
 			entry["dependency_blockers"] = blockers
 			entry["dependencies_satisfied"] = blockers.is_empty()
+	return pick
 
 # Returns -1/0/1 for version comparison (a < b, equal, a > b).
 func compare_versions(a: String, b: String) -> int:
@@ -989,6 +1034,7 @@ func fetch_latest_modworkshop_versions(ids: Array[int]) -> Dictionary:
 	for chunk_ids in _chunk_int_array(ids, MODWORKSHOP_BATCH_SIZE):
 		var req := HTTPRequest.new()
 		req.timeout = API_CHECK_TIMEOUT
+		req.download_body_size_limit = MWS_JSON_BODY_LIMIT
 		add_child(req)
 		# The API reads mod_ids as repeated ?mod_ids[]= query params, NOT a GET
 		# request body -- a JSON body is ignored and returns 422, silently
@@ -998,7 +1044,7 @@ func fetch_latest_modworkshop_versions(ids: Array[int]) -> Dictionary:
 		for mid in chunk_ids:
 			qparts.append("mod_ids[]=" + str(mid))
 		var err := req.request(MODWORKSHOP_VERSIONS_URL + "?" + "&".join(qparts),
-			PackedStringArray(["Accept: application/json"]),
+			_mws_default_headers(),
 			HTTPClient.METHOD_GET)
 		if err != OK:
 			req.queue_free()
@@ -1146,7 +1192,12 @@ func download_and_replace_mod(target_path: String, modworkshop_id: int) -> Dicti
 	req.timeout = API_DOWNLOAD_TIMEOUT
 	req.download_body_size_limit = 256 * 1024 * 1024
 	add_child(req)
-	var err := req.request(MODWORKSHOP_DOWNLOAD_URL_TEMPLATE % str(modworkshop_id))
+	# The API answers a default/empty User-Agent with a bodyless 403 (see the
+	# note at the top of mws_api.gd), so this legacy route needs the same UA
+	# the _mws_get_json chokepoint sends. No Accept header -- this is a file
+	# download, not a JSON route.
+	var err := req.request(MODWORKSHOP_DOWNLOAD_URL_TEMPLATE % str(modworkshop_id),
+		PackedStringArray(["User-Agent: " + (MWS_USER_AGENT_TEMPLATE % MODLOADER_VERSION)]))
 	if err != OK:
 		req.queue_free()
 		failure["error"] = "Could not start the download request (error %d)" % err
@@ -1309,12 +1360,17 @@ func download_new_mod(modworkshop_id: int, version: String = "", allow_rename_on
 	var err := req.request(download_url, headers)
 	if err != OK:
 		req.queue_free()
-		failure["error"] = "Failed to start download"
+		failure["error"] = "Could not start the download request (error %d)" % err
 		return failure
 	var res: Array = await req.request_completed
 	req.queue_free()
 	if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] < 200 or res[1] >= 300:
-		failure["error"] = "Download failed (HTTP " + str(res[1]) + ")"
+		# Transport failures never produce a status code -- res[1] is 0 there, so
+		# formatting it would report a meaningless "HTTP 0". Split the branches.
+		if res[0] != HTTPRequest.RESULT_SUCCESS:
+			failure["error"] = "Download failed (connection error or timeout) -- check your network and retry"
+		else:
+			failure["error"] = mws_error_status("Download failed (HTTP %d)" % int(res[1]))
 		return failure
 	var resp_headers: PackedStringArray = res[2]
 	var body: PackedByteArray = res[3]

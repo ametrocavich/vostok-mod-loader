@@ -849,14 +849,35 @@ func _get_missing_mods_for_modpack(entry: Dictionary) -> Array:
 	return missing
 
 
+# Wait out an armed ModWorkshop rate-limit cooldown before starting the next
+# download. Once a 429 (or a spent rate budget) arms the cooldown, every
+# metadata lookup fails fast in milliseconds -- without this pause, one
+# mid-apply rate limit turns every remaining mod in the pack into a failure
+# row. Ticks once per second so the progress dialog can show a live
+# countdown ("rate_wait" action with wait_s) and a Cancel click is honored
+# promptly. This only delays the NEXT attempt until the window reopens; it
+# never retries a request itself, so it cannot loop forever.
+func _await_mws_rate_cooldown(progress: Callable, current: int, total: int) -> void:
+	while not _modpack_apply_cancelled:
+		var wait_s := mws_rate_cooldown_seconds()
+		if wait_s <= 0:
+			return
+		if progress.is_valid():
+			progress.call({"current": current, "total": total, "mod_name": "", "action": "rate_wait", "wait_s": wait_s})
+		if get_tree() == null:
+			return
+		await get_tree().create_timer(1.0).timeout
+
+
 # Apply a discovered modpack. Snapshots current state to a backup slot,
 # downloads any missing mods declared in `sources`, materializes the
 # modpack into a profile (creates from zip on first apply, resumes on
 # subsequent applies preserving user edits), switches to it, and marks
 # active. progress is an optional Callable(info: Dictionary) invoked per
 # step with {current: int, total: int, mod_name: String, action: String}
-# where action is one of "downloading" | "skipped" | "applying" (mod_name
-# is "" for "applying"), so the UI can show download progress. Returns
+# where action is one of "downloading" | "skipped" | "applying" |
+# "rate_wait" (mod_name is "" for "applying"/"rate_wait"; "rate_wait"
+# carries an extra wait_s), so the UI can show download progress. Returns
 # {ok, error, downloaded, failed_downloads}.
 func apply_modpack(entry: Dictionary, tabs: TabContainer, progress: Callable = Callable()) -> Dictionary:
 	# Concurrency guard. apply_modpack awaits during downloads; without this
@@ -919,6 +940,13 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 		_log_info("[Modpack] applying " + sanitized + ": " + str(missing.size()) + " mod(s) to install")
 		var total := missing.size()
 		for i in range(total):
+			# If a rate-limit cooldown is armed, wait it out BEFORE the next
+			# download instead of letting its metadata lookups fail fast --
+			# otherwise one mid-apply 429 mass-fails every remaining mod in
+			# milliseconds. The wait ticks per second, reports a countdown
+			# via progress, and returns early on cancel (caught just below).
+			if mws_rate_cooldown_seconds() > 0:
+				await _await_mws_rate_cooldown(progress, i + 1, total)
 			# Check the cancel flag BEFORE each download so an in-flight one
 			# completes (no way to interrupt HTTPRequest mid-await cleanly
 			# without refactoring download_new_mod) but no further ones
@@ -1246,8 +1274,12 @@ func unload_modpack(tabs: TabContainer) -> Dictionary:
 # Re-attempt the failed downloads from a previous apply. The active modpack
 # is unchanged; this just runs the download step again for items that
 # failed the first time. After any new successes, re-runs collect to get
-# the new mod files into _ui_mod_entries. Returns {downloaded, failures}
-# where failures has the same shape as apply's (still-failed items only).
+# the new mod files into _ui_mod_entries. Honors _modpack_apply_cancelled
+# at each loop top (set by the retry progress dialog's Cancel button):
+# not-yet-attempted items stay in the failures list so the follow-up
+# failure dialog re-lists them -- nothing is silently dropped. Returns
+# {downloaded, failures, cancelled} where failures has the same shape as
+# apply's (still-failed items only).
 func retry_failed_downloads(failures: Array, progress: Callable = Callable()) -> Dictionary:
 	var still_failed: Array = []
 	var newly_downloaded: int = 0
@@ -1255,12 +1287,24 @@ func retry_failed_downloads(failures: Array, progress: Callable = Callable()) ->
 		var item = failures[i]
 		if not (item is Dictionary):
 			continue
+		# Cancelled: keep the remaining items as still-failed instead of
+		# attempting them, mirroring _apply_modpack_inner's loop-top check.
+		if _modpack_apply_cancelled:
+			still_failed.append(item)
+			continue
 		var pk: String = str(item.get("profile_key", "?"))
 		var mws_id: int = int(item.get("mws_id", 0))
 		var version: String = str(item.get("version", ""))
 		if mws_id <= 0:
 			still_failed.append(item)
 			continue
+		# Same rate-limit pause as the apply loop: wait out an armed cooldown
+		# instead of fail-fasting the rest of the retry pass.
+		if mws_rate_cooldown_seconds() > 0:
+			await _await_mws_rate_cooldown(progress, i + 1, failures.size())
+			if _modpack_apply_cancelled:
+				still_failed.append(item)
+				continue
 		if progress.is_valid():
 			progress.call({"current": i + 1, "total": failures.size(), "mod_name": pk, "action": "retrying"})
 		_log_info("[Modpack][Retry] " + pk + " (mws_id=" + str(mws_id) + ")")
@@ -1282,7 +1326,7 @@ func retry_failed_downloads(failures: Array, progress: Callable = Callable()) ->
 		var cfg := ConfigFile.new()
 		cfg.load(UI_CONFIG_PATH)
 		_apply_profile_to_entries(cfg, _active_profile)
-	return {"downloaded": newly_downloaded, "failures": still_failed}
+	return {"downloaded": newly_downloaded, "failures": still_failed, "cancelled": _modpack_apply_cancelled}
 
 
 # Save the named profile as a modpack zip in <game>/mods/. Used by the
