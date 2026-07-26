@@ -371,7 +371,7 @@ Everything below is implementation detail. You do not need it to write hook mods
 
 ## Dispatch semantics
 
-The dispatch wrapper template lives in `src/rewriter.gd` (`_rtv_dispatch_inline_src`). For every wrapped vanilla method, the rewriter emits roughly:
+The dispatch wrapper template lives in `src/rewriter_rewrite.gd` (`_rtv_dispatch_inline_src`). For every wrapped vanilla method, the rewriter emits roughly:
 
 ```
 func <name>(args):
@@ -440,7 +440,7 @@ Notes:
 For every vanilla script in the opt-in wrap surface, `src/hook_pack.gd` (`_generate_hook_pack`) produces a rewritten `.gd`:
 
 1. Detokenize the `.gdc` bytecode to reconstructed source (see [GDSC-Detokenizer](GDSC-Detokenizer)).
-2. Parse the source (`_rtv_parse_script` in `src/rewriter.gd`) -- signatures, params, return types, coroutine markers.
+2. Parse the source (`_rtv_parse_script` in `src/rewriter_parse.gd`) -- signatures, params, return types, coroutine markers.
 3. Normalize line endings, autofix legacy syntax (bodyless blocks get `pass`, `tool`/`onready var`/`export var` get `@` annotations, `base(...)` forms become `super.` calls).
 4. Apply the per-method wrap mask: paths declared via `[hooks]`/`.hook()`/`add_hook()` wrap only listed methods; registry targets wrap every method (injection needs whole-script access).
 5. Rename pass: `func <name>(` -> `func _rtv_vanilla_<name>(`.

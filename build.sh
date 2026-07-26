@@ -58,7 +58,10 @@ FILES=(
     # Codegen pipeline
     "$SRC/gdsc_detokenizer.gd"
     "$SRC/pck_enumeration.gd"
-    "$SRC/rewriter.gd"
+    "$SRC/rewriter_parse.gd"            # regex compile + detokenized-source parsing
+    "$SRC/rewriter_rewrite.gd"          # rename+wrap orchestrator + dispatch wrapper emitter
+    "$SRC/rewriter_registry_inject.gd"  # declaration transforms, preludes, registry appendices
+    "$SRC/rewriter_autofix.gd"          # legacy-GDScript autofix + bare-base/reload strippers
     "$SRC/hook_pack.gd"
     # Orchestration
     "$SRC/lifecycle.gd"

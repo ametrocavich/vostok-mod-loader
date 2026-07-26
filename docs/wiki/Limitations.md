@@ -101,7 +101,7 @@ Header comment in [src/registry/scenes.gd](https://github.com/ametrocavich/vosto
 
 GDScript rejects files mixing `\r\n` and `\n` line endings with a misleading `"Expected indented block after 'X' block"` error (the real issue is the inconsistent endings, not indentation).
 
-ImmersiveXP ships CRLF-encoded source; the loader's appended wrappers use LF only. Before rewriting, [src/rewriter.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter.gd) strips all CR:
+ImmersiveXP ships CRLF-encoded source; the loader's appended wrappers use LF only. Before rewriting, [src/rewriter_rewrite.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter_rewrite.gd) strips all CR:
 
 ```gdscript
 var src = source.replace("\r\n", "\n").replace("\r", "\n")
@@ -111,13 +111,13 @@ var src = source.replace("\r\n", "\n").replace("\r", "\n")
 
 GDScript also rejects mixed tabs and spaces in one file. ImmersiveXP uses 4-space indent, vanilla RTV uses tabs. The dispatch wrapper has to match the file's existing style.
 
-[`_detect_indent_style` in src/rewriter.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter.gd) scans the first indented non-empty non-comment line and returns `"\t"` or `" ".repeat(n)`. Dispatch wrappers are generated with that indent.
+[`_detect_indent_style` in src/rewriter_rewrite.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter_rewrite.gd) scans the first indented non-empty non-comment line and returns `"\t"` or `" ".repeat(n)`. Dispatch wrappers are generated with that indent.
 
 ### Bodyless blocks
 
 Godot 4's parser rejects `if X:` with no indented body (a no-op the author got away with in Godot 3). Common in real-world RTV mods (e.g. AI Overhaul's `AwarenessSystem.gd`).
 
-Autofix: [`_rtv_autofix_legacy_syntax` in src/rewriter.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter.gd) scans for block headers (`if`/`elif`/`else`/`for`/`while`/`match`/`func`/`class`/`static func`). If the next non-blank non-comment line isn't indented deeper, injects a `pass` at `header_indent + indent_unit`:
+Autofix: [`_rtv_autofix_legacy_syntax` in src/rewriter_autofix.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter_rewrite.gd) scans for block headers (`if`/`elif`/`else`/`for`/`while`/`match`/`func`/`class`/`static func`). If the next non-blank non-comment line isn't indented deeper, injects a `pass` at `header_indent + indent_unit`:
 
 ```gdscript
 if some_condition:
@@ -130,7 +130,7 @@ Also migrates `tool` -> `@tool`, `onready var` -> `@onready var`, `export var` -
 
 When the rewriter renames `func CheckVersion():` to `func _rtv_vanilla_CheckVersion():` and the body contains bare `super()`, Godot's strict reload looks for `_rtv_vanilla_CheckVersion` on the parent -- which vanilla doesn't have. Result: reload failure.
 
-[`_rewrite_bare_super` in src/rewriter.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter.gd) rewrites bare `super(` to `super.<orig_name>(` inside renamed bodies. `super.OtherMethod()` passes through untouched (already explicit).
+[`_rewrite_bare_super` in src/rewriter_rewrite.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter_rewrite.gd) rewrites bare `super(` to `super.<orig_name>(` inside renamed bodies. `super.OtherMethod()` passes through untouched (already explicit).
 
 ### Windows backslash zip paths
 

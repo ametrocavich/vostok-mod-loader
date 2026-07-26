@@ -27,6 +27,12 @@
 ##   ["remove",      reg, [id, id, ...]]
 ##   ["hooks",       {hook_name: callback, ...}]
 ##   ["when",        predicate, sub_plan]            # predicate: bool | Callable -> bool
+##   ["register_item",       {id: data, ...}]        # aggregator helpers --
+##   ["register_furniture",  {id: data, ...}]        # registry-implicit, no
+##   ["register_weapon",     {id: data, ...}]        # reg arg; map 1:1 to the
+##   ["register_magazine",   {id: data, ...}]        # public register_* methods
+##   ["register_attachment", {id: data, ...}]        # in registry.gd
+##   ["register_ai_loadout", {id: data, ...}]
 ##
 ## Predicate evaluation: at setup() traversal time. If a plan is built in
 ## _ready (typical), runtime state is queryable in the predicate. A const
@@ -77,7 +83,11 @@ func _setup_run_entry(entry: Variant) -> Dictionary:
 		return {"verb": "<malformed>", "ok": false, "error": "verb (1st element) must be a String"}
 	var verb: String = String(arr[0])
 	# SEAM: new verbs = one match arm here + a schema line in the header
-	# docstring above (+ a _bind_* helper if it wraps a _many form).
+	# docstring above (+ a _bind_* helper if it wraps a _many form or an
+	# aggregator; see _setup_dispatch_many / _setup_dispatch_aggregator for
+	# the two ready-made shapes). A forgotten arm is not a compile error --
+	# the verb falls through to the `_:` default below, which warns and
+	# returns ok=false without aborting the rest of the plan.
 	match verb:
 		"register":
 			return _setup_dispatch_many("register", arr, _bind_register_many())
@@ -125,6 +135,11 @@ func _setup_run_entry(entry: Variant) -> Dictionary:
 		"when":
 			return _setup_dispatch_when(arr)
 		_:
+			# Loud as well as reported: the per-entry error dict is only seen
+			# by mods that inspect setup()'s return value, and most don't --
+			# a typo'd (or newly added but unwired) verb otherwise just
+			# doesn't run, with no trace anywhere.
+			push_warning("[Registry] setup: unknown verb '%s' -- entry skipped (typo, or a verb missing its match arm in _setup_run_entry)" % verb)
 			return {"verb": verb, "ok": false, "error": "unknown verb"}
 
 

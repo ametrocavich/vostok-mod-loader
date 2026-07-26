@@ -133,7 +133,7 @@ Dev-only (behind the same `if not _developer_mode: return` gate as the probes) i
 
 ### 11. Dispatch counters
 
-Per-hook-base counts accumulate in the loader's `_dispatch_counts` dict (constants.gd). The generated dispatch wrappers increment it only when dev mode is on (rewriter.gd emits the increment inside an `if _lib._developer_mode:` block). The dict is cleared at the start of the 30s probe window (hook_pack.gd) and printed as the DISPATCH-COUNT top-20 breakdown, with the LIFECYCLE-RUNAWAY red-flag check described in section 7.
+Per-hook-base counts accumulate in the loader's `_dispatch_counts` dict (constants.gd). The generated dispatch wrappers increment it only when dev mode is on (rewriter_rewrite.gd emits the increment inside an `if _lib._developer_mode:` block). The dict is cleared at the start of the 30s probe window (hook_pack.gd) and printed as the DISPATCH-COUNT top-20 breakdown, with the LIFECYCLE-RUNAWAY red-flag check described in section 7.
 
 ## Dev-mode gate placement
 

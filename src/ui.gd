@@ -3390,11 +3390,15 @@ func show_mod_ui() -> void:
 	# it. (_rebuild_mods_tab also restores the user's current tab by name;
 	# _rebuild_modpacks_tab restores it by index.)
 	# To add a tab: (1) write build_x_tab(tabs) returning its root Control,
-	# (2) add + name it below, (3) if other surfaces can change its state,
-	# add a _rebuild_x_tab helper (copy the recursion-guard pattern from
-	# _rebuild_modpacks_tab) and/or an on-show refresh via the tab_changed
-	# listener below. build_updates_tab takes no tabs arg only because it
-	# never rebuilds in place; prefer the (tabs) signature for new tabs.
+	# (2) declare a UI_TAB_X const (they live in constants.gd, next to
+	# UI_TAB_MODS) and add + name the tab below, (3) if other surfaces can
+	# change its state, add a _rebuild_x_tab helper (copy the recursion-guard
+	# pattern from _rebuild_modpacks_tab) and/or an on-show refresh via the
+	# tab_changed listener below. build_updates_tab takes no tabs arg only
+	# because it never rebuilds in place; prefer the (tabs) signature for new
+	# tabs. A name mismatch between the const and the assignment below fails
+	# silently: get_node_or_null returns null and the rebuild helpers /
+	# tab_changed refreshes just skip, leaving the tab permanently stale.
 
 	var mods_tab := build_mods_tab(tabs)
 	mods_tab.name = UI_TAB_MODS

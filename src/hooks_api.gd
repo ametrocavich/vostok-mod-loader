@@ -74,6 +74,18 @@ func hook(hook_name: String, callback: Callable, priority: int = 100) -> int:
 	var is_replace := not (hook_name.ends_with("-pre") \
 			or hook_name.ends_with("-post") \
 			or hook_name.ends_with("-callback"))
+	# Unknown-suffix trap. The name grammar allows exactly one hyphen for a
+	# replace hook ("<stem>-<method>"; neither script stems nor GDScript
+	# method names can contain one). Two or more hyphens with no recognized
+	# suffix means either a mod typo ("-per", "-Post") or a NEW hook variant
+	# whose suffix wasn't added to this check, _hook_base_of, the
+	# _re_hook_call regex, and both _rtv_dispatch_inline_src branches (see
+	# the ADDING A NEW HOOK VARIANT note in rewriter_parse.gd). Either way the
+	# registration would be silently misfiled as a replace hook under a base
+	# no wrapper ever dispatches -- it "succeeds" and never fires.
+	if is_replace and hook_name.count("-") >= 2:
+		push_warning("[RTVModLib] hook('%s'): unrecognized suffix '-%s' -- registering as a REPLACE hook, which will never fire under that name. Did you mean -pre, -post, or -callback?" \
+				% [hook_name, hook_name.get_slice("-", hook_name.count("-"))])
 	if is_replace and _hooks.has(hook_name) and (_hooks[hook_name] as Array).size() > 0:
 		var owner_id: int = (_hooks[hook_name] as Array)[0]["id"]
 		# Info-level, not warning: rejection is normal API behavior (replace

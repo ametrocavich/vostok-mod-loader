@@ -70,7 +70,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Codegen invariants. These assert on the wrapper TEMPLATES in rewriter.gd,
+# Codegen invariants. These assert on the wrapper TEMPLATES in rewriter_*.gd,
 # not on a running loader: generating a wrapper for real would mean executing
 # modloader.gd, and its static-init runs the whole boot sequence against
 # whatever directory the engine lives in. Static assertions are the safe way
@@ -88,9 +88,18 @@ fi
 #
 # The only legitimate way to emit an await is via the `aw` variable, which is
 # "await " only when the vanilla target is itself a coroutine.
-bad_await=$(grep -n 'out += ' src/rewriter.gd | grep 'await' || true)
+#
+# Glob, not a single filename: rewriter.gd was split into rewriter_*.gd, and
+# a grep pinned to one path passes VACUOUSLY when the file is renamed away
+# (grep of a missing file matches nothing). The glob survives both layouts;
+# the guard below fails loudly if the glob itself ever stops matching.
+if ! ls src/rewriter*.gd >/dev/null 2>&1; then
+    echo "FAILED: no src/rewriter*.gd found -- the await invariant has nothing to check (emitter files renamed?)" >&2
+    exit 1
+fi
+bad_await=$(grep -n 'out += ' src/rewriter*.gd | grep 'await' || true)
 if [[ -n "$bad_await" ]]; then
-    echo "FAILED: rewriter.gd emits a literal 'await' into generated code." >&2
+    echo "FAILED: a rewriter_*.gd file emits a literal 'await' into generated code." >&2
     echo "        Use the is_coro-gated 'aw' variable instead -- an" >&2
     echo "        unconditional await makes every wrapped method a coroutine." >&2
     echo "$bad_await" >&2
