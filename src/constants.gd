@@ -69,7 +69,12 @@ const HOOK_PACK_DIR := "user://modloader_hooks"
 # = new mount = fresh offsets. Orphan files from prior sessions are cleaned
 # up at static-init in _mount_previous_session before any mount happens.
 const HOOK_PACK_PREFIX := "framework_pack"
-const HOOK_PACK_MOUNT_BASE := "res://modloader_hooks"
+# NOTE: there is deliberately no "mount base" constant. Hook-pack entries are
+# written at the original vanilla res:// paths, which is the only reason they
+# win over the PCK -- see the header comment on _generate_hook_pack. A prior
+# HOOK_PACK_MOUNT_BASE := "res://modloader_hooks" was declared here and never
+# referenced; it described a design that was never implemented and would not
+# work, so it was removed rather than left to mislead.
 const VANILLA_CACHE_DIR := "user://modloader_hooks/vanilla"
 # --- ModWorkshop network API ---
 

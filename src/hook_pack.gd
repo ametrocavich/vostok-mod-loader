@@ -91,9 +91,17 @@ func _source_has_indented_func_body(source: String) -> bool:
 # Build the framework pack: enumerate res://Scripts/*.gd, detokenize each via
 # _read_vanilla_source, parse + generate wrappers, zip them, mount the zip.
 #
-# The zip mounts at res://modloader_hooks/ and wrappers load from there. NOT
-# from user:// -- Godot 4.6's extends-chain resolution for class_name parents
-# breaks for scripts loaded from user://, which shows up as broken super()
+# The zip's entries are written at the ORIGINAL vanilla res:// paths -- that IS
+# the mechanism. A mounted archive takes precedence over the PCK's compiled
+# bytecode, so a wrapper written to Scripts/Camera.gd replaces vanilla Camera
+# in place. Relocating entries under a subfolder would override nothing at all,
+# and class_name at a non-registered path additionally triggers "Class X hides
+# a global script class" for scripts Godot pre-compiled at startup (see the
+# entry-naming comment at the zip write below).
+#
+# The pack FILE lives in user:// but is only ever reached through that mount:
+# Godot 4.6's extends-chain resolution for class_name parents breaks for
+# scripts loaded directly from user://, which shows up as broken super()
 # dispatch on class_name-wrapped scripts.
 func _generate_hook_pack(defer_activation: bool = false) -> String:
 	# Wipe prior-run artifacts even when deferring. Cheap + keeps mode-switches
