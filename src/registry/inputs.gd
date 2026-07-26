@@ -203,6 +203,13 @@ func _remove_input(id: String) -> bool:
 		InputMap.erase_action(id)
 	reg.erase(id)
 	_registry_registered["inputs"] = reg
+	# Drop the id's patch stash with the entry (mirrors _remove_event): the
+	# action is gone from InputMap, so its stashed originals are dead state
+	# and would poison a later re-registration under the same id.
+	var patched: Dictionary = _registry_patched.get("inputs", {})
+	if patched.has(id):
+		patched.erase(id)
+		_registry_patched["inputs"] = patched
 	_log_debug("[Registry] removed input '%s'" % id)
 	return true
 

@@ -464,7 +464,10 @@ func zip_folder_to_temp(folder_path: String) -> String:
 func _zip_folder_recursive(zp: ZIPPacker, disk_path: String, archive_prefix: String) -> bool:
 	var dir := DirAccess.open(disk_path)
 	if dir == null:
-		return true
+		# An unreadable (sub)folder means content is missing from the zip.
+		# Returning true here used to let the caller stamp a partial archive
+		# as complete -- every later launch would then trust half a mod.
+		return false
 	var ok := true
 	dir.list_dir_begin()
 	while true:

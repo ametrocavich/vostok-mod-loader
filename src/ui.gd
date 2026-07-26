@@ -444,8 +444,13 @@ func _preserve_stored_profile_key(key: String, live_keys: Dictionary, installed_
 	return true
 
 func _save_ui_config() -> void:
-	var cfg := ConfigFile.new()
-	cfg.load(UI_CONFIG_PATH)
+	# Only the ACTIVE profile's sections are rebuilt from live state below --
+	# every other profile is carried over from the loaded file. So an
+	# unreadable cfg here does not just lose this save, it silently deletes
+	# every other profile the user has. Refuse rather than rewrite.
+	var cfg := _load_ui_cfg_for_write()
+	if cfg == null:
+		return
 
 	# Drop legacy flat sections if they linger after migration.
 	if cfg.has_section("enabled"):
@@ -543,9 +548,30 @@ func _get_ui_cfg_value(section: String, key: String, default: Variant) -> Varian
 # Write a single value into mod_config.cfg via the backup-then-save path.
 # Mirrors the load (result ignored) / set / _persist_ui_cfg dance the accessors
 # shared; a missing file loads empty and is created on save.
-func _set_ui_cfg_value(section: String, key: String, value: Variant) -> void:
+# Load mod_config.cfg for a PARTIAL write (set a key or two, then persist).
+#
+# _persist_ui_cfg rewrites the whole file, so a caller that persists a
+# ConfigFile which failed to load replaces every profile with just the handful
+# of keys it set -- silent, total loss of the user's mod setup. A MISSING file
+# is fine and expected (fresh install): ConfigFile.load returns
+# ERR_FILE_NOT_FOUND and the empty cfg is the correct starting point. Any other
+# error means the file is there but unreadable (lock, corruption), and writing
+# over it would destroy state we cannot see.
+#
+# Returns null in that case; callers skip the write and keep the change
+# in-memory for the session.
+func _load_ui_cfg_for_write() -> ConfigFile:
 	var cfg := ConfigFile.new()
-	cfg.load(UI_CONFIG_PATH)
+	var err := cfg.load(UI_CONFIG_PATH)
+	if err != OK and err != ERR_FILE_NOT_FOUND:
+		_log_warning("mod_config.cfg exists but could not be read (error %d) -- refusing to overwrite it. This change is not saved." % err)
+		return null
+	return cfg
+
+func _set_ui_cfg_value(section: String, key: String, value: Variant) -> void:
+	var cfg := _load_ui_cfg_for_write()
+	if cfg == null:
+		return
 	cfg.set_value(section, key, value)
 	_persist_ui_cfg(cfg)
 
@@ -667,10 +693,16 @@ func _switch_profile(name: String) -> void:
 	if old != VANILLA_PROFILE and old != name:
 		_snapshot_mcm_to(old)
 	_active_profile = name
-	var cfg := ConfigFile.new()
-	cfg.load(UI_CONFIG_PATH)
-	cfg.set_value("settings", "active_profile", _active_profile)
-	_persist_ui_cfg(cfg)
+	var cfg := _load_ui_cfg_for_write()
+	if cfg != null:
+		cfg.set_value("settings", "active_profile", _active_profile)
+		_persist_ui_cfg(cfg)
+	else:
+		# Unreadable cfg: do not rewrite it (that would drop every profile),
+		# but still read what we can so the in-memory apply below behaves as
+		# it always did.
+		cfg = ConfigFile.new()
+		cfg.load(UI_CONFIG_PATH)
 	_apply_profile_to_entries(cfg, _active_profile)
 	if name != VANILLA_PROFILE:
 		if _has_mcm_snapshot(name):
@@ -4403,10 +4435,11 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		# Written straight through rather than via _save_ui_config: this is a
 		# display preference, and the full save rewrites profile state we have
 		# no reason to touch here.
-		var scfg := ConfigFile.new()
-		scfg.load(UI_CONFIG_PATH)
-		scfg.set_value("settings", "ui_scale", sv)
-		_persist_ui_cfg(scfg)
+		var scfg := _load_ui_cfg_for_write()
+		if scfg != null:
+			scfg.set_value("settings", "ui_scale", sv)
+			_persist_ui_cfg(scfg)
+		# Apply regardless -- an unsaved scale should still take effect now.
 		_apply_ui_scale(_ui_window, sv)
 	)
 

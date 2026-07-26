@@ -237,8 +237,10 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	var needed_paths: Dictionary = {}
 	# Per-path per-method mask. Keyed by res_path -> Dictionary[method_name, true].
 	# Populated from _hooked_methods (static [hooks] section + scanned .hook()).
-	# Empty inner dict = all methods (fallback used only for REGISTRY_TARGETS
-	# where the wrap contract is whole-script, not per-method).
+	# Empty inner dict = wrap ALL methods. Two producers read identically:
+	# the user-facing "[hooks] <path> = *" wildcard sentinel (mod_loading.gd
+	# mints {} for it), and REGISTRY_TARGETS below, whose mask is ERASED so
+	# path_mask.get's {} default yields the same whole-script wrap.
 	var hook_mask: Dictionary = {}
 	# Reconciliation ledger: one entry per DECLARED wrap target, so the end of
 	# generation can answer "did every declared hook target end up in the
@@ -275,6 +277,12 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			# Still enroll it (harmless: the rewrite loop iterates the
 			# ENUMERATED vanilla list, so an unknown path is never visited);
 			# the ledger entry above is what actually reports the loss.
+			#
+			# Merge note: the other branch warned here directly and claimed the
+			# rewrite loop would surface it a second time. It does not -- that
+			# was the false comment the codegen audit corrected. The ledger is
+			# now the single place this loss is reported, so warning here too
+			# would double-report it.
 		needed_paths[path] = true
 		hook_mask[path] = (_hooked_methods[path] as Dictionary).duplicate()
 	# Gate Database.gd on explicit [registry] opt-in. REGISTRY_TARGETS are
@@ -608,9 +616,12 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			continue
 		if zp.write_file(rewritten.to_utf8_buffer()) != OK:
 			pack_write_failed = true
+		# close_file flushes the entry, so a deferred I/O error surfaces HERE
+		# rather than in write_file. Unchecked, that ships a structurally
+		# valid but truncated pack; treat it like any other write failure so
+		# the pack is discarded. (Both audit passes found this independently
+		# and fixed it identically -- only the comments differed.)
 		if zp.close_file() != OK:
-			# An unflushed entry is a structurally-valid-but-truncated pack;
-			# treat like any other write failure so the pack gets discarded.
 			pack_write_failed = true
 		# Self-referencing .gd.remap overrides the PCK's .gd.remap -> .gdc
 		# redirect. Godot's _path_remap reads this BEFORE GDScript loader.
