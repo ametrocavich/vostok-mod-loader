@@ -66,5 +66,35 @@ if [[ $status -eq 0 ]]; then
     echo "OK: $OUT parses clean ($(wc -l < "$OUT") lines)"
 else
     echo "FAILED: $OUT has parse/type errors (see above)" >&2
+    exit $status
 fi
-exit $status
+
+# ---------------------------------------------------------------------------
+# Codegen invariants. These assert on the wrapper TEMPLATES in rewriter.gd,
+# not on a running loader: generating a wrapper for real would mean executing
+# modloader.gd, and its static-init runs the whole boot sequence against
+# whatever directory the engine lives in. Static assertions are the safe way
+# to pin a contract the compiler cannot see.
+# ---------------------------------------------------------------------------
+
+# INVARIANT: no emitted line may contain a literal `await`.
+#
+# In GDScript, ANY function whose body contains `await` is a coroutine. A
+# hardcoded await in a wrapper template therefore turns every wrapped vanilla
+# method into a coroutine, and every existing caller breaks at PARSE time
+# ("Function X is a coroutine, so it must be called with await") -- including
+# third-party mods calling vanilla correctly. Shipped in 3.3.0 and broke any
+# mod pairing with a wide enough hook surface.
+#
+# The only legitimate way to emit an await is via the `aw` variable, which is
+# "await " only when the vanilla target is itself a coroutine.
+bad_await=$(grep -n 'out += ' src/rewriter.gd | grep 'await' || true)
+if [[ -n "$bad_await" ]]; then
+    echo "FAILED: rewriter.gd emits a literal 'await' into generated code." >&2
+    echo "        Use the is_coro-gated 'aw' variable instead -- an" >&2
+    echo "        unconditional await makes every wrapped method a coroutine." >&2
+    echo "$bad_await" >&2
+    exit 1
+fi
+echo "OK: codegen invariants hold (no unconditional await in wrapper templates)"
+exit 0

@@ -1571,7 +1571,21 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		out += "%sif _repl.size() > 0:\n" % I1
 		out += "%svar _prev_skip = _lib._skip_super\n" % I2
 		out += "%s_lib._skip_super = false\n" % I2
-		out += "%svar _replret = await _repl[0].callv(%s)\n" % [I2, args_array]
+		# Gated on is_coro via `aw`, NOT unconditional. In GDScript any function
+		# whose body contains `await` IS a coroutine -- so an unconditional
+		# await here turned every wrapped vanilla method into a coroutine, and
+		# every existing caller then failed at PARSE time with "Function X is a
+		# coroutine, so it must be called with await". Runtime cost was nil
+		# (awaiting a non-coroutine Callable returns immediately); the damage
+		# was entirely the coroutine marking, and it scaled with the wrap
+		# surface -- 384 hook points across 35 scripts in the reported case.
+		#
+		# This does not change the hook contract. docs/wiki/Hooks.md has always
+		# told authors to suspend inside a replace callback ONLY when the
+		# vanilla method they replaced is itself a coroutine -- the wrapper
+		# just failed to enforce it, and marked every wrapped method as a
+		# coroutine to no benefit. Coroutine targets keep full async support.
+		out += "%svar _replret = %s_repl[0].callv(%s)\n" % [I2, aw, args_array]
 		out += "%svar _did_skip = _lib._skip_super\n" % I2
 		out += "%s_lib._skip_super = _prev_skip\n" % I2
 		out += "%sif _did_skip:\n" % I2
@@ -1624,7 +1638,10 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		out += "%sif _repl.size() > 0:\n" % I1
 		out += "%svar _prev_skip = _lib._skip_super\n" % I2
 		out += "%s_lib._skip_super = false\n" % I2
-		out += "%sawait _repl[0].callv(%s)\n" % [I2, args_array]
+		# Void path -- same gating and same contract as the value-returning
+		# branch above; see the comment there for why this must not be an
+		# unconditional await.
+		out += "%s%s_repl[0].callv(%s)\n" % [I2, aw, args_array]
 		out += "%svar _did_skip = _lib._skip_super\n" % I2
 		out += "%s_lib._skip_super = _prev_skip\n" % I2
 		out += "%sif !_did_skip:\n" % I2

@@ -158,7 +158,9 @@ func _custom_loot():
 
 ### `await` inside a replace hook
 
-Only suspend (`await` something that actually waits) inside a replace callback when the vanilla method you replaced is itself a coroutine. The wrapper always `await`s your replace callback -- free for synchronous callbacks -- but if vanilla is synchronous and your callback suspends, the wrapper suspends too, and the vanilla call site (which does not `await`) receives a coroutine state object instead of the declared type. Any typed call site (`var n: int = obj.Method()`) then throws a runtime error in vanilla code you cannot fix from a mod. For async work behind a synchronous hook, use `call_deferred` or a `-callback` hook and return a plain value.
+Only suspend (`await` something that actually waits) inside a replace callback when the vanilla method you replaced is itself a coroutine. The wrapper `await`s your replace callback only when vanilla is a coroutine; if vanilla is synchronous and your callback suspends, the method's result is a coroutine state object instead of the declared type. Any typed call site (`var n: int = obj.Method()`) then throws a runtime error in vanilla code you cannot fix from a mod. For async work behind a synchronous hook, use `call_deferred` or a `-callback` hook and return a plain value.
+
+> **Fixed in 3.3.1.** 3.3.0 emitted that `await` unconditionally. In GDScript *any* function whose body contains `await` is a coroutine, so the wrapper for a synchronous vanilla method became a coroutine itself, and every existing caller failed at parse time with `Function "X()" is a coroutine, so it must be called with "await"`. This broke unrelated mods calling vanilla correctly, scaling with the wrap surface. The rule above is unchanged -- suspending in a replace callback for a synchronous method was never supported -- only the wrapper's behavior was wrong.
 
 ## Post hooks and result mutation
 
