@@ -307,8 +307,10 @@ func _dispatch(hook_name: String, args: Array) -> void:
 # legacy mods keep running without log spam, but authors get a clear
 # nudge to update their signatures.
 #
-# Priority order matches _dispatch: ascending by `priority` field, ties
-# broken by registration order (Array iteration).
+# Priority order matches _dispatch: ascending by `priority` field. Ties are
+# NOT stable -- sort_custom is not a stable sort, so equal priorities may run
+# in any order. (The previous claim here, "ties broken by registration order",
+# was wrong; hook()'s own docstring and Hooks.md both state it correctly.)
 func _dispatch_post(hook_name: String, args: Array, current_result: Variant) -> Variant:
 	if not _hooks.has(hook_name):
 		return current_result

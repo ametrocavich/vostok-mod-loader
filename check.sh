@@ -127,4 +127,18 @@ if ! ./check_codegen.sh; then
     echo "FAILED: codegen compile harness (see above)" >&2
     exit 1
 fi
+
+# ---------------------------------------------------------------------------
+# Runtime dispatch harness: the layer above the compile harness. Loads the
+# neutered loader in-engine, rewrites a synthetic fixture with the real
+# rewriter, attaches it to real Nodes, registers hooks through the real
+# public API and asserts on actual dispatch behavior (ordering, skip_super,
+# post-result mutation, _caller, re-entrancy, coroutines, defaults).
+# Needs no vanilla corpus, so it never skips; ~1s. Self-test:
+# ./check_dispatch.sh --prove
+# ---------------------------------------------------------------------------
+if ! ./check_dispatch.sh; then
+    echo "FAILED: runtime dispatch harness (see above)" >&2
+    exit 1
+fi
 exit 0

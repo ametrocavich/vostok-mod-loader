@@ -262,6 +262,17 @@ Mods written against [godot-mod-loader](https://github.com/GodotModding/godot-mo
 - `_caller` is only meaningful during a dispatch.
 - A whole-script replacement at the same path -- a mod shipping its own file at the wrapped `res://Scripts/` path, or `take_over_path` from a script that does not extend it -- displaces the rewrite; hooks will not fire for nodes using that script. Chain-by-`extends` via `[script_extend]` (or its parse-identical legacy alias `[script_overrides]`) composes through `super()` (see below). Either way, the loader warns at boot when a wrapped path also carries an override claim.
 - A mod override that skips `super()` suppresses hook dispatch for that method.
+- **Overlapping calls to the same coroutine method on the same node skip hooks.** If a wrapped `await`-ing method is called again on the same instance while the first call is still suspended, the second call runs vanilla directly -- no pre, replace, post or callback. See below.
+
+### Overlapping coroutine calls
+
+Every wrapper holds a re-entrancy guard for the duration of its dispatch, keyed per instance and per hook. The guard exists to stop a `[script_extend]` subclass calling `super()` from re-entering the same wrapper and dispatching your hooks twice.
+
+For a synchronous method the guard is held for microseconds and you will never observe it. For a **coroutine** method it is held across the `await`, so a second call arriving on the same node while the first is suspended sees the guard and takes the vanilla path with no dispatch at all. Verified behavior, not a leak -- the guard is released on every completed path, and the next call after the first finishes dispatches normally.
+
+This is a known limitation rather than a bug we can fix cheaply: with a per-instance key the wrapper cannot distinguish "overlapping call" from "the extends-chain re-entry this guard exists to suppress", and threading a per-logical-call token through rewritten vanilla signatures is not possible without changing those signatures.
+
+Practical impact is small -- it needs a coroutine vanilla method re-entered on the *same node* mid-suspension. If you are hooking one and need every call observed, hook a synchronous method it calls instead, or use a `-callback` hook on the caller.
 
 ## Worked examples
 
