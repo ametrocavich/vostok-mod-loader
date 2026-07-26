@@ -168,9 +168,18 @@ PCK introspection. Parses the game's `RTV.pck` file table to enumerate every `re
 - `_enumerate_game_scripts` -- parses PCK, normalizes `.gdc` / `.gd.remap` to `.gd`, filters to `res://Scripts/`, tracks zero-byte entries into `_pck_zero_byte_paths` (base game ships e.g. empty `CasettePlayer.gd` in RTV 4.6.1)
 - `_collect_module_scope_scene_preloads` -- column-0 `preload("res://...tscn|.scn")` matches, used to decide which rewritten scripts get deferred from eager compile
 
-### [rewriter.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter.gd)
+### rewriter_*.gd
 
-Source-rewrite codegen for vanilla scripts in the opt-in wrap surface. Given detokenized vanilla source + a parse structure + a per-method wrap mask:
+Source-rewrite codegen for vanilla scripts in the opt-in wrap surface. Split into four files (was a single 1,796-line `rewriter.gd`):
+
+| File | Owns |
+|---|---|
+| [rewriter_parse.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter_parse.gd) | Regex compilation, signature scanning, param splitting, `_rtv_parse_script`. Carries the PIPELINE MAP and the ADDING A NEW REWRITE TARGET recipe |
+| [rewriter_rewrite.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter_rewrite.gd) | The orchestrator `_rtv_rewrite_vanilla_source`, bare-`super()` rewriting, indent detection, and the wrapper emitter `_rtv_dispatch_inline_src` |
+| [rewriter_registry_inject.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter_registry_inject.gd) | Every per-script transform: the Database/Loader/AISpawner declaration rewrites, prelude injection, and the registry appendices |
+| [rewriter_autofix.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter_autofix.gd) | Legacy GDScript-3 repair: bodyless blocks, `tool`/`onready`/`export`, `base()` |
+
+Given detokenized vanilla source + a parse structure + a per-method wrap mask:
 
 - Renames each non-static method in the mask from `Foo` to `_rtv_vanilla_Foo`
 - Appends a dispatch wrapper at the original name that fires pre/replace/post/callback hooks then calls the renamed body

@@ -21,13 +21,18 @@
 ##      patch, _array_op_dispatch, remove, revert, get_entry, and
 ##      _enumerate_vanilla. Verbs the section doesn't support still need an
 ##      explicit warn-and-return-false arm (see 'resources'/'scene_nodes'
-##      arms), or callers get a misleading "unknown registry" warning.
+##      arms). A forgotten arm is NOT a compile error -- the call lands in
+##      the `_:` default at runtime, where _warn_unknown_registry names it
+##      as an unwired section (it cross-checks the Registry const).
 ##   3. Create src/registry/foo.gd with the _register_foo / _override_foo /
 ##      _patch_foo / _remove_foo / _revert_foo handlers those arms call.
 ##   4. List the new file in build.sh's FILES array (order only matters when
 ##      a const initializer references a const from another file).
 ##   5. If the section needs game-code cooperation (injected dicts/preludes,
-##      as scenes/loader/ai/fish do), add the injection in rewriter.gd; wire
+##      as scenes/loader/ai/fish do), add the injection in
+##      rewriter_registry_inject.gd (_rtv_registry_injection appendix and/or
+##      _rtv_apply_prelude_injections) plus a REGISTRY_TARGETS + marker
+##      entry in hook_pack.gd; wire
 ##      any boot-time listener in hooks_api (see scene_nodes).
 ##   6. Document the section in docs/wiki/Registry.md.
 ## setup(), the *_many batch verbs, and has/keys/list/find pick the new
@@ -77,6 +82,20 @@ const Registry := {
 var _registry_registered: Dictionary = {}
 var _registry_overridden: Dictionary = {}
 var _registry_patched: Dictionary = {}
+
+# Default-arm diagnostic for every verb dispatcher in this file. Two distinct
+# failure modes land in a `_:` arm and used to print the same misleading
+# message: (a) a mod typo'd a registry name -- genuinely unknown -- and (b) a
+# maintainer added a Registry.FOO const but forgot this verb's match arm
+# (checklist step 2 above). (b) is a loader bug, not a mod bug, and in a
+# concatenated flat-namespace build nothing else will ever flag it: the
+# handler file compiles fine, it just never runs. Name the real culprit.
+func _warn_unknown_registry(verb: String, registry: String) -> void:
+	if registry in Registry.values():
+		push_warning("[Registry] %s: '%s' is declared in the Registry const but has no match arm in %s -- unwired section (loader bug, see the NEW-SECTION CHECKLIST in registry.gd), not a mod typo" \
+				% [verb, registry, verb])
+	else:
+		push_warning("[Registry] %s: unknown registry '%s'" % [verb, registry])
 
 # ---- Aggregator helpers (weapons / magazines / attachments) ----
 # These wrap several primitive registries (ITEMS + SCENES + LOOT +
@@ -218,7 +237,7 @@ func register(registry: String, id: String, data: Variant) -> bool:
 		"attachments":
 			return bool(_register_attachment(id, data).get("ok", false))
 		_:
-			push_warning("[Registry] register: unknown registry '%s'" % registry)
+			_warn_unknown_registry("register", registry)
 			return false
 
 ## Replace an existing entry. Preserves the original so revert() can restore.
@@ -264,7 +283,7 @@ func override(registry: String, id: String, data: Variant) -> bool:
 			push_warning("[Registry] override: '%s' is a pure aggregator -- override the underlying primitives instead (override('items', ...) for the ItemData, override('scenes', ...) for the world/rig scene)" % registry)
 			return false
 		_:
-			push_warning("[Registry] override: unknown registry '%s'" % registry)
+			_warn_unknown_registry("override", registry)
 			return false
 
 ## Partial update: merge `fields` into the entry at `id`. Not every registry
@@ -356,7 +375,7 @@ func patch(registry: String, id: Variant, fields: Dictionary) -> bool:
 			push_warning("[Registry] patch: '%s' is a pure aggregator -- patch the underlying primitive instead (patch('items', ...) for ItemData fields like compatible/damage/etc)" % registry)
 			return false
 		_:
-			push_warning("[Registry] patch: unknown registry '%s'" % registry)
+			_warn_unknown_registry("patch", registry)
 			return false
 
 ## Append values to an Array field on a registry entry. Array-only.
@@ -481,7 +500,7 @@ func _array_op_dispatch(registry: String, id: Variant, field: String, op: String
 			push_warning("[Registry] %s: '%s' is a pure aggregator -- use the underlying primitive (e.g. %s('items', ...))" % [op, registry, op])
 			return false
 		_:
-			push_warning("[Registry] %s: unknown registry '%s'" % [op, registry])
+			_warn_unknown_registry(op, registry)
 			return false
 	return false
 
@@ -517,7 +536,7 @@ func remove(registry: String, id: String) -> bool:
 			push_warning("[Registry] remove: '%s' is a pure aggregator -- remove the underlying primitives instead (remove('items', ...), remove('scenes', ...), remove('loot', ...))" % registry)
 			return false
 		_:
-			push_warning("[Registry] remove: unknown registry '%s'" % registry)
+			_warn_unknown_registry("remove", registry)
 			return false
 
 ## Undo an override() or patch(). `fields` is for per-field revert on patch
@@ -611,7 +630,7 @@ func revert(registry: String, id: Variant, fields: Array = []) -> bool:
 			push_warning("[Registry] revert: '%s' is a pure aggregator -- revert the underlying primitives instead" % registry)
 			return false
 		_:
-			push_warning("[Registry] revert: unknown registry '%s'" % registry)
+			_warn_unknown_registry("revert", registry)
 			return false
 
 ## Batched form of register(). `entries` is `{id: data, ...}`. Fans out to
@@ -816,7 +835,7 @@ func get_entry(registry: String, id: String) -> Variant:
 			push_warning("[Registry] get_entry: '%s' is a pure aggregator -- read the underlying primitives instead (get_entry('items', ...) / get_entry('scenes', ...))" % registry)
 			return null
 		_:
-			push_warning("[Registry] get_entry: unknown registry '%s'" % registry)
+			_warn_unknown_registry("get_entry", registry)
 			return null
 
 # ---- Bulk read API ----
@@ -944,7 +963,8 @@ func _enumerate_vanilla(registry: String) -> Dictionary:
 			# Vanilla scenes start life as const declarations on Database.gd.
 			# When any mod declares [registry], the rewriter moves every
 			# `const X = preload(...)` into the injected _rtv_vanilla_scenes
-			# dict (rewriter.gd _rtv_rewrite_database_constants), leaving the
+			# dict (_rtv_rewrite_database_constants in
+			# rewriter_registry_inject.gd), leaving the
 			# script constant map with no PackedScene entries. Read the
 			# injected dict first -- the same source _scene_exists_in_vanilla
 			# uses -- and fall back to the const-map walk for the unrewritten
@@ -1024,5 +1044,5 @@ func _enumerate_vanilla(registry: String) -> Dictionary:
 		"scene_nodes", "weapons", "magazines", "attachments", "ai_loadouts":
 			return {}
 		_:
-			push_warning("[Registry] _enumerate_vanilla: unknown registry '%s'" % registry)
+			_warn_unknown_registry("_enumerate_vanilla (has/keys/list/find)", registry)
 			return {}

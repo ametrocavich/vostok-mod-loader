@@ -101,6 +101,14 @@ func _get_hardcoded_class_map() -> Dictionary:
 		"WorldSave": "res://Scripts/WorldSave.gd",
 	}
 
+# --- Script enumeration -----------------------------------------------------
+# DirAccess.get_files_at() returns at most 1 entry on res://Scripts/ in
+# Godot 4.6 -- it doesn't enumerate PCK contents. Parse the PCK file table
+# directly instead.
+
+# Returns res://Scripts/*.gd paths found in the game's PCK, or [] on failure
+# (encrypted pack, embedded pack, new format, missing file). Callers fall
+# back to _class_name_to_path when empty.
 func _enumerate_game_scripts() -> Array[String]:
 	# Memoized: PCK parsing is non-trivial and we call this from two sites
 	# now (early in pass 1/2 so the .hook() merge can resolve class_name-less

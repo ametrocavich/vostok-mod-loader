@@ -14,6 +14,21 @@
 # such in the reconciliation.
 var _hook_declared_by: Dictionary = {}
 
+# Every mod.txt section this loader actually reads, anywhere (load-time
+# handlers below, discovery-time readers in mod_discovery/ui, and the legacy
+# no-op [rtvmodlib]). Used ONLY for the unrecognized-section notice in
+# _process_mod_candidate -- a section missing from this list still parses
+# and still works if something reads it; the notice is a breadcrumb for the
+# two ways a section can silently do nothing: a mod author's typo
+# ([autoloads], [hook]) and a maintainer adding a handler without listing
+# it here.
+const MOD_TXT_KNOWN_SECTIONS: Array[String] = [
+	"mod", "autoload", "hooks", "registry",
+	"script_extend", "script_overrides",
+	"dependencies", "updates",
+	"rtvmodlib",  # legacy, tolerated no-op (pre-v3.0.1 opt-in surface)
+]
+
 func load_all_mods(pass_label: String = "") -> void:
 	_pending_autoloads.clear()
 	_loaded_mod_ids.clear()
@@ -166,11 +181,25 @@ func _merge_hook_calls_into_wrap_mask() -> void:
 # apply its mod.txt sections. SEAM: mod.txt section handlers are the
 # inline blocks below, in this order -- [hooks], [registry] (+ the
 # implicit B_Loader form), [script_extend]/[script_overrides], then
-# [autoload]. To support a new section, add a block here; values using
-# non-Variant syntax (bare identifiers, `*`, top-level commas) also need
-# preprocessing in _parse_mod_txt (see the [hooks] quote-wrapping in
-# fs_archive.gd), and presence-only sections with empty bodies need the
-# [registry]-style sentinel-key workaround there too.
+# [autoload]. To support a new section:
+#   1. Add a handler block below (runs in BOTH passes; load_all_mods is
+#      re-entered by _run_pass_2, so handlers must be idempotent across
+#      the state _clear at the top of load_all_mods).
+#   2. Add the section name to MOD_TXT_KNOWN_SECTIONS (constants below the
+#      state vars in this file) or every mod using it gets the
+#      "unrecognized section" notice.
+#   3. Values using non-Variant syntax (bare identifiers, `*`, top-level
+#      commas) need preprocessing in _parse_mod_txt (see the [hooks]
+#      quote-wrapping in fs_archive.gd); presence-only sections with empty
+#      bodies need the [registry]-style sentinel-key workaround there too.
+#   4. If the section should drive the launcher UI at DISCOVERY time (rows,
+#      confirms), that is a separate wire: an entry field in
+#      mod_discovery._entry_from_config (see has_registry + the entry-dict
+#      doc block there), not a block here.
+#   5. Document the section in docs/wiki/Mod-Format.md.
+# Forgetting step 1 is silent by design of ConfigFile: unknown sections
+# parse fine and are simply never read -- the notice from step 2 is the
+# only breadcrumb.
 func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 	var file_name: String = c["file_name"]
 	var full_path: String = c["full_path"]
@@ -253,6 +282,18 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 		"required_dependencies": (c.get("required_dependencies", []) as Array).duplicate(),
 		"optional_dependencies": (c.get("optional_dependencies", []) as Array).duplicate(),
 	}
+
+	# Unrecognized-section notice. ConfigFile accepts any section name, and a
+	# section nothing reads does nothing -- with no trace. That silence eats
+	# both mod-author typos ([autoloads], [hook]) and forgotten handler
+	# wiring for new sections (see the SEAM comment above). One INFO line
+	# per mod; never blocks loading.
+	var _unknown_sections: PackedStringArray = []
+	for _sect in cfg.get_sections():
+		if not (_sect in MOD_TXT_KNOWN_SECTIONS):
+			_unknown_sections.append("[" + _sect + "]")
+	if not _unknown_sections.is_empty():
+		_log_info("  mod.txt section(s) %s not recognized by this loader -- ignored (typo? see the Mod-Format wiki)" % ", ".join(_unknown_sections))
 
 	# [hooks] static declaration (v3.0.1 opt-in model). Escape hatch for
 	# mods that can't get auto-enrolled via the .hook("prefix-method-...",

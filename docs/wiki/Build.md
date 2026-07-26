@@ -53,7 +53,10 @@ FILES=(
     # Codegen pipeline
     "$SRC/gdsc_detokenizer.gd"
     "$SRC/pck_enumeration.gd"
-    "$SRC/rewriter.gd"
+    "$SRC/rewriter_parse.gd"
+    "$SRC/rewriter_rewrite.gd"
+    "$SRC/rewriter_registry_inject.gd"
+    "$SRC/rewriter_autofix.gd"
     "$SRC/hook_pack.gd"
     # Orchestration
     "$SRC/lifecycle.gd"

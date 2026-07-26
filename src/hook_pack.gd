@@ -14,7 +14,9 @@
 # Scripts that carry rewriter-injected registry helpers. These MUST be
 # force-activated (bypass the scene-preload deferral) so the injected fields
 # are live on autoload instances when mods call lib.register(). Keep in
-# sync with the match statement in _rtv_registry_injection(). Enrollment
+# sync with the match statement in _rtv_registry_injection() AND with
+# REGISTRY_EXPECTED_MARKERS below -- a target without a marker gets no
+# transform verification (the generation loop warns about the gap). Enrollment
 # into the wrap surface now REQUIRES at least one mod to declare [registry]
 # in its mod.txt -- see _generate_hook_pack's wrap-surface build.
 const REGISTRY_TARGETS: Array[String] = [
@@ -32,10 +34,11 @@ func _is_registry_target(filename: String) -> bool:
 # Post-rewrite verification markers for registry targets. Each substring is
 # emitted ONLY when the corresponding transform / prelude injection actually
 # landed in the rewritten source (the always-appended registry appendices
-# deliberately do NOT contain these strings -- verified against rewriter.gd).
+# deliberately do NOT contain these strings -- verified against
+# rewriter_registry_inject.gd).
 # The rewriter's transforms are anchored to vanilla source patterns and
 # silently no-op when a game update moves the pattern (see the ANCHOR
-# comments in rewriter.gd); checking the marker at generation time turns
+# comments in rewriter_registry_inject.gd); checking the marker at generation time turns
 # that silent no-op into one loud, attributable warning. Keep in sync with:
 #   Database.gd  -> _rtv_rewrite_database_constants dict block
 #   Loader.gd    -> _rtv_loader_loadscene_prelude comment line
@@ -592,7 +595,14 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		# recorded loss the reconciliation reports.
 		if _any_mod_declared_registry and _is_registry_target(filename):
 			var marker := str(REGISTRY_EXPECTED_MARKERS.get(filename, ""))
-			if marker != "" and not (marker in rewritten):
+			if marker == "":
+				# A target in REGISTRY_TARGETS but not in
+				# REGISTRY_EXPECTED_MARKERS: its transform gets NO
+				# verification, so an anchored rewrite that no-ops on a game
+				# update would once again fail silently -- exactly the bug
+				# class the marker check exists to catch. Flag the gap itself.
+				_log_warning("[RTVCodegen] %s is a REGISTRY_TARGET with no REGISTRY_EXPECTED_MARKERS entry -- its registry transform is unverified; add a marker (see the keep-in-sync note at the const)" % filename)
+			elif not (marker in rewritten):
 				if not rec_v.is_empty():
 					var mm2: Array = rec_v.get("missing_methods", []) as Array
 					mm2.append("registry transform (marker '%s' absent -- registry features on this script will not work)" % marker)
