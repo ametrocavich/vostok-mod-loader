@@ -32,20 +32,48 @@ func _looks_like_item_data(res: Resource) -> bool:
 # won't pass. Walks item's script chain looking for a script whose resource
 # path matches the array's declared type.
 #
-# Returns true if either the array is untyped, or the item inherits from the
+# Returns true if either the array is untyped, or the item is accepted by the
 # array's declared type. Lets handlers fail fast with a clear warning rather
-# than letting Godot spit cryptic TypedArray errors.
+# than letting Godot spit cryptic TypedArray errors. This MUST mirror what the
+# engine's own typed-array validation accepts: _array_op_on_resource treats a
+# pass here as "every append will land", so a false positive means the engine
+# silently drops the value at append time while we still report success -- a
+# partial batch returned as a full one.
 func _typed_array_accepts(arr: Array, item: Variant) -> bool:
 	if not arr.is_typed():
 		return true
+	var builtin: int = arr.get_typed_builtin()
+	if builtin != TYPE_OBJECT:
+		# Typed by a built-in Variant type (Array[String], Array[int], ...).
+		# Accept an exact type match plus the strict conversions the engine's
+		# own container validation performs (numeric widening, string-ish
+		# interconversion). Everything else would be rejected by push_back.
+		var t: int = typeof(item)
+		if t == builtin:
+			return true
+		match builtin:
+			TYPE_INT, TYPE_FLOAT:
+				return t == TYPE_INT or t == TYPE_FLOAT or t == TYPE_BOOL
+			TYPE_BOOL:
+				return t == TYPE_INT or t == TYPE_FLOAT
+			TYPE_STRING:
+				return t == TYPE_STRING_NAME or t == TYPE_NODE_PATH
+			TYPE_STRING_NAME, TYPE_NODE_PATH:
+				return t == TYPE_STRING
+		return false
+	if not (item is Object):
+		return false
+	# Native-class constraint (Array[Node], Array[Texture2D], ...; also the
+	# native base of script-typed arrays, e.g. "Resource" for Array[ItemData]).
+	var cls: StringName = arr.get_typed_class_name()
+	if cls != &"" and not (item as Object).is_class(String(cls)):
+		return false
 	# For typed arrays of Objects, get_typed_script() returns the required
 	# script. Walk item's script chain; any match means it's a valid subclass.
 	var required = arr.get_typed_script()
 	if required == null:
-		# Typed by built-in type, not a script class; fall back to duck check.
+		# Typed by native class only; the is_class check above already passed.
 		return true
-	if not (item is Object):
-		return false
 	var s = item.get_script()
 	while s != null:
 		if s == required:

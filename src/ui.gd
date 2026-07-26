@@ -138,7 +138,14 @@ func _load_ui_config() -> void:
 			# bad in this branch, so there is nothing good left to lose, and it
 			# matches the recovery branch above.
 			if FileAccess.file_exists(UI_CONFIG_PATH):
-				DirAccess.copy_absolute(UI_CONFIG_PATH, UI_CONFIG_PATH + ".corrupt")
+				if DirAccess.copy_absolute(UI_CONFIG_PATH, UI_CONFIG_PATH + ".corrupt") == OK:
+					# The unreadable file is preserved as .corrupt; REMOVE the
+					# live copy so the fresh-Default save below is not refused
+					# by _load_ui_cfg_for_write's unreadable-file guard. Without
+					# this, the save silently no-ops here AND every later save
+					# this session refuses too -- the user's toggles would never
+					# persist again until they deleted the file by hand.
+					DirAccess.remove_absolute(UI_CONFIG_PATH)
 			_save_ui_config()
 			return
 
@@ -444,8 +451,13 @@ func _preserve_stored_profile_key(key: String, live_keys: Dictionary, installed_
 	return true
 
 func _save_ui_config() -> void:
-	var cfg := ConfigFile.new()
-	cfg.load(UI_CONFIG_PATH)
+	# Only the ACTIVE profile's sections are rebuilt from live state below --
+	# every other profile is carried over from the loaded file. So an
+	# unreadable cfg here does not just lose this save, it silently deletes
+	# every other profile the user has. Refuse rather than rewrite.
+	var cfg := _load_ui_cfg_for_write()
+	if cfg == null:
+		return
 
 	# Drop legacy flat sections if they linger after migration.
 	if cfg.has_section("enabled"):
@@ -543,9 +555,42 @@ func _get_ui_cfg_value(section: String, key: String, default: Variant) -> Varian
 # Write a single value into mod_config.cfg via the backup-then-save path.
 # Mirrors the load (result ignored) / set / _persist_ui_cfg dance the accessors
 # shared; a missing file loads empty and is created on save.
-func _set_ui_cfg_value(section: String, key: String, value: Variant) -> void:
+# Load mod_config.cfg for a PARTIAL write (set a key or two, then persist).
+#
+# _persist_ui_cfg rewrites the whole file, so a caller that persists a
+# ConfigFile which failed to load replaces every profile with just the handful
+# of keys it set -- silent, total loss of the user's mod setup. A MISSING file
+# is fine and expected (fresh install): ConfigFile.load returns
+# ERR_FILE_NOT_FOUND and the empty cfg is the correct starting point. Any other
+# error means the file is there but unreadable (lock, corruption), and writing
+# over it would destroy state we cannot see.
+#
+# Returns null in that case; callers skip the write and keep the change
+# in-memory for the session.
+#
+# The refusal must not stay console-only: a player whose config goes
+# unreadable mid-session (file lock, sync tool, disk fault) would otherwise
+# toggle mods all evening and only discover at next launch that nothing
+# stuck. Tell them ONCE, in the launcher, that changes are session-only.
+# Next boot self-heals via _load_ui_config's .bak/.corrupt recovery.
+var _ui_cfg_refusal_notified := false
+
+func _load_ui_cfg_for_write() -> ConfigFile:
 	var cfg := ConfigFile.new()
-	cfg.load(UI_CONFIG_PATH)
+	var err := cfg.load(UI_CONFIG_PATH)
+	if err != OK and err != ERR_FILE_NOT_FOUND:
+		_log_warning("mod_config.cfg exists but could not be read (error %d) -- refusing to overwrite it. This change is not saved." % err)
+		if not _ui_cfg_refusal_notified and _ui_window != null and is_instance_valid(_ui_window):
+			_ui_cfg_refusal_notified = true
+			_show_error_dialog("Settings cannot be saved",
+					"Your settings file (mod_config.cfg) cannot be read right now, so changes made in this session will not be saved. Your existing profiles are untouched. Restart the game to recover.")
+		return null
+	return cfg
+
+func _set_ui_cfg_value(section: String, key: String, value: Variant) -> void:
+	var cfg := _load_ui_cfg_for_write()
+	if cfg == null:
+		return
 	cfg.set_value(section, key, value)
 	_persist_ui_cfg(cfg)
 
@@ -667,10 +712,16 @@ func _switch_profile(name: String) -> void:
 	if old != VANILLA_PROFILE and old != name:
 		_snapshot_mcm_to(old)
 	_active_profile = name
-	var cfg := ConfigFile.new()
-	cfg.load(UI_CONFIG_PATH)
-	cfg.set_value("settings", "active_profile", _active_profile)
-	_persist_ui_cfg(cfg)
+	var cfg := _load_ui_cfg_for_write()
+	if cfg != null:
+		cfg.set_value("settings", "active_profile", _active_profile)
+		_persist_ui_cfg(cfg)
+	else:
+		# Unreadable cfg: do not rewrite it (that would drop every profile),
+		# but still read what we can so the in-memory apply below behaves as
+		# it always did.
+		cfg = ConfigFile.new()
+		cfg.load(UI_CONFIG_PATH)
 	_apply_profile_to_entries(cfg, _active_profile)
 	if name != VANILLA_PROFILE:
 		if _has_mcm_snapshot(name):
@@ -4403,10 +4454,11 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		# Written straight through rather than via _save_ui_config: this is a
 		# display preference, and the full save rewrites profile state we have
 		# no reason to touch here.
-		var scfg := ConfigFile.new()
-		scfg.load(UI_CONFIG_PATH)
-		scfg.set_value("settings", "ui_scale", sv)
-		_persist_ui_cfg(scfg)
+		var scfg := _load_ui_cfg_for_write()
+		if scfg != null:
+			scfg.set_value("settings", "ui_scale", sv)
+			_persist_ui_cfg(scfg)
+		# Apply regardless -- an unsaved scale should still take effect now.
 		_apply_ui_scale(_ui_window, sv)
 	)
 
@@ -6489,6 +6541,33 @@ func _browse_render_mod_row(mod_data: Dictionary, install_entry: Variant, on_get
 # parent PanelContainer -- no image asset needed, and FS_META + COL_TEXT_DIM
 # keeps it as quiet as the rest of the meta text. Safe to call after awaits
 # (guards the rect and its parent) and idempotent per cell.
+# Decode an image buffer by SNIFFING its magic bytes rather than trying every
+# decoder in turn.
+#
+# The old try-webp-then-jpg-then-png chain pushed nine engine ERROR lines into
+# the console for every buffer that was not an image -- an HTML error page, a
+# 404 body, a truncated download. Those lines are indistinguishable from real
+# failures at a glance, so a perfectly healthy launch log read as catastrophic
+# and genuine errors got buried in the noise.
+#
+# Returns null when the buffer is not a format we support; every caller already
+# treats that as "load failed".
+func _decode_image_buffer(bytes: PackedByteArray) -> Image:
+	if bytes.size() < 12:
+		return null
+	var img := Image.new()
+	# PNG: 89 'P' 'N' 'G'
+	if bytes[0] == 0x89 and bytes[1] == 0x50 and bytes[2] == 0x4E and bytes[3] == 0x47:
+		return img if img.load_png_from_buffer(bytes) == OK else null
+	# JPEG: FF D8 FF
+	if bytes[0] == 0xFF and bytes[1] == 0xD8 and bytes[2] == 0xFF:
+		return img if img.load_jpg_from_buffer(bytes) == OK else null
+	# WebP: "RIFF" <4-byte size> "WEBP"
+	if bytes[0] == 0x52 and bytes[1] == 0x49 and bytes[2] == 0x46 and bytes[3] == 0x46 \
+			and bytes[8] == 0x57 and bytes[9] == 0x45 and bytes[10] == 0x42 and bytes[11] == 0x50:
+		return img if img.load_webp_from_buffer(bytes) == OK else null
+	return null
+
 func _set_thumb_failed(rect: TextureRect, failed: bool) -> void:
 	if not is_instance_valid(rect):
 		return
@@ -6613,10 +6692,8 @@ func _browse_load_thumbnail_async(rect: TextureRect, image_record: Dictionary) -
 			var bytes := f.get_buffer(f.get_length())
 			f.close()
 			if bytes.size() > 0:
-				var img := Image.new()
-				if img.load_webp_from_buffer(bytes) == OK \
-						or img.load_jpg_from_buffer(bytes) == OK \
-						or img.load_png_from_buffer(bytes) == OK:
+				var img := _decode_image_buffer(bytes)
+				if img != null:
 					var disk_tex := ImageTexture.create_from_image(img)
 					_thumb_texture_cache_store(fn, disk_tex)
 					_set_thumb_ready(rect, disk_tex)
@@ -6655,11 +6732,8 @@ func _browse_load_thumbnail_async(rect: TextureRect, image_record: Dictionary) -
 		_set_thumb_failed(rect, true)
 		return
 
-	var img := Image.new()
-	var ok := img.load_webp_from_buffer(body) == OK \
-			or img.load_jpg_from_buffer(body) == OK \
-			or img.load_png_from_buffer(body) == OK
-	if not ok:
+	var img := _decode_image_buffer(body)
+	if img == null:
 		_set_thumb_failed(rect, true)
 		return
 

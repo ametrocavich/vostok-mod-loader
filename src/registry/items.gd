@@ -129,6 +129,14 @@ func _remove_item(id: String) -> bool:
 		return false
 	reg.erase(id)
 	_registry_registered["items"] = reg
+	# Drop the id's patch stash with the entry (mirrors _remove_event): its
+	# first-write-wins originals belong to the item being removed, and leaving
+	# it would poison a later re-registration of the same id -- revert would
+	# write the OLD item's values onto the NEW one.
+	var patched: Dictionary = _registry_patched.get("items", {})
+	if patched.has(id):
+		patched.erase(id)
+		_registry_patched["items"] = patched
 	_log_debug("[Registry] removed item '%s'" % id)
 	return true
 

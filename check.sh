@@ -66,5 +66,79 @@ if [[ $status -eq 0 ]]; then
     echo "OK: $OUT parses clean ($(wc -l < "$OUT") lines)"
 else
     echo "FAILED: $OUT has parse/type errors (see above)" >&2
+    exit $status
 fi
-exit $status
+
+# ---------------------------------------------------------------------------
+# Codegen invariants. These assert on the wrapper TEMPLATES in rewriter.gd,
+# not on a running loader: generating a wrapper for real would mean executing
+# modloader.gd, and its static-init runs the whole boot sequence against
+# whatever directory the engine lives in. Static assertions are the safe way
+# to pin a contract the compiler cannot see.
+# ---------------------------------------------------------------------------
+
+# INVARIANT: no emitted line may contain a literal `await`.
+#
+# In GDScript, ANY function whose body contains `await` is a coroutine. A
+# hardcoded await in a wrapper template therefore turns every wrapped vanilla
+# method into a coroutine, and every existing caller breaks at PARSE time
+# ("Function X is a coroutine, so it must be called with await") -- including
+# third-party mods calling vanilla correctly. Shipped in 3.3.0 and broke any
+# mod pairing with a wide enough hook surface.
+#
+# The only legitimate way to emit an await is via the `aw` variable, which is
+# "await " only when the vanilla target is itself a coroutine.
+bad_await=$(grep -n 'out += ' src/rewriter.gd | grep 'await' || true)
+if [[ -n "$bad_await" ]]; then
+    echo "FAILED: rewriter.gd emits a literal 'await' into generated code." >&2
+    echo "        Use the is_coro-gated 'aw' variable instead -- an" >&2
+    echo "        unconditional await makes every wrapped method a coroutine." >&2
+    echo "$bad_await" >&2
+    exit 1
+fi
+# INVARIANT: the docs must not re-bless the bug either.
+#
+# The commit that shipped the 3.3.0 await regression ALSO edited Hooks.md to
+# document the broken wrapper as intended behavior -- in two separate places.
+# That is worse than an undocumented bug: it made the fix look like a contract
+# change, and the first pass at correcting the docs missed the second block.
+# Pin both, so a future doc sync cannot quietly describe the bug as a feature.
+bad_doc=$(grep -n 'await _repl\[0\]' docs/wiki/Hooks.md || true)
+bad_doc+=$(grep -in 'replace callback is always awaited' docs/wiki/Hooks.md || true)
+if [[ -n "$bad_doc" ]]; then
+    echo "FAILED: docs/wiki/Hooks.md documents the 3.3.0 unconditional-await bug" >&2
+    echo "        as intended behavior. The wrapper awaits the replace callback" >&2
+    echo "        ONLY when the vanilla method is itself a coroutine." >&2
+    echo "$bad_doc" >&2
+    exit 1
+fi
+echo "OK: codegen invariants hold (no unconditional await in templates or docs)"
+
+# ---------------------------------------------------------------------------
+# Codegen compile harness: run the REAL rewriter over real vanilla scripts,
+# then compile both the rewritten output and a generated caller stub with the
+# real GDScript compiler. The grep invariant above pins the one template line
+# that broke 3.3.0; the harness fails the whole bug class (any wrapper
+# becoming a coroutine, signature drift, transform breakage) at build time.
+# Skips itself (exit 0, with a banner) on machines without the decompiled
+# vanilla source. Self-test: ./check_codegen.sh --prove
+# ---------------------------------------------------------------------------
+if ! ./check_codegen.sh; then
+    echo "FAILED: codegen compile harness (see above)" >&2
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Runtime dispatch harness: the layer above the compile harness. Loads the
+# neutered loader in-engine, rewrites a synthetic fixture with the real
+# rewriter, attaches it to real Nodes, registers hooks through the real
+# public API and asserts on actual dispatch behavior (ordering, skip_super,
+# post-result mutation, _caller, re-entrancy, coroutines, defaults).
+# Needs no vanilla corpus, so it never skips; ~1s. Self-test:
+# ./check_dispatch.sh --prove
+# ---------------------------------------------------------------------------
+if ! ./check_dispatch.sh; then
+    echo "FAILED: runtime dispatch harness (see above)" >&2
+    exit 1
+fi
+exit 0

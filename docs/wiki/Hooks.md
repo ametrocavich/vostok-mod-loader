@@ -158,7 +158,9 @@ func _custom_loot():
 
 ### `await` inside a replace hook
 
-Only suspend (`await` something that actually waits) inside a replace callback when the vanilla method you replaced is itself a coroutine. The wrapper always `await`s your replace callback -- free for synchronous callbacks -- but if vanilla is synchronous and your callback suspends, the wrapper suspends too, and the vanilla call site (which does not `await`) receives a coroutine state object instead of the declared type. Any typed call site (`var n: int = obj.Method()`) then throws a runtime error in vanilla code you cannot fix from a mod. For async work behind a synchronous hook, use `call_deferred` or a `-callback` hook and return a plain value.
+Only suspend (`await` something that actually waits) inside a replace callback when the vanilla method you replaced is itself a coroutine. The wrapper `await`s your replace callback only when vanilla is a coroutine; if vanilla is synchronous and your callback suspends, the method's result is a coroutine state object instead of the declared type. Any typed call site (`var n: int = obj.Method()`) then throws a runtime error in vanilla code you cannot fix from a mod. For async work behind a synchronous hook, use `call_deferred` or a `-callback` hook and return a plain value.
+
+> **Fixed in 3.3.1.** 3.3.0 emitted that `await` unconditionally. In GDScript *any* function whose body contains `await` is a coroutine, so the wrapper for a synchronous vanilla method became a coroutine itself, and every existing caller failed at parse time with `Function "X()" is a coroutine, so it must be called with "await"`. This broke unrelated mods calling vanilla correctly, scaling with the wrap surface. The rule above is unchanged -- suspending in a replace callback for a synchronous method was never supported -- only the wrapper's behavior was wrong.
 
 ## Post hooks and result mutation
 
@@ -260,6 +262,17 @@ Mods written against [godot-mod-loader](https://github.com/GodotModding/godot-mo
 - `_caller` is only meaningful during a dispatch.
 - A whole-script replacement at the same path -- a mod shipping its own file at the wrapped `res://Scripts/` path, or `take_over_path` from a script that does not extend it -- displaces the rewrite; hooks will not fire for nodes using that script. Chain-by-`extends` via `[script_extend]` (or its parse-identical legacy alias `[script_overrides]`) composes through `super()` (see below). Either way, the loader warns at boot when a wrapped path also carries an override claim.
 - A mod override that skips `super()` suppresses hook dispatch for that method.
+- **Overlapping calls to the same coroutine method on the same node skip hooks.** If a wrapped `await`-ing method is called again on the same instance while the first call is still suspended, the second call runs vanilla directly -- no pre, replace, post or callback. See below.
+
+### Overlapping coroutine calls
+
+Every wrapper holds a re-entrancy guard for the duration of its dispatch, keyed per instance and per hook. The guard exists to stop a `[script_extend]` subclass calling `super()` from re-entering the same wrapper and dispatching your hooks twice.
+
+For a synchronous method the guard is held for microseconds and you will never observe it. For a **coroutine** method it is held across the `await`, so a second call arriving on the same node while the first is suspended sees the guard and takes the vanilla path with no dispatch at all. Verified behavior, not a leak -- the guard is released on every completed path, and the next call after the first finishes dispatches normally.
+
+This is a known limitation rather than a bug we can fix cheaply: with a per-instance key the wrapper cannot distinguish "overlapping call" from "the extends-chain re-entry this guard exists to suppress", and threading a per-logical-call token through rewritten vanilla signatures is not possible without changing those signatures.
+
+Practical impact is small -- it needs a coroutine vanilla method re-entered on the *same node* mid-suspension. If you are hooking one and need every call observed, hook a synchronous method it calls instead, or use a `-callback` hook on the caller.
 
 ## Worked examples
 
@@ -390,7 +403,7 @@ func <name>(args):
     if _repl.size() > 0:
         var _prev_skip = _lib._skip_super
         _lib._skip_super = false
-        var _replret = await _repl[0].callv([args])
+        var _replret = _repl[0].callv([args])  # `await`-prefixed only when vanilla is a coroutine
         var _did_skip = _lib._skip_super
         _lib._skip_super = _prev_skip
         if _did_skip:
@@ -416,7 +429,7 @@ func <name>(args):
 Notes:
 
 - **Void methods** use a structurally similar template but fire `_dispatch("<hook_base>-post", ...)` (return ignored) instead of `_dispatch_post`.
-- **Coroutines**: `await` is prepended to the vanilla call only when the vanilla body itself contains `await`. The replace callback is always awaited.
+- **Coroutines**: `await` is prepended to the vanilla call AND the replace-callback call only when the vanilla body itself contains `await`. An unconditional `await` on the replace call was the 3.3.0 regression: it marked every wrapped method a coroutine and broke every non-awaited call site at parse time (fixed in 3.3.1; regression-locked by `check_codegen.sh`).
 - The dispatch helpers (`_dispatch`, `_dispatch_post`, `_dispatch_deferred` in `src/hooks_api.gd`) iterate a `.duplicate()` snapshot of the entry array -- that is what makes mid-dispatch `hook()`/`unhook()` safe.
 - `_skip_super` is saved/restored around the replace call, so nested wrapped calls are safe.
 - The legacy-post deprecation warning is one-shot per (hook name, callback object, callback method), so hot-path methods do not spam the log.
