@@ -28,8 +28,20 @@ FILES=(
     "$SRC/modpacks.gd"
     "$SRC/mod_loading.gd"
     "$SRC/conflict_report.gd"
-    # UI
-    "$SRC/ui.gd"
+    # UI -- the launcher window, split by concern. Order within this group is
+    # presentation only: GDScript resolves funcs and consts regardless of
+    # position, and no module-scope var in these files initializes from another
+    # symbol (they are all literals), so the group can be reordered freely.
+    "$SRC/ui_theme.gd"            # design tokens, dark theme, styleboxes, icons
+    "$SRC/ui_config_profiles.gd"  # mod_config.cfg load/save, profile plumbing
+    "$SRC/ui_dialogs.gd"          # generic dialog kit + the concrete confirms
+    "$SRC/ui_shell.gd"            # the Window, tabs, bottom bar -- entry point
+    "$SRC/ui_mods_tab.gd"         # Mods tab + per-mod ModWorkshop meta layer
+    "$SRC/ui_browse_tab.gd"       # Browse tab: search, sort, category, paging
+    "$SRC/ui_browse_detail.gd"    # Browse rows, thumbnails, the detail modal
+    "$SRC/ui_modpack_io.gd"       # profile <-> modpack zip serialization
+    "$SRC/ui_modpacks_tab.gd"     # Modpacks tab + the apply/retry flow
+    "$SRC/ui_updates_tab.gd"      # Updates tab + the loader self-update check
     # Public API (hooks + registry)
     "$SRC/hooks_api.gd"
     # Registry dispatcher + per-section handlers. shared.gd holds helpers
