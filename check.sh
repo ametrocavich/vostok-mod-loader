@@ -96,7 +96,23 @@ if [[ -n "$bad_await" ]]; then
     echo "$bad_await" >&2
     exit 1
 fi
-echo "OK: codegen invariants hold (no unconditional await in wrapper templates)"
+# INVARIANT: the docs must not re-bless the bug either.
+#
+# The commit that shipped the 3.3.0 await regression ALSO edited Hooks.md to
+# document the broken wrapper as intended behavior -- in two separate places.
+# That is worse than an undocumented bug: it made the fix look like a contract
+# change, and the first pass at correcting the docs missed the second block.
+# Pin both, so a future doc sync cannot quietly describe the bug as a feature.
+bad_doc=$(grep -n 'await _repl\[0\]' docs/wiki/Hooks.md || true)
+bad_doc+=$(grep -in 'replace callback is always awaited' docs/wiki/Hooks.md || true)
+if [[ -n "$bad_doc" ]]; then
+    echo "FAILED: docs/wiki/Hooks.md documents the 3.3.0 unconditional-await bug" >&2
+    echo "        as intended behavior. The wrapper awaits the replace callback" >&2
+    echo "        ONLY when the vanilla method is itself a coroutine." >&2
+    echo "$bad_doc" >&2
+    exit 1
+fi
+echo "OK: codegen invariants hold (no unconditional await in templates or docs)"
 
 # ---------------------------------------------------------------------------
 # Codegen compile harness: run the REAL rewriter over real vanilla scripts,

@@ -392,7 +392,7 @@ func <name>(args):
     if _repl.size() > 0:
         var _prev_skip = _lib._skip_super
         _lib._skip_super = false
-        var _replret = await _repl[0].callv([args])
+        var _replret = _repl[0].callv([args])  # `await`-prefixed only when vanilla is a coroutine
         var _did_skip = _lib._skip_super
         _lib._skip_super = _prev_skip
         if _did_skip:
@@ -418,7 +418,7 @@ func <name>(args):
 Notes:
 
 - **Void methods** use a structurally similar template but fire `_dispatch("<hook_base>-post", ...)` (return ignored) instead of `_dispatch_post`.
-- **Coroutines**: `await` is prepended to the vanilla call only when the vanilla body itself contains `await`. The replace callback is always awaited.
+- **Coroutines**: `await` is prepended to the vanilla call AND the replace-callback call only when the vanilla body itself contains `await`. An unconditional `await` on the replace call was the 3.3.0 regression: it marked every wrapped method a coroutine and broke every non-awaited call site at parse time (fixed in 3.3.1; regression-locked by `check_codegen.sh`).
 - The dispatch helpers (`_dispatch`, `_dispatch_post`, `_dispatch_deferred` in `src/hooks_api.gd`) iterate a `.duplicate()` snapshot of the entry array -- that is what makes mid-dispatch `hook()`/`unhook()` safe.
 - `_skip_super` is saved/restored around the replace call, so nested wrapped calls are safe.
 - The legacy-post deprecation warning is one-shot per (hook name, callback object, callback method), so hot-path methods do not spam the log.
