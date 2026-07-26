@@ -97,4 +97,18 @@ if [[ -n "$bad_await" ]]; then
     exit 1
 fi
 echo "OK: codegen invariants hold (no unconditional await in wrapper templates)"
+
+# ---------------------------------------------------------------------------
+# Codegen compile harness: run the REAL rewriter over real vanilla scripts,
+# then compile both the rewritten output and a generated caller stub with the
+# real GDScript compiler. The grep invariant above pins the one template line
+# that broke 3.3.0; the harness fails the whole bug class (any wrapper
+# becoming a coroutine, signature drift, transform breakage) at build time.
+# Skips itself (exit 0, with a banner) on machines without the decompiled
+# vanilla source. Self-test: ./check_codegen.sh --prove
+# ---------------------------------------------------------------------------
+if ! ./check_codegen.sh; then
+    echo "FAILED: codegen compile harness (see above)" >&2
+    exit 1
+fi
 exit 0
