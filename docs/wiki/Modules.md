@@ -14,7 +14,7 @@ All module-scope `const`, `var`, and `signal` declarations. Everything has to la
 
 - `MODLOADER_VERSION` at [constants.gd:20](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L20) -- release-please bumps this via Conventional Commits, bracketed by `x-release-please-start/end` markers
 - `RTV_SKIP_LIST` (7 scripts), `RTV_RESOURCE_SERIALIZED_SKIP` (11), `RTV_RESOURCE_DATA_SKIP` (25) -- scripts the rewriter refuses to touch, each with inline rationale
-- `_filescope_mounted := _mount_previous_session()` at [constants.gd:366](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L366) -- a module-scope var with a function-call initializer. This is what triggers the static-init mount before `_ready`
+- `_filescope_mounted := _mount_previous_session()` at [constants.gd:366](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L366). A module-scope var with a function-call initializer. This is what triggers the static-init mount before `_ready`
 
 ### [logging.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/logging.gd)
 
@@ -34,7 +34,7 @@ Includes both static functions (callable from static init before instance state 
 
 The largest domain. Owns:
 
-- `_mount_previous_session` at [boot.gd:170](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L170) -- the static-init entry point triggered by `constants.gd:366`
+- `_mount_previous_session` at [boot.gd:170](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L170). The static-init entry point triggered by `constants.gd:366`
 - Sentinel handling (disabled, safe mode, Pass 2 dirty marker)
 - `override.cfg` reading + writing (`_write_override_cfg`, `_restore_clean_override_cfg`)
 - Pass state persistence (`_write_pass_state`, `_compute_state_hash`)
@@ -66,16 +66,16 @@ ModWorkshop API client -- thin async wrappers over `HTTPRequest` that return a p
 - Every request carries a User-Agent -- `api.modworkshop.net` rejects empty/default UAs with a bodyless 403
 - GETs opt into a per-URL in-memory TTL cache via `_mws_get_json`; failures are never cached, so a flake retries on the next call
 - 429-aware backoff: a 429 (or spent rate budget) arms a module-wide cooldown; calls during it fail fast, and callers wrap their error copy in `mws_error_status()` so the status reads "rate limit reached, try again in Ns"
-- `mws_list_mods` pages at `limit=50` (`MWS_PAGE_LIMIT`) -- the API 422s larger values
+- `mws_list_mods` pages at `limit=50` (`MWS_PAGE_LIMIT`). The API 422s larger values
 - Offline grace: the discover landing payload is persisted to `user://mws_cache/discover_snapshot.json`; when a live fetch fails, the Browse tab renders the snapshot behind a cached-results banner
 
 The legacy `fetch_latest_modworkshop_versions` / `download_and_replace_mod` remain in `mod_discovery.gd` until a dedicated migration phase.
 
 ### [mod_discovery.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd)
 
-Scans `<exe>/mods/`, parses mod.txt metadata, handles ModWorkshop version checks and downloads. No mounting -- that's `mod_loading`.
+Scans `<exe>/mods/`, parses mod.txt metadata, handles ModWorkshop version checks and downloads. No mounting. That's `mod_loading`.
 
-- `collect_mod_metadata` at [mod_discovery.gd:7](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd#L7) -- the main scanner
+- `collect_mod_metadata` at [mod_discovery.gd:7](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd#L7). The main scanner
 - `compare_versions` -- semver-ish with `v` prefix tolerance
 - `fetch_latest_modworkshop_versions` / `download_and_replace_mod` -- chunked HTTP against `api.modworkshop.net`; the legacy Updates-tab client -- the Browse tab's endpoints live in `mws_api.gd` (these two stay here until a dedicated migration phase)
 - `_log_security_findings` -- emits `[ModScan]` summary + per-rule lines to the boot log when `entry["security_findings"]` is non-empty
@@ -104,7 +104,7 @@ Developer-mode diagnostics. Most functions only run when `_developer_mode = true
 
 Override verification:
 
-- **`_verify_script_overrides`** at [conflict_report.gd:35](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/conflict_report.gd#L35): loads each declared override target post-autoloads and logs `resource_path` + source head. Operators read the heads to verify `take_over_path` landed. The v3.0.0 method-prefix classifier (Layer A/B, AutoloadInstanceProbe auto-swap, tree-walk fallback) was removed with Step C since there's no longer a `_rtv_mod_` in-source signal to classify against
+- **`_verify_script_overrides`** at [conflict_report.gd:35](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/conflict_report.gd#L35): loads each declared override target post-autoloads and logs `resource_path` + source head. Read the heads to verify `take_over_path` landed. There is no automatic stale/broken classification: that would need a marker inside the mod's own source, and mod source is never rewritten
 
 ## UI
 
@@ -146,7 +146,7 @@ Exists so mods that lean heavily on the hook + registry systems can collapse doz
 
 ### [framework_wrappers.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/framework_wrappers.gd)
 
-Single-function file containing `_rtv_collect_nodes_by_class` -- a scene-tree walker that finds nodes whose attached script (or any ancestor in its `extends` chain) carries a given `class_name`. Used by hook_pack.gd's post-apply verification.
+Single-function file containing `_rtv_collect_nodes_by_class`. A scene-tree walker that finds nodes whose attached script (or any ancestor in its `extends` chain) carries a given `class_name`. Used by hook_pack.gd's post-apply verification.
 
 The legacy extends-wrapper pipeline (`[rtvmodlib] needs=` -> `Framework<X>.gd` subclass generation -> `node_added` swap / `_activate_hooked_scripts` / `_register_override` / `_connect_node_swap` / `_on_node_added` / `_deferred_swap`) was removed in v3.0.1 -- dead code under the source-rewrite model.
 
@@ -154,9 +154,9 @@ The legacy extends-wrapper pipeline (`[rtvmodlib] needs=` -> `Framework<X>.gd` s
 
 ### [gdsc_detokenizer.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/gdsc_detokenizer.gd)
 
-Reads Godot's binary-tokenized `.gdc` scripts and reconstructs source. Required because `load().source_code` is empty for tokenized scripts. Covers TOKENIZER_VERSION 100 (Godot 4.0-4.4) and 101 (Godot 4.5-4.6).
+Reads Godot's binary-tokenized `.gdc` scripts and reconstructs source. Required because `load().source_code` is empty for tokenized scripts. Covers TOKENIZER_VERSION 100 (Godot 4.3-4.4) and 101 (Godot 4.5-4.6).
 
-Also owns the vanilla-source cache under `user://modloader_hooks/vanilla/` -- the cache is cold until the hook pack is mounted, to prevent `ResourceFormatLoaderGDScript` from caching the PCK's tokenized result at the rewrite path.
+Also owns the vanilla-source cache under `user://modloader_hooks/vanilla/`. The cache is cold until the hook pack is mounted, to prevent `ResourceFormatLoaderGDScript` from caching the PCK's tokenized result at the rewrite path.
 
 See [GDSC-Detokenizer](GDSC-Detokenizer) for the binary format.
 
@@ -187,7 +187,7 @@ Given detokenized vanilla source + a parse structure + a per-method wrap mask:
 - Autofixes legacy GDScript 3 syntax: bodyless blocks get a `pass`, `tool`/`onready var`/`export var` get the `@` annotation, `base(args)` -> `super.<enclosing>(args)`, `base().method(x)` -> `super.method(x)`
 - Per-script transforms for registry targets: `Database.gd` gets `const X = preload(...)` rewritten to `_rtv_vanilla_scenes` dict entries + `_get()` injection; `Loader.gd` gets `const shelters` rewritten to `var` with a capture snapshot + `_rtv_mod_scene_paths`/`_rtv_override_scene_paths` dict injection; `AISpawner.gd` gets `agent = <Name>` assignments routed through a `_rtv_resolve_ai_type` lookup helper that reads `Engine.get_meta("_rtv_ai_overrides")`; `FishPool.gd` gets a `_ready()` prelude that appends mod-registered species from `Engine.get_meta("_rtv_fish_species")` before the random-spawn loop
 
-Mod sources are **not rewritten** -- the old `_rtv_mod_` subclass rewrite (Step C) was removed in v3.0.1. Mod scripts that extend wrapped vanilla see the dispatch wrapper as their parent method via native Godot resolution; `super.foo(...)` from the mod lands on the wrapper naturally.
+Mod sources are **not rewritten**. A mod script that extends wrapped vanilla sees the dispatch wrapper as its parent method through native Godot resolution, so `super.foo(...)` from the mod lands on the wrapper naturally.
 
 See [Hooks](Hooks) for details.
 

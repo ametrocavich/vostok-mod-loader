@@ -6,9 +6,9 @@
 ## dispatch wrapper is appended at the original name. The wrappers fire
 ## pre/replace/post/callback hooks and call the renamed body.
 ##
-## v3.0.1: mod-subclass rewrite removed (was the old Step C). Mods that
-## extend wrapped vanilla now compose via Godot's native extends
-## resolution -- no _rtv_mod_ prefix, no rewrite of mod source.
+## Only vanilla source is rewritten. A mod that extends a wrapped vanilla
+## composes through Godot's own extends resolution, so mod source is left
+## alone and carries no injected prefix.
 ##
 ## Also owns: regex compilation, parse-script, autofix legacy syntax,
 ## indent detection, bare-super rewriting.
@@ -54,8 +54,8 @@
 ## ADDING A NEW REWRITE TARGET touches, in sync (all dispatch on the bare
 ## filename string):
 ##   a. hook_pack.gd REGISTRY_TARGETS (only if whole-script wrap +
-##      force-activation is needed). The new file must NOT appear in
-##      constants.gd's RTV_SKIP_LIST / RTV_RESOURCE_*_SKIP -- those are
+##      force-activation is needed). The new file must not appear in
+##      constants.gd's RTV_SKIP_LIST / RTV_RESOURCE_*_SKIP. Those are
 ##      checked BEFORE needed_paths in _generate_hook_pack's loop and win
 ##      silently.
 ##   b. this file: the declaration-transform if/elif in
@@ -68,12 +68,12 @@
 ##      is in registry.gd's file header).
 ## ADDING A NEW HOOK VARIANT (a 4th suffix besides -pre/-post/-callback)
 ## touches: hooks_api.gd hook() + _hook_base_of + a new dispatcher, the
-## _re_hook_call regex in _compile_regex below, and BOTH emitter branches
+## _re_hook_call regex in _compile_regex below, and both emitter branches
 ## of _rtv_dispatch_inline_src.
 ## ======================================================================
 
-# NOTE: a second, deliberately separate regex set lives in
-# _rtv_compile_codegen_regex below. The two parse the same grammar but are NOT
+# a second, deliberately separate regex set lives in
+# _rtv_compile_codegen_regex below. The two parse the same grammar but are not
 # equivalent (this set: whole-blob search/search_all, name-only func captures,
 # res://-quoted-only extends -- grammar consumers in mod_loading.gd, plus
 # _re_filename_priority in mod_discovery.gd; that set: per-line, full-signature
@@ -96,7 +96,7 @@ func _compile_regex() -> void:
 	# VostokMods compat: "100-ModName.vmz" encodes priority in the filename.
 	_re_filename_priority = RegEx.new()
 	_re_filename_priority.compile('^(-?\\d+)-(.*)')
-	# .hook("<prefix>-<method>[-pre|-post|-callback]") -- the first capture
+	# .hook("<prefix>-<method>[-pre|-post|-callback]"). The first capture
 	# is the lowercase script stem (e.g. "controller"), the second is the
 	# declared method name. _generate_hook_pack uses the (prefix, method)
 	# pair to build a per-path, per-method wrap mask so only the methods a
@@ -110,7 +110,7 @@ func _compile_regex() -> void:
 # --- Codegen source parsing (regex compile + script-structure extraction) ---
 
 
-# NOTE: twin of _compile_regex above -- deliberately NOT shared; see the note
+# twin of _compile_regex above -- deliberately not shared; see the note
 # there before attempting to merge the two sets.
 func _rtv_compile_codegen_regex() -> void:
 	if _rtv_re_extends != null:
@@ -248,10 +248,10 @@ func _rtv_parse_script(filename: String, source: String) -> Dictionary:
 		#      script-level record. For funcs specifically, a wrap-mask
 		#      (especially the wildcard "*") would then emit a top-level
 		#      dispatch wrapper for a method that only exists inside the
-		#      inner class -- a rewritten script that cannot compile.
+		#      inner class. A rewritten script that cannot compile.
 		#   2. Startup cost: indented body lines are ~80% of a script; the
 		#      per-line strip_edges + two regex searches they used to get
-		#      (extends + class_name ran on EVERY line) were pure overhead,
+		#      (extends + class_name ran on every line) were pure overhead,
 		#      repeated across every wrapped script on every generation.
 		if line.begins_with("\t") or line.begins_with(" "):
 			continue
@@ -329,13 +329,13 @@ func _rtv_parse_script(filename: String, source: String) -> Dictionary:
 			if body_line.is_empty():
 				continue
 			# A top-level (unindented) line between this func and the next one
-			# is NOT part of this body -- it's module scope (e.g. Database.gd's
+			# is NOT part of this body. It's module scope (e.g. Database.gd's
 			# const preload block sits after _ready) or an inner `class` header
 			# whose indented methods would otherwise be scanned as OUR body.
 			# Stop here: an `await` past this point would falsely mark the
 			# method a coroutine, the wrapper would gain `await`, and every
-			# caller of the wrapped method would then fail at PARSE time
-			# ("must be called with await") -- the exact 3.3.0 bug class.
+			# caller of the wrapped method would then fail at parse time
+			# with "must be called with await".
 			# Column-0 comments inside a body are legal GDScript; skip those.
 			if raw_body[0] != "\t" and raw_body[0] != " ":
 				if body_line.begins_with("#"):

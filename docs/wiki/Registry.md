@@ -4,7 +4,7 @@ The registry lets your mod add, replace, patch, and remove content in the vanill
 
 Use it whenever your mod changes *game data*. To intercept *game code*, use [Hooks](Hooks) instead.
 
-## Quick start -- the 90% case
+## Quick start. The 90% case
 
 Get the API object, then register/patch from your mod's `_ready()`:
 
@@ -31,7 +31,7 @@ lib.remove(lib.Registry.ITEMS, "mymod_elixir")        # undo a register
 
 Two prerequisites:
 
-1. **`mod.txt` must contain a `[registry]` section.** An empty section is enough -- the loader only checks for its presence. Without it, several registries silently or loudly fail; see [Opting in](#opting-in). Full `mod.txt` reference: [Mod-Format](Mod-Format).
+1. **`mod.txt` must contain a `[registry]` section.** An empty section is enough. The loader only checks for its presence. Without it, several registries silently or loudly fail; see [Opting in](#opting-in). Full `mod.txt` reference: [Mod-Format](Mod-Format).
 2. **Register during your mod's `_ready()`.** Traders, loot containers, the crafting UI, and the event system copy from the shared stores in their own `_ready()` and never re-read. Registering later mutates the store but is invisible in-game. See [Timing](#timing).
 
 If you need hooks or other framework state first, `await lib.frameworks_ready` before registering.
@@ -276,7 +276,7 @@ if not result.ok:
             push_warning("[mymod] failed to patch %s" % id)
 ```
 
-**One field per call** for the array verbs. `append_many` / `prepend_many` / `remove_from_many` all take a single `field` arg that applies to every entry in the dict. If you need different fields per id, make multiple calls -- or use `setup` (below), which runs an ordered sequence of verbs in one call.
+**One field per call** for the array verbs. `append_many` / `prepend_many` / `remove_from_many` all take a single `field` arg that applies to every entry in the dict. If you need different fields per id, make multiple calls, or use `setup` (below), which runs an ordered sequence of verbs in one call.
 
 **`revert_many` values must be Arrays.** `{id: "field"}` is rejected with a warning, not coerced -- pass `["field"]`, or `[]` for a full revert of that id. This is a deliberate typo guard.
 
@@ -322,7 +322,7 @@ Returns `{ok: bool, results: Array}` -- one result per top-level entry: `{"verb"
 
 **`when` predicate caveat:** a Callable is evaluated at `setup()` traversal time; bools and numbers coerce as-is; `null` counts as false; anything else warns and counts as false. In a `const` plan, non-Callable predicates evaluate at *script-parse* time -- use Callables/lambdas for runtime state.
 
-**`hooks` wrap-surface caveat:** hook names in a plan are plain Dictionary keys, not literal `.hook("...")` calls, so the loader's source scanner does not enroll their targets in the wrap surface. Make sure each target is wrapped some other way -- a literal `.hook()` call elsewhere in your source, or a `[hooks]` declaration in `mod.txt`. See [Hooks](Hooks#wrap-surface----why-hook-alone-is-not-enough).
+**`hooks` wrap-surface caveat:** hook names in a plan are plain Dictionary keys, not literal `.hook("...")` calls, so the loader's source scanner does not enroll their targets in the wrap surface. Make sure each target is wrapped some other way. A literal `.hook()` call elsewhere in your source, or a `[hooks]` declaration in `mod.txt`. See [Hooks](Hooks#wrap-surface----why-hook-alone-is-not-enough).
 
 See **[Setup-Plans](Setup-Plans)** for the full verb table, predicate forms, return shape, and an example covering every supported entry.
 
@@ -335,7 +335,7 @@ The rules that apply across every registry:
 - **`patch` on the same field stacks.** Both writes apply in call order; last writer's value is visible. The stash preserves the **true vanilla original** (the first patcher's pre-patch value), so a later `revert` returns to vanilla, not to the first patcher's value. Mod A's patch is lost on revert even if Mod A didn't call revert themselves.
 - **`patch` on different fields coexists.** Independent stash per field name; both mods' patches are respected simultaneously.
 - **Array-based registries (`loot`, `recipes`, `events`, `trader_tasks`) are additive on `register`.** Two mods registering different ids into the same array both succeed; the array just grows.
-- **Array `override` (the `replaces:` form) fails if the target is already gone.** If mod A swapped `vanillaX` for `newA`, mod B can't also swap `vanillaX` -- it's no longer in the array. Mod B would have to target `newA` instead (which then silently undoes mod A's swap; avoid this).
+- **Array `override` (the `replaces:` form) fails if the target is already gone.** If mod A swapped `vanillaX` for `newA`, mod B can't also swap `vanillaX`. It's no longer in the array. Mod B would have to target `newA` instead (which then silently undoes mod A's swap; avoid this).
 
 ---
 
@@ -720,7 +720,7 @@ lib.register(lib.Registry.MAPS, "mymod_quarry", {
 lib.remove(lib.Registry.MAPS, "mymod_quarry")
 ```
 
-**Conflicts.** Same rules as SHELTERS -- the two registries share one id space, and id collisions across them fail loud. `remove` is cross-surface guarded: `remove('maps', X)` fails if `X` was registered as a shelter, and vice versa; use the registry it was registered under.
+**Conflicts.** Same rules as SHELTERS. The two registries share one id space, and id collisions across them fail loud. `remove` is cross-surface guarded: `remove('maps', X)` fails if `X` was registered as a shelter, and vice versa; use the registry it was registered under.
 
 ### RANDOM_SCENES
 
@@ -862,7 +862,7 @@ The loader subscribes to `SceneTree.node_added`. When a scene whose path matches
 
 **Validated up front.** The patch is checked against a probe instantiation of the scene; if any field is missing on the target node, the whole patch is rejected (nothing applies).
 
-**Limits.** Property values only -- it cannot add or remove nodes and cannot patch embedded sub-resources. To add nodes or restructure, `override(SCENES, ...)` with a full replacement scene.
+**Limits.** Property values only. It cannot add or remove nodes and cannot patch embedded sub-resources. To add nodes or restructure, `override(SCENES, ...)` with a full replacement scene.
 
 **Conflicts.** Multiple mods patching different properties on the same node compose cleanly. Multiple mods patching the **same** property: last call wins; revert restores vanilla.
 
@@ -911,7 +911,7 @@ if not result.ok:
 
 **Generated sub-ids.** The bundles create loot entries under `"<id>_in_<table>"` and trader-pool entries under `"<id>_in_pool_<pool>"`; weapon rigs are registered as scene id `"<weapon_id>_Rig"`, and furniture recipes as `"<id>_recipe"`. You need these handles to `remove` or `get_entry` the pieces individually later.
 
-Aggregators are pure fan-out -- they call existing primitives under the hood. There's no separate storage; undo by removing/reverting the primitives, and mods can drop down to primitives any time. Source: [src/registry/aggregators.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/registry/aggregators.gd).
+Aggregators are pure fan-out. They call existing primitives under the hood. There's no separate storage; undo by removing/reverting the primitives, and mods can drop down to primitives any time. Source: [src/registry/aggregators.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/registry/aggregators.gd).
 
 ### register_item
 
@@ -967,7 +967,7 @@ var result: Dictionary = lib.register_weapon({
 
 The `magazines` field auto-populates the weapon's `compatible` array with each magazine's ItemData ref (as a tracked patch). `fits_attachments` resolves vanilla / mod-registered attachment ids and appends them to `compatible` too. The rig is registered as scene id `"<weapon_id>_Rig"`.
 
-Per-id `ok` requires `items` + `scene` + `rig` and zero `fits_attachments` failures. The optional `ai_loadout` dict creates an AI_LOADOUTS entry using the weapon's own scene and id; you supply `ai_types` / `chance` / `replace`. A failed loadout is reported in the per-id `ai_loadout` but does **not** gate `ok` -- the weapon still spawns as loot, it just won't be carried by AI.
+Per-id `ok` requires `items` + `scene` + `rig` and zero `fits_attachments` failures. The optional `ai_loadout` dict creates an AI_LOADOUTS entry using the weapon's own scene and id; you supply `ai_types` / `chance` / `replace`. A failed loadout is reported in the per-id `ai_loadout` but does **not** gate `ok`. The weapon still spawns as loot, it just won't be carried by AI.
 
 ### register_magazine
 
@@ -1067,13 +1067,13 @@ for entry in weapons:
     print(entry["id"], " -> ", entry["entry"].get("name"))
 ```
 
-**`get_entry` semantics by registry.** For handle-based registries (`loot`, `recipes`, `events`, `trader_pools`, `trader_tasks`, `inputs`, `scene_paths`, `shelters`, `maps`, `random_scenes`, `ai_types`, `ai_loadouts`, `fish_species`) it returns the mod-registered payload dict, or `null` if the id isn't a mod registration -- it does not enumerate vanilla content. For `resources` the id is a `res://` path and it returns `load(id)`. `scene_nodes` and the aggregator-only registries warn and return `null`.
+**`get_entry` semantics by registry.** For handle-based registries (`loot`, `recipes`, `events`, `trader_pools`, `trader_tasks`, `inputs`, `scene_paths`, `shelters`, `maps`, `random_scenes`, `ai_types`, `ai_loadouts`, `fish_species`) it returns the mod-registered payload dict, or `null` if the id isn't a mod registration. It does not enumerate vanilla content. For `resources` the id is a `res://` path and it returns `load(id)`. `scene_nodes` and the aggregator-only registries warn and return `null`.
 
 **Mod-vs-vanilla precedence** matches `get_entry`: mod entries override vanilla on id collision. So `list(ITEMS)` returns the mod's version when both exist.
 
 **Per-registry vanilla enumeration** (for `keys`/`list`/`find` with `include_vanilla = true`):
 - `ITEMS` -- walks `LT_Master.items`, keyed by `.file`
-- `SCENES` -- the rewriter-captured `_rtv_vanilla_scenes` dict on Database (falls back to the script const map filtered to `PackedScene` when no rewrite happened)
+- `SCENES`. The rewriter-captured `_rtv_vanilla_scenes` dict on Database (falls back to the script const map filtered to `PackedScene` when no rewrite happened)
 - `SCENE_PATHS` -- Loader script's const map filtered to `res://` strings
 - `SHELTERS` -- vanilla shelter list snapshot
 - `RECIPES` -- walks `Recipes.tres` seven category arrays, ids synthesized as `"<category>:<recipe.name>"`. Note this is the only registry whose vanilla keys are in a different namespace than its register ids.

@@ -7,15 +7,16 @@
 ## via source_code+reload / CACHE_MODE_IGNORE+take_over_path fallback so
 ## game code compiles against the wrapped source.
 ##
-## v3.0.1 cutover: zero declarations -> zero generation. No more inference
-## from extends/take_over_path; no more mod-source rewriting (old Step C).
-## A modlist that declares nothing behaves byte-identical to v2.1.0.
+## Generation is entirely opt-in: zero declarations means zero generation.
+## Nothing is inferred from extends or take_over_path, and mod sources are
+## never rewritten. A modlist that declares nothing runs against untouched
+## vanilla.
 
-# Scripts that carry rewriter-injected registry helpers. These MUST be
+# Scripts that carry rewriter-injected registry helpers. These must be
 # force-activated (bypass the scene-preload deferral) so the injected fields
 # are live on autoload instances when mods call lib.register(). Keep in
-# sync with the match statement in _rtv_registry_injection() AND with
-# REGISTRY_EXPECTED_MARKERS below -- a target without a marker gets no
+# sync with the match statement in _rtv_registry_injection() and with
+# REGISTRY_EXPECTED_MARKERS below. A target without a marker gets no
 # transform verification (the generation loop warns about the gap). Enrollment
 # into the wrap surface now REQUIRES at least one mod to declare [registry]
 # in its mod.txt -- see _generate_hook_pack's wrap-surface build.
@@ -32,9 +33,9 @@ func _is_registry_target(filename: String) -> bool:
 	return filename in REGISTRY_TARGETS
 
 # Post-rewrite verification markers for registry targets. Each substring is
-# emitted ONLY when the corresponding transform / prelude injection actually
+# emitted only when the corresponding transform / prelude injection actually
 # landed in the rewritten source (the always-appended registry appendices
-# deliberately do NOT contain these strings -- verified against
+# deliberately do not contain these strings -- verified against
 # rewriter_registry_inject.gd).
 # The rewriter's transforms are anchored to vanilla source patterns and
 # silently no-op when a game update moves the pattern (see the ANCHOR
@@ -57,7 +58,7 @@ const REGISTRY_EXPECTED_MARKERS: Dictionary = {
 
 # Convert the list of wrapped full res:// paths into the PackedStringArray
 # persisted in pass_state. boot.gd's next-session _mount_previous_session
-# uses these to preempt ONLY scripts this session wrapped, instead of a
+# uses these to preempt only scripts this session wrapped, instead of a
 # hardcoded pinned list.
 func _wrapped_paths_packed(filenames: Array[String]) -> PackedStringArray:
 	var out := PackedStringArray()
@@ -67,7 +68,7 @@ func _wrapped_paths_packed(filenames: Array[String]) -> PackedStringArray:
 
 # STABILITY canary C helper. Detokenizes the first probe script that carries
 # GDSC bytes (same probe set as _probe_gdsc_version) and checks structural
-# indentation. Goes through _detokenize_script directly, NOT
+# indentation. Goes through _detokenize_script directly, not
 # _read_vanilla_source, so a pristine on-disk cache from an earlier session
 # cannot mask a detokenizer that is broken against the current game build.
 # Returns true when the structure checks out OR when no probe script could
@@ -93,9 +94,16 @@ func _canary_detokenizer_roundtrip_ok() -> bool:
 
 # True when at least one colon-terminated func declaration line is followed
 # by a tab-indented body line. Every vanilla RTV script satisfies this when
-# the column->tab math (_indent_from_column, tab_size=4) is correct. Under a
-# raw-offset column format a depth-1 body reconstructs at 0 tabs, so no func
-# body starts with a tab and the check fails.
+# _indent_from_column's math holds.
+#
+# What this actually guards: that math is `col / 4`, which depends on RTV's
+# vanilla source being indented with four spaces per level. It does not depend
+# on the bytecode format; the engine counts one column per character, not
+# tab_size columns per tab (see the note above _indent_from_column).
+# If RTV ever ships tab-indented or 2-space-indented scripts, a depth-1 body
+# reconstructs at 0 tabs, no func body starts with a tab, and this check fails
+#, which is the correct, loud failure mode. Its passing in production is what
+# is what confirms RTV is 4-space indented.
 func _source_has_indented_func_body(source: String) -> bool:
 	var lines := source.split("\n")
 	for i in range(lines.size() - 1):
@@ -117,7 +125,7 @@ func _source_has_indented_func_body(source: String) -> bool:
 # Build the framework pack: enumerate res://Scripts/*.gd, detokenize each via
 # _read_vanilla_source, parse + generate wrappers, zip them, mount the zip.
 #
-# The zip mounts at res://modloader_hooks/ and wrappers load from there. NOT
+# The zip mounts at res://modloader_hooks/ and wrappers load from there. not
 # from user:// -- Godot 4.6's extends-chain resolution for class_name parents
 # breaks for scripts loaded from user://, which shows up as broken super()
 # dispatch on class_name-wrapped scripts.
@@ -126,7 +134,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	# below for exactly the scripts THIS generation rewrites; it is never
 	# cleared anywhere else, so a stale entry from an earlier generation in
 	# the same process would skew the eager/deferred accounting in
-	# _activate_rewritten_scripts and defer scripts we no longer wrap.
+	# _activate_rewritten_scripts and defer scripts that are no longer wrapped.
 	_scripts_with_scene_preloads.clear()
 	# Wipe prior-run artifacts even when deferring. Cheap + keeps mode-switches
 	# clean.
@@ -136,7 +144,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	# new file at a new path so load_resource_pack mounts fresh (no path-dedup
 	# stale offsets). Old files get cleaned up at next static-init.
 	var pack_zip_rel := HOOK_PACK_DIR.path_join("%s_%d.zip" % [HOOK_PACK_PREFIX, Time.get_ticks_msec()])
-	# Do NOT delete the old hook pack zip here. If a previous session mounted
+	# Do not delete the old hook pack zip here. If a previous session mounted
 	# it via ProjectSettings.load_resource_pack (_mount_previous_session), the
 	# VFS still holds a file handle to the zip. Deleting the file on disk
 	# invalidates that handle, causing every VFS read that routes through the
@@ -156,12 +164,12 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 				DirAccess.remove_absolute(hook_dir.path_join(fname))
 		dir.list_dir_end()
 
-	# STABILITY canary B: verify the GDSC tokenizer format is one we support
+	# STABILITY canary B: verify the GDSC tokenizer format is a supported one
 	# before any rewrite work. One loud, actionable message beats a flood of
 	# "Empty detokenized source" warnings, one per hookable script.
 	var tok_version := _probe_gdsc_version()
 	if tok_version != -1 and tok_version != GDSC_VERSION_V100 and tok_version != GDSC_VERSION_V101:
-		_log_critical("[STABILITY] Unsupported GDSC tokenizer v%d on Godot %s. This ModLoader supports v100 (Godot 4.0-4.4) and v101 (Godot 4.5-4.6). Hook pack generation disabled -- script hooks will not fire. See README for supported Godot versions." \
+		_log_critical("[STABILITY] Unsupported GDSC tokenizer v%d on Godot %s. This ModLoader supports v100 (Godot 4.3-4.4) and v101 (Godot 4.5-4.6). Hook pack generation disabled -- script hooks will not fire. See README for supported Godot versions." \
 				% [tok_version, Engine.get_version_info().get("string", "unknown")])
 		return ""
 	if tok_version != -1:
@@ -174,33 +182,34 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	# STABILITY canary C: round-trip one known vanilla script through the
 	# detokenizer and sanity-check the reconstructed indentation. Canary B
 	# above only reads the version integer, which a future engine can leave
-	# at 101 while still changing the serialized column semantics (raw string
-	# offsets instead of tab_size=4 columns -- see PR 116986 and
-	# .research/GODOT_47_COMPAT.md section 2.2). Without this check, broken
+	# at 101 while still changing the serialized column semantics (see PR
+	# 116986 and .research/GODOT_47_COMPAT.md section 2.2). It also catches
+	# the other way this can break, which has nothing to do with the engine:
+	# _indent_from_column assumes RTV's vanilla source is 4-space indented,
+	# so a game update that reindents the scripts trips this too. Broken
 	# column math would produce silently mis-indented rewrites; with it, the
 	# failure is one loud, diagnosable stop, exactly like canary B. Placed
 	# after the no-mods short-circuit so pure-vanilla sessions skip the
 	# detokenize cost; gated on tok_version != -1 so the renamed-probe-set
 	# edge case degrades the same way canary B does (proceed, no false stop).
 	if tok_version != -1 and not _canary_detokenizer_roundtrip_ok():
-		_log_critical("[STABILITY] Detokenized vanilla source failed the indentation sanity check on Godot %s -- the .gdc column format likely changed even though the GDSC version is still %d. Hook pack generation disabled -- script hooks will not fire. Update the ModLoader to a version that supports this game build." \
+		_log_critical("[STABILITY] Detokenized vanilla source failed the indentation sanity check on Godot %s (GDSC version is still %d). Two known causes: the .gdc column format changed, or the game's scripts are no longer indented with 4 spaces per level -- _indent_from_column's `col / 4` depends on that. See the note above _indent_from_column in gdsc_detokenizer.gd. Hook pack generation disabled -- script hooks will not fire. Update the ModLoader to a version that supports this game build." \
 				% [Engine.get_version_info().get("string", "unknown"), tok_version])
 		return ""
 
-	# OPT-IN GATE (v3.0.1): user mods run against unmodified vanilla unless
+	# Opt-in gate: user mods run against unmodified vanilla unless
 	# at least one mod declares [hooks] / .hook() / [registry]. Prior
 	# versions' inference triggers (extends_paths, take_over_literal_paths,
 	# pinned-always-wrap, REGISTRY_TARGETS-unconditional) all flowed
 	# through this code path; the opt-in check below is the single guard
 	# protecting legacy mods.
 	#
-	# Capture the user-declared-empty state BEFORE _seed_core_hooks runs,
+	# Capture the user-declared-empty state before _seed_core_hooks runs,
 	# since the seed adds a core-owned entry (Menu.gd _ready for the
 	# main-menu Mods button) that would otherwise mask the empty check.
-	# Legacy-mode users get a minimal pack containing only the core wrap;
-	# the wrap only affects main-menu UI injection, not anything user mods
-	# would hook against, so it's effectively v2.1.0-equivalent from a
-	# mod-author perspective.
+	# A modlist that declares nothing gets a minimal pack holding only that
+	# core wrap. It affects main-menu UI injection and nothing a user mod
+	# would hook, so mod authors see untouched vanilla.
 	var user_wrap_empty: bool = _hooked_methods.is_empty() and not _any_mod_declared_registry
 
 	# Seed core-owned hook declarations (e.g. Menu.gd _ready for the main-menu
@@ -217,7 +226,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		_log_warning("[RTVCodegen] script enumeration failed -- falling back to class_name list (%d)" % _class_name_to_path.size())
 		for path: String in _class_name_to_path.values():
 			script_paths.append(path)
-	# Opt-in wrap surface. A vanilla script enters needed_paths ONLY if:
+	# Opt-in wrap surface. A vanilla script enters needed_paths only if:
 	#   1. at least one mod declared it in [hooks] in its mod.txt, OR
 	#   2. at least one mod called .hook("<stem>-<method>", ...) in source, OR
 	#   3. it's a REGISTRY_TARGET (Database.gd) and at least one mod has
@@ -240,7 +249,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	var needed_paths: Dictionary = {}
 	# Per-path per-method mask. Keyed by res_path -> Dictionary[method_name, true].
 	# Populated from _hooked_methods (static [hooks] section + scanned .hook()).
-	# Empty inner dict = wrap ALL methods. Two producers read identically:
+	# Empty inner dict = wrap all methods. Two producers read identically:
 	# the user-facing "[hooks] <path> = *" wildcard sentinel (mod_loading.gd
 	# mints {} for it), and REGISTRY_TARGETS below, whose mask is ERASED so
 	# path_mask.get's {} default yields the same whole-script wrap.
@@ -281,11 +290,9 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			# ENUMERATED vanilla list, so an unknown path is never visited);
 			# the ledger entry above is what actually reports the loss.
 			#
-			# Merge note: the other branch warned here directly and claimed the
-			# rewrite loop would surface it a second time. It does not -- that
-			# was the false comment the codegen audit corrected. The ledger is
-			# now the single place this loss is reported, so warning here too
-			# would double-report it.
+			# No warning here: the ledger is the single place this loss is
+			# reported. The rewrite loop does not surface it again, so warning
+			# here as well would double-report it.
 		needed_paths[path] = true
 		hook_mask[path] = (_hooked_methods[path] as Dictionary).duplicate()
 	# Gate Database.gd on explicit [registry] opt-in. REGISTRY_TARGETS are
@@ -320,7 +327,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		_hooked_methods.size(),
 		REGISTRY_TARGETS.size() if _any_mod_declared_registry else 0,
 	])
-	# Skip-list breakdown -- gives the README an evidence trail for "we wrap N
+	# Skip-list breakdown. Gives the README an evidence trail for "N scripts
 	# scripts, skip M". Static table sizes, pure developer detail -- dev-only.
 	_log_debug("[RTVCodegen] Skip lists: %d runtime-sensitive, %d data, %d serialized (total %d skipped from rewrite)" % [
 		RTV_SKIP_LIST.size(),
@@ -329,7 +336,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		RTV_SKIP_LIST.size() + RTV_RESOURCE_DATA_SKIP.size() + RTV_RESOURCE_SERIALIZED_SKIP.size(),
 	])
 
-	# Pre-read mod sibling scripts BEFORE opening ZIPPacker on the hook pack.
+	# Pre-read mod sibling scripts before opening ZIPPacker on the hook pack.
 	# When the hook pack from a previous session is mounted via
 	# ProjectSettings.load_resource_pack, Godot holds a FileAccessZIP handle
 	# to the file. ZIPPacker.open below opens the same file for writing,
@@ -340,9 +347,9 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	# Reading here, while the old mount is still valid, keeps the sibling
 	# source snapshot safe. Writes happen later via zp.start_file.
 	#
-	# Emit EVERY iterated sibling into the new hook pack, not just ones
+	# Emit every iterated sibling into the new hook pack, not just ones
 	# autofix changed. Rationale: if a previous session's hook pack already
-	# owns a sibling path and we skip emitting it because autofix is
+	# owns a sibling path and emitting it is skipped because autofix is
 	# idempotent, the new hook pack on disk won't contain that path. Godot's
 	# load_resource_pack(replace_files=true) gives the newest mount
 	# precedence, and VFS resolves paths against whichever mount claims
@@ -350,13 +357,13 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	# can end up routing through the old (now stale-indexed) mount and
 	# fail at file_access_zip.cpp:141 (the unzGoToFilePos failure, distinct
 	# from :137's "Cannot open file"). Emitting unconditionally keeps the
-	# new pack a superset of the old for every sibling path we read, so
+	# new pack a superset of the old for every sibling path read, so
 	# there are no holes for the stale mount to answer.
 	# Read directly from each mod archive via ZIPReader rather than via
 	# VFS. Going through FileAccess/ResourceLoader would walk every
 	# mounted overlay, and a previous-session hook pack is still mounted
 	# at this point, its stale copy of these same paths would win and
-	# we'd re-emit that stale snapshot into the new hook pack, preventing
+	# that stale snapshot would be re-emitted into the new hook pack, preventing
 	# mod updates from ever taking effect between sessions. The archive
 	# path is the original on-disk .zip/.vmz (or cached .zip for .vmz);
 	# it always reflects the current mod version.
@@ -445,7 +452,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 
 		# Skip lists win over declarations by design (wrapping these scripts
 		# is KNOWN to break them -- see constants.gd). But a mod that declared
-		# a hook on one must not find out by silence: warn NOW, in a normal
+		# a hook on one must not find out by silence: warn now, in a normal
 		# (non-dev) log, and record the loss for the reconciliation.
 		if filename in RTV_SKIP_LIST:
 			if not rec_v.is_empty() and rec_v["status"] == "pending":
@@ -473,8 +480,8 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			continue
 		# Wrap-surface filter: no mod extends, take_over_paths, or hooks
 		# this script, and it's not a pinned-at-boot class_name. Skipping
-		# means the script stays pure vanilla at runtime -- no dispatch
-		# overhead, same behavior as v2.1.0 for this path.
+		# means the script stays pure vanilla at runtime, with no dispatch
+		# overhead.
 		if not needed_paths.has(script_path):
 			surface_skipped += 1
 			_log_debug("[RTVCodegen] Surface-skip %s (no mod extends/hooks/overrides)" % filename)
@@ -482,7 +489,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 
 		# Warn if a [script_overrides] replacement is also in play. For rewritten
 		# scripts this is benign (no extends chain into the override) but the
-		# override still displaces our rewrite at its own path, so dispatch
+		# override still displaces the rewrite at its own path, so dispatch
 		# won't fire for nodes using the override.
 		if _override_registry.has(script_path) or _applied_script_overrides.has(script_path):
 			var sources: PackedStringArray = []
@@ -505,9 +512,9 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			continue
 
 		var parsed := _rtv_parse_script(filename, source)
-		# Per-method wrap mask (v3.0.1). A path with no mask entry wraps every
+		# Per-method wrap mask. A path with no mask entry wraps every
 		# hookable method (used for REGISTRY_TARGETS where injection needs to
-		# see the whole script). A path WITH a mask wraps ONLY declared methods.
+		# see the whole script). A path WITH a mask wraps only declared methods.
 		var path_mask: Dictionary = hook_mask.get(script_path, {}) as Dictionary
 		var apply_mask: bool = not path_mask.is_empty()
 		# Track WHICH declared methods matched a parsed vanilla method, not
@@ -547,16 +554,16 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 
 		# Record scripts whose module-scope preload() pulls in a PackedScene.
 		# _activate_rewritten_scripts skips eager load+reload for these paths
-		# so the preload fires later, AFTER mod autoloads run overrideScript().
-		# VFS mount precedence (.gd + .remap + empty .gdc) still serves our
+		# so the preload fires later, after mod autoloads run overrideScript().
+		# VFS mount precedence (.gd + .remap + empty .gdc) still serves the
 		# rewrite when game code lazy-compiles the script at first reference.
 		#
-		# EXCEPTION: scripts with registry injections MUST be force-activated
+		# EXCEPTION: scripts with registry injections must be force-activated
 		# so the injected _rtv_mod_scenes / _rtv_override_scenes / _get()
 		# are live on the autoload instance when mods call lib.register().
 		# Lazy-compile would leave the autoload running vanilla bytecode.
 		# Registry-target scripts don't have the ext_resource staleness
-		# problem because mods don't take_over_path them -- they use the
+		# problem because mods don't take_over_path them. They use the
 		# registry API instead.
 		var scene_preloads := _collect_module_scope_scene_preloads(source)
 		if scene_preloads.size() > 0 and not _is_registry_target(filename):
@@ -597,7 +604,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			var marker := str(REGISTRY_EXPECTED_MARKERS.get(filename, ""))
 			if marker == "":
 				# A target in REGISTRY_TARGETS but not in
-				# REGISTRY_EXPECTED_MARKERS: its transform gets NO
+				# REGISTRY_EXPECTED_MARKERS: its transform gets no
 				# verification, so an anchored rewrite that no-ops on a game
 				# update would once again fail silently -- exactly the bug
 				# class the marker check exists to catch. Flag the gap itself.
@@ -611,7 +618,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 					# Registry targets are always in the ledger; belt+braces.
 					_log_warning("[RTVCodegen] %s: registry transform marker '%s' missing from rewrite -- registry features on this script will not work (game update changed the vanilla pattern?)" % [filename, marker])
 		# Ship at the ORIGINAL vanilla path so class_name registration in the
-		# PCK's global_script_class_cache.cfg matches our file. Declaring
+		# PCK's global_script_class_cache.cfg matches this file. Declaring
 		# class_name at a non-registered path triggers "Class X hides a
 		# global script class" errors for scripts Godot pre-compiled at
 		# startup (Camera, WeaponRig). Same-path keeps the registry
@@ -626,11 +633,10 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			continue
 		if zp.write_file(rewritten.to_utf8_buffer()) != OK:
 			pack_write_failed = true
-		# close_file flushes the entry, so a deferred I/O error surfaces HERE
+		# close_file flushes the entry, so a deferred I/O error surfaces here
 		# rather than in write_file. Unchecked, that ships a structurally
 		# valid but truncated pack; treat it like any other write failure so
-		# the pack is discarded. (Both audit passes found this independently
-		# and fixed it identically -- only the comments differed.)
+		# the pack is discarded.
 		if zp.close_file() != OK:
 			pack_write_failed = true
 		# Self-referencing .gd.remap overrides the PCK's .gd.remap -> .gdc
@@ -650,9 +656,9 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			pack_write_failed = true
 		# Empty .gdc to shadow the PCK's bytecode. Godot's GDScript loader
 		# prefers a sibling .gdc when present at the same base path -- even
-		# after our self-referencing remap redirects to .gd. A zero-byte
+		# after the self-referencing remap redirects to .gd. A zero-byte
 		# .gdc at the same path defeats that preference: Godot can't parse
-		# empty bytecode, silently falls back to compiling our .gd. Verified
+		# empty bytecode, silently falls back to compiling the .gd. Verified
 		# 2026-04-17 -- no engine errors, all 5 rewrites load live.
 		var gdc_entry := gd_entry.substr(0, gd_entry.length() - 3) + ".gdc"
 		if zp.start_file(gdc_entry) != OK:
@@ -676,18 +682,17 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			rec_v["wrapped_count"] = hookable_count
 		_log_debug("[RTVCodegen] Rewrote %s (%d hooks)" % [script_path, hookable_count * 4])
 
-	# Step C (mod-subclass rewrite) removed in v3.0.1. Mods that extend
-	# wrapped vanilla now compose via Godot's native extends resolution:
-	# their script sees the wrapped vanilla as its parent, super.method()
-	# calls land on the dispatch wrapper, hooks fire normally. Mods whose
-	# overrides skip super() lose hook composition on those methods --
-	# that's the opt-in contract (declare your hooks, or call super()).
+	# Mod scripts are never rewritten. A mod that extends a wrapped vanilla
+	# composes through Godot's own extends resolution: it sees the wrapped
+	# vanilla as its parent, so super.method() lands on the dispatch wrapper
+	# and hooks fire. A mod override that skips super() gets no hook
+	# composition on that method, which is the opt-in contract -- declare your
+	# hooks, or call super().
 	#
-	# Step E (sibling autofix) remains. Mod siblings may still be
-	# preloaded/extended by subclass scripts and rely on our legacy-syntax
-	# autofix (bodyless blocks, Godot-3 annotations) to parse cleanly.
-	# Unlike Step C, autofix preserves the mod author's intent semantically
-	# -- no rename, no super() rewrite, no dispatch injection.
+	# Sibling autofix below is the one exception, and it only repairs syntax.
+	# Mod siblings may be preloaded or extended by subclass scripts and need
+	# legacy-syntax repair (bodyless blocks, Godot 3 annotations) to parse at
+	# all. It does not rename, rewrite super(), or inject dispatch.
 	var sibling_fixed := 0
 	var sibling_carried := 0
 	var sibling_total_bodyless := 0
@@ -724,7 +729,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		_log_debug("[Autofix] Carried %d unchanged mod sibling script(s) forward into new hook pack -- preserves VFS coverage across regen" \
 				% sibling_carried)
 
-	# STABILITY VFS-precedence canary: add a tiny known-content file to the hook pack so we
+	# STABILITY VFS-precedence canary: add a tiny known-content file to the hook pack so the loader
 	# can verify VFS mount precedence independently of the script-rewriting
 	# path. After mount, a FileAccess.get_file_as_string on this path should
 	# return the canary content -- if not, the pack mounted but isn't serving
@@ -746,10 +751,10 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		_log_critical("[RTVCodegen] Hook pack write failed (disk full / I/O error?) at %s -- pack discarded, hooks disabled this session, running vanilla" % zip_abs)
 		return ""
 
-	# Mount must happen BEFORE mod autoloads run so [rtvmodlib] needs= resolves
+	# Mount must happen before mod autoloads run so [rtvmodlib] needs= resolves
 	# and before any scene compiles against the rewritten class_name scripts.
-	# replace_files=true is the default in 4.6 but pass explicitly -- the whole
-	# design depends on our Scripts/*.gd + .gd.remap entries winning over the
+	# replace_files=true is the default in 4.6 but pass explicitly. The whole
+	# design depends on the Scripts/*.gd + .gd.remap entries winning over the
 	# PCK's same-path entries in Godot's VFS layering.
 	if zero_byte_skipped > 0:
 		_log_debug("[RTVCodegen] Skipped %d zero-byte PCK entry(ies) (base game ships empty .gd files -- not hookable, not a modloader failure): %s" \
@@ -758,7 +763,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		_log_debug("[RTVCodegen] Surface-skipped %d vanilla script(s) with no mod interaction -- they run native (no dispatch overhead)" \
 				% surface_skipped)
 	# Any ledger entry still "pending" was never even visited by the rewrite
-	# loop -- the loop iterates the ENUMERATED vanilla list, so a declared
+	# loop. The loop iterates the ENUMERATED vanilla list, so a declared
 	# path missing from that list falls through every branch above without
 	# a trace. Catch-all so nothing can leave this function unaccounted.
 	for rp: String in reconcile:
@@ -780,7 +785,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			# the misleading STABILITY alarm fired by _activate_rewritten_scripts
 			# against the pre-compiled Camera/WeaponRig/Door/etc. that would
 			# otherwise scream "hooks WILL NOT fire this session" seconds before
-			# we restart and Pass 2 gets 126/126 inline-live.
+			# the game restarts and Pass 2 gets 126/126 inline-live.
 			_log_info("[RTVCodegen] Generated %d rewritten vanilla script(s), %d hook points -- activation deferred to Pass 2 fresh engine" \
 					% [script_count, hook_count])
 			_persist_hook_pack_state(pack_zip_rel, _wrapped_paths_packed(packed_paths))
@@ -791,11 +796,11 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			# rewrite will silently fall back to vanilla.
 			var canary_got := FileAccess.get_file_as_string("res://__modloader_canary__.txt")
 			if canary_got.strip_edges() != canary_content:
-				# Fail LOUD and run vanilla. Activating anyway would leave a
+				# Fail loud and run vanilla. Activating anyway would leave a
 				# half-modded state: cached scripts get the rewrite via direct
 				# source mutation, while lazy VFS loads fall back to vanilla.
 				# Skipping the persist means next launch regenerates a fresh
-				# pack instead of static-init remounting this broken one -- a
+				# pack instead of static-init remounting this broken one. A
 				# transient failure self-heals, it does not disable modding.
 				_log_critical("[STABILITY] VFS canary FAILED (got '%s', expected '%s') -- hook pack mounted but files aren't served. Skipping activation: script hooks will not fire this session, vanilla scripts run. Pack state not persisted; next launch regenerates." % [canary_got.substr(0, 40), canary_content])
 				return ""
@@ -835,10 +840,10 @@ func _hook_declarers_label(path: String) -> String:
 #     declared methods (typo'd method, rename that didn't land, registry
 #     transform whose vanilla anchor moved).
 #   - full per-entry table at _log_debug (dev mode only).
-# Deliberately runs only when the pack survived generation -- a discarded
+# Deliberately runs only when the pack survived generation. A discarded
 # pack already logs its own critical ("hooks disabled this session").
 # Pure string/dictionary work over data built during generation: no I/O,
-# no load(), no tree access, every read defaulted -- it cannot itself
+# no load(), no tree access, every read defaulted. It cannot itself
 # break a boot.
 func _log_hook_reconciliation(reconcile: Dictionary) -> void:
 	if reconcile.is_empty():
@@ -892,31 +897,31 @@ func _log_hook_reconciliation(reconcile: Dictionary) -> void:
 				% [wrapped_scripts, wrapped_methods])
 
 # Force the game's ResourceCache entry for each rewritten vanilla path to use
-# our source. Necessary because:
+# the rewritten source. Necessary because:
 #   - pre-mount load()s (engine class_name pre-compile for scripts in the main
 #     scene graph, or anything else) cache the PCK's .gdc-compiled script at
 #     res://Scripts/<Name>.gd
-#   - CACHE_MODE_REPLACE doesn't fully rewrite those entries -- it re-reads
+#   - CACHE_MODE_REPLACE doesn't fully rewrite those entries. It re-reads
 #     through the GDScript loader which keeps the bytecode association
 #   - scene ext_resource and ClassName.new() both resolve through the cache,
-#     so if the cache is stale our dispatch wrappers never fire
+#     so if the cache is stale the dispatch wrappers never fire
 #
 # Direct mutation of source_code + reload() recompiles the existing cached
 # script in place. Scene nodes, ScriptServer class_cache, and any other
-# live references keep working -- they now dispatch through our wrappers.
+# live references keep working. They now dispatch through the wrappers.
 # Verified 2026-04-17: 158 wrapper calls in 4s across 5 scripts (physics
 # tick rate on active Camera/Controller nodes).
 
 func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) -> void:
 	# Scripts whose module-scope preload() pulls in a PackedScene are deferred
 	# from eager load+reload. Loading them here would fire their preload()
-	# chain BEFORE mod autoloads call overrideScript(), baking Script
+	# chain before mod autoloads call overrideScript(), baking Script
 	# ext_resources in those scenes to the pre-override vanilla. When mods
 	# later take_over_path, the baked refs go empty-path (see Godot
 	# core/io/resource.cpp Resource::set_path with p_take_over=true) and
 	# scene instantiate() produces orphan-scripted nodes that never run mod
 	# bodies. VFS mount precedence (.gd + .remap + empty .gdc) still serves
-	# our rewrite when game code lazy-loads these paths after mod overrides.
+	# the rewrite when game code lazy-loads these paths after mod overrides.
 	var deferred: PackedStringArray = []
 	for fname: String in filenames:
 		if _scripts_with_scene_preloads.has(fname):
@@ -926,14 +931,14 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 				% [deferred.size(), ", ".join(Array(deferred))])
 		# DEFER-VERIFY watchdog: "will lazy-compile" was a promise nobody
 		# checked -- if VFS precedence regresses, a deferred script compiles
-		# from PCK bytecode WITHOUT our rewrite and its hooks die silently.
-		# One shot at 60s: inspect ONLY scripts game code already loaded
+		# from PCK bytecode without the rewrite, and its hooks die silently.
+		# One shot at 60s: inspect only scripts game code already loaded
 		# (has_cached guard -- never force a compile, that would re-create
 		# the exact preload-ordering bug the deferral exists to avoid).
 		# Three outcomes: rewrite live (fine), not yet loaded (normal until
-		# its scenes are used), or compiled WITHOUT rewrite (the silent-loss
+		# its scenes are used), or compiled without rewrite (the silent-loss
 		# case -- one loud critical). Walks the base-script chain so a mod
-		# override sitting on top of our rewrite doesn't false-alarm.
+		# override sitting on top of the rewrite doesn't false-alarm.
 		var deferred_watch := deferred.duplicate()
 		get_tree().create_timer(60.0).timeout.connect(func():
 			var live_cnt := 0
@@ -971,13 +976,13 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 
 	# PRE-ACTIVATE pass: classify each cached script as
 	#  (a) already has _rtv_vanilla_* from static-init preload (pinned OK)
-	#  (b) source_code matches our rewrite but methods don't (GDScriptCache-pinned)
+	#  (b) source_code matches the rewrite but methods don't (GDScriptCache-pinned)
 	#  (c) source_code is empty (tokenized bytecode from PCK, no Static init preload)
 	#  (d) something else
-	# Summary counts printed at the end so we don't have to count by hand.
+	# Summary counts printed at the end, so nothing has to be tallied by hand.
 	# Dev-mode only: this pass exists purely for the summary log below (the
 	# activation loop re-derives everything it needs itself), and it costs a
-	# load() + method-list scan per wrapped script on EVERY launch.
+	# load() + method-list scan per wrapped script on every launch.
 	if _developer_mode:
 		var pre_a := 0
 		var pre_b := 0
@@ -1027,18 +1032,18 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 			_log_warning("[RTVCodegen] activate %s: load returned null -- skip" % vp)
 			continue
 
-		# If static-init preload already put our rewrite into this cached
+		# If static-init preload already put the rewrite into this cached
 		# script, skip the reload entirely. reload() would fail with
 		# "Cannot reload script while instances exist" for autoload-backed
-		# scripts (Database, GameData, Inputs, Loader, Menu, etc.) -- and
+		# scripts (Database, GameData, Inputs, Loader, Menu, etc.), and
 		# the reload isn't needed anyway since the compiled methods
-		# already include our _rtv_vanilla_* renames.
+		# already include the _rtv_vanilla_* renames.
 		#
 		# Staleness caveat: across modloader releases, the rewriter may add
 		# new injected fields (registry dicts, new prelude code) that aren't
 		# in the static-init-preloaded script from the previous session. We
 		# detect this by comparing the cached script's source_code to the
-		# freshly-generated source we'd emit. If they diverge, we skip the
+		# freshly-generated source. If they diverge, skip the
 		# "already live" shortcut and fall through to the reload path. This
 		# covers the common case where someone updates the modloader and
 		# launches: first run picks up the new rewriter output instead of
@@ -1075,7 +1080,7 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 			continue
 
 		# Otherwise: mutate source_code + reload. This covers scripts whose
-		# cache entry was compiled-from-source but without our rewrite yet
+		# cache entry was compiled-from-source but without the rewrite yet
 		# (rare -- normal case is static-init preload already covered it).
 		var our_source := FileAccess.get_file_as_string(vp)
 		if our_source.is_empty():
@@ -1089,9 +1094,9 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 		# method list. For scripts originally compiled from .gdc bytecode
 		# (Camera, WeaponRig -- pre-compiled by the engine during startup
 		# because they're referenced by the initial scene graph), reload()
-		# does NOT re-parse from the mutated source_code -- it apparently
+		# does not re-parse from the mutated source_code. It apparently
 		# re-reads bytecode. Fall back to loading a fresh script via
-		# CACHE_MODE_IGNORE (which goes through _path_remap -> our .gd
+		# CACHE_MODE_IGNORE (which goes through _path_remap -> the .gd
 		# with source compile) and take_over_path to displace the stale
 		# cache entry.
 		var has_rename := false
@@ -1124,23 +1129,23 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 	_log_info("[RTVCodegen] Activated %d/%d rewritten script(s) (%d already live from static-init preload; %d deferred to lazy-compile)" \
 			% [activated, eager_total, preactivated, deferred.size()])
 
-	# Step D: persist hook pack path + wrapped-paths list to pass_state so
+	# Persist hook pack path + wrapped-paths list to pass_state so
 	# the next session's _mount_previous_session() picks it up at static
-	# init -- BEFORE game autoloads compile class_name scripts from the
-	# PCK's .gdc. Only then can we rewire pre-compiled scripts like Camera
+	# init -- before game autoloads compile class_name scripts from the
+	# PCK's .gdc. Only then can pre-compiled scripts like Camera be rewired
 	# and WeaponRig (ScriptServer.class_cache pins their bytecode once
 	# compiled). wrapped_paths drives the narrow preempt: only the scripts
-	# we wrapped this session get CACHE_MODE_IGNORE treatment at static
+	# wrapped this session get CACHE_MODE_IGNORE treatment at static
 	# init next session.
 	_persist_hook_pack_state(pack_path, _wrapped_paths_packed(filenames))
 
-	# End-to-end proof: register REAL hooks via the public RTVModLib API
+	# End-to-end proof: register real hooks via the public RTVModLib API
 	# on well-known Controller/Camera/Door methods. If these fire at
 	# runtime, the full chain is working:
-	#   1. our rewrite is what game code compiles against
-	#   2. our dispatch wrapper runs on method entry
+	#   1. the rewrite is what game code compiles against
+	#   2. the dispatch wrapper runs on method entry
 	#   3. _dispatch("<hook_name>-pre", args) reaches RTVModLib's _hooks dict
-	#   4. our registered callback fires with the right args
+	#   4. the registered callback fires with the right args
 	# Each hook bumps its own counter via Engine meta; deferred log
 	# reports which hooks fired. If any of the three is zero, that
 	# layer of the chain is broken.
@@ -1180,9 +1185,9 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 	hook("character-_physics_process-pre", func(d): _bump.call("character_pp", d), 100)
 	hook("camera-_physics_process-pre", func(d): _bump.call("camera_pp", d), 100)
 
-	# Compile proof: inspect the methods on each activated script. If our
+	# Compile proof: inspect the methods on each activated script. If the
 	# rewrite compiled into the cached GDScript, the method list contains
-	# both the renamed vanilla (e.g. _rtv_vanilla_Movement) AND the
+	# both the renamed vanilla (e.g. _rtv_vanilla_Movement) and the
 	# dispatch wrapper at the original name (e.g. Movement).
 	var compile_proof_ok := 0
 	var compile_proof_fail: PackedStringArray = []
@@ -1215,8 +1220,8 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 
 	# STABILITY canary A: summarize COMPILE-PROOF results and alarm on
 	# catastrophic or critical-script failure. Silent breakage is the worst
-	# mode -- users should see a clear message if Godot changed something
-	# under us (VFS precedence, reload-parse behavior, cache eviction rules).
+	# mode. Users should see a clear message if Godot changed something
+	# underneath (VFS precedence, reload-parse behavior, cache eviction rules).
 	var critical_set: Dictionary = {"Controller.gd": true, "Camera.gd": true,
 			"WeaponRig.gd": true, "Door.gd": true, "Trader.gd": true,
 			"Hitbox.gd": true, "LootContainer.gd": true, "Pickup.gd": true}
@@ -1224,7 +1229,7 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 	for f in compile_proof_fail:
 		if critical_set.has(String(f).get_file()):
 			critical_failures.append(f)
-	# Deferred scripts aren't counted against the total here -- they skipped
+	# Deferred scripts aren't counted against the total here. They skipped
 	# compile-proof intentionally; the DEFER-VERIFY watchdog above checks
 	# them at 60s once lazy-compile has had a chance to fire.
 	var attempted := filenames.size() - deferred.size()
@@ -1242,10 +1247,10 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 					deferred_tag])
 
 	# Autoload instance inspection: for the "Already in use" set, the
-	# script's get_script_method_list() shows our renames, BUT the live
+	# script's get_script_method_list() shows the renames, but the live
 	# autoload node might still be holding a pointer to the original
 	# bytecode via its get_script() property. If script_match=false for
-	# any of these, our rewrite isn't reaching the actual game instance.
+	# any of these, the rewrite isn't reaching the actual game instance.
 	# Developer-mode only -- pure diagnostic, 9 log lines per session.
 	if _developer_mode:
 		var autoload_names: Array[String] = ["Database", "GameData", "Settings",
@@ -1266,7 +1271,7 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 					has_rename = true
 					break
 			# Also check if the method list is available via the INSTANCE (has_method
-			# on the node). If the node's bytecode is our rewrite, it should report
+			# on the node). If the node's bytecode is the rewrite, it should report
 			# _rtv_vanilla_<something> as a method.
 			var instance_methods_has_rename := false
 			for m in node.get_method_list():
@@ -1276,12 +1281,12 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 			_log_info("[RTVCodegen] AUTOLOAD-CHECK %s: script=%s script_has_rename=%s instance_has_rename=%s" \
 					% [aname, scr.resource_path, has_rename, instance_methods_has_rename])
 
-	# Registry smoke probe (developer-mode only -- we are past the
+	# Registry smoke probe (developer-mode only. We are past the
 	# `if not _developer_mode: return` gate above). Verifies tetra's
 	# const->dict rewrite + _get() injection on Database actually
 	# executed and serves scenes at runtime. Without this, a silent
 	# regression in the Database transform would only surface when a
-	# mod's lib.register() call returned stale data -- this probe
+	# mod's lib.register() call returned stale data. This probe
 	# catches it at boot instead.
 	var db_node: Node = get_tree().root.get_node_or_null("Database")
 	if db_node == null:
@@ -1357,8 +1362,8 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 		# instances. IXP's take_over_path moves IXP's script onto the vanilla
 		# path. If IXP's override is ACTIVE, node.get_script() will be IXP's
 		# script (source contains "IXP" or "ImmersiveXP" markers), and the
-		# base-script chain should walk IXP -> our rewrite -> engine class.
-		# If IXP failed, node.get_script() is our rewrite directly (no IXP
+		# base-script chain should walk IXP -> the rewrite -> engine class.
+		# If IXP failed, node.get_script() is the rewrite directly (no IXP
 		# ancestor). This is the definitive proof IXP's takeover works.
 		var check_classes: Array[String] = ["Controller", "Camera", "WeaponRig"]
 		for cls_name: String in check_classes:

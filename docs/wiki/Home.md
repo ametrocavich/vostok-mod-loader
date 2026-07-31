@@ -21,13 +21,13 @@ This wiki is the home for mod authors. Everything here -- hooks, the registry, d
 
 Then the pages every mod ships with:
 
-- [Mod-Format](Mod-Format) -- the mod.txt schema: metadata, autoloads, `[hooks]` / `[script_extend]` / `[registry]` declarations
+- [Mod-Format](Mod-Format). The mod.txt schema: metadata, autoloads, `[hooks]` / `[script_extend]` / `[registry]` declarations
 - [Setup-Plans](Setup-Plans) -- declarative `lib.setup(plan)`: batch your registry + hook calls as one plan literal
 
 Related, when you need them:
 
 - [Config-Files](Config-Files) -- where profile state lives on disk, how to edit/back up/reset it
-- [Profile-Format](Profile-Format) -- the metroprofile v1 JSON format used inside a modpack's profile.json
+- [Profile-Format](Profile-Format). The metroprofile v1 JSON format used inside a modpack's profile.json
 - [Limitations](Limitations) -- known Godot quirks, bug #83542, scene-preload defer, supported/unsupported patterns
 
 ## Internals (for contributors)
@@ -43,6 +43,6 @@ You do not need any of this to write a mod. These pages cover how the loader its
 
 ## Source-of-truth rules
 
-This wiki is generated from `docs/wiki/` in the main repo and synced to the GitHub Wiki via [.github/workflows/wiki-sync.yml](https://github.com/ametrocavich/vostok-mod-loader/blob/development/.github/workflows/wiki-sync.yml). To edit a page, PR changes to `docs/wiki/*.md` -- the wiki updates itself on merge.
+This wiki is generated from `docs/wiki/` in the main repo and synced to the GitHub Wiki via [.github/workflows/wiki-sync.yml](https://github.com/ametrocavich/vostok-mod-loader/blob/development/.github/workflows/wiki-sync.yml). To edit a page, PR changes to `docs/wiki/*.md`. The wiki updates itself on merge.
 
 Every significant claim in these pages cites `src/<file>.gd:<line>`. If source drifts, the wiki is stale -- open an issue or submit a PR.

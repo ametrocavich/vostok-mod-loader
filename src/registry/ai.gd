@@ -21,14 +21,14 @@
 ##     convert back at lookup time.
 ##   - Only override is meaningful here: a single agent scene per zone.
 ##     Register "adds a new entry" is semantically the same as override
-##     for this registry, so we expose both verbs but they share a slot.
+##     for this registry, so both verbs exist but share one slot.
 ##
 ## Data shape:
 ##   {scene: PackedScene, zone: String}
 
 const _VALID_ZONES := ["Area05", "BorderZone", "Vostok"]
 
-# Keep the overrides we install in Engine meta, keyed by zone name, so the
+# Installed overrides live in Engine meta, keyed by zone name, so the
 # injected resolver on every AISpawner instance finds them. Each id in
 # _registry_registered tracks a {scene, zone} payload; the engine-meta dict
 # is derived from those registrations at each write.

@@ -26,7 +26,7 @@ func _register_rtv_modlib_meta() -> void:
 	_log_info("[RTVModLib] modloader registered as Engine.meta('RTVModLib')")
 
 # Mods that await Engine.get_meta("RTVModLib").frameworks_ready block until
-# we fire this.
+# this fires.
 func _emit_frameworks_ready() -> void:
 	_is_ready = true
 	_register_core_hooks()
@@ -36,7 +36,7 @@ func _emit_frameworks_ready() -> void:
 	# All mod autoloads have now finished their _ready() calls, which is
 	# where overrideScript() calls typically fire take_over_path. Verify
 	# each declared override actually landed in the ResourceCache and
-	# subscribe to node_added so we can report whether NEW instances
+	# subscribe to node_added so the report can say whether new instances
 	# spawn with the mod's script vs. vanilla (catches PackedScene
 	# ext_resource staleness that take_over_path can't fix).
 	_verify_script_overrides()
@@ -58,11 +58,11 @@ static func _hook_base_of(hook_name: String) -> String:
 ## lowercase>" plus an optional "-pre" / "-post" / "-callback" suffix; the
 ## bare (suffixless) name is the single-owner REPLACE slot. Returns a hook
 ## id usable with unhook(), or -1 when the replace slot is already owned.
-## Callbacks run in ascending `priority` order. Ties are NOT guaranteed to
+## Callbacks run in ascending `priority` order. Ties are not guaranteed to
 ## run in registration order (Array.sort_custom is not a stable sort) --
 ## use distinct priorities when order between two callbacks matters.
 ##
-## IMPORTANT wrap-surface contract: registering here does NOT wrap the
+## IMPORTANT wrap-surface contract: registering here does not wrap the
 ## vanilla method. The wrap surface is fixed at _generate_hook_pack time
 ## from (a) [hooks] sections in mod.txt, (b) LITERAL .hook("...") string
 ## calls found by the _re_hook_call source scan, (c) add_hook(), or (d) the
@@ -82,7 +82,7 @@ func hook(hook_name: String, callback: Callable, priority: int = 100) -> int:
 	# _re_hook_call regex, and both _rtv_dispatch_inline_src branches (see
 	# the ADDING A NEW HOOK VARIANT note in rewriter_parse.gd). Either way the
 	# registration would be silently misfiled as a replace hook under a base
-	# no wrapper ever dispatches -- it "succeeds" and never fires.
+	# no wrapper ever dispatches. It "succeeds" and never fires.
 	if is_replace and hook_name.count("-") >= 2:
 		push_warning("[RTVModLib] hook('%s'): unrecognized suffix '-%s' -- registering as a REPLACE hook, which will never fire under that name. Did you mean -pre, -post, or -callback?" \
 				% [hook_name, hook_name.get_slice("-", hook_name.count("-"))])
@@ -113,12 +113,12 @@ func hook(hook_name: String, callback: Callable, priority: int = 100) -> int:
 
 ## godot-mod-loader compat shim. Mods written against the upstream
 ## godot-mod-loader convention call `ModLoader.add_hook(path, method, cb,
-## before)` to register a hook. Translate that into our native
+## before)` to register a hook. Translate that into the native
 ## `hook("<stem>-<method>-pre/post", cb)`. Enroll the path into
 ## _hooked_methods so the wrap surface picks it up on pack generation.
 ##
 ## Limitation 1 -- timing: pack generation reads _hooked_methods up front.
-## An add_hook() call that arrives AFTER `_generate_hook_pack` has already
+## An add_hook() call that arrives after `_generate_hook_pack` has already
 ## run won't get its vanilla script wrapped (the hook name registers fine,
 ## but there's no wrapper to dispatch it). To be wrapped, add_hook() must
 ## run before _generate_hook_pack -- in practice, from a `!`-prefixed early
@@ -140,7 +140,7 @@ func add_hook(script_path: String, method_name: String, callback: Callable, is_b
 	# bare filenames; normalize bare filenames to res://Scripts/<file> to
 	# match the game's script layout. Mask keys are lowercase (hook_pack.gd
 	# checks `fe["name"].to_lower()` against the mask), so lowercase the
-	# method name on write -- godot-mod-loader callers pass vanilla method
+	# method name on write. Godot-mod-loader callers pass vanilla method
 	# names preserving source casing (e.g. "UpdateToolTip").
 	var res_path := script_path
 	if not res_path.begins_with("res://"):
@@ -222,7 +222,7 @@ func seq() -> int:
 ## True when a mod with the given id is loaded. Optional `min_version` does
 ## a numeric semver compare (1.2.3 split on '.', component-wise int compare,
 ## non-numeric components compare as 0). Mods declaring no version field
-## return version="" which compares as 0.0.0 -- they pass any min_version
+## return version="" which compares as 0.0.0. They pass any min_version
 ## of "0" but fail anything stricter.
 func has_mod(mod_id: String, min_version: String = "") -> bool:
 	if not _loaded_mod_ids.has(mod_id):
@@ -246,7 +246,7 @@ func has_mod(mod_id: String, min_version: String = "") -> bool:
 func mod_info(mod_id: String) -> Dictionary:
 	var info = _loaded_mod_ids.get(mod_id, null)
 	if info is Dictionary:
-		# deep=true so nested dependency arrays are copies too -- a shallow
+		# deep=true so nested dependency arrays are copies too. A shallow
 		# duplicate would hand mods live references into the loader registry.
 		return (info as Dictionary).duplicate(true)
 	return {}
@@ -294,7 +294,7 @@ func _dispatch(hook_name: String, args: Array) -> void:
 	# Snapshot before iterating so callbacks that hook()/unhook() mid-dispatch
 	# see consistent semantics: hooks registered during dispatch don't fire
 	# in the CURRENT dispatch (they join the next one), and the new hook()'s
-	# sort_custom on the live array can't re-enter our iteration. Matches
+	# sort_custom on the live array cannot re-enter this iteration. Matches
 	# C03/C16/C17/C18 test expectations.
 	var entries: Array = (_hooks[hook_name] as Array).duplicate()
 	for entry in entries:
@@ -320,7 +320,7 @@ func _dispatch(hook_name: String, args: Array) -> void:
 # nudge to update their signatures.
 #
 # Priority order matches _dispatch: ascending by `priority` field. Ties are
-# NOT stable -- sort_custom is not a stable sort, so equal priorities may run
+# not stable -- sort_custom is not a stable sort, so equal priorities may run
 # in any order. (The previous claim here, "ties broken by registration order",
 # was wrong; hook()'s own docstring and Hooks.md both state it correctly.)
 func _dispatch_post(hook_name: String, args: Array, current_result: Variant) -> Variant:
@@ -341,7 +341,7 @@ func _dispatch_post(hook_name: String, args: Array, current_result: Variant) -> 
 		else:
 			# Legacy 2-arg form (or anything else). Fire-and-forget on
 			# args only, ignore return. Warn once.
-			# Key includes the method so two legacy callbacks on the SAME
+			# Key includes the method so two legacy callbacks on the same
 			# object (or object_id 0 statics) each get their own warning.
 			var warn_key: String = "%s::%d::%s" % [hook_name, cb.get_object_id(), str(cb.get_method())]
 			if not _post_legacy_warned.has(warn_key):

@@ -17,9 +17,9 @@ func _ready() -> void:
     ])
 ```
 
-A plan can also live at module scope as a `const` -- but a `const` initializer resolves at script-parse time, before the loader object exists, so use the plain string registry names there (`"items"` instead of `lib.Registry.ITEMS`) and Callable predicates in `when` entries (see [Predicates](#predicates-for-when)).
+A plan can also live at module scope as a `const`, but a `const` initializer resolves at script-parse time, before the loader object exists, so use the plain string registry names there (`"items"` instead of `lib.Registry.ITEMS`) and Callable predicates in `when` entries (see [Predicates](#predicates-for-when)).
 
-`setup` doesn't introduce new behavior -- it dispatches each entry to the existing public verbs. Anything you can do with `register` / `override` / `patch` / `append` / `prepend` / `remove_from` / `revert` / `remove` / `hook_many` you can do here, plus a meta verb `when` for conditional sub-plans.
+`setup` doesn't introduce new behavior. It dispatches each entry to the existing public verbs. Anything you can do with `register` / `override` / `patch` / `append` / `prepend` / `remove_from` / `revert` / `remove` / `hook_many` you can do here, plus a meta verb `when` for conditional sub-plans.
 
 ## Verb shapes
 
@@ -56,7 +56,7 @@ Predicates accept three shapes:
 
 Evaluated when `setup` traverses the entry. A plan built in `_ready` can use runtime state freely. A `const PLAN = [...]` with non-Callable predicates evaluates them at script-parse time -- fine for compile-time constants but wrong for runtime state, so prefer Callable predicates in `const` plans.
 
-A skipped `when` (predicate false) returns `ok=true` -- it succeeded by not running anything.
+A skipped `when` (predicate false) returns `ok=true`. It succeeded by not running anything.
 
 Nested `when` works as expected: the inner sub-plan only runs when both predicates evaluate truthy. There's no `unless` or `else` verb -- compose two `when` entries with negated predicates if you need branching.
 
@@ -337,5 +337,5 @@ Use `setup` for the static, declarative slice and write whatever else you need a
 
 ## See also
 
-- [Registry](Registry) -- the underlying verbs `setup` dispatches to
+- [Registry](Registry). The underlying verbs `setup` dispatches to
 - [Hooks](Hooks) -- hook registration, the `["hooks", {...}]` entry maps to `hook_many`

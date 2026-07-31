@@ -9,7 +9,7 @@ func _ready() -> void:
 		return
 	_has_loaded = true
 	# Honor disabled sentinel. Static init already cleaned persistent state,
-	# so we just sit idle for this session. User removes the persistent file
+	# so the loader sits idle for this session. The user removes the persistent file
 	# to re-enable; the one-shot variant is auto-cleared here so the next
 	# launch goes through the normal flow.
 	if _is_modloader_disabled():
@@ -23,7 +23,7 @@ func _ready() -> void:
 		return
 	await get_tree().process_frame
 	_compile_regex()
-	# Hook _load_all_mods completion to mount our test pack AFTER mod re-mounts.
+	# Hook _load_all_mods completion to mount the test pack after mod re-mounts.
 	# (Test pack mounted before _run_pass_2 gets overwritten when load_all_mods
 	# re-mounts ImmersiveXP.vmz with replace_files=true.)
 	var is_pass_2 := "--modloader-restart" in OS.get_cmdline_user_args()
@@ -52,17 +52,17 @@ func _modloader_restart(clean_pass1: bool) -> void:
 	else:
 		args = Array(OS.get_cmdline_args())
 	# Godot's arg parser consumes --rendering-driver / --rendering-method
-	# (main.cpp:1272,1280) and does NOT push them back to main_args, so
+	# (main.cpp:1272,1280) and does not push them back to main_args, so
 	# OS.get_cmdline_args() returns the stripped list. Without re-injecting,
 	# the relaunch loses the Steam launch option and Godot falls back to the
 	# default driver (D3D12 on Windows). Visible on fresh-install first
 	# launch; subsequent launches short-circuit on the mod-state hash and
 	# never restart.
 	_preserve_engine_driver_args(args)
-	# OS.get_cmdline_args() excludes everything after "--" -- those live only in
+	# OS.get_cmdline_args() excludes everything after "--". Those live only in
 	# OS.get_cmdline_user_args() (the same split Pass-2 detection in _ready
 	# relies on). Forward the player's original user args so restarts are
-	# command-line-transparent, stripping our own sentinel and re-appending it
+	# command-line-transparent, stripping the loader's sentinel and re-appending it
 	# only for the Pass-1 -> Pass-2 bootstrap.
 	var user_args: Array = []
 	for ua in OS.get_cmdline_user_args():
@@ -80,7 +80,7 @@ func _preserve_engine_driver_args(args: Array) -> void:
 	# Scoped to the two flags RTV's Steam launch-option presets actually set
 	# ([DirectX] / [Vulkan] / [Compatibility] pick --rendering-driver and/or
 	# --rendering-method). If the user didn't pass a flag, querying returns
-	# Godot's default (no-op); if they did, we preserve their choice.
+	# Godot's default (no-op); if they did, that choice is preserved.
 	if not args.has("--rendering-driver"):
 		var driver := RenderingServer.get_current_rendering_driver_name()
 		if not driver.is_empty():
@@ -117,7 +117,7 @@ func _run_pass_1() -> void:
 	_check_safe_mode()
 	_compile_regex()
 	_build_class_name_lookup()
-	# Populate _all_game_script_paths NOW so the .hook() prefix resolver in
+	# Populate _all_game_script_paths now so the .hook() prefix resolver in
 	# _merge_hook_calls_into_wrap_mask (run from load_all_mods below) can
 	# fall back to filename-stem matches for vanilla scripts without
 	# class_name (Flashlight, NVG, Interface, ...). Previously this only
@@ -148,7 +148,7 @@ func _run_pass_1() -> void:
 		await _finish_with_existing_mounts()
 		return
 
-	# Note: do NOT generate framework wrappers here. If we restart, the work is
+	# Do not generate framework wrappers here. If a restart follows, the work is
 	# wasted. Pass 2 will generate after archives are mounted + class lookup
 	# rebuilt. Single-pass paths (_finish_single_pass, _finish_with_existing_mounts)
 	# generate before activating hooks.
@@ -206,7 +206,7 @@ func _run_pass_1() -> void:
 	await _finish_single_pass()
 
 func _finish_with_existing_mounts() -> void:
-	# Register meta + generate the framework pack BEFORE mod autoloads run so
+	# Register meta + generate the framework pack before mod autoloads run so
 	# Engine.get_meta("RTVModLib") is live by the time they call .hook().
 	# Script overrides were already applied in _run_pass_1() before the hash
 	# check; no need to re-apply from pass state.
@@ -293,9 +293,9 @@ func _run_pass_2() -> void:
 	load_all_mods("Pass 2")
 	_register_rtv_modlib_meta()
 	_generate_hook_pack()
-	# After load_all_mods re-mounts mod archives (wiping our IXP/Controller
+	# After load_all_mods re-mounts mod archives (wiping the IXP/Controller
 	# override), remount the already-generated test pack to re-apply.
-	# NOTE: Godot dedupes load_resource_pack by path, so mounting the same
+	# Godot dedupes load_resource_pack by path, so mounting the same
 	# filename twice is a no-op. Copy to a different filename each time.
 	if _load_test_pack_flag():
 		# Sweep reapply copies from prior sessions first -- each Pass 2 creates
@@ -353,9 +353,9 @@ func _run_pass_2() -> void:
 		_write_conflict_report()
 	_emit_frameworks_ready()
 	_delete_heartbeat()
-	# Pass 2 reached cleanup -- clear the dirty marker so next launch knows we
-	# finished without crashing. If reload_current_scene below fails we still
-	# want the marker gone; the state we wrote IS consistent at this point.
+	# Pass 2 reached cleanup. Clear the dirty marker so the next launch knows
+	# this one finished without crashing. If reload_current_scene below fails,
+	# the marker should still go: the state on disk is consistent by now.
 	if FileAccess.file_exists(PASS2_DIRTY_PATH):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(PASS2_DIRTY_PATH))
 	if not _filescope_mounted.is_empty() or not _archive_file_sets.is_empty() or _pending_autoloads.size() > 0:

@@ -41,7 +41,7 @@ Boot-time probes that alarm loudly when something the loader depends on silently
 - Not 100 or 101 (and not -1 for "file not tokenized") -> critical:
   ```
   [STABILITY] Unsupported GDSC tokenizer vN on Godot <version>.
-  This ModLoader supports v100 (Godot 4.0-4.4) and v101 (Godot 4.5-4.6).
+  This ModLoader supports v100 (Godot 4.3-4.4) and v101 (Godot 4.5-4.6).
   Hook pack generation disabled -- script hooks will not fire.
   See README for supported Godot versions.
   ```
@@ -61,7 +61,7 @@ Boot-time probes that alarm loudly when something the loader depends on silently
 - Round-trip fails the indentation check -> critical:
   ```
   [STABILITY] Detokenized vanilla source failed the indentation sanity check on Godot <version>
-  -- the .gdc column format likely changed even though the GDSC version is still <N>.
+ . The .gdc column format likely changed even though the GDSC version is still <N>.
   Hook pack generation disabled -- script hooks will not fire.
   Update the ModLoader to a version that supports this game build.
   ```
@@ -123,7 +123,7 @@ In all three cases nothing is persisted, so the next launch retries from scratch
 
 **Source**: [ui.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd) `_launch_vanilla_once`.
 
-**When to use**: mods loaded but the game crashes or behaves badly. One guaranteed vanilla launch without losing the mod setup. The `modloader_disabled_once` sentinel can also be created by hand -- it belongs to the same escape-hatch set as the two sentinels above.
+**When to use**: mods loaded but the game crashes or behaves badly. One guaranteed vanilla launch without losing the mod setup. The `modloader_disabled_once` sentinel can also be created by hand. It belongs to the same escape-hatch set as the two sentinels above.
 
 ## Crash recovery
 

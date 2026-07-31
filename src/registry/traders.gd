@@ -73,7 +73,7 @@ func _register_trader_pool(id: String, data: Variant) -> bool:
 		push_warning("[Registry] register('trader_pools', '%s'): item has no '%s' flag field (not a standard ItemData?)" % [id, flag])
 		return false
 	# Stash the original flag value so remove/revert can restore it. Most
-	# items default to false for a given trader flag, but we don't assume.
+	# items default to false for a given trader flag, but that is not assumed.
 	var original_value = item.get(flag)
 	# If another live handle already covers this (item, flag) pair, inherit
 	# its stashed original: item.get(flag) here would be that handle's
@@ -327,7 +327,7 @@ func _remove_trader_task(id: String) -> bool:
 	reg.erase(id)
 	_registry_registered["trader_tasks"] = reg
 	# Drop the handle's patch stash with the entry (mirrors _remove_event).
-	# Ref-keyed stashes are left alone -- they track the Resource identity.
+	# Ref-keyed stashes are left alone. They track the Resource identity.
 	var patched: Dictionary = _registry_patched.get("trader_tasks", {})
 	if patched.has(id):
 		patched.erase(id)

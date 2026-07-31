@@ -37,7 +37,7 @@ Click **Launch modded** (or **Launch**, when no mods are enabled) or close the w
 
 The launcher does a static scan of every mod's source for a small set of patterns that have been seen in actual malicious mods (obfuscated string decoding paired with process spawning, anti-debug crashes, ransomware-setup calls). Mods that match get a small red "suspicious code" tag in the list, and clicking **Launch modded** with one enabled pops a confirmation dialog before the game starts.
 
-This is **not** a virus scanner. It catches lazy / copy-paste attacks; a determined attacker with the modloader source can write around the patterns. Loading is never silently blocked -- you can confirm and launch any mod. The scanner exists to slow down the obvious cases, nothing more. Always install mods from sources you trust.
+This is **not** a virus scanner. It catches lazy / copy-paste attacks; a determined attacker with the modloader source can write around the patterns. Loading is never silently blocked. You can confirm and launch any mod. The scanner exists to slow down the obvious cases, nothing more. Always install mods from sources you trust.
 
 ## Authoring a Mod
 
@@ -55,7 +55,7 @@ MyMod.vmz
   MyMod/Main.gd        <- mounts as res://MyMod/Main.gd
 ```
 
-Developer Mode folders use the same layout and the same `mod.txt` -- a folder's
+Developer Mode folders use the same layout and the same `mod.txt`. A folder's
 contents mount at `res://` just like the zip, so nothing changes when you package
 it up.
 
@@ -87,7 +87,7 @@ optional=["some_soft_integration"]
 | `[updates] modworkshop` | ModWorkshop mod ID |
 | `[dependencies] required/optional` | Godot string arrays of mod IDs. Required deps must be installed, enabled, and load before the dependent mod |
 
-Mods without `mod.txt` still mount as resource packs -- their files override vanilla resources, but no autoloads run.
+Mods without `mod.txt` still mount as resource packs. Their files override vanilla resources, but no autoloads run.
 
 ### Opt-in hook declarations
 
@@ -103,7 +103,7 @@ res://Scripts/Camera.gd = "res://MyMod/MyCamera.gd"
 ; declaring this section is enough to enable lib.register() / lib.override()
 ```
 
-- **`[script_extend]`** -- a full-script replacement that chains via Godot's `extends` resolution. Multiple mods can extend the same vanilla script; take_over_path runs in priority order, each override's `extends` resolves to the prior chain tip. `[script_overrides]` is kept as a legacy alias.
+- **`[script_extend]`**. A full-script replacement that chains via Godot's `extends` resolution. Multiple mods can extend the same vanilla script; take_over_path runs in priority order, each override's `extends` resolves to the prior chain tip. `[script_overrides]` is kept as a legacy alias.
 - **`[registry]`** -- declaring this section enables `lib.register()` / `lib.override()` on Database.gd. Without it, the registry helpers never get injected and those calls return `false`.
 
 **Escape hatch: `[hooks]`.** The scanner can't find every hook. If your mod registers via `ModLoader.add_hook(path, method, cb, before)` from an autoload's `_ready`, or passes a hook callback through a second autoload so the `.hook()` call site isn't in the mod's own source, list the vanilla script path:
@@ -131,7 +131,7 @@ v3.0.0 inferred the wrap surface from `extends`, `take_over_path`, and a pinned 
 
 ### Migrating from v2.1.0
 
-If you stayed on v2.1.0 because v3.0.0 broke your loadout, upgrade directly to v3.0.1 -- it's designed to behave like v2.1.0 for undeclared mods. No opt-in declarations means no rewriting; your mods run against unmodified vanilla bytes, just as they did on v2.1.0.
+If you stayed on v2.1.0 because v3.0.0 broke your loadout, upgrade directly to v3.0.1. It's designed to behave like v2.1.0 for undeclared mods. No opt-in declarations means no rewriting; your mods run against unmodified vanilla bytes, just as they did on v2.1.0.
 
 Declare only the features you actually use:
 
@@ -188,7 +188,7 @@ More recovery detail (heartbeat, restart counter, crashed-Pass-2 dirty marker): 
 - **Package as `.vmz`** with forward-slash paths. Use 7-Zip, not .NET `ZipFile.CreateFromDirectory()` (writes backslashes, breaks mounting).
 - **Include a `mod.txt`** at the archive root. Without it, autoloads won't run.
 - **Use `super()` in lifecycle methods** (`_ready`, `_process`, etc.) when overriding vanilla scripts. Skipping it breaks hook composition for other mods that hooked that method.
-- **Declare `[hooks]` or call `.hook(...)`** on the vanilla methods you care about. Since v3.0.1, only declared methods get dispatch wrappers -- there's no auto-wrap surface anymore.
+- **Declare `[hooks]` or call `.hook(...)`** on the vanilla methods you care about. Since v3.0.1, only declared methods get dispatch wrappers. There's no auto-wrap surface anymore.
 - **Prefer hooks over file replacement** when you only need to modify a few methods. Hooks compose across mods; file replacement doesn't.
 - **Test with other mods installed** and check the conflict report (Developer Mode).
 

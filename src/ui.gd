@@ -61,9 +61,9 @@ const CTRL_H := 26  # uniform min height for single-line inputs (LineEdit, SpinB
 func _load_developer_mode_setting() -> void:
 	var cfg := ConfigFile.new()
 	if cfg.load(UI_CONFIG_PATH) != OK:
-		# Live config missing or corrupt. This runs BEFORE collect_mod_metadata
+		# Live config missing or corrupt. This runs before collect_mod_metadata
 		# (which drops dev-folder mods when developer_mode is off) and before
-		# _load_ui_config recovers the profiles from the rolling .bak -- so read
+		# _load_ui_config recovers the profiles from the rolling .bak, so read
 		# developer_mode from that same backup here. Without this, a recoverable
 		# corrupt config silently turns dev mode off and strands every folder mod
 		# for the session even though the rest of the config recovers fine.
@@ -113,7 +113,7 @@ func _load_ui_config() -> void:
 	var cfg := ConfigFile.new()
 	if cfg.load(UI_CONFIG_PATH) != OK:
 		# The live config is missing OR failed to parse (corrupt / half-written
-		# by a crash mid-save). Before falling through to a fresh Default -- which
+		# by a crash mid-save). Before falling through to a fresh Default, which
 		# overwrites and would wipe every other stored profile -- try the rolling
 		# backup written by _persist_ui_cfg.
 		var bak := UI_CONFIG_PATH + ".bak"
@@ -123,7 +123,7 @@ func _load_ui_config() -> void:
 			# Preserve the unreadable file for inspection, then write the
 			# recovered state back as the live config. Raw save (not
 			# _persist_ui_cfg) so the corrupt live file is not copied over the
-			# good backup we just read.
+			# good backup just read.
 			if FileAccess.file_exists(UI_CONFIG_PATH):
 				DirAccess.copy_absolute(UI_CONFIG_PATH, UI_CONFIG_PATH + ".corrupt")
 			cfg = bak_cfg
@@ -134,7 +134,7 @@ func _load_ui_config() -> void:
 			# materialize the placeholder Default profile so it is a real on-disk
 			# profile from the first UI render (see the comment at the tail of
 			# this function for rationale). If a corrupt live config exists,
-			# preserve it as .corrupt for inspection first -- the .bak is already
+			# preserve it as .corrupt for inspection first. The .bak is already
 			# bad in this branch, so there is nothing good left to lose, and it
 			# matches the recovery branch above.
 			if FileAccess.file_exists(UI_CONFIG_PATH):
@@ -142,8 +142,8 @@ func _load_ui_config() -> void:
 					# The unreadable file is preserved as .corrupt; REMOVE the
 					# live copy so the fresh-Default save below is not refused
 					# by _load_ui_cfg_for_write's unreadable-file guard. Without
-					# this, the save silently no-ops here AND every later save
-					# this session refuses too -- the user's toggles would never
+					# this, the save silently no-ops here and every later save
+					# this session refuses too. The user's toggles would never
 					# persist again until they deleted the file by hand.
 					DirAccess.remove_absolute(UI_CONFIG_PATH)
 			_save_ui_config()
@@ -178,7 +178,7 @@ func _load_ui_config() -> void:
 	var stored := str(cfg.get_value("settings", "active_profile", "Default"))
 	var profiles := _list_profiles_in_cfg(cfg)
 	# Legacy: pre-Vanilla-removal users have stored = VANILLA_PROFILE in their
-	# config. Treat it as missing so we fall through to the first user profile
+	# config. Treat it as missing and fall through to the first user profile
 	# rather than a sentinel value with no UI presence.
 	if stored == VANILLA_PROFILE:
 		stored = ""
@@ -190,11 +190,11 @@ func _load_ui_config() -> void:
 		_active_profile = "Default"
 
 	# Reconcile modpack state. A managed slot (modpack__X) is a legitimate
-	# active profile ONLY while that pack is genuinely applied (active_modpack
+	# active profile only while that pack is genuinely applied (active_modpack
 	# names it). Resolving into a managed slot with no matching active_modpack
-	# means we were stranded -- a crash mid-apply, a quit during unload, or a
+	# means the launcher was stranded: a crash mid-apply, a quit during unload, or a
 	# delete that fell into a managed slot. And a lingering active_modpack flag
-	# whose slot we're no longer in is just stale. Either way, recover to a
+	# whose slot is no longer active is just stale. Either way, recover to a
 	# real user profile / clear the flag instead of letting the user edit a
 	# pack-managed slot invisibly.
 	var active_mp := str(cfg.get_value("settings", "active_modpack", ""))
@@ -202,9 +202,9 @@ func _load_ui_config() -> void:
 	if _is_modpack_managed_profile(_active_profile) \
 			and _active_profile != MODPACK_PROFILE_PREFIX + active_mp:
 		# Stranded in a managed slot whose pack isn't active (crash mid-apply,
-		# or a quit during unload). Restore override files AND roll live MCM back
+		# or a quit during unload). Restore override files and roll live MCM back
 		# to the pre-apply snapshot -- keyed off the slot name, since active_mp
-		# may be blank here -- then recover to a real user profile. Without the
+		# may be blank here, then recover to a real user profile. Without the
 		# MCM rollback, a crash mid-unload leaves the modpack's MCM live, and the
 		# next profile switch would capture it into a user slot and corrupt it.
 		# Both restores no-op when their backup is absent, so this is safe even
@@ -221,12 +221,12 @@ func _load_ui_config() -> void:
 		mp_dirty = true
 		_log_warning("[Modpack] Recovered from a stranded managed slot -> profile '%s'" % _active_profile)
 	elif active_mp != "" and _active_profile != MODPACK_PROFILE_PREFIX + active_mp:
-		# Revert trigger set but we never reached the pack's slot: a crash after
+		# Revert trigger set but the pack's slot was never reached: a crash after
 		# the apply set active_modpack but before _switch_profile. Best-effort
 		# restore of override files via the manifest, then clear the stale flag.
 		# (A crash mid-apply, before _apply_modpack_overrides writes its manifest,
 		# is covered instead by the independent pre-apply snapshot + Restore
-		# button -- the manifest-driven path is a no-op in that narrow window.)
+		# button. The manifest-driven path is a no-op in that narrow window.)
 		_restore_modpack_overrides(MODPACK_BACKUP_PREFIX + active_mp)
 		active_mp = ""
 		mp_dirty = true
@@ -248,10 +248,10 @@ func _load_ui_config() -> void:
 	# (Firefox, Minecraft, Steam). Users can rename or delete it if they
 	# want.
 	#
-	# Uses the has_any_profile flag captured BEFORE migration rather than
+	# Uses the has_any_profile flag captured before migration rather than
 	# cfg.has_section, because the legacy [enabled]/[priority] migration
 	# populates profile.Default.* in-memory -- cfg.has_section would
-	# return true from the in-memory state and we'd skip the save,
+	# return true from the in-memory state and the save would be skipped,
 	# leaving disk still without the section.
 	if _active_profile == "Default" and not has_any_profile:
 		_save_ui_config()
@@ -270,7 +270,7 @@ func _apply_profile_to_entries(cfg: ConfigFile, profile: String) -> void:
 		# Resolve once, reuse for both enabled and priority lookups. Exact
 		# profile_key match first; if missing, fall back to id-prefix match
 		# ("<mod_id>@*") so a version bump doesn't silently drop the entry --
-		# we carry over the stored state and flag the mismatch for the UI.
+		# carry over the stored state and flag the mismatch for the UI.
 		var resolved_key := ""
 		if cfg.has_section_key(en_sec, pk) or cfg.has_section_key(pr_sec, pk):
 			resolved_key = pk
@@ -291,7 +291,7 @@ func _apply_profile_to_entries(cfg: ConfigFile, profile: String) -> void:
 			# adding a mod meant for one profile shouldn't silently turn it on
 			# in every other profile. Imports already write explicit disables
 			# for unlisted local mods at import time; this catches the symmetric
-			# case where a user drops a new mod AFTER importing/creating.
+			# case where a user drops a new mod after importing/creating.
 			entry["enabled"] = profile == "Default"
 		if resolved_key != "" and cfg.has_section_key(pr_sec, resolved_key):
 			entry["priority"] = int(str(cfg.get_value(pr_sec, resolved_key)))
@@ -321,7 +321,7 @@ func _save_per_profile_setting(key: String, value: Variant) -> void:
 	if _active_profile == VANILLA_PROFILE:
 		return
 	_set_ui_cfg_value(_profile_sec(_active_profile, ".settings"), key, value)
-	# Deliberately does NOT set _dirty_since_boot: the per-profile settings
+	# Deliberately does not set _dirty_since_boot: the per-profile settings
 	# here are pure VIEW filters (hide_disabled, read only by
 	# _mods_entry_visible). Marking dirty would restart the game on the
 	# post-boot reopen path just because the user toggled a list filter.
@@ -366,7 +366,7 @@ func _list_profiles_in_cfg(cfg: ConfigFile) -> Array[String]:
 	for sec: String in cfg.get_sections():
 		if sec.begins_with(prefix) and sec.ends_with(suffix):
 			var name: String = sec.substr(prefix.length(), sec.length() - prefix.length() - suffix.length())
-			# Skip VANILLA_PROFILE -- it's a sentinel, not a real profile, and
+			# Skip VANILLA_PROFILE. It's a sentinel, not a real profile, and
 			# leaked ghost sections (e.g. from pre-guard auto-save bugs) must
 			# not appear in the dropdown.
 			if name != "" and name != VANILLA_PROFILE and not (name in names):
@@ -465,7 +465,7 @@ func _save_ui_config() -> void:
 	if cfg.has_section("priority"):
 		cfg.erase_section("priority")
 
-	# Skip profile-section writes while the Vanilla sentinel is active -- it's
+	# Skip profile-section writes while the Vanilla sentinel is active. It's
 	# not a real profile and must not materialize stored sections, even from
 	# the Launch-time save in lifecycle.gd.
 	if _active_profile != VANILLA_PROFILE:
@@ -474,7 +474,7 @@ func _save_ui_config() -> void:
 		var pr_sec := _profile_sec(_active_profile, ".priority")
 		var ig_sec := _profile_sec(_active_profile, ".dep_ignore")
 		# Snapshot stored state for every key with no live entry backing it --
-		# folder mods that dev-mode-off filtered out of _ui_mod_entries AND
+		# folder mods that dev-mode-off filtered out of _ui_mod_entries and
 		# missing mods (file deleted, or modpack references not downloaded
 		# yet). Otherwise the erase+rewrite below would silently drop them on
 		# any save, killing the Missing-mods recovery rows and their
@@ -525,10 +525,10 @@ func _save_ui_config() -> void:
 		_dirty_since_boot = true
 
 # Persist the UI config with a single rolling backup. ConfigFile.save rewrites in
-# place (truncate then write), so a crash mid-write can leave a half-file; we
-# cannot do a Windows-safe atomic rename from GDScript, so instead we copy the
-# current good file to <path>.bak BEFORE each write and _load_ui_config falls
-# back to it if the live file fails to parse. The backup is best-effort -- a
+# place (truncate then write), so a crash mid-write can leave a half-file.
+# GDScript has no Windows-safe atomic rename, so instead copy the
+# current good file to <path>.bak before each write and _load_ui_config falls
+# back to it if the live file fails to parse. The backup is best-effort. A
 # failed copy never blocks the save. Returns the ConfigFile.save error code.
 func _persist_ui_cfg(cfg: ConfigFile) -> int:
 	if FileAccess.file_exists(UI_CONFIG_PATH):
@@ -539,7 +539,7 @@ func _profile_sec(name: String, suffix: String) -> String:
 	return "profile." + name + suffix
 
 # Every per-profile config section suffix. Use only when wiping or renaming a
-# WHOLE profile -- the 2-element [".enabled", ".priority"] loops elsewhere
+# WHOLE profile. The 2-element [".enabled", ".priority"] loops elsewhere
 # scan just those two sections by design.
 const PROFILE_SUBSECTIONS := [".enabled", ".priority", ".settings", ".dep_ignore"]
 
@@ -563,7 +563,7 @@ func _get_ui_cfg_value(section: String, key: String, default: Variant) -> Varian
 # is fine and expected (fresh install): ConfigFile.load returns
 # ERR_FILE_NOT_FOUND and the empty cfg is the correct starting point. Any other
 # error means the file is there but unreadable (lock, corruption), and writing
-# over it would destroy state we cannot see.
+# over it would destroy state that is not visible here.
 #
 # Returns null in that case; callers skip the write and keep the change
 # in-memory for the session.
@@ -610,7 +610,7 @@ func _live_full_path(profile_key: String, fallback: String) -> String:
 # Same staleness hazard as _live_full_path, for whole entry dicts: an awaited
 # confirm dialog can outlive a rescan (_reload_entries_for_active_profile
 # reassigns _ui_mod_entries to FRESH dicts, e.g. when a Browse download lands
-# mid-dialog), orphaning the dict captured at row build time -- a write to it
+# mid-dialog), orphaning the dict captured at row build time. A write to it
 # then mutates state nothing reads and the next _save_ui_config drops the
 # change. Re-resolve the live dict by profile key after any await; falls back
 # to the captured dict when the mod left the scan (write becomes a no-op).
@@ -627,11 +627,11 @@ func _live_entry_for_profile_key(profile_key: String, fallback: Dictionary) -> D
 # file so _ui_mod_entries reflects on-disk reality before the Mods tab rebuilds.
 # Callers keep their own (divergent) _rebuild_mods_tab guard after this returns.
 func _reload_entries_for_active_profile() -> void:
-	# Flush a pending debounced priority edit BEFORE reloading. A load-order
+	# Flush a pending debounced priority edit before reloading. A load-order
 	# drag arms the 0.4s _schedule_priority_save timer and the edit lives only
 	# in _ui_mod_entries until it fires; the reload below replaces those dicts
 	# from the on-disk config, so an async download completing mid-window would
-	# silently revert the edit -- and the late timer would then persist the
+	# silently revert the edit, and the late timer would then persist the
 	# reverted state. Same flush _switch_profile does for the same race.
 	if _priority_save_pending:
 		_priority_save_pending = false
@@ -648,7 +648,7 @@ func _reload_entries_for_active_profile() -> void:
 # profile's starting state instead of getting lost.
 func _create_profile(name: String) -> void:
 	# Refresh the outgoing profile's MCM snapshot before switching, same as
-	# _switch_profile -- otherwise MCM edits made
+	# _switch_profile. Otherwise MCM edits made
 	# while it was active are captured only into the NEW profile's slot, and
 	# switching back later restores a stale snapshot over them.
 	var old := _active_profile
@@ -682,7 +682,7 @@ func _delete_active_profile() -> void:
 	_persist_ui_cfg(cfg)
 	_apply_profile_to_entries(cfg, _active_profile)
 	# Restore the new active profile's MCM if it has one. Skip for Vanilla
-	# (no slot, no swap -- user://MCM/ left alone).
+	# (no slot, no swap. User://MCM/ left alone).
 	if _active_profile != VANILLA_PROFILE and _has_mcm_snapshot(_active_profile):
 		_restore_mcm_from(_active_profile)
 	if _boot_complete:
@@ -718,7 +718,7 @@ func _switch_profile(name: String) -> void:
 		_persist_ui_cfg(cfg)
 	else:
 		# Unreadable cfg: do not rewrite it (that would drop every profile),
-		# but still read what we can so the in-memory apply below behaves as
+		# but still read what is readable so the in-memory apply below behaves as
 		# it always did.
 		cfg = ConfigFile.new()
 		cfg.load(UI_CONFIG_PATH)
@@ -750,16 +750,16 @@ func _rename_profile(new_name: String) -> void:
 		return
 	# Carry over per-profile UI settings (e.g. hide_disabled). The .enabled /
 	# .priority sections were already materialized under new_name by the save
-	# above; .settings has no in-memory backing, so we copy it explicitly.
+	# above; .settings has no in-memory backing, so copy it explicitly.
 	var old_settings := _profile_sec(old, ".settings")
 	var new_settings := _profile_sec(new_name, ".settings")
 	if cfg.has_section(old_settings):
 		for key: String in cfg.get_section_keys(old_settings):
 			cfg.set_value(new_settings, key, cfg.get_value(old_settings, key))
 	# The save above wrote the new sections from in-memory entries plus the
-	# preservation pass -- but that pass read the NEW name's sections, which
+	# preservation pass, but that pass read the NEW name's sections, which
 	# were empty, so stored keys with no live entry (dev-mode-hidden folder
-	# mods, missing mods) still live only under the OLD name. Carry them
+	# mods, missing mods) still live only under the old name. Carry them
 	# across before the old sections are erased below.
 	var key_maps := _collect_live_profile_key_maps()
 	var live_keys: Dictionary = key_maps["live"]
@@ -831,7 +831,7 @@ func _copy_dir_recursive(src: String, dst: String) -> bool:
 			src_f.close()
 			var dst_f := FileAccess.open(dst_full, FileAccess.WRITE)
 			if dst_f != null:
-				# store_buffer returns bool since 4.3 -- a full disk can leave a
+				# store_buffer returns bool since 4.3. A full disk can leave a
 				# truncated file behind. Log it so an incomplete MCM restore
 				# (which wipes user://MCM first) isn't silently invisible.
 				if not dst_f.store_buffer(bytes):
@@ -937,14 +937,14 @@ func _load_preferred_author() -> String:
 	return str(_get_ui_cfg_value("settings", "preferred_author", ""))
 
 # Persist the preferred author for future modpack saves. Pass empty to
-# clear -- the next save dialog will open with an empty field.
+# clear. The next save dialog will open with an empty field.
 func _save_preferred_author(author: String) -> void:
 	_set_ui_cfg_value("settings", "preferred_author", author)
 
 
 # Mods that are enabled in the active profile but whose mod.txt doesn't
 # carry [updates] modworkshop=N. These get written to profile.enabled in the
-# exported modpack zip but NOT to profile.sources, so anyone applying the
+# exported modpack zip but not to profile.sources, so anyone applying the
 # modpack on a clean install would see them as unresolved missing-mod stubs.
 # Returned for the save-as-modpack pre-confirm so the user is warned before
 # sharing a partial modpack. Each entry is {mod_name, profile_key}.
@@ -966,7 +966,7 @@ func _enabled_mods_without_modworkshop_id() -> Array:
 
 # Save-as-modpack dialog. Shows the profile being saved, a description
 # input, and (when applicable) a warning section listing enabled mods that
-# lack [updates] modworkshop=N -- these get written without download info,
+# lack [updates] modworkshop=N. These get written without download info,
 # so recipients have to source them manually. The OK button text + tint
 # shift between "Save" and "Save Anyway" based on whether orphans exist.
 # Whole body is wrapped in a single ScrollContainer with a fixed max
@@ -978,7 +978,7 @@ func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: Ta
 	d.title = "Save partial modpack?" if has_orphans else "Save as modpack"
 	# Sized so name + author + description all fit without the outer scroll
 	# swallowing the description (the name field pushed content past the old
-	# 220px). Clamped to the live launcher size -- the fixed 600x520 was
+	# 220px). Clamped to the live launcher size. The fixed 600x520 was
 	# taller than the launcher's 640x420 minimum and got clipped.
 	d.min_size = _dialog_fit_size(Vector2i(600, 520 if has_orphans else 420))
 	d.max_size = Vector2i(780, 600)
@@ -1092,7 +1092,7 @@ func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: Ta
 
 	d.ok_button_text = "Save anyway" if has_orphans else "Save modpack"
 	# Keep the dialog open until the save actually succeeds: freeing the
-	# form BEFORE validating meant a name collision (or invalid name)
+	# form before validating meant a name collision (or invalid name)
 	# destroyed the typed name/author/description and the user had to
 	# retype everything. Same inline-error pattern as New/Rename profile.
 	d.dialog_hide_on_ok = false
@@ -1122,9 +1122,9 @@ func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: Ta
 			# retype their handle every modpack. Cleared if they explicitly
 			# blank it out.
 			_save_preferred_author(author)
-			# Validate/save BEFORE freeing the dialog (dialog_hide_on_ok is
+			# Validate/save before freeing the dialog (dialog_hide_on_ok is
 			# false): on any failure -- name collision, invalid name, export
-			# error -- the form survives with everything typed and the error
+			# error. The form survives with everything typed and the error
 			# shows inline instead of in a dialog over a destroyed form.
 			var result := save_profile_as_modpack(profile_to_save, pack_name, desc, author)
 			if not bool(result.get("ok", false)):
@@ -1224,9 +1224,9 @@ func _export_profile_to_zip(profile_name: String, output_path: String, descripti
 		_add_dir_to_zip(packer, MCM_SOURCE_DIR, "MCM")
 
 	packer.close()
-	# Count the enabled mods from the payload we just wrote so the caller can
+	# Count the enabled mods from the payload just written so the caller can
 	# say "saved with N mods" without re-deriving it. Parse failure is
-	# non-fatal -- the save succeeded, we just report an unknown count.
+	# non-fatal. The save succeeded; the count is simply reported as unknown.
 	var mod_count := 0
 	var parsed_v: Variant = JSON.parse_string(json_str)
 	if parsed_v is Dictionary and (parsed_v as Dictionary).get("enabled") is Dictionary:
@@ -1237,7 +1237,7 @@ func _export_profile_to_zip(profile_name: String, output_path: String, descripti
 # slot. Replaces any existing snapshot. Used by the modpack apply path
 # (_materialize_modpack_profile) before the profile swap restores from this
 # slot. Always creates the destination
-# directory even when mcm_data is empty -- otherwise _has_mcm_snapshot
+# directory even when mcm_data is empty. Otherwise _has_mcm_snapshot
 # returns false for the modpack profile and _switch_profile falls through
 # to seeding MCM from the previous profile's user://MCM/ contents (wrong,
 # the modpack should override with its own EMPTY MCM).
@@ -1267,9 +1267,9 @@ func _write_mcm_snapshot_from_data(profile_name: String, mcm_data: Dictionary) -
 # shape require bumping the schema version so old parsers reject cleanly.
 
 # Serialize the named profile to a JSON string. Used as the inner layer of
-# _export_profile_to_zip (modpack save); exposed separately in case we need
+# _export_profile_to_zip (modpack save); exposed separately in case a caller needs
 # it for debugging or tests. Empty string if the profile has no stored sections.
-# CONTRACT: this is the ONE writer of the metroprofile v1 payload, but the
+# CONTRACT: this is the one writer of the metroprofile v1 payload, but the
 # payload is parsed independently in several places. Profile-STATE fields
 # (the enabled/priority/dep_ignore family, materialized into config
 # sections) must be read by the single state consumer,
@@ -1282,9 +1282,9 @@ func _write_mcm_snapshot_from_data(profile_name: String, mcm_data: Dictionary) -
 # (docs/wiki/Profile-Format.md forward-compat rules) and document them there.
 func _profile_to_json_string(profile_name: String, description: String = "", author: String = "", display_name: String = "") -> String:
 	# display_name is the modpack's own name (the payload "name" field). When
-	# empty it falls back to the profile name -- so a caller that doesn't name
+	# empty it falls back to the profile name, so a caller that doesn't name
 	# the pack keeps the old behavior. profile_name still selects which
-	# profile's config sections we read.
+	# profile's config sections read above.
 	var src := ConfigFile.new()
 	if src.load(UI_CONFIG_PATH) != OK:
 		return ""
@@ -1336,7 +1336,7 @@ func _profile_to_json_string(profile_name: String, description: String = "", aut
 	# modworkshop= in mod.txt. Optional v1 metroprofile field; old parsers
 	# ignore it per the forward-compat rule. Lets a future import fetch
 	# missing mods automatically.
-	# Only enabled mods' sources -- a pack must not ship download info for mods
+	# Only enabled mods' sources. A pack must not ship download info for mods
 	# it doesn't include (else applying it fetches mods the author had disabled).
 	# `enabled` keys come from the on-disk config section; source keys are live
 	# profile_keys. They can disagree on version (stale disk key after an
@@ -1398,7 +1398,7 @@ func _missing_mods_in_active_profile() -> Array[String]:
 	return missing
 
 # Combined source map for missing-mod stubs. Layered:
-#   1. Persisted [mod_sources] cache (every mod we've ever scanned with
+#   1. Persisted [mod_sources] cache (every mod ever scanned with
 #      [updates] modworkshop=) -- works for any profile, even after the
 #      mod file is deleted.
 #   2. Active modpack's profile.json sources -- overlays the cache, since
@@ -1482,10 +1482,10 @@ func _sanitize_profile_name(raw: String) -> String:
 # game directory so the next launch skips the modloader entirely (no UI, no
 # mod loading) and lets the game start clean. lifecycle.gd clears the
 # sentinel during _ready so subsequent launches resume normal modded flow.
-# Active profile is untouched -- the user comes back to their last loadout
+# Active profile is untouched. The user comes back to their last loadout
 # next time they boot.
 #
-# Important: we do NOT call _save_ui_config here. That would rewrite the
+# _save_ui_config is deliberately not called here. That would rewrite the
 # currently-active profile's sections from the in-memory _ui_mod_entries
 # state.
 
@@ -1511,7 +1511,7 @@ func _launch_vanilla_once(win: Window) -> void:
 	if is_instance_valid(win):
 		win.queue_free()
 	# Strip --modloader-restart so the relaunch is a clean Pass 1, not a Pass 2
-	# that would expect pass state we just deleted.
+	# that would expect the pass state just deleted.
 	_modloader_restart(true)
 
 # Tear down and rebuild the Mods tab in place. Called whenever profile state
@@ -1524,7 +1524,7 @@ func _rebuild_mods_tab(tabs: TabContainer) -> void:
 	if old == null:
 		return
 	_rebuilding_tab_in_place = true
-	# Carry the list scroll position across the teardown -- a rebuild from a
+	# Carry the list scroll position across the teardown. A rebuild from a
 	# checkbox halfway down a long list must not snap the view to the top.
 	var saved_scroll := 0
 	if is_instance_valid(_ui_mods_scroll):
@@ -1540,7 +1540,7 @@ func _rebuild_mods_tab(tabs: TabContainer) -> void:
 	new_tab.name = UI_TAB_MODS
 	tabs.add_child(new_tab)
 	tabs.move_child(new_tab, idx)
-	# Restore by name. If the previous tab was Mods itself, we land back on
+	# Restore by name. If the previous tab was Mods itself, the result lands on
 	# the rebuilt one. If it was Browse/Modpacks/Updates, the user stays
 	# where they were.
 	for i in range(tabs.get_tab_count()):
@@ -1613,7 +1613,7 @@ func _restore_updates_scroll(saved_scroll: int) -> void:
 # known, which is every case except sourceless legacy modpacks). The
 # bottom bar has a "Retry failed" button that re-runs only the failed
 # downloads, plus the auto-OK Close. Replaces the simple text dialog
-# that handled this before -- a flat string can't fit 30+ lines and
+# that handled this before. A flat string can't fit 30+ lines and
 # offers no recovery action.
 func _show_modpack_failure_dialog(downloaded: int, failures: Array, tabs: TabContainer) -> void:
 	var d := AcceptDialog.new()
@@ -1714,8 +1714,8 @@ func _show_modpack_failure_dialog(downloaded: int, failures: Array, tabs: TabCon
 func _run_modpack_retry(failures: Array, tabs: TabContainer) -> void:
 	# Reuse the apply progress dialog so the retry pass gets the same
 	# ProgressBar + Cancel affordance. The old hand-rolled dialog swallowed
-	# ESC (correctly -- a hidden exclusive dialog lifts the input block) but
-	# offered NO cancel control, trapping the user for the whole sequential
+	# ESC (correctly. A hidden exclusive dialog lifts the input block) but
+	# offered no cancel control, trapping the user for the whole sequential
 	# download run (up to 300s per item on a bad connection). Cancel sets
 	# the shared _modpack_apply_cancelled flag, which
 	# retry_failed_downloads checks at each loop top.
@@ -1818,8 +1818,8 @@ func _show_info_toast(message: String) -> void:
 # minimum size (640x420 logical) gets clipped by the embedder near that
 # minimum, cutting off content and the bottom button bar with no way to
 # resize the borderless dialog. Sizes here are in the launcher's LOGICAL
-# (content-scaled) coordinates -- the same space embedded windows are laid
-# out in -- so divide the physical window size by content_scale_factor.
+# (content-scaled) coordinates. The same space embedded windows are laid
+# out in, so divide the physical window size by content_scale_factor.
 func _dialog_fit_size(desired: Vector2i) -> Vector2i:
 	if _ui_window == null or not is_instance_valid(_ui_window):
 		return desired
@@ -1849,7 +1849,7 @@ func _attach_ui_dialog(d: Window) -> void:
 	# Consume title + dialog_text into a single header VBox. AcceptDialog's
 	# internal dialog_text label is absolutely positioned -- leaving it
 	# active and adding sibling Labels at "child index 0" makes them
-	# render at the same y. So we clear both and re-emit them in a
+	# render at the same y, so clear both and re-emit them in a
 	# regular VBox where flow layout is honored.
 	var title_text := str(d.title)
 	var body_text := ""
@@ -1921,12 +1921,12 @@ func _connect_dialog_exits(d: ConfirmationDialog, on_confirm: Callable, on_dismi
 
 # Make a Control swap the bottom-bar hint label to `text` while hovered and
 # restore the original on exit. Stand-in for Godot tooltips, which are popups
-# that render behind our always_on_top launcher window.
+# that render behind the always_on_top launcher window.
 func _wire_hint(c: Control, text: String) -> void:
 	if _ui_hint_label == null:
 		return
 	# mouse_entered/exited never fire on a MOUSE_FILTER_IGNORE control (Labels
-	# default to IGNORE), so guarantee our own precondition rather than relying
+	# default to IGNORE), so establish the precondition here rather than relying
 	# on every caller to have set PASS.
 	if c.mouse_filter == Control.MOUSE_FILTER_IGNORE:
 		c.mouse_filter = Control.MOUSE_FILTER_PASS
@@ -1941,7 +1941,7 @@ func _wire_hint(c: Control, text: String) -> void:
 	)
 
 # Modal opens from the red "suspicious code" tag on a mod row. Lists the
-# specific patterns the scanner matched. Dismiss-only -- the actual
+# specific patterns the scanner matched. Dismiss-only. The actual
 # launch-time gate lives in _confirm_red_launch.
 func _show_security_findings_dialog(entry: Dictionary) -> void:
 	var findings: Array = entry.get("security_findings", [])
@@ -2020,7 +2020,7 @@ func _show_security_findings_dialog(entry: Dictionary) -> void:
 	_wire_accept_dismiss(d)
 	d.popup_centered()
 
-# Mod entries that are currently enabled AND scored RED by the scanner.
+# Mod entries that are currently enabled and scored RED by the scanner.
 # Used to gate Launch when the user has any of these toggled on.
 func _enabled_red_mods() -> Array:
 	var out: Array = []
@@ -2059,7 +2059,7 @@ func _confirm_red_launch(red_mods: Array) -> bool:
 	d.exclusive = true
 	d.always_on_top = true
 	# Red text on the destructive button so "Launch anyway" reads as the
-	# risky option. Dialog OK buttons stay on modulate -- a theme
+	# risky option. Dialog OK buttons stay on modulate. A theme
 	# font-color override didn't take effect here when tried (see
 	# style_dialog_danger_button for the shared rationale).
 	style_dialog_danger_button(d.get_ok_button())
@@ -2128,8 +2128,8 @@ func _validate_profile_name(name: String, existing: Array, current := "") -> Str
 	var lowered := name.to_lower()
 	for other_v in existing:
 		# Skip the profile being renamed: a case-only rename (Main -> MAIN)
-		# is safe -- it keeps ONE profile and one snapshot dir, and
-		# DirAccess.rename handles a case-only rename on NTFS -- so it must
+		# is safe. It keeps one profile and one snapshot dir, and
+		# DirAccess.rename handles a case-only rename on NTFS, so it must
 		# not be rejected as a duplicate of itself. New Profile passes
 		# current == "", so collision blocking there is unchanged.
 		if current != "" and str(other_v) == current:
@@ -2169,7 +2169,7 @@ func _show_new_profile_dialog(tabs: TabContainer) -> void:
 	form.add_child(state_lbl)
 
 	# CheckBox + ButtonGroup is the Godot 4 idiom for radio buttons. Set
-	# button_group BEFORE button_pressed so the group registers the default.
+	# button_group before button_pressed so the group registers the default.
 	var state_group := ButtonGroup.new()
 
 	var state_empty := CheckBox.new()
@@ -2205,7 +2205,7 @@ func _show_new_profile_dialog(tabs: TabContainer) -> void:
 			d.queue_free()
 			# Mutate in-memory entries to match the chosen initial state, then
 			# _create_profile snapshots them into profile.<name>.* sections.
-			# Priorities are intentionally left untouched -- they're a load-
+			# Priorities are intentionally left untouched. They're a load-
 			# order preference that survives an enable-state reset.
 			if state_all.button_pressed:
 				for entry in _ui_mod_entries:
@@ -2280,7 +2280,7 @@ func _show_rename_profile_dialog(tabs: TabContainer) -> void:
 # shows up here. Apply runs the modpack's profile + MCM and backs up the
 # user's previous state; Unload restores the backup. Edits while a modpack
 # is active save into the modpack's profile slot and persist across applies.
-# The standard 8/8/6/6 outer margin shared by ALL top-level tab builders
+# The standard 8/8/6/6 outer margin shared by all top-level tab builders
 # (Mods, Modpacks, Browse, Updates).
 func _make_tab_margin() -> MarginContainer:
 	var m := MarginContainer.new()
@@ -2291,15 +2291,15 @@ func _make_tab_margin() -> MarginContainer:
 	return m
 
 # Restore-point picker: lists the automatic pre-apply snapshots (newest first)
-# and, after a confirm, restores the chosen one over live state -- a full revert
+# and, after a confirm, restores the chosen one over live state. A full revert
 # of mod_config.cfg + MCM + saved override files to how things were before that
 # apply. Re-reads state from the restored cfg and rebuilds the tabs.
 func _show_restore_snapshot_dialog(tabs: TabContainer) -> void:
-	# Restore points are always captured while NO pack is active, so restoring
+	# Restore points are always captured while no pack is active, so restoring
 	# one while a pack IS active would rewrite cfg to a no-pack state and leave
 	# the active pack's override files live with nothing tracking them (and the
 	# user's originals stranded in the backup slot). Require a clean unload
-	# first -- its manifest-driven revert is the correct path out.
+	# first. Its manifest-driven revert is the correct path out.
 	var active_pack := get_active_modpack()
 	if active_pack != "":
 		_show_error_dialog("Modpack active",
@@ -2472,7 +2472,7 @@ func build_modpacks_tab(tabs: TabContainer) -> Control:
 
 
 # Unload the active modpack and surface the outcome: error dialog on failure,
-# and always rebuild the Modpacks tab -- on success to remove the ACTIVE row
+# and always rebuild the Modpacks tab -- on success to remove the active row
 # state, on error to correct the stale view that likely triggered the click.
 func _unload_modpack_with_feedback(tabs: TabContainer) -> void:
 	var result := unload_modpack(tabs)
@@ -2482,7 +2482,7 @@ func _unload_modpack_with_feedback(tabs: TabContainer) -> void:
 
 # Render one modpack row: name + filename/mod-count meta + Apply or
 # Active+Unload button. Apply is disabled when ANOTHER modpack is active
-# (single-slot constraint -- user has to unload first).
+# (single-slot constraint. User has to unload first).
 func _modpacks_render_row(entry: Dictionary, active_modpack: String, tabs: TabContainer) -> Control:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", SP_L)
@@ -2494,7 +2494,7 @@ func _modpacks_render_row(entry: Dictionary, active_modpack: String, tabs: TabCo
 
 	# Name is a heading. Author (if any) appears next to it as "by X" in a
 	# dimmer tone. The Details button in the action area is the canonical
-	# way to open the modal -- a chevron on the name didn't read as
+	# way to open the modal. A chevron on the name didn't read as
 	# interactive in testing.
 	var name_row := HBoxContainer.new()
 	name_row.add_theme_constant_override("separation", SP_M)
@@ -2537,7 +2537,7 @@ func _modpacks_render_row(entry: Dictionary, active_modpack: String, tabs: TabCo
 
 	# Surface dedupe results so the user knows other same-name zips exist
 	# in /mods/ but aren't shown. Without this they'd wonder where the
-	# other file went and we'd risk both rows tagging as ACTIVE.
+	# other file went, and both rows would risk tagging as active.
 	var dups: Array = entry.get("duplicates_hidden", [])
 	if not dups.is_empty():
 		var dup_names := PackedStringArray()
@@ -2654,7 +2654,7 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 		func():
 			cd.queue_free()
 			# Skip the progress dialog entirely when there's nothing to
-			# download -- the apply is a near-instant cfg flip and a
+			# download. The apply is a near-instant cfg flip and a
 			# pop-and-vanish dialog looks broken. Failure dialog still
 			# opens at the end if anything fails.
 			var needs_progress := dl_count > 0
@@ -2708,8 +2708,8 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 			var dl_failed: int = int(result.get("failed_downloads", 0))
 			var failures: Array = result.get("failures", [])
 
-			# Cancelled: the apply aborted BEFORE any state mutation -- the pack
-			# was NOT applied. Say exactly that instead of routing to the
+			# Cancelled: the apply aborted before any state mutation. The pack
+			# was not applied. Say exactly that instead of routing to the
 			# "Applied with Issues" dialog, which would claim the opposite.
 			if was_cancelled:
 				if pd != null and is_instance_valid(pd):
@@ -2768,7 +2768,7 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 
 # Construct the modpack-apply progress dialog: ProgressBar + status label +
 # Cancel button. Returns the dialog plus references to the controls so
-# callers can wire signals + update them. Build content BEFORE _attach_ui_dialog
+# callers can wire signals + update them. Build content before _attach_ui_dialog
 # so the helper's reparent-children step folds them into the root VBox.
 # title_override lets the retry pass reuse the same dialog (same Cancel
 # affordance) under its own title.
@@ -2809,7 +2809,7 @@ func _build_modpack_progress_dialog(raw_name: String, title_override: String = "
 	# Attach AFTER content so _attach_ui_dialog's reparent step picks up
 	# the box and folds it into the root VBox with the injected title.
 	# Progress is non-dismissible while running; hide the native OK until
-	# the caller flips it on at completion, and swallow ESC too -- a hidden
+	# the caller flips it on at completion, and swallow ESC too. A hidden
 	# (not cancelled) dialog would lift the exclusive input block and let the
 	# user Launch / switch profiles mid-apply. Cancel is the only way out.
 	_attach_ui_dialog(pd)
@@ -2847,7 +2847,7 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 	d.title = str(entry.get("raw_name", "?"))
 	d.ok_button_text = "Close"
 	# Clamped to the launcher: the fixed 660x540 exceeded the launcher's
-	# 640x420 minimum in BOTH axes and got clipped by the embedder.
+	# 640x420 minimum in both axes and got clipped by the embedder.
 	d.min_size = _dialog_fit_size(Vector2i(660, 540))
 
 	var scroll := ScrollContainer.new()
@@ -3030,8 +3030,8 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 # preserving current_tab so the user doesn't get yanked to a different tab
 # during the swap. _rebuilding_modpacks_tab guards against recursion: the
 # remove_child shifts current_tab to a sibling which fires tab_changed,
-# whose listener calls back here -- the flag short-circuits the second
-# call. Also breaks recursion when we explicitly restore current_tab at
+# whose listener calls back here. The flag short-circuits the second
+# call. Also breaks recursion when current_tab is explicitly restored at
 # the end (fires another tab_changed).
 func _rebuild_modpacks_tab(tabs: TabContainer) -> void:
 	if _rebuilding_modpacks_tab:
@@ -3042,7 +3042,7 @@ func _rebuild_modpacks_tab(tabs: TabContainer) -> void:
 		_rebuilding_modpacks_tab = false
 		return
 	_rebuilding_tab_in_place = true
-	# Carry the list scroll position across the teardown -- a row action
+	# Carry the list scroll position across the teardown. A row action
 	# halfway down a long modpack list must not snap the view to the top.
 	var saved_scroll := 0
 	if is_instance_valid(_ui_modpacks_scroll):
@@ -3162,15 +3162,15 @@ func show_mod_ui() -> void:
 	win.borderless = true
 	# Embed sub-windows (tooltips, dropdowns, dialogs) INSIDE this window's
 	# viewport instead of as separate OS windows. Separate windows aren't
-	# always_on_top, so they stranded behind this always_on_top launcher -- the
+	# always_on_top, so they stranded behind this always_on_top launcher. The
 	# tooltip-behind-window bug, and the reason dropdowns needed always_on_top
 	# hacks. Embedded, they render on top of the launcher content and can't fall
 	# behind it, fixing every tooltip at once.
 	win.gui_embed_subwindows = true
-	# UI scale. Do NOT derive this from screen DPI. The launcher is a subwindow
+	# UI scale. Do not derive this from screen DPI. The launcher is a subwindow
 	# of the game's root viewport, and RTV's project.godot sets
-	# stretch/mode="canvas_items" against a 1920x1080 base -- so the root
-	# ALREADY scales everything we draw by (window size / 1920x1080). A
+	# stretch/mode="canvas_items" against a 1920x1080 base, so the root
+	# already scales everything drawn by (window size / 1920x1080). A
 	# DPI-derived factor multiplies on top of that: a 4K display gave roughly
 	# 2x from the root and another 1.7x from DPI, and the launcher came out
 	# unusably large. Deriving it from DPI also can't be right for both a dense
@@ -3232,9 +3232,9 @@ func show_mod_ui() -> void:
 	root.add_theme_constant_override("separation", SP_M)
 	margin.add_child(root)
 
-	# Equipment plate header: ALL-CAPS title with the version beside it on a
+	# Equipment plate header: all-CAPS title with the version beside it on a
 	# COL_SURFACE strip with a 1px amber-dim bottom border. The one FS_TITLE
-	# use in the UI (spec section 6).
+	# use in the UI.
 	var header := PanelContainer.new()
 	var header_s := StyleBoxFlat.new()
 	header_s.bg_color = COL_SURFACE
@@ -3302,7 +3302,12 @@ func show_mod_ui() -> void:
 		if ev is InputEventMouseButton and ev.button_index == MOUSE_BUTTON_LEFT:
 			drag["on"] = ev.pressed
 			if ev.pressed:
-				drag["grab"] = Vector2i(ev.global_position)
+				# Convert the grab to physical pixels. ev.global_position is in
+				# Control space, which content_scale_factor shrinks relative to
+				# the screen; mouse_get_position() below is raw screen pixels.
+				# Mixing them offsets the window by grab_x * (1 - 1/scale),
+				# which at 200% is most of a screen.
+				drag["grab"] = Vector2i(ev.global_position * win.content_scale_factor)
 		elif ev is InputEventMouseMotion and drag["on"]:
 			win.position = DisplayServer.mouse_get_position() - drag["grab"]
 	)
@@ -3371,9 +3376,9 @@ func show_mod_ui() -> void:
 	close_btn.pressed.connect(func(): launch_btn.pressed.emit())
 	# Status-line hint, kept for the launcher's consistent hover-hint UX.
 	# (Historically raw tooltips stranded behind this always_on_top window;
-	# win.gui_embed_subwindows now embeds tooltips so that's fixed -- the hint is
+	# win.gui_embed_subwindows now embeds tooltips so that's fixed. The hint is
 	# a deliberate style choice, not a workaround.) _wire_hint needs
-	# _ui_hint_label, which the bottom bar sets above -- so wire it here, after.
+	# _ui_hint_label, which the bottom bar sets above, so wire it here, after.
 	_wire_hint(close_btn, "Close the launcher and launch the game (same as Launch).")
 
 	# Fire-and-forget self-update check. Updates _ui_update_alert_btn and may
@@ -3417,9 +3422,9 @@ func show_mod_ui() -> void:
 	tabs.add_child(updates_tab)
 
 	# Refresh the Modpacks tab whenever the user switches to it. State can
-	# change behind the tab's back -- e.g. banner Unload from Mods tab --
+	# change behind the tab's back, e.g. banner Unload from Mods tab --
 	# and without this listener the Modpacks tab keeps showing stale
-	# ACTIVE/Apply state until UI close/reopen. _rebuild_modpacks_tab now
+	# active/Apply state until UI close/reopen. _rebuild_modpacks_tab now
 	# preserves current_tab and short-circuits recursion via the
 	# _rebuilding_modpacks_tab flag, so the rebuild-during-tab-show that
 	# broke things in the earlier revision no longer applies.
@@ -3473,10 +3478,10 @@ func show_mod_ui() -> void:
 	_ui_updates_scroll = null
 	_ui_updates_check_btn = null
 	# Drop the Browse-tab API response cache. It's a session optimization,
-	# not durable state -- the modloader autoload survives across launcher
-	# open/close (rare in practice) and we don't want the dict to accumulate
+	# not durable state. The modloader autoload survives across launcher
+	# open/close (rare in practice) and the dict should not accumulate
 	# across sessions. Disk-cached thumbnails stay (immutable storage keys
-	# are valid indefinitely; they're how we make repeat browsing snappy).
+	# are valid indefinitely; they are what makes repeat browsing snappy).
 	# In-flight HTTPRequests (list + thumbnail fetches) are parented to self
 	# and self-queue_free on completion, so no node-leak cleanup is needed.
 	_mws_cache.clear()
@@ -3508,7 +3513,7 @@ func refresh_launch_button_label() -> void:
 # The launcher's small-print conventions, encoded once: font 11, ellipsis
 # trim instead of a mid-word cut, and working tooltips (Labels default to
 # MOUSE_FILTER_IGNORE, which silently suppresses them). Hand-built labels
-# kept forgetting one of these -- that's how the order-panel overflow and
+# kept forgetting one of these. That's how the order-panel overflow and
 # the never-firing tooltips shipped. New sub-labels go through here.
 func _make_sub_label(text: String, color: Color, tip := "") -> Label:
 	var lbl := Label.new()
@@ -3549,7 +3554,7 @@ func _after_dep_action(tabs: TabContainer) -> void:
 	(func(): _rebuild_mods_tab(tabs)).call_deferred()
 
 # Runtime-generated 16x16 pencil icon. Monochrome outline in button-text
-# gray so it matches the rest of the UI -- a colored pencil looks like an
+# gray so it matches the rest of the UI. A colored pencil looks like an
 # emoji in this context.
 func _make_pencil_icon() -> ImageTexture:
 	var img := Image.create(16, 16, false, Image.FORMAT_RGBA8)
@@ -3600,7 +3605,7 @@ func _make_trashcan_icon() -> ImageTexture:
 func make_dark_theme() -> Theme:
 	var t := Theme.new()
 	# Default control font size. Without this, every control that doesn't set
-	# its own font_size falls back to the engine's 16px default -- which is
+	# its own font_size falls back to the engine's 16px default, which is
 	# FS_TITLE, the window-header size -- flattening the whole FS_* type scale
 	# (body text ends up as large as headings). Pin the default to FS_BODY so
 	# the scale reads as designed; larger surfaces opt up explicitly.
@@ -3808,7 +3813,7 @@ func make_dark_theme() -> Theme:
 	t.set_color("font_pressed_color", "OptionButton", COL_TEXT)
 
 	# -- Tooltip (hover hint panel) --------------------------------------------
-	# Without these our tooltips render with the default light theme and get
+	# Without these, tooltips render with the default light theme and get
 	# lost behind the always_on_top launcher window.
 	var tt_panel := StyleBoxFlat.new()
 	tt_panel.bg_color = COL_SURFACE_2
@@ -3946,7 +3951,7 @@ func _make_banner(text: String, edge_color: Color) -> Dictionary:
 	return {"panel": panel, "row": row, "label": lbl}
 
 # Relative age for cache timestamps ("just now", "12m ago", "3h ago",
-# "2d ago"). Coarse on purpose -- it qualifies how stale cached data is,
+# "2d ago"). Coarse on purpose. It qualifies how stale cached data is,
 # it is not a clock. Input is unix seconds (see _mws_discover_snapshot).
 func _format_age(saved_at_unix: int) -> String:
 	var delta := int(Time.get_unix_time_from_system()) - saved_at_unix
@@ -4002,7 +4007,7 @@ func _make_radio_icon(checked: bool, ring_color: Color, mark_color: Color) -> Im
 				img.set_pixel(x, y, ring_color)
 	return ImageTexture.create_from_image(img)
 
-# Runtime-generated 9x14 SpinBox up/down arrows -- the stock glyph is
+# Runtime-generated 9x14 SpinBox up/down arrows. The stock glyph is
 # light-theme gray and glares on the dark inputs.
 func _make_updown_icon(line: Color) -> ImageTexture:
 	var img := Image.create(9, 14, false, Image.FORMAT_RGBA8)
@@ -4028,7 +4033,7 @@ func _make_close_icon(line: Color) -> ImageTexture:
 
 # Best-effort cached ModWorkshop summary for a mod id, from the Browse discover
 # snapshot (popular + latest). Gives the Mods tab an instant thumbnail + author
-# for mods already seen in Browse, with no network. {} when not cached -- the
+# for mods already seen in Browse, with no network. {} when not cached. The
 # caller then fetches by id.
 func _mods_cached_summary_by_id(mod_id: int) -> Dictionary:
 	if mod_id <= 0:
@@ -4058,12 +4063,12 @@ func _mods_cached_summary_by_id(mod_id: int) -> Dictionary:
 const _MODS_META_SIDECAR_PATH := "user://mws_cache/mods_meta.json"
 const _MODS_META_REFRESH_SEC := 86400
 
-# Lazy one-time seed of the meta memo from the sidecar. Runs BEFORE the
+# Lazy one-time seed of the meta memo from the sidecar. Runs before the
 # snapshot/network path consults the memo, so cached rows paint immediately
 # and offline. Every field is shape-checked: a hand-edited or truncated file
 # (wrong root type, non-dict entry, null/absent "mod", null/absent
 # "saved_at") degrades to skipping that entry, never a crash -- .get()'s
-# default only covers ABSENT keys, so present-but-null needs the `is` guards.
+# default only covers absent keys, so present-but-null needs the `is` guards.
 func _mods_meta_sidecar_load() -> void:
 	if _mods_meta_sidecar_loaded:
 		return
@@ -4118,8 +4123,8 @@ func _mods_meta_sidecar_store(mod_id: int) -> void:
 	f.store_string(JSON.stringify(out))
 	f.close()
 
-# Paint ModWorkshop meta onto the CURRENT Mods-tab row for mod_id, looked up
-# via _mods_meta_nodes at paint time -- NOT via nodes captured when the fetch
+# Paint ModWorkshop meta onto the current Mods-tab row for mod_id, looked up
+# via _mods_meta_nodes at paint time -- not via nodes captured when the fetch
 # started, which a rebuild may have freed. No entry (row filtered out, tab
 # rebuilt without it, launcher closed) means the data is memoized for the next
 # build and nothing is painted. Idempotent per row: the author line is added
@@ -4202,7 +4207,7 @@ func _mods_meta_fetch_enqueue(mod_id: int) -> void:
 	_mods_meta_fetch_active = true
 	while not _mods_meta_fetch_queue.is_empty():
 		if mws_rate_cooldown_seconds() > 0:
-			# Don't spend the recovery window on background meta -- user-facing
+			# Don't spend the recovery window on background meta. User-facing
 			# surfaces (Browse, downloads) need the budget more.
 			_mods_meta_fetch_queue.clear()
 			break
@@ -4250,7 +4255,7 @@ func _mods_load_mws_meta(mod_id: int) -> void:
 		_mods_apply_mws_meta(mod_id, data)
 		# Soft refresh: a sidecar entry older than a day re-fetches in the
 		# background so changed thumbnails/authors converge. Values in
-		# _mods_mws_meta_saved_at are ints we wrote ourselves; 0 means the
+		# _mods_mws_meta_saved_at are ints written by this code; 0 means the
 		# entry is session-sourced (snapshot) and never soft-refreshes.
 		var saved_at := int(_mods_mws_meta_saved_at.get(mod_id, 0))
 		if saved_at <= 0 \
@@ -4300,14 +4305,14 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	_refresh_dependency_status()
 	# Drop last build's row-node mapping; the row loop below re-registers each
 	# visible MWS row. An async meta fetch still in flight from the previous
-	# build then paints the row built HERE (or, for a now-filtered-out mod,
+	# build then paints the row built here (or, for a now-filtered-out mod,
 	# finds no entry and just memoizes).
 	_mods_meta_nodes.clear()
 	var outer := VBoxContainer.new()
 	outer.size_flags_vertical = Control.SIZE_EXPAND_FILL
 
 	# Active-modpack banner. When a modpack is applied, surface it loudly so
-	# the user knows their mod selection isn't their own configuration -- and
+	# the user knows their mod selection isn't their own configuration, and
 	# can unload back to it with one click. Hidden when no modpack is active.
 	var active_modpack := get_active_modpack()
 	if active_modpack != "":
@@ -4352,7 +4357,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 
 	# The dropdown popup is a sub-Window. Our modloader Window is always_on_top,
 	# which leaves the popup stranded behind it (invisible on click). Mark the
-	# popup always_on_top and transient so it layers over us correctly. Theme
+	# popup always_on_top and transient so it layers correctly. Theme
 	# assignment is explicit -- theme lookup doesn't always cross Window boundaries.
 	var profile_popup := profile_opt.get_popup()
 	profile_popup.always_on_top = true
@@ -4363,7 +4368,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	# Fresh install has no profile sections yet -- show Default as a placeholder
 	# that gets materialized on the first _save_ui_config (Launch or any toggle).
 	# Filter modpack-managed profiles ("modpack__*", "_before_modpack_*") so
-	# they don't appear in the user-facing dropdown -- those are handled by
+	# they don't appear in the user-facing dropdown. Those are handled by
 	# the Modpacks tab and are not user-named profiles.
 	var profiles := _list_profiles().filter(func(n: String): return not _is_modpack_managed_profile(n))
 	if profiles.is_empty():
@@ -4378,7 +4383,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	profile_opt.selected = active_idx
 
 	# When a modpack is active, the active profile is "modpack__X" which the
-	# filter above hides -- so the dropdown's selection defaults back to
+	# filter above hides, so the dropdown's selection defaults back to
 	# Vanilla which is misleading. Disable the dropdown (and replace its
 	# label) so it's clear the user has to Unload the modpack via the banner
 	# to interact with regular profiles.
@@ -4389,8 +4394,8 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		profile_opt.disabled = true
 
 	# Profile-mutation buttons. Delete needs at least one other profile to
-	# switch to. ALL profile mutations are disabled while a modpack is
-	# active -- the active profile slot is modpack-managed (modpack__X) and
+	# switch to. all profile mutations are disabled while a modpack is
+	# active. The active profile slot is modpack-managed (modpack__X) and
 	# shouldn't be renamed/deleted/created-from.
 	var modpack_locked := active_modpack != ""
 	# Whether mod state in the active profile can be edited at all. Vanilla is
@@ -4435,7 +4440,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	# Launcher zoom, user-owned. Auto-detecting it from screen DPI compounded
 	# with the game's own canvas_items stretch and blew the window up on
 	# high-res displays (see _show_mod_ui), and no single formula fits every
-	# monitor -- so this is an explicit choice that applies immediately.
+	# monitor, so this is an explicit choice that applies immediately.
 	var scale_lbl := Label.new()
 	scale_lbl.text = "UI scale"
 	scale_lbl.add_theme_font_size_override("font_size", FS_BODY)
@@ -4456,13 +4461,13 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	scale_opt.item_selected.connect(func(idx: int):
 		var sv: float = scale_values[idx] if idx >= 0 and idx < scale_values.size() else 1.0
 		# Written straight through rather than via _save_ui_config: this is a
-		# display preference, and the full save rewrites profile state we have
+		# display preference, and the full save rewrites profile state held
 		# no reason to touch here.
 		var scfg := _load_ui_cfg_for_write()
 		if scfg != null:
 			scfg.set_value("settings", "ui_scale", sv)
 			_persist_ui_cfg(scfg)
-		# Apply regardless -- an unsaved scale should still take effect now.
+		# Apply regardless. An unsaved scale should still take effect now.
 		_apply_ui_scale(_ui_window, sv)
 	)
 
@@ -4578,7 +4583,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		if is_instance_valid(tabs):
 			_rebuild_mods_tab(tabs)
 		# Surface a one-liner so the user knows something happened even when
-		# nothing is out of date -- and be honest when checks ERRORED rather
+		# nothing is out of date, and be honest when checks ERRORED rather
 		# than counting unreachable mods as "up to date".
 		var n := int(summary.get("with_updates", 0))
 		var ck := int(summary.get("checked", 0))
@@ -4671,7 +4676,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	_ui_mods_scroll = left_scroll
 
 	# Right padding keeps the load-order SpinBox arrows from sitting flush
-	# against the vertical scrollbar -- users were hitting the spin arrows
+	# against the vertical scrollbar. Users were hitting the spin arrows
 	# while trying to drag the scrollbar handle.
 	var list_pad := MarginContainer.new()
 	list_pad.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -4725,7 +4730,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	var refresh_order := func():
 		# _refresh_dependency_status already ran the full resolution pipeline
 		# (priority sort + topological order + blocked-set fixpoint) and hands
-		# back the same pick the loader itself uses -- the panel shows the
+		# back the same pick the loader itself uses. The panel shows the
 		# EFFECTIVE order, so what you see is what mounts. Reusing it matters
 		# here: this closure fires per step while a load-order spin arrow is
 		# held, and a second _loadable_enabled_entries call per tick doubled
@@ -4986,7 +4991,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 				var captured_mws_id := src_mws_id
 				var captured_version := src_version
 				# Reuse _mod_update_in_flight keyed by the missing entry's stored
-				# profile key (can't collide with update rows -- a missing entry
+				# profile key (can't collide with update rows. A missing entry
 				# has no installed row). Without this, a mid-download rebuild
 				# recreates the row with a fresh enabled button and a second
 				# click installs a duplicate archive via rename-on-collision.
@@ -5027,7 +5032,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 							_show_error_dialog("Download failed", str(r.get("error", "Could not download this mod. Check your connection and try again.")))
 				)
 			else:
-				# No source info -- name what's unavailable, not the data we
+				# No source info. Name what is unavailable, not the data
 				# lack. Matches r2modman/Vortex pattern of action-clear
 				# state strings. Label defaults to MOUSE_FILTER_IGNORE in
 				# Godot 4, so explicit STOP is required for hover signals.
@@ -5111,7 +5116,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		empty.add_theme_font_size_override("font_size", FS_EMPH)
 		list.add_child(empty)
 
-	# Track whether any row passed the filter so we can show a hint when a
+	# Track whether any row passed the filter, so a hint can show when a
 	# search or hide-disabled toggle narrows the list to zero rows.
 	var rendered_any := false
 	# Hoisted once per build for _dependency_display_for_id: its fallback
@@ -5133,7 +5138,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 
 		# ModWorkshop info column, for mods that declare [updates] modworkshop=N.
 		# Thumbnail (filled async) + author line + the name as a click-through to
-		# the same detail dialog the Browse tab uses -- so a mod's page,
+		# the same detail dialog the Browse tab uses, so a mod's page,
 		# screenshots and description read in-app without hunting it down in
 		# Browse. Non-MWS mods get a same-width spacer so the name column stays
 		# aligned across every row.
@@ -5145,8 +5150,8 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		var thumb_ref: TextureRect = null
 		# EVERY row gets a real thumbnail cell, captioned "no thumbnail" from
 		# the moment it is built. Previously a non-MWS mod got a bare invisible
-		# spacer -- so a modlist of hand-installed mods showed nothing at all
-		# where a thumbnail belongs -- and an MWS row sat as an unlabelled gray
+		# spacer, so a modlist of hand-installed mods showed nothing at all
+		# where a thumbnail belongs, and an MWS row sat as an unlabelled gray
 		# panel until its meta fetch resolved, which is indistinguishable from
 		# still-loading and never resolves at all while offline. A texture that
 		# arrives later clears the caption (_set_thumb_ready).
@@ -5222,7 +5227,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		var dep_blocked: bool = entry["enabled"] \
 				and not (entry.get("dependency_blockers", []) as Array).is_empty()
 		if dep_blocked:
-			# The green "enabled" tint would lie -- this mod won't load.
+			# The green "enabled" tint would lie. This mod won't load.
 			name_ctrl.add_theme_color_override("font_color", COL_AMBER)
 		if required_deps.size() > 0 or optional_deps.size() > 0:
 			var named := PackedStringArray()
@@ -5336,7 +5341,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			var vm_text := "version changed: " + stored_disp + " -> " + current_disp
 			name_col.add_child(_make_sub_label(vm_text, COL_AMBER, vm_text))
 
-		# Scanner indicator. Only renders for RED risk -- mods whose source
+		# Scanner indicator. Only renders for RED risk. Mods whose source
 		# combines patterns that are nearly diagnostic of malware (dropper
 		# trinity, anti-debug crash, ransomware setup). Yellow ("uses
 		# notable APIs") is computed and logged but deliberately not shown
@@ -5370,7 +5375,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 
 		# Per-row Remove. Folder mods (dev) skip the file delete because
 		# DirAccess.remove_absolute is for files only and recursive deletion
-		# of a working directory is too risky to do casually -- the user
+		# of a working directory is too risky to do casually. The user
 		# can use Open Mods Folder for those.
 		var remove_btn := Button.new()
 		remove_btn.icon = _make_trashcan_icon()
@@ -5405,7 +5410,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 					if is_instance_valid(check):
 						check.set_pressed_no_signal(true)
 					return
-			# Apply to the LIVE entry dict regardless of whether the original
+			# Apply to the live entry dict regardless of whether the original
 			# checkbox survived a mid-dialog rebuild. The captured dict stays
 			# live across rebuilds, but a mid-dialog RESCAN (e.g. a Browse
 			# download finishing) replaces _ui_mod_entries with fresh dicts --
@@ -5417,7 +5422,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			_after_dep_action(tabs)
 		)
 		spin.value_changed.connect(func(val: float):
-			# Write through the LIVE entry like the checkbox handler above: a
+			# Write through the live entry like the checkbox handler above: a
 			# mid-drag rescan (e.g. a background download finishing) replaces
 			# _ui_mod_entries with fresh dicts, orphaning the captured `e` --
 			# later ticks written into it would never be saved.
@@ -5455,7 +5460,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		_mods_filter_focus_pending = false
 		filter_edit.call_deferred("grab_focus")
 		# Setting LineEdit.text resets the caret to column 0 (Godot 4.6
-		# LineEdit::_set_text), and FOCUS_ENTER doesn't move it -- so without
+		# LineEdit::_set_text), and FOCUS_ENTER doesn't move it, so without
 		# this every keystroke after the first inserts at the FRONT ("dep"
 		# typed -> "ped"). Restore the caret to end-of-text after focus lands.
 		filter_edit.call_deferred("set_caret_column", filter_edit.text.length())
@@ -5486,7 +5491,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		"sort": "bumped_at",
 		# featured: true while the sort dropdown sits on item 0 ("Featured",
 		# the curated landing). The empty-input handlers key on THIS flag --
-		# not on sort == "bumped_at" -- so "Recently updated" is a real sort
+		# not on sort == "bumped_at", so "Recently updated" is a real sort
 		# that routes through the filter fetch like every other sort.
 		"featured": true,
 		"category_id": 0,
@@ -5497,7 +5502,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		# checks it after await; if state["fetch_seq"] has advanced, a newer
 		# fetch is in flight and this one's result must NOT render. Without
 		# this guard, rapid sort/category clicks let the slowest response win
-		# whichever finishes last -- so the UI shows results that don't match
+		# whichever finishes last, so the UI shows results that don't match
 		# the dropdown's current value.
 		"fetch_seq": 0,
 		# downloading_id: mws_id currently being downloaded. -1 = idle.
@@ -5532,7 +5537,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	search_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	search_input.custom_minimum_size.x = 200
 	search_input.custom_minimum_size.y = CTRL_H
-	# The API 422s on a query over 150 chars, which our non-2xx handling would
+	# The API 422s on a query over 150 chars, which the non-2xx handling would
 	# report as a connection problem no retry could fix. Stop it at the input.
 	search_input.max_length = MWS_QUERY_MAX_LEN
 	toolbar.add_child(search_input)
@@ -5560,7 +5565,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	toolbar.add_child(category_dropdown)
 
 	# OptionButton popups are sub-Windows; the launcher's always_on_top leaves
-	# them stranded behind the main window unless we explicitly raise them.
+	# them stranded behind the main window unless they are explicitly raised.
 	# Theme assignment is also explicit because theme inheritance does not
 	# always cross Window boundaries in Godot 4. Same fix the profile_opt
 	# dropdown applies in build_mods_tab. Unfolded rather than looped because
@@ -5594,13 +5599,13 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	status_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
 	container.add_child(status_lbl)
 
-	# One status-text pattern (spec section 6): every Browse state change
-	# routes through here so the color always matches the message --
-	# COL_AMBER in-progress, COL_OK success, COL_ERR failure, COL_TEXT_DIM
-	# neutral/meta. font_color override, never modulate (modulate would
-	# also tint child icons; spec jank class 5). Assigned BEFORE every
-	# closure that calls it, so by-value capture picks up a real Callable
-	# (handoff bug class 1).
+	# Every Browse state change routes through here so the color always matches
+	# the message: COL_AMBER in-progress, COL_OK success, COL_ERR failure,
+	# COL_TEXT_DIM neutral or meta.
+	#
+	# Override font_color rather than modulate, which would also
+	# tint child icons. Assigned before every closure that calls it, so
+	# by-value capture picks up a real Callable.
 	var set_status := func(text: String, color: Color):
 		if not is_instance_valid(status_lbl):
 			return
@@ -5609,7 +5614,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 
 	# Mirror of set_status for downloads started from the detail dialog. The
 	# dialog is exclusive and covers the tab's status label, so failures and
-	# already-downloading/queued notices were invisible behind it -- the
+	# already-downloading/queued notices were invisible behind it. The
 	# dialog's button just flipped back to "Download" with no explanation.
 	# _show_browse_mod_detail_dialog tags its Download button with an
 	# in-dialog status Label (meta "browse_dialog_status"); when the button
@@ -5646,16 +5651,17 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			child.queue_free()
 		banner_slot.visible = false
 
-	# Banner with a Retry action (spec section 6: banner via the one
-	# builder; edge_color COL_AMBER = notice such as showing-cached-results,
-	# COL_ERR = error such as no-cached-data, matching the adjacent status
-	# label's color). saved_at_unix > 0 adds a
-	# "Last refreshed Xm ago" note in FS_META COL_TEXT_DIM (spec section 7:
-	# meta info never parenthetical in the body label). Retry re-runs the
-	# CURRENT view's fetch through `state`: this lambda is created before
+	# Banner with a Retry action, built through the single banner builder.
+	# edge_color COL_AMBER is a notice such as showing-cached-results, COL_ERR
+	# an error such as no-cached-data, matching the adjacent status label.
+	# saved_at_unix > 0 adds a "Last refreshed Xm ago" note in FS_META
+	# COL_TEXT_DIM.
+	#
+	# Retry re-runs the
+	# current view's fetch through `state`: this lambda is created before
 	# do_discover_fetch / do_filter_fetch are assigned, and lambdas capture
-	# locals by value at creation (handoff bug class 1), so the state
-	# dictionary is the only route to their real bodies.
+	# locals by value at creation, so the state dictionary is the only route to
+	# their real bodies.
 	var show_browse_banner := func(text: String, saved_at_unix: int, edge_color: Color):
 		if not is_instance_valid(banner_slot):
 			return
@@ -5759,7 +5765,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 				# the controls may be freed. A rescan while the dialog was
 				# open (e.g. a queued download landing) replaces
 				# _ui_mod_entries with fresh dicts, so write the confirmed
-				# state to the LIVE entry, not the orphaned capture.
+				# state to the live entry, not the orphaned capture.
 				live_entry = _live_entry_for_profile_key(str(entry.get("profile_key", "")), entry)
 			live_entry["enabled"] = enabled
 			_save_ui_config()
@@ -5820,7 +5826,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		if bool(result.get("ok", false)):
 			# Remember that this batch installed at least one mod; the drain
 			# below keys the one-shot rescan and row sync on it. The full
-			# mods-dir rescan + Mods-tab rebuild happen at drain, NOT here:
+			# mods-dir rescan + Mods-tab rebuild happen at drain, not here:
 			# per-item they re-opened every installed archive and rebuilt the
 			# hidden Mods tab once per queued download.
 			state["queue_any_success"] = true
@@ -5833,7 +5839,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			if is_instance_valid(get_btn):
 				get_btn.disabled = false
 				get_btn.text = "Download"
-			# Error copy pattern (spec section 7): what happened + what to do
+			# Error copy pattern: what happened + what to do
 			# next; fall back to the connection hint when the downloader gave
 			# no detail rather than saying "unknown".
 			var err_detail := str(result.get("error", "")).strip_edges()
@@ -5849,10 +5855,10 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			(state["queue_failures"] as Array).append(str(mod_data.get("name", "mod")) + " (" + err_detail + ")")
 
 		# Drain queue or settle the batch. Re-rendering frees button refs in
-		# the queue, so we only re-render once the queue is empty -- otherwise
+		# the queue, so re-render only once the queue is empty. Otherwise
 		# subsequent items lose their "Queued" button state mid-flight.
 		#
-		# Call through `state`, NOT the captured locals. GDScript lambdas
+		# Call through `state`, not the captured locals. GDScript lambdas
 		# capture locals BY VALUE at creation time; this lambda was created
 		# before perform_download_for_item / do_discover_fetch /
 		# do_filter_fetch were assigned, so the captured copies are empty
@@ -5872,8 +5878,8 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		state["queue_failures"] = []
 		state["queue_done_total"] = 0
 
-		# ONE mods-dir rescan + hidden Mods-tab rebuild for the whole batch
-		# (previously per successful item -- a main-thread stall proportional
+		# One mods-dir rescan + hidden Mods-tab rebuild for the whole batch
+		# (previously per successful item. A main-thread stall proportional
 		# to installed-mod count, multiplied by the queue length).
 		if any_success:
 			_reload_entries_for_active_profile()
@@ -5902,7 +5908,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		# At least one item failed. Skip the re-fetch (its completion would
 		# wipe the failure report with "N popular, M latest"); sync duplicate
 		# rows of installed mods in place instead -- same mod can appear in
-		# popular AND latest -- so the failure text stays visible.
+		# popular and latest, so the failure text stays visible.
 		if any_success and is_instance_valid(scroll):
 			_refresh_browse_installed_rows(scroll)
 		# Persistent batch summary: for a lone download the full error set
@@ -5977,7 +5983,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		# Stamp this fetch with a fresh seq so any earlier in-flight fetch's
 		# completion handler sees the mismatch and bails. Snapshot into a
 		# local `my_seq` because state["fetch_seq"] will keep advancing if
-		# the user clicks again before our await returns.
+		# the user clicks again before the await returns.
 		state["fetch_seq"] = int(state["fetch_seq"]) + 1
 		var my_seq := int(state["fetch_seq"])
 		# Consume any pending scroll carry (set by the post-download
@@ -6003,7 +6009,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		load_more_btn.disabled = true
 		set_status.call("Loading...", COL_TEXT_DIM)
 		var data: Variant = await mws_get_popular_and_latest()
-		# Stale completion: another fetch was started while we awaited.
+		# Stale completion: another fetch started during the await.
 		# Newer fetch's render owns the UI; drop ours.
 		if int(state["fetch_seq"]) != my_seq:
 			return
@@ -6031,7 +6037,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		if not popular.is_empty():
 			var pop_hdr := Label.new()
 			# "this week" because the backing sort is ModWorkshop's
-			# weekly_score -- the label must match the parameter.
+			# weekly_score. The label must match the parameter.
 			pop_hdr.text = "Popular this week"
 			pop_hdr.add_theme_font_size_override("font_size", FS_HEAD)
 			pop_hdr.add_theme_color_override("font_color", COL_TEXT)
@@ -6072,7 +6078,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		set_status.call("%d popular, %d latest" % [popular.size(), latest.size()], COL_TEXT_DIM)
 		# Restore the pre-refetch scroll position one frame later: the fresh
 		# rows have no layout yet on this frame, so setting scroll_vertical
-		# now would clamp against a zero-height list (handoff bug class 6).
+		# now would clamp against a zero-height list.
 		if my_restore >= 0:
 			await get_tree().process_frame
 			if int(state["fetch_seq"]) == my_seq and is_instance_valid(scroll):
@@ -6120,7 +6126,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			return
 		var rows: Array = _mws_data_rows(data)
 		# Accumulate every page fetched for this query/filter so the sort and
-		# render below operate on the FULL loaded set; a fresh (non-append)
+		# render below operate on the full loaded set; a fresh (non-append)
 		# fetch resets the accumulator. Dedup by id: a mod bumped between page
 		# fetches shifts server pages and can arrive twice.
 		if append:
@@ -6134,7 +6140,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 					acc.append(r)
 			rows = acc
 		state["loaded_rows"] = rows
-		# MWS ignores the sort param when a text query is present -- it always
+		# MWS ignores the sort param when a text query is present. It always
 		# returns relevance order, so an outdated exact-name match pins to the
 		# top no matter the dropdown. Re-sort client-side by the selected field.
 		# Sorting the accumulated set keeps multi-page results globally sorted
@@ -6149,7 +6155,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 				if not (b is Dictionary):
 					return true
 				if numeric:
-					# .get() default only covers ABSENT keys; a present-but-null
+					# .get() default only covers absent keys; a present-but-null
 					# counter would make int(null) a runtime error. JSON numbers
 					# parse as float, so accept int/float and coerce junk to 0.
 					var av: Variant = (a as Dictionary).get(sort_key)
@@ -6175,7 +6181,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		(state["fn_populate_categories"] as Callable).call()
 		# Full re-render of the accumulated set. On Load more this replaces
 		# the old per-page append -- required for the global re-sort above to
-		# actually show -- so carry the current scroll position across the
+		# actually show, so carry the current scroll position across the
 		# rebuild (restored one frame later below, same as the pending-carry
 		# path). A pending carry, if any, wins: it predates this fetch.
 		if append and my_restore < 0 and is_instance_valid(scroll):
@@ -6189,7 +6195,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		# `rows` is the full accumulated set here, so no append arithmetic.
 		state["shown_count"] = rows.size()
 		var shown_so_far: int = int(state["shown_count"])
-		# Empty state as an invitation (spec section 7), not a bare zero.
+		# Empty state as an invitation, not a bare zero.
 		if shown_so_far == 0:
 			set_status.call("No results. Try a different search or category.", COL_TEXT_DIM)
 		else:
@@ -6198,7 +6204,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		load_more_btn.disabled = not bool(state["has_more"])
 		# Restore the pre-refetch scroll position one frame later: the fresh
 		# rows have no layout yet on this frame, so setting scroll_vertical
-		# now would clamp against a zero-height list (handoff bug class 6).
+		# now would clamp against a zero-height list.
 		if my_restore >= 0:
 			await get_tree().process_frame
 			if int(state["fetch_seq"]) == my_seq and is_instance_valid(scroll):
@@ -6227,7 +6233,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	search_input.text_submitted.connect(func(_t: String):
 		search_debounce.stop()
 		# Same routing as the debounce timeout: Enter in an EMPTY box while
-		# Featured is selected must (re)render the curated landing -- an
+		# Featured is selected must (re)render the curated landing. An
 		# unconditional filter fetch here would show a flat sorted list under
 		# a "Featured" dropdown label.
 		if str(state["query"]) == "" and int(state["category_id"]) == 0 and bool(state["featured"]):
@@ -6263,8 +6269,8 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 
 	# Populate categories asynchronously after the tab is visible. Each entry's
 	# metadata holds the API category_id; the visible label is just the name.
-	# Skip child categories for the first pass -- a flat list of 40 items in a
-	# dropdown is already a stretch UX-wise, so we surface only top-level
+	# Skip child categories for the first pass. A flat list of 40 items in a
+	# dropdown is already a stretch UX-wise, so surface only top-level
 	# (parent_id == null) and rely on search to find sub-category mods.
 	var populate_categories := func():
 		# Retry-able, not one-shot: the banner Retry and every successful list
@@ -6324,7 +6330,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 # "Enabled in <profile>" checkboxes bake the profile name and enabled state
 # when rendered, and profile switches, modpack apply/unload, and Mods-tab
 # edits all change that state behind the Browse tab's back (the tab has no
-# rebuild path by design -- its content is network-fetched). Called from the
+# rebuild path by design. Its content is network-fetched). Called from the
 # tab_changed listener when Browse is shown. In-place (no re-fetch, no
 # re-render) so search text, caret, scroll position, and loaded pages all
 # survive. Rows are found via the browse_mws_id meta tag set at render time.
@@ -6381,7 +6387,7 @@ func _refresh_browse_installed_rows(root: Node) -> void:
 
 
 # Guarded int() for API JSON fields. Dictionary.get()'s default only covers
-# an ABSENT key -- a present-but-null value flows through and int(null) is a
+# an absent key. A present-but-null value flows through and int(null) is a
 # runtime error (the search sort comparator and the snapshot loader already
 # guard this way). JSON numbers parse as float, so accept int/float and
 # coerce anything else (null, string junk) to the fallback.
@@ -6400,7 +6406,7 @@ func _json_int(d: Dictionary, key: String, fallback: int = 0) -> int:
 # Title for a filtered / searched / category Browse view. The curated landing
 # titles its own two sections ("Popular this week" / "Latest") but every other
 # view rendered a bare row list, so the only heading in the whole tab belonged
-# to Popular -- it read as if that were a permanent title rather than one
+# to Popular. It read as if that were a permanent title rather than one
 # section among several.
 #
 # Derived from the sort key actually sent to the API, not the dropdown index:
@@ -6549,12 +6555,12 @@ func _browse_render_mod_row(mod_data: Dictionary, install_entry: Variant, on_get
 # decoder in turn.
 #
 # The old try-webp-then-jpg-then-png chain pushed nine engine ERROR lines into
-# the console for every buffer that was not an image -- an HTML error page, a
+# the console for every buffer that was not an image. An HTML error page, a
 # 404 body, a truncated download. Those lines are indistinguishable from real
 # failures at a glance, so a perfectly healthy launch log read as catastrophic
 # and genuine errors got buried in the noise.
 #
-# Returns null when the buffer is not a format we support; every caller already
+# Returns null when the buffer is not a supported format; every caller already
 # treats that as "load failed".
 func _decode_image_buffer(bytes: PackedByteArray) -> Image:
 	if bytes.size() < 12:
@@ -6645,7 +6651,7 @@ func _make_thumb_cell(parent: Control, min_size: Vector2, cover: bool = true,
 # Session memo of decoded thumbnail textures keyed by storage filename.
 # Without it every Mods-tab rebuild (per filter keystroke) and every Browse
 # re-render re-read the disk cache and re-decoded the image into a fresh
-# ImageTexture per row -- a visible hitch that grew with each "Load more"
+# ImageTexture per row. A visible hitch that grew with each "Load more"
 # page. FIFO-bounded so a long Browse session can't hold hundreds of
 # 640px textures forever (Dictionary preserves insertion order).
 var _thumb_texture_cache: Dictionary = {}
@@ -6659,8 +6665,8 @@ func _thumb_texture_cache_store(fn: String, tex: Texture2D) -> void:
 
 # Async thumbnail loader. Cache layout: user://mws_cache/thumbs/<storage_filename>.
 # Filenames from MWS are opaque/immutable per upload, so the storage filename
-# IS the cache key -- a thumbnail replaced by the author gets a different file
-# name and we naturally fetch fresh. No TTL needed, no manual cache busting.
+# IS the cache key. A thumbnail replaced by the author gets a different file
+# name, so a fresh fetch happens naturally. No TTL, no manual cache busting.
 # Failures surface via _set_thumb_failed so the cell doesn't stay an
 # ambiguous gray panel. 1MB hard cap (download_body_size_limit below) defends
 # against malformed responses without limiting real thumbnails.
@@ -6670,10 +6676,9 @@ func _browse_load_thumbnail_async(rect: TextureRect, image_record: Dictionary) -
 		_set_thumb_failed(rect, false)
 		return
 	# Server-provided name: accept only a bare basename so path_join cannot
-	# escape the cache dir (same never-trust-a-server-name posture as the
-	# _is_safe_mod_filename gate on mod download names). get_file() only
-	# splits on "/", so reject backslashes and ".." explicitly too.
-	if fn != fn.get_file() or fn.contains("\\") or fn.contains(".."):
+	# escape the cache dir. Shared with the mod-download gate so both reject
+	# the same shapes.
+	if not _is_safe_basename(fn):
 		_set_thumb_failed(rect, false)
 		return
 
@@ -6742,9 +6747,9 @@ func _browse_load_thumbnail_async(rect: TextureRect, image_record: Dictionary) -
 		return
 
 	# The CDN serves full-size images (100-300KB+) while the row cells render
-	# at 96x54, so downscale before caching. This ONE cache is also read by
+	# at 96x54, so downscale before caching. This one cache is also read by
 	# the detail dialog's banner (a ~220px-tall letterboxed band), so rather
-	# than keying a separate small variant -- which risks serving a tiny stale
+	# than keying a separate small variant, which risks serving a tiny stale
 	# entry where the banner expects a large one -- cap the longest side at
 	# 640px: still crisp for the banner band, while cutting typical cached
 	# files by roughly an order of magnitude. Re-encoded as lossy WebP; the
@@ -6763,7 +6768,7 @@ func _browse_load_thumbnail_async(rect: TextureRect, image_record: Dictionary) -
 		if resized.size() > 0:
 			cache_bytes = resized
 
-	# Stash for next launch. Failure to write is non-fatal -- we still display
+	# Stash for next launch. Failure to write is non-fatal. We still display
 	# the texture this session, just refetch next time. store_buffer returns
 	# bool since 4.3; drop a partial file rather than leaving a truncated
 	# cache entry around.
@@ -6828,13 +6833,13 @@ func _re_replace(re: RegEx, s: String, repl: Callable) -> String:
 ## RichTextLabel can't load remote images inline without extra async work.
 ## Best-effort and non-crashing: malformed input just renders imperfectly.
 func _markdown_to_bbcode(md: String) -> String:
-	# Sentinels stand in for our own '[' / ']' while we escape the user's literal
-	# brackets, so escaping can't mangle tags we generate. STX/ETX never appear
+	# Sentinels stand in for generated '[' / ']' while the user's literal
+	# brackets are escaped, so escaping cannot mangle generated tags. STX/ETX never appear
 	# in real descriptions.
 	var LB := char(2)
 	var RB := char(3)
 	var s := md.replace("\r\n", "\n").replace("\r", "\n")
-	# Untrusted remote input must NOT contain our sentinels -- the final restore
+	# Untrusted remote input must not contain the sentinels. The final restore
 	# would turn them into real brackets and inject BBCode past the [lb] escape.
 	s = s.replace(LB, "").replace(RB, "")
 	s = s.replace(":::", "")  # drop MWS colored-block delimiters; keep {#hex}(..)
@@ -6859,7 +6864,7 @@ func _markdown_to_bbcode(md: String) -> String:
 	# Only '[' matters to the parser; a lone ']' renders literally.
 	s = s.replace("[", "[lb]")
 
-	# Block level: strip line markers, wrap in sentinel tags. Done BEFORE inline
+	# Block level: strip line markers, wrap in sentinel tags. Done before inline
 	# emphasis so a bullet's leading '*' is gone before the '*italic*' rule runs.
 	var re_h := RegEx.new()
 	re_h.compile("^(#{1,6})\\s+(.*)$")
@@ -6901,7 +6906,7 @@ func _markdown_to_bbcode(md: String) -> String:
 	re_ital.compile("(?<![\\w*])\\*([^*\\n]+)\\*(?![\\w*])")
 	s = _re_replace(re_ital, s, func(m): return LB + "i" + RB + m.get_string(1) + LB + "/i" + RB)
 
-	# Restore our tags to real brackets, last, so escaping never touched them.
+	# Restore generated tags to real brackets last, so escaping never touched them.
 	s = s.replace(LB, "[").replace(RB, "]")
 	return s
 
@@ -6915,7 +6920,7 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 	d.title = str(mod_data.get("name", "?"))
 	d.ok_button_text = "Close"
 	# Clamped to the launcher: the fixed 660x540 exceeded the launcher's
-	# 640x420 minimum in BOTH axes and got clipped by the embedder.
+	# 640x420 minimum in both axes and got clipped by the embedder.
 	d.min_size = _dialog_fit_size(Vector2i(660, 540))
 
 	# Single content child for the AcceptDialog (it stacks added children over
@@ -6935,7 +6940,7 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 
 	# In-dialog download status. This modal is exclusive and covers the Browse
 	# tab's status label, so a download started HERE used to fail (or dedupe)
-	# with no visible feedback -- the button just flipped back to "Download".
+	# with no visible feedback. The button just flipped back to "Download".
 	# The Download button below carries this Label in its
 	# "browse_dialog_status" meta; build_browse_tab's set_dl_status mirror
 	# fills it. Hidden until the first message so it costs no height. clip
@@ -7053,7 +7058,7 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 	var mod_id := int(mod_data.get("id", 0))
 	# Pin Get + Open-page to the dialog's native button bar (alongside Close)
 	# so they stay visible regardless of scroll position. add_button returns
-	# the actual Button so we can update its text/disabled during the install
+	# the actual Button so its text/disabled state can change during the install
 	# flow. right=false puts a button to the LEFT of the OK/Close button;
 	# right=true puts it on the right.
 	var page_btn := d.add_button("Open mod page in browser", false, "")
@@ -7075,7 +7080,7 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 	if already_installed:
 		get_btn.disabled = true
 	else:
-		# The dialog's one primary action (spec section 6). List rows keep
+		# The dialog's one primary action. List rows keep
 		# bare-theme Download buttons -- primary is at most one per surface.
 		style_primary_button(get_btn)
 		# Tag the button with the in-dialog status label so the Browse tab's
@@ -7150,7 +7155,7 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 #   _updates_tab_status: profile_key -> {text, tooltip, color} snapshot of a
 #     row's TERMINAL Status text ("Up to date", "Check failed", "Updated --
 #     restart to apply", "Download failed"). Rows with an update AVAILABLE are
-#     not stored here -- they re-arm from _mod_updates_state so a mod updated
+#     not stored here. They re-arm from _mod_updates_state so a mod updated
 #     from the Mods tab never shows a stale "Update: vX" here.
 #   _updates_tab_log: already-timestamped Activity lines, re-rendered on build.
 #   _updates_tab_dl_in_flight: count of this tab's row downloads currently
@@ -7164,7 +7169,7 @@ const _UPDATES_LOG_MAX := 200
 var _updates_tab_dl_in_flight: int = 0
 # Live references to the current build's list scroller / check button so the
 # rebuild can carry scroll position and download completions can re-enable the
-# CURRENT check button even after the one they captured was freed. Cleared on
+# current check button even after the one they captured was freed. Cleared on
 # launcher close with the other _ui_* node refs.
 var _ui_updates_scroll: ScrollContainer = null
 var _ui_updates_check_btn: Button = null
@@ -7209,7 +7214,7 @@ func _updates_arm_row_update(info: Dictionary, latest_v: String, add_log: Callab
 	var mw_id: int = int(info["mw_id"])
 	var mod_name: String = str(info["mod_name"])
 	var new_ver: String = latest_v
-	# Guard key for _mod_update_in_flight -- the SAME dictionary the Mods-tab
+	# Guard key for _mod_update_in_flight. The same dictionary the Mods-tab
 	# badge path uses, because both surfaces target the same mod file (and the
 	# same .download temp / .bak rollback paths). Path fallback only for the
 	# unexpected entry-less row.
@@ -7238,15 +7243,15 @@ func _updates_arm_row_update(info: Dictionary, latest_v: String, add_log: Callab
 		# file since the Updates tab was built, orphaning the captured path.
 		var live_path: String = _live_full_path(pk, full_path)
 		var result: Dictionary = await download_and_replace_mod(live_path, mw_id)
-		# -- State bookkeeping FIRST, unconditionally. The on-show rebuild can
+		# -- State bookkeeping first, unconditionally. The on-show rebuild can
 		# free every node this closure captured while the download is in
 		# flight; an early return on node validity here used to silently drop
-		# ALL of it, leaving the tab offering an update that was already
+		# all of it, leaving the tab offering an update that was already
 		# installed (whose retry then hits the file-collision error until a
 		# rescan). UI touches are guarded individually below instead.
 		_mod_update_in_flight.erase(guard_key)
 		_updates_tab_dl_in_flight = maxi(0, _updates_tab_dl_in_flight - 1)
-		# Only re-enable the (current) check button when NO downloads remain --
+		# Only re-enable the (current) check button when no downloads remain --
 		# the first of two completions used to re-enable it mid-download.
 		if _updates_tab_dl_in_flight == 0 and is_instance_valid(_ui_updates_check_btn):
 			_ui_updates_check_btn.disabled = false
@@ -7256,7 +7261,7 @@ func _updates_arm_row_update(info: Dictionary, latest_v: String, add_log: Callab
 			# Reflect the on-disk rename in the in-memory entry so the next
 			# discovery pass (and any subsequent UI rebuild before relaunch)
 			# point at the right archive instead of the old filename that no
-			# longer exists. Write through the LIVE entry dict: a rescan may
+			# longer exists. Write through the live entry dict: a rescan may
 			# have replaced _ui_mod_entries since this row was built.
 			var new_path: String = str(result.get("new_path", full_path))
 			var new_fn: String = str(result.get("new_file_name", full_path.get_file()))
@@ -7313,7 +7318,7 @@ func _updates_arm_row_update(info: Dictionary, latest_v: String, add_log: Callab
 				dl_btn.text = "Retry"
 	)
 
-# Scroll the restored Activity log to its newest line one frame later -- the
+# Scroll the restored Activity log to its newest line one frame later. The
 # fresh labels have no layout on the build frame, so an immediate
 # scroll_vertical set clamps against a zero content height.
 func _updates_scroll_log_to_bottom(sc: ScrollContainer) -> void:
@@ -7540,7 +7545,7 @@ func build_updates_tab() -> Control:
 	var add_log := func(msg: String):
 		var t := Time.get_time_string_from_system()
 		var line := "[" + t + "] " + msg
-		# Persist FIRST: a download can finish after this tab was rebuilt
+		# Persist first: a download can finish after this tab was rebuilt
 		# (freeing log_list); the line must survive into the restored log.
 		# Capped: the log now survives every rebuild, and each rebuild
 		# re-renders one Label per stored line, so an unbounded array would
@@ -7556,7 +7561,7 @@ func build_updates_tab() -> Control:
 		# view lags one message behind.
 		_updates_scroll_log_to_bottom(log_scroll)
 
-	# Restore Activity lines from earlier checks/downloads this session -- the
+	# Restore Activity lines from earlier checks/downloads this session. The
 	# tab is rebuilt on every show and used to wipe the log. Scroll to the
 	# newest line one frame later: the restored labels have no layout yet, so
 	# an immediate set would clamp to 0.
@@ -7566,7 +7571,7 @@ func build_updates_tab() -> Control:
 		_updates_scroll_log_to_bottom(log_scroll)
 
 	# Restore per-row results from earlier checks this session (the rebuild
-	# used to reset every row to "--", forcing a re-check -- and a re-spend of
+	# used to reset every row to "--", forcing a re-check, and a re-spend of
 	# rate budget -- just to re-see results). Precedence: a download in flight
 	# renders the row inert (a fresh live Update button here would allow a
 	# second concurrent download of the same file); then an available update
@@ -7590,7 +7595,7 @@ func build_updates_tab() -> Control:
 		if _mod_updates_state.has(pk):
 			var upd: Dictionary = _mod_updates_state[pk]
 			var latest_known := str(upd.get("latest_version", ""))
-			# Re-verify against the row's CURRENT version -- the file may have
+			# Re-verify against the row's CURRENT version. The file may have
 			# been updated through another surface since the check ran.
 			if latest_known != "" and compare_versions(str(info["version"]), latest_known) < 0:
 				_updates_arm_row_update(info, latest_known, add_log)
@@ -7728,10 +7733,9 @@ func check_updates_for_ui(status_info: Dictionary, add_log: Callable, _check_btn
 		var pk: String = str(pre_entry.get("profile_key", "")) if not pre_entry.is_empty() else ""
 		var latest_v = latest.get(str(info["mw_id"]), null)
 		if latest_v == null:
-			# Rate-limit hint (spec section 7: what happened + what to do)
-			# lives in the tooltip -- the full sentence would ellipsize in
-			# this narrow column. Falls back to the plain text when no MWS
-			# cooldown is armed.
+			# The rate-limit hint lives in the tooltip: the full sentence
+			# would ellipsize in this narrow column. Falls back to plain
+			# text when no MWS cooldown is armed.
 			var fail_tip := mws_error_status("Check failed")
 			if pk != "":
 				_updates_tab_status[pk] = {"text": "Check failed", "tooltip": fail_tip, "color": COL_ERR}
@@ -7760,7 +7764,7 @@ func check_updates_for_ui(status_info: Dictionary, add_log: Callable, _check_btn
 # ----- modloader self-update check ----------------------------------------
 
 # Fire-and-forget from show_mod_ui. Hits the ModWorkshop versions API for
-# our own mod id, compares the result against MODLOADER_VERSION, and on a
+# the loader's own mod id, compares the result against MODLOADER_VERSION, and on a
 # newer release: recolors the always-visible launch-row version LinkButton
 # (and rewrites its text), and pops a one-shot
 # dialog the first session each new version is detected. All UI mutations
@@ -7778,10 +7782,10 @@ func _check_modloader_update_async() -> void:
 	if latest.is_empty():
 		return
 	_modloader_latest_version = latest
-	# Exact match first: when ModWorkshop publishes the very version we are
+	# Exact match first: when ModWorkshop publishes the very version that is
 	# running (including a prerelease like "3.3.0-beta.1"), there is nothing
 	# to update to -- without this the base-version compare below would flag
-	# our own version as an update every session.
+	# the running version as an update every session.
 	if latest == MODLOADER_VERSION:
 		return
 	# Prerelease-aware gate. compare_versions() mis-parses "3.3.0-beta.1" as
@@ -7800,7 +7804,7 @@ func _check_modloader_update_async() -> void:
 	if base_cmp == 0:
 		# Same base version -- decide on the prerelease suffixes. compare_versions
 		# can't do this: it parses "3.3.0-beta.1" as 3.3.0.1 (the "-beta" segment
-		# reads as 0), which would rank ANY same-base prerelease above the base
+		# reads as 0), which would rank any same-base prerelease above the base
 		# and even flag an OLDER prerelease as an update (a downgrade prompt).
 		var installed_pre := MODLOADER_VERSION.substr(installed_base.length()).lstrip("-")
 		var latest_pre := latest.substr(latest_base.length()).lstrip("-")

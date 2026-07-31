@@ -1,15 +1,15 @@
 ## ----- main_menu_hook.gd -----
 ## Injects a "Mods" button into RTV's main menu (res://Scripts/Menu.gd) that
 ## re-opens the launcher UI post-boot. Any mutation to mod_config.cfg while
-## the UI is open flips _dirty_since_boot; on close we restart into a clean
+## the UI is open flips _dirty_since_boot; closing restarts into a clean
 ## Pass 1 so the new mod set takes effect.
 ##
 ## Implementation uses the same hook machinery mods use:
 ##   1. _seed_core_hooks pre-populates _hooked_methods so the rewriter wraps
 ##      Menu.gd's _ready even when no user mod asked for it. Called from each
 ##      finish path + Pass 1's pre-restart generation so every code path that
-##      produces a hook pack includes our wrap.
-##   2. _register_core_hooks subscribes our injector to menu-_ready-post via
+##      produces a hook pack includes this wrap.
+##   2. _register_core_hooks subscribes the injector to menu-_ready-post via
 ##      the public hook() API. Fired from _emit_frameworks_ready.
 
 const _MENU_SCRIPT_PATH := "res://Scripts/Menu.gd"

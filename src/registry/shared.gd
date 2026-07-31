@@ -21,7 +21,7 @@ func _object_has_property(res: Object, prop: String) -> bool:
 	return false
 
 # Heuristic: does this Resource carry the ItemData shape? We don't use `is
-# ItemData` because that requires the class_name to be registered in our
+# ItemData` because that requires the class_name to be registered in the
 # loader's script scope, which it isn't (ItemData is a game class). Instead
 # check for the canonical `file` field every ItemData (and subclass) defines.
 func _looks_like_item_data(res: Resource) -> bool:
@@ -34,10 +34,10 @@ func _looks_like_item_data(res: Resource) -> bool:
 #
 # Returns true if either the array is untyped, or the item is accepted by the
 # array's declared type. Lets handlers fail fast with a clear warning rather
-# than letting Godot spit cryptic TypedArray errors. This MUST mirror what the
+# than letting Godot spit cryptic TypedArray errors. This must mirror what the
 # engine's own typed-array validation accepts: _array_op_on_resource treats a
 # pass here as "every append will land", so a false positive means the engine
-# silently drops the value at append time while we still report success -- a
+# silently drops the value at append time while the call reports success. A
 # partial batch returned as a full one.
 func _typed_array_accepts(arr: Array, item: Variant) -> bool:
 	if not arr.is_typed():
@@ -135,7 +135,7 @@ func _array_op_on_resource(reg: String, stash_key: Variant, target: Resource, fi
 					working.insert(0, v)
 		"remove_from":
 			for v in values:
-				# Remove ALL matching occurrences, not just the first. Mods
+				# Remove all matching occurrences, not just the first. Mods
 				# saying "remove this" almost always mean every instance.
 				while working.has(v):
 					working.erase(v)

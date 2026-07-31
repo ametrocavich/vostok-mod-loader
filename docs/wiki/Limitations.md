@@ -4,7 +4,7 @@ Things the loader can't do, plus the engine quirks it works around.
 
 ## What this means for players
 
-- **Keep a content mod enabled for any save you created with it.** If a save stops loading after you change your mod list, re-enable the mod you removed and try again -- the save itself is not corrupted. Details in the next section.
+- **Keep a content mod enabled for any save you created with it.** If a save stops loading after you change your mod list, re-enable the mod you removed and try again. The save itself is not corrupted. Details in the next section.
 - **Changing mods requires restarting the game.** Mods can't be added, removed, or reloaded while the game is running.
 - **Mods built with Godot 4.7 or newer won't load if they ship as a `.pck` file.** The loader rejects them with a warning that names the Godot version they were exported with. Ask the mod author for a `.zip` version or a Godot 4.6 build.
 - **Some badly-packaged `.zip` mods are rejected** because they were zipped with Windows-style backslash paths inside. The loader logs this when it happens; the mod author needs to re-pack the zip (7-Zip packs it correctly).
@@ -13,7 +13,7 @@ Things the loader can't do, plus the engine quirks it works around.
 
 Mods that register game content -- items, recipes, loot, and similar -- add that content through the [registry](Registry) at launch. Mod-registered items live only in the registry's own table; they are **not** merged into the game's built-in master item list. The table is rebuilt from the enabled mods every launch.
 
-That means: if you create a save while a content mod is enabled, then **disable or remove that mod**, loading the save (Continue) can fail or crash -- the content it refers to is no longer registered, so the game can't resolve it.
+That means: if you create a save while a content mod is enabled, then **disable or remove that mod**, loading the save (Continue) can fail or crash. The content it refers to is no longer registered, so the game can't resolve it.
 
 The save file itself is **not corrupted**. Re-enabling the mod brings the content back and the save loads fully again.
 
@@ -64,7 +64,7 @@ Hooks on methods in these scripts won't fire. Mods should hook alternative call 
 
 Resource-serialized scripts in [`RTV_RESOURCE_SERIALIZED_SKIP` in src/constants.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd) (save data -- `CharacterSave`, `ContainerSave`, `FurnitureSave`, `ItemSave`, `Preferences`, `ShelterSave`, `SlotData`, `SwitchSave`, `TraderSave`, `Validator`, `WorldSave`) aren't rewritten -- `ResourceSaver` embeds the script path into user save files, and wrapping the script would make saves mod-dependent.
 
-Data-resource scripts in [`RTV_RESOURCE_DATA_SKIP` in src/constants.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd) (25 entries: `AIWeaponData`, `AttachmentData`, `ItemData`, `LootTable`, `Recipes`, etc.) aren't rewritten -- they're loaded from `res://` only, have no call sites to intercept. Mods should hook the consumers instead.
+Data-resource scripts in [`RTV_RESOURCE_DATA_SKIP` in src/constants.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd) (25 entries: `AIWeaponData`, `AttachmentData`, `ItemData`, `LootTable`, `Recipes`, etc.) aren't rewritten. They're loaded from `res://` only, have no call sites to intercept. Mods should hook the consumers instead.
 
 ### Scene-preload deferred compile
 
@@ -74,7 +74,7 @@ Data-resource scripts in [`RTV_RESOURCE_DATA_SKIP` in src/constants.gd](https://
 
 **Workaround**: the activator in [src/hook_pack.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd) skips eager compile for these scripts -- VFS mount precedence (`.gd` + `.gd.remap` + empty `.gdc`) still serves the rewrite when game code lazy-loads them AFTER mod overrides run.
 
-**Exception**: registry targets (currently `Database.gd`, see `REGISTRY_TARGETS` in src/hook_pack.gd) MUST force-activate so the injected `_rtv_mod_scenes` / `_rtv_override_scenes` / `_get()` are live on the autoload instance when mods call `lib.register`. Registry targets don't have the ext_resource staleness problem because mods don't `take_over_path` them -- they use the registry API instead.
+**Exception**: registry targets (currently `Database.gd`, see `REGISTRY_TARGETS` in src/hook_pack.gd) MUST force-activate so the injected `_rtv_mod_scenes` / `_rtv_override_scenes` / `_get()` are live on the autoload instance when mods call `lib.register`. Registry targets don't have the ext_resource staleness problem because mods don't `take_over_path` them. They use the registry API instead.
 
 ### Direct const access bypasses `_get()`
 
@@ -124,11 +124,11 @@ if some_condition:
 	pass  # [Autofix] injected -- original block had no body
 ```
 
-Also migrates `tool` -> `@tool`, `onready var` -> `@onready var`, `export var` -> `@export var`. Does NOT touch `export(Type) var` -- that needs type-annotation transform (left for a future pass).
+Also migrates `tool` -> `@tool`, `onready var` -> `@onready var`, `export var` -> `@export var`. Does NOT touch `export(Type) var`. That needs type-annotation transform (left for a future pass).
 
 ### `super()` rewriting
 
-When the rewriter renames `func CheckVersion():` to `func _rtv_vanilla_CheckVersion():` and the body contains bare `super()`, Godot's strict reload looks for `_rtv_vanilla_CheckVersion` on the parent -- which vanilla doesn't have. Result: reload failure.
+When the rewriter renames `func CheckVersion():` to `func _rtv_vanilla_CheckVersion():` and the body contains bare `super()`, Godot's strict reload looks for `_rtv_vanilla_CheckVersion` on the parent, which vanilla doesn't have. Result: reload failure.
 
 [`_rewrite_bare_super` in src/rewriter_rewrite.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter_rewrite.gd) rewrites bare `super(` to `super.<orig_name>(` inside renamed bodies. `super.OtherMethod()` passes through untouched (already explicit).
 
@@ -143,7 +143,7 @@ BAD ZIP: <n> entries use Windows backslash paths.
   Re-pack with 7-Zip. Example bad entry: 'MyMod\Main.gd'
 ```
 
-Not auto-fixed -- users re-pack with 7-Zip or similar.
+Not auto-fixed. Users re-pack with 7-Zip or similar.
 
 ### Mod-shadowed global_script_class_cache
 
@@ -204,4 +204,4 @@ Workaround (`_generate_hook_pack` in [src/hook_pack.gd](https://github.com/ametr
 - Hot-reload of mods without a full restart.
 - `export(Type) var` -> `@export var X: Type` auto-migration (the autofix doesn't handle typed exports).
 - Mods that add new `class_name` declarations that collide with vanilla.
-- Calling `lib.hook` before `frameworks_ready` from a mod that isn't an autoload -- mod scene scripts can't register hooks until the tree is up.
+- Calling `lib.hook` before `frameworks_ready` from a mod that isn't an autoload. Mod scene scripts can't register hooks until the tree is up.

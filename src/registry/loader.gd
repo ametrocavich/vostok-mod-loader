@@ -4,7 +4,7 @@
 ## The rewriter injects into Loader.gd:
 ##   - _rtv_mod_scene_paths / _rtv_override_scene_paths dicts
 ##   - _rtv_vanilla_shelters snapshot (for revert)
-##   - const `shelters` rewritten to a var (so we can append)
+##   - const `shelters` rewritten to a var, so entries can be appended
 ##   - a prelude at the top of LoadScene that checks the dicts and sets
 ##     scenePath + gameData flags before the vanilla if-elif runs
 ##
@@ -19,7 +19,7 @@
 ##     remove / revert: standard
 ##
 ## - shelters: append-only list of shelter NAMES (each name must also be a
-##   resolvable scene; pass `{path, ...}` and we'll auto-register in
+##   resolvable scene; pass `{path, ...}` to auto-register in
 ##   scene_paths too, or pass just {} if the name is already a vanilla
 ##   scene or was pre-registered via scene_paths)
 ##     register: {path?: String, menu?: bool, shelter?: bool, ...}
@@ -50,6 +50,21 @@ func _vanilla_scene_const_exists(ldr: Node, id: String) -> bool:
 		_vanilla_scene_const_built = true
 	return _vanilla_scene_const_cache.has(id)
 
+# Reject a scene path that does not resolve to a real resource.
+#
+# Registration is the last point where this is recoverable. Once a bad path
+# reaches gameData.scenePath, vanilla has already frozen gameData,
+# change_scene_to_file() returns ERR_CANT_OPEN and vanilla discards the error,
+# and Interactor's isTransitioning flag is cleared only by the Compiler in the
+# scene that never loads. UIManager then swallows the settings action, so the
+# pause menu is unreachable and the only way out is force-quitting.
+func _scene_path_exists(verb: String, kind: String, id: String, path: String) -> bool:
+	if ResourceLoader.exists(path):
+		return true
+	push_warning("[Registry] %s('%s', '%s'): scene '%s' does not exist -- not registered. A missing scene freezes the loading screen with no way back to the menu, so this is refused rather than deferred to runtime. Check the path and that the file shipped in your mod archive." \
+			% [verb, kind, id, path])
+	return false
+
 # -------- scene_paths --------
 
 func _register_scene_path(id: String, data: Variant) -> bool:
@@ -59,6 +74,8 @@ func _register_scene_path(id: String, data: Variant) -> bool:
 	var d: Dictionary = data
 	if not d.has("path") or not (d["path"] is String):
 		push_warning("[Registry] register('scene_paths', '%s'): data requires string 'path' key" % id)
+		return false
+	if not _scene_path_exists("register", "scene_paths", id, d["path"]):
 		return false
 	var ldr := _loader_node()
 	if ldr == null:
@@ -92,6 +109,8 @@ func _override_scene_path(id: String, data: Variant) -> bool:
 	if not d.has("path") or not (d["path"] is String):
 		push_warning("[Registry] override('scene_paths', '%s'): data requires string 'path' key" % id)
 		return false
+	if not _scene_path_exists("override", "scene_paths", id, d["path"]):
+		return false
 	var ldr := _loader_node()
 	if ldr == null:
 		return false
@@ -109,9 +128,9 @@ func _override_scene_path(id: String, data: Variant) -> bool:
 	var ov: Dictionary = _registry_overridden.get("scene_paths", {})
 	if not ov.has(id):
 		# Stash the original. For vanilla, that's {path: <const value>} with
-		# the appropriate flags (we don't know them without replicating the
-		# if-elif, so stash minimally and on revert we just clear the
-		# override; vanilla's if-elif handles the restore naturally).
+		# the appropriate flags. Those are not knowable without
+		# replicating the if-elif, so stash minimally; revert just clears
+		# the override and vanilla's if-elif restores naturally.
 		if is_vanilla_const:
 			ov[id] = {"vanilla": true}
 		else:
@@ -157,7 +176,7 @@ func _patch_scene_path(id: String, fields: Dictionary) -> bool:
 				stash[fname] = "__rtv_missing__"
 		target_dict[fname] = fields[field]
 	# Write back since dicts are references in GDScript, but re-store to be
-	# explicit (helps readers and matches our pattern).
+	# explicit, matching the surrounding pattern.
 	if target_store == "override":
 		ldr._rtv_override_scene_paths[id] = target_dict
 	else:
@@ -271,17 +290,17 @@ func _revert_scene_path(id: String, fields: Array) -> bool:
 #
 # The shelters list holds bare strings (vanilla shelter names). Registering
 # a shelter or map also requires a scene behind the name; if the mod
-# provides `path`, we auto-register a paired scene_paths entry so
-# LoadScene(name) works. Otherwise we assume the name is already resolvable
+# provides `path`, a paired scene_paths entry is auto-registered so
+# LoadScene(name) works. Otherwise the name is assumed already resolvable
 # (vanilla, or previously registered).
 #
-# The shelters and maps registries share storage and behavior -- they
+# The shelters and maps registries share storage and behavior. They
 # differ only in the default `shelter` flag (true for shelters, false for
 # maps). The `shelter` flag controls TWO related things:
 #   1. gameData.shelter -- flipped during LoadScene's prelude (sets HUD/world state)
 #   2. Loader.LoadShelter(name) call in Compiler.Spawn() -- loads/saves
 #      per-shelter persistent state (furniture, stash). Maps don't get this.
-# The vanilla concept of "shelter" lumps both together; we follow suit.
+# The vanilla concept of "shelter" lumps both together, and so does this.
 #
 # Full registration schema (all optional except `path` for newly-added
 # scenes):
@@ -358,7 +377,7 @@ func _register_shelter_or_map(id: String, data: Variant, default_shelter: bool, 
 		if d.has("menu"): sp_data["menu"] = d["menu"]
 		if d.has("permadeath"): sp_data["permadeath"] = d["permadeath"]
 		if d.has("tutorial"): sp_data["tutorial"] = d["tutorial"]
-		# transition_text lives on the scene_paths entry too -- the LoadScene
+		# transition_text lives on the scene_paths entry too. The LoadScene
 		# prelude reassigns the `scene` arg from this so vanilla's label
 		# code shows the modded label.
 		sp_data["transition_text"] = entry["transition_text"]
@@ -422,6 +441,8 @@ func _register_random_scene(id: String, data: Variant) -> bool:
 		return false
 	if not (data is Dictionary) or not data.has("path") or not (data["path"] is String):
 		push_warning("[Registry] register('random_scenes', '%s', ...) expects Dictionary with 'path' key" % id)
+		return false
+	if not _scene_path_exists("register", "random_scenes", id, data["path"]):
 		return false
 	var reg: Dictionary = _registry_registered.get("random_scenes", {})
 	if reg.has(id):

@@ -2,7 +2,7 @@
 # REGISTRY_INJECTIONS map below get extra code appended: a runtime dict for
 # mod-registered entries and a _get() override that serves them transparently.
 # Vanilla game code calling Node.get(name) falls through to _get() when the
-# name isn't a declared property/const, which is how we expose mod data
+# name isn't a declared property/const, which is how mod data is exposed
 # without modifying the vanilla lookup call sites.
 func _rtv_registry_injection(filename: String, indent: String) -> String:
 	match filename:
@@ -26,7 +26,7 @@ func _rtv_registry_injection(filename: String, indent: String) -> String:
 			return ""
 
 func _rtv_inject_database_registry(indent: String) -> String:
-	# Database.gd is just an appendix here. The REAL transform is done up
+	# Database.gd is just an appendix here. The real transform is done up
 	# front in _rtv_rewrite_database_constants(): every vanilla `const X =
 	# preload(...)` is converted to an entry in _rtv_vanilla_scenes, so
 	# Database.get() can route through _get() and pick up mod overrides.
@@ -61,7 +61,7 @@ func _rtv_inject_database_registry(indent: String) -> String:
 #
 # ExecuteUpdate() in @tool mode reads get_script_constant_map() to build
 # LT_Master at edit time. That's editor-only and irrelevant to runtime
-# modding, but we also swap that call for an iteration over
+# modding, but that call is also swapped for an iteration over
 # _rtv_vanilla_scenes so @tool still works if someone opens the script.
 # ANCHOR: vanilla Database.gd -- top-level `const X = preload("...")` declarations; silent no-op if the game changes the decl style.
 func _rtv_rewrite_database_constants(source: String) -> String:
@@ -70,7 +70,7 @@ func _rtv_rewrite_database_constants(source: String) -> String:
 	var out_lines: PackedStringArray = []
 	# Regex: top-level `const NAME = preload("path")` with optional trailing
 	# comment. Captures the name and the full preload expression verbatim so
-	# we don't disturb whitespace/quoting.
+	# whitespace and quoting are left undisturbed.
 	var re := RegEx.new()
 	# Detokenized source never carries comments (the tokenizer drops them),
 	# but the plain-text fallback path in _detokenize_script can.
@@ -85,11 +85,11 @@ func _rtv_rewrite_database_constants(source: String) -> String:
 		# Not survivable silently: the registry appendix appended later
 		# references _rtv_vanilla_scenes, which only this transform declares.
 		# Without it the rewritten Database.gd fails to compile, killing
-		# Database hooks AND the scenes registry in one stroke.
+		# Database hooks and the scenes registry in one stroke.
 		_log_critical("[RTVCodegen] Database.gd: vanilla const layout changed (no 'const X = preload(...)' found) -- the scenes registry and Database hooks will NOT work. Update the modloader.")
 		return source
 	# Inject the dict var right after the extends/script-annotation preamble.
-	# Safe place: before any function. Walk until we find the first `func ` or
+	# Safe place: before any function. Walk to the first `func ` or
 	# class_name and insert above it. If none found, append at end.
 	var dict_block := "\n# --- Metro mod loader: vanilla scene dict (rewritten from const declarations) ---\n" \
 		+ "var _rtv_vanilla_scenes: Dictionary = {\n" \
@@ -134,7 +134,7 @@ func _rtv_rewrite_loader_shelters(source: String) -> String:
 	if not changed:
 		# `shelters` stays const, so the appended add_shelter()/registry
 		# appends will fail at runtime. Only user-impacting when a mod
-		# actually uses the registry/B_Loader surface -- which is gated by
+		# actually uses the registry/B_Loader surface, which is gated by
 		# _any_mod_declared_registry.
 		if _any_mod_declared_registry:
 			_log_critical("[RTVCodegen] Loader.gd: vanilla 'const shelters' declaration not found (game update?) -- mod shelters/maps will NOT work. Update the modloader.")
@@ -144,8 +144,8 @@ func _rtv_rewrite_loader_shelters(source: String) -> String:
 	return "\n".join(lines)
 
 # Function-body prelude injection dispatcher. Returns lines array (may be
-# unchanged). Called after the rename pass -- the target function has
-# already been renamed to _rtv_vanilla_<Name>, so we look for the renamed
+# unchanged). Called after the rename pass. The target function has
+# already been renamed to _rtv_vanilla_<Name>, so match the renamed
 # signature.
 func _rtv_apply_prelude_injections(filename: String, lines: PackedStringArray, rename_prefix: String, indent_unit: String = "\t") -> PackedStringArray:
 	match filename:
@@ -169,7 +169,7 @@ func _rtv_apply_prelude_injections(filename: String, lines: PackedStringArray, r
 # If the function has multiple blank lines at the top of its body, the
 # prelude slots in before them.
 #
-# `after_var_decls`: when true, insertion happens AFTER the run of leading
+# `after_var_decls`: when true, insertion happens after the run of leading
 # `var ...` and blank lines at the top of the body, rather than directly
 # under the signature. Use this when the prelude needs to reference a
 # local declared by vanilla (e.g. Compiler.Spawn's `spawnTarget`).
@@ -205,7 +205,7 @@ func _rtv_inject_prelude(lines: PackedStringArray, func_name: String, prelude_li
 	if after_var_decls:
 		# Advance past leading body lines that are blank or indented `var ...`
 		# declarations. Stop on the first indented line that isn't a var
-		# declaration. If we hit a top-level line first (next func or EOF),
+		# declaration. If a top-level line comes first (next func or EOF),
 		# the function body was empty -- fall back to inserting at signature.
 		var j := sig_target + 1
 		while j < lines.size():
@@ -214,7 +214,7 @@ func _rtv_inject_prelude(lines: PackedStringArray, func_name: String, prelude_li
 			if stripped == "":
 				j += 1
 				continue
-			# Top-level line means we ran out of body.
+			# Top-level line means the body ended.
 			if not (ln.begins_with("\t") or ln.begins_with(" ")):
 				break
 			if stripped.begins_with("var "):
@@ -247,19 +247,19 @@ func _rtv_inject_prelude(lines: PackedStringArray, func_name: String, prelude_li
 # the top of the function; on match, sets `scenePath` and applies the
 # mod's gameData flag overrides. Does NOT early-return.
 #
-# Design rationale: vanilla LoadScene's structure is:
+# vanilla LoadScene's structure is:
 #     FadeInLoading(); gameData.freeze = true
 #     <label visibility setup>
 #     if scene == "Cabin": scenePath = Cabin; <flags>
 #     elif ...
 #     <tail> await timer; get_tree().change_scene_to_file(scenePath)
 #
-# We insert right after the func signature, so our prelude runs BEFORE
-# the fade/label setup AND the if-elif. If the scene name is a mod
-# registration, we set scenePath + flags here. The if-elif then falls
+# Inserted right after the func signature, so the prelude runs before
+# the fade/label setup and the if-elif. If the scene name is a mod
+# registration, scenePath and flags are set here. The if-elif then falls
 # through with no match (mod names aren't vanilla), and the tail code
-# picks up our scenePath for change_scene_to_file. Vanilla fade/label
-# setup still runs (harmless side-effects we want).
+# picks up that scenePath for change_scene_to_file. Vanilla fade/label
+# setup still runs, which is the desired side-effect.
 #
 # This means mod scene_paths registrations:
 #   - reuse vanilla's full loading flow (fade, label, timer, scene change)
@@ -304,7 +304,7 @@ func _rtv_inject_loader_registry(indent: String) -> String:
 	# Also injects B_Loader compat shim methods (add_shelter / add_map) so
 	# mods written against the BitByteBytes B_Loader project keep working
 	# without requiring B_Loader as a dependency. The shim translates the
-	# legacy dict shape (map_name + scene_path) to our internal entry
+	# legacy dict shape (map_name + scene_path) to the internal entry
 	# format and writes directly to _rtv_mod_shelters + shelters +
 	# _rtv_mod_scene_paths, mirroring what _register_shelter_or_map does on
 	# the RTVModLib side. Mods can migrate to lib.register at their own
@@ -345,7 +345,7 @@ func _rtv_inject_loader_registry(indent: String) -> String:
 	out += I2 + "push_warning(\"[B_Loader compat] '\" + id + \"' already in vanilla shelters list\")\n"
 	out += I2 + "return false\n"
 	out += I1 + "var is_shelter: bool = bool(d.get(\"shelter\", default_shelter))\n"
-	# B_Loader uses 'scene_path'; our schema uses 'path'. Accept both.
+	# B_Loader uses 'scene_path'; this schema uses 'path'. Accept both.
 	out += I1 + "var scene_path: String = String(d.get(\"path\", d.get(\"scene_path\", \"\")))\n"
 	out += I1 + "var entry: Dictionary = {\n"
 	out += I2 + "\"shelter\": is_shelter,\n"
@@ -381,7 +381,7 @@ func _rtv_inject_loader_registry(indent: String) -> String:
 # mod-registered replacement for the current zone.
 #
 # Pattern matched: the exact 5-line block `if zone == Zone.Foo: agent = bar`
-# -- we search for leading-whitespace + `agent =` and rewrite it. Only
+#. We search for leading-whitespace + `agent =` and rewrite it. Only
 # vanilla fields (bandit/guard/military/punisher) should trigger this; any
 # other `agent = <literal>` outside those cases is left alone.
 # ANCHOR: vanilla AISpawner.gd::_ready -- `agent = <ident>` assignment lines inside the Zone if/elif; silent no-op if the mapping moves.
@@ -420,7 +420,7 @@ func _rtv_rewrite_aispawner_agent_assignments(source: String) -> String:
 # FishPool instance filters by its own node name (or "all" as a wildcard).
 #
 # Dedupe: if a mod registers the same scene twice (or another mod does too),
-# we don't re-append. Keeps the random-pick weight stable when the same
+# re-appending is skipped. Keeps the random-pick weight stable when the same
 # scene would otherwise multiply.
 # ANCHOR: vanilla FishPool.gd::_ready -- relies on local `species: Array[PackedScene]` declared before the random-spawn loop.
 func _rtv_fishpool_ready_prelude() -> PackedStringArray:
@@ -449,7 +449,7 @@ func _rtv_fishpool_ready_prelude() -> PackedStringArray:
 #      mod entry name), pre-set spawnTarget to that entry's
 #      entrance_spawn -- vanilla's if-elif then runs LoadWorld/LoadChar
 #      etc as normal but its inner `if previousMap == ...` checks only
-#      know vanilla map names, so our spawnTarget survives. Fall through
+#      know vanilla map names, so the registered spawnTarget survives. Fall through
 #      to vanilla so it handles the rest.
 #
 # Conditions for handling are checked against Loader._rtv_mod_shelters
@@ -472,7 +472,7 @@ func _rtv_compiler_spawn_prelude() -> PackedStringArray:
 	p.append("\t\t\t\tLoader.LoadShelter(_rtv_mn)")
 	p.append("\t\t\tSimulation.simulate = true")
 	p.append("\t\t\tspawnTarget = String(_rtv_entry.get(\"exit_spawn\", \"\"))")
-	# Run the transition-pose loop ourselves so we can early-return. Reuses
+	# Run the transition-pose loop inline so it can early-return. Reuses
 	# vanilla's `transitions` local declared above (the prelude lands after
 	# var decls thanks to after_var_decls=true on the inject call).
 	p.append("\t\t\tif spawnTarget != \"\":")
@@ -514,7 +514,7 @@ func _rtv_compiler_spawn_prelude() -> PackedStringArray:
 	p.append("\t\t\t\t\t\t_rtv_inst.rotation_degrees = _rtv_item[\"rotation\"]")
 	p.append("\t\t\t\t\t_rtv_content.add_child(_rtv_inst)")
 	# Refresh the locals `transitions` and `waypoints`: vanilla captured
-	# them at the top of Spawn() BEFORE our connected_content was added,
+	# them at the top of Spawn() before connected_content was added,
 	# so any Transition / AI_WP node inside the freshly spawned scenes
 	# wouldn't be in the original snapshot. Without this, the tail's
 	# pose-loop misses the entrance_spawn target and any modded waypoint
@@ -572,6 +572,11 @@ func _rtv_inject_ai_registry(indent: String) -> String:
 	out += I1 + I1 + I1 + "continue\n"
 	out += I1 + I1 + "if bool(e.get(\"replace\", false)):\n"
 	out += I1 + I1 + I1 + "for child in weapons.get_children():\n"
+	# Unparent before freeing. queue_free() defers deletion to the end of the
+	# frame, so on its own it leaves the replaced weapons in get_children() for
+	# the rest of this call. Vanilla then picks one at random and reads
+	# weapon/weaponData/muzzle off a node that is about to disappear.
+	out += I1 + I1 + I1 + I1 + "weapons.remove_child(child)\n"
 	out += I1 + I1 + I1 + I1 + "child.queue_free()\n"
 	out += I1 + I1 + "var scene: PackedScene = e.get(\"weapon_scene\")\n"
 	out += I1 + I1 + "if scene == null:\n"
@@ -587,8 +592,8 @@ func _rtv_inject_ai_registry(indent: String) -> String:
 	out += "func _rtv_ai_category() -> String:\n"
 	# self.boss is set by AISpawner.CreatePools() (true for the punisher
 	# in BPool, false for the regular agents in APool). AISpawner is the
-	# back-reference also set there. Without AISpawner we can't tell which
-	# zone-driven category this AI belongs to, so we bail.
+	# back-reference also set there. Without AISpawner there is no way to tell
+	# which zone-driven category this AI belongs to, so bail.
 	out += I1 + "if boss:\n"
 	out += I1 + I1 + "return \"Punisher\"\n"
 	out += I1 + "if AISpawner == null:\n"
@@ -615,7 +620,7 @@ func _rtv_inject_aispawner_registry(indent: String) -> String:
 	# AISpawner.gd registry appendix. Adds the resolver helper used by the
 	# rewritten `agent = _rtv_resolve_ai_type(zone, vanilla)` assignments.
 	# The override lookup goes through Engine metadata rather than node
-	# instance state because AISpawner is a per-scene Node3D -- there are
+	# instance state because AISpawner is a per-scene Node3D. There are
 	# multiple instances, and mods write to one shared registry that every
 	# spawner reads on _ready.
 	#

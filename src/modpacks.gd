@@ -15,8 +15,10 @@
 ## Conventions:
 ##   modpack__<sanitized_name>           -- live state of an applied modpack
 ##   _before_modpack_<sanitized_name>    -- backup of pre-apply state
-##   [settings] active_modpack=<name>    -- which modpack is currently active
-##   [settings] modpack_backup_profile   -- which profile to restore on unload
+##   [settings] active_modpack=<name>   , which modpack is currently active
+##   [settings] modpack_backup_profile  , which profile to restore on unload
+##   [settings] modpack_backup_valid     -- apply wrote a backup (possibly an
+##                                          empty one; see unload_modpack)
 ##
 ## State machine. Transitions are owned by: apply_modpack/_apply_modpack_inner
 ## (no-pack -> active), unload_modpack (active -> no-pack), the boot reconciler
@@ -30,7 +32,7 @@
 ##                clears the flag without erasing them; the next apply's
 ##                step 1 erase cleans stale ones up.
 ##   DOWNLOADING  apply_modpack is awaiting missing-mod downloads. No profile,
-##                backup, override, or MCM state has been touched yet -- a
+##                backup, override, or MCM state has been touched yet. A
 ##                crash or Cancel here only leaves downloaded zips in /mods/
 ##                and cached [mod_sources] entries (both harmless). Concurrent
 ##                applies are serialized by _modpack_apply_in_progress; Cancel
@@ -56,11 +58,11 @@
 ##                A hard failure after step 1 (e.g. a materialize error)
 ##                returns with the flag still set; the next boot's reconciler
 ##                clears it.
-##   ACTIVE       active_modpack=<name>, active_profile=modpack__<name>,
+##   Active       active_modpack=<name>, active_profile=modpack__<name>,
 ##                backup slot sections + overrides manifest on disk. Re-apply
 ##                in this state is downloads-only (never touches backups,
 ##                restore points, profile slots, or MCM).
-##   UNLOADING    unload_modpack: aborts with profiles untouched when BOTH
+##   UNLOADING    unload_modpack: aborts with profiles untouched when both
 ##                backup sections are missing (corruption guard); otherwise
 ##                1. restore backup sections into the pre-apply profile slot,
 ##                2. erase backup sections, clear both [settings] flags,
@@ -79,14 +81,14 @@
 ##     active_profile to the first user profile and clear the flag.
 ##   - active_modpack is set but active_profile isn't that pack's slot (crash
 ##     between apply steps 1 and 4): best-effort override restore via the
-##     manifest -- a no-op if the crash predates step 3 writing it, the window
-##     the manual Restore button covers -- then clear the flag.
+##     manifest. A no-op if the crash predates step 3 writing it, the window
+##     the manual Restore button covers, then clear the flag.
 ##
 ## Invariants:
 ##   - Downloads strictly precede state mutation; the mutation phase does no
 ##     network I/O.
 ##   - The independent restore point (user://.modpack_backups/, one per fresh
-##     apply) is only ever taken while NO pack is active, and the apply/
+##     apply) is only ever taken while no pack is active, and the apply/
 ##     unload/reconcile machinery never consumes it -- only pruning to the
 ##     MODPACK_SNAPSHOT_KEEP newest deletes one.
 ##   - The _before_modpack_ backup slot is created at apply step 1 and torn
@@ -100,9 +102,9 @@
 const MODPACK_PROFILE_PREFIX := "modpack__"
 const MODPACK_BACKUP_PREFIX := "_before_modpack_"
 
-# Paths inside a modpack zip that should NOT be applied as user:// overrides.
+# Paths inside a modpack zip that should not be applied as user:// overrides.
 # Anything matching any of these prefixes (relative to user://) is silently
-# dropped during apply -- the modpack can ship them in its zip but they
+# dropped during apply. The modpack can ship them in its zip but they
 # won't take effect. These are launcher-internal: modpacks must not affect
 # the modloader's own state files, snapshot dirs, or caches.
 const MODPACK_OVERRIDE_DENY_PREFIXES: Array[String] = [
@@ -111,8 +113,22 @@ const MODPACK_OVERRIDE_DENY_PREFIXES: Array[String] = [
 	".modpack_backups/",       # pre-apply restore points -- packs must not poison them
 	"mws_cache/",              # Browse-tab thumbnail / API cache
 	"vmz_mount_cache/",        # archive mount tmpdir
-	"modloader_",              # heartbeat, safe-mode, pass-state, etc.
+	"modloader_",              # heartbeat, safe-mode, conflicts, hooks, etc.
+	# The pass state is the one loader state file that does not carry the
+	# modloader_ prefix, so the line above never covered it. It has to be
+	# listed by name: boot.gd reads archive_paths and hook_pack_path out of
+	# it during [autoload_prepend] and load_resource_pack()s them before the
+	# security scanner or any profile gating runs. A pack that could write
+	# this file could mount arbitrary code at boot. Keep in sync with
+	# constants.gd PASS_STATE_PATH.
+	"mod_pass_state.cfg",
 ]
+
+# Resource-pack formats the engine can mount. A modpack has no legitimate
+# reason to drop one into user://, and boot.gd hands exactly these to
+# load_resource_pack(), so refuse them outright rather than relying on the
+# pass-state deny above to keep them unreferenced.
+const MODPACK_OVERRIDE_DENY_EXTENSIONS: Array[String] = ["pck", "vmz"]
 
 # Profile names the modpack system manages internally. The Mods tab dropdown
 # filters these out so the user only sees profiles they explicitly created.
@@ -154,7 +170,7 @@ func _count_truthy(d: Dictionary) -> int:
 
 # Pre-apply validation: open the zip, parse profile.json, sanity-check the
 # schema. Catches malformed zips, missing profile.json, wrong schema version,
-# missing required fields BEFORE apply has touched any state. Returns
+# missing required fields before apply has touched any state. Returns
 # {ok: bool, error: String, enabled_count: int, total_count: int}.
 func _validate_modpack(entry: Dictionary) -> Dictionary:
 	var file_path: String = str(entry.get("file_path", ""))
@@ -274,7 +290,7 @@ func collect_modpack_metadata() -> Array[Dictionary]:
 
 	# Dedupe by sanitized_name. Without this, two zips whose names sanitize
 	# to the same key both match the single active_modpack string in
-	# mod_config.cfg -- both rows get tagged ACTIVE which is misleading.
+	# mod_config.cfg -- both rows get tagged active which is misleading.
 	# Keep the newest by file mtime, attach the dropped files as
 	# duplicates_hidden so the UI can surface them.
 	if entries.size() > 1:
@@ -318,35 +334,53 @@ func get_active_modpack() -> String:
 		return ""
 	return str(cfg.get_value("settings", "active_modpack", ""))
 
-# True when a path inside the modpack zip should be skipped during override
-# apply -- path traversal attempts and modloader-internal paths.
-func _modpack_override_path_allowed(rel: String) -> bool:
-	# Normalize before checking: zip entry names are attacker-controlled and
-	# Windows resolves paths case-insensitively with either separator, so the
-	# deny checks must run against a lowercased, forward-slash form. Callers
-	# keep using the original rel for the actual write path.
-	var norm := rel.replace("\\", "/").to_lower()
+# Vet a path inside the modpack zip and return the form callers must actually
+# use, or "" when the entry is denied (path traversal, modloader-internal
+# state, mountable resource packs).
+#
+# Returning the normalized path rather than a bool is the whole point. Zip
+# entry names are attacker-controlled, and the OS resolves "./mod_config.cfg"
+# and "mod_config.cfg" to the same file -- Godot's FileAccessWindows runs
+# simplify_path() before it opens anything, and POSIX collapses "." in the
+# kernel. A gate that checks one spelling while the caller writes another is
+# not a gate at all: every deny prefix below is a begins_with, so a single
+# leading "./" used to walk straight past all of them. Check and write the
+# same string, always.
+func _modpack_override_rel(rel: String) -> String:
+	# Lowercase only for MATCHING (Windows resolves case-insensitively); the
+	# returned path keeps its original case so the write lands where the pack
+	# author meant it to.
+	var norm := rel.replace("\\", "/").simplify_path()
+	var probe := norm.to_lower()
 	if norm.is_empty():
-		return false
-	if norm.contains(".."):
-		return false
+		return ""
+	# simplify_path turns a bare "./" into ".". A directory reference, not a
+	# file. Nothing downstream should try to open it as one.
+	if probe == "." or probe.ends_with("/"):
+		return ""
+	# simplify_path resolves interior "..", but a leading one it cannot cancel
+	# survives verbatim, so this still has to be checked after normalizing.
+	if probe.contains(".."):
+		return ""
 	# Blocks Windows drive-letter and NTFS alternate-data-stream tricks;
 	# legitimate zip entries never contain ":".
-	if norm.contains(":"):
-		return false
-	if norm.begins_with("/"):
-		return false
+	if probe.contains(":"):
+		return ""
+	if probe.begins_with("/"):
+		return ""
 	# MCM/ is handled by the per-profile MCM snapshot mechanic, not the
 	# generic overrides flow -- exclude it here.
-	if norm.begins_with("mcm/"):
-		return false
+	if probe.begins_with("mcm/"):
+		return ""
 	# profile.json is the schema, not an override.
-	if norm == "profile.json":
-		return false
+	if probe == "profile.json":
+		return ""
+	if probe.get_extension() in MODPACK_OVERRIDE_DENY_EXTENSIONS:
+		return ""
 	for prefix in MODPACK_OVERRIDE_DENY_PREFIXES:
-		if norm.begins_with(prefix):
-			return false
-	return true
+		if probe.begins_with(prefix):
+			return ""
+	return norm
 
 # Apply the modpack's non-MCM, non-profile.json files as user:// overrides.
 # Snapshots any pre-existing originals to the backup slot, copies the
@@ -368,12 +402,16 @@ func _apply_modpack_overrides(entry: Dictionary, backup_profile: String) -> int:
 	var manifest := {"replaced": [] as Array, "added": [] as Array}
 	var applied := 0
 
-	for f in reader.get_files():
-		if f.ends_with("/"):
+	for raw_f in reader.get_files():
+		if raw_f.ends_with("/"):
 			continue
-		if not _modpack_override_path_allowed(f):
+		# f is the vetted, normalized spelling -- use it for the write path and
+		# the manifest, never raw_f. The manifest is what unload replays, so a
+		# mismatch here would revert a different file than the one replaced.
+		var f := _modpack_override_rel(raw_f)
+		if f.is_empty():
 			continue
-		var bytes := reader.read_file(f)
+		var bytes := reader.read_file(raw_f)
 		var user_path := "user://" + f
 		var existed := FileAccess.file_exists(user_path)
 		if existed:
@@ -407,11 +445,11 @@ func _apply_modpack_overrides(entry: Dictionary, backup_profile: String) -> int:
 	reader.close()
 
 	# Persist the manifest. Unload reads this to know what to revert. A failed
-	# write is LOUD: without a fresh manifest, unload either restores per a
+	# write is loud: without a fresh manifest, unload either restores per a
 	# stale manifest from an earlier apply (wrong files) or treats the apply as
 	# "nothing overridden" and wipes the backup slot with the snapshots inside
 	# -- both lose the user's originals. The pre-apply restore point still
-	# covers recovery, so we warn rather than abort.
+	# covers recovery, so this warns rather than aborts.
 	DirAccess.make_dir_recursive_absolute(backup_root)
 	var manifest_path := backup_root.path_join("overrides_manifest.json")
 	var mf := FileAccess.open(manifest_path, FileAccess.WRITE)
@@ -439,7 +477,7 @@ func _restore_modpack_overrides(backup_profile: String) -> bool:
 		return true
 	var mf := FileAccess.open(manifest_path, FileAccess.READ)
 	if mf == null:
-		# Originals may exist in overrides/ but cannot be located -- the
+		# Originals may exist in overrides/ but cannot be located. The
 		# slot must survive.
 		return false
 	var content := mf.get_as_text()
@@ -453,7 +491,7 @@ func _restore_modpack_overrides(backup_profile: String) -> bool:
 
 	# Restore replaced files first so any ordering issues (added file under
 	# a path that should be a directory containing replaced files) don't
-	# fight us. In practice paths are flat enough that ordering doesn't
+	# conflict. In practice paths are flat enough that ordering doesn't
 	# matter, but conservative is cheap here.
 	var all_ok := true
 	var replaced: Array = manifest.get("replaced", []) if manifest.get("replaced") is Array else []
@@ -497,7 +535,7 @@ func _restore_modpack_overrides(backup_profile: String) -> bool:
 # is driven by the apply/unload state machine, so a crash in the wrong window
 # can leave it unconsumed. The functions below take a SECOND, write-once,
 # timestamped snapshot right before apply that the state machine never touches
-# -- the user-facing safety net (Restore button in the Modpacks tab). Mod
+#. The user-facing safety net (Restore button in the Modpacks tab). Mod
 # archives (large, re-downloadable) and game saves (untouched by apply) are
 # deliberately excluded, so a snapshot is small (config + MCM + override files).
 
@@ -545,10 +583,14 @@ func _snapshot_state_before_apply(entry: Dictionary) -> String:
 		var reader := ZIPReader.new()
 		if reader.open(file_path) == OK:
 			var ov_root := snap_root.path_join("overrides")
-			for f in reader.get_files():
-				if f.ends_with("/"):
+			for raw_f in reader.get_files():
+				if raw_f.ends_with("/"):
 					continue
-				if not _modpack_override_path_allowed(f):
+				# Same normalization as _apply_modpack_overrides, and for the
+				# same reason: this snapshot is what Restore replays, so it has
+				# to name the file the apply step will actually overwrite.
+				var f := _modpack_override_rel(raw_f)
+				if f.is_empty():
 					continue
 				var user_path := "user://" + f
 				if FileAccess.file_exists(user_path):
@@ -631,7 +673,7 @@ func _list_apply_snapshots() -> Array:
 	# name first (the name is the leading token), which could let prune delete
 	# a genuinely newer snapshot of an alphabetically-early pack. Each entry
 	# gets ONE key: 'created' (normalized to the dash form) when present, else
-	# the trailing stamp of the folder name -- a per-entry key keeps the
+	# the trailing stamp of the folder name. A per-entry key keeps the
 	# comparator total even when some snapshots lost their snapshot.json.
 	for s_v in out:
 		var s: Dictionary = s_v
@@ -668,7 +710,7 @@ func _read_snapshot_meta(snap_path: String) -> Dictionary:
 
 # Restore-only recursive copy that INCLUDES dot-prefixed entries. The override
 # capture in _snapshot_state_before_apply step 3 records files per-path with
-# no dot filter, so the replay must not filter either -- the shared
+# no dot filter, so the replay must not filter either. The shared
 # _copy_dir_recursive skips every ".xyz" entry and would silently never write
 # back a captured original like ".rtvcfg" or "cfg/.settings". Do NOT reuse
 # this for profile/MCM swaps: those rely on _copy_dir_recursive skipping dot
@@ -705,7 +747,7 @@ func _copy_snapshot_tree_incl_hidden(src: String, dst: String) -> void:
 	dir.list_dir_end()
 
 # Restore a pre-apply snapshot: copy mod_config.cfg, MCM, and saved override
-# files back over the live user:// state -- a full revert to how things were
+# files back over the live user:// state. A full revert to how things were
 # before that apply. Keeps a .bak of the current cfg first so a botched restore
 # is itself recoverable. Caller re-reads state + rebuilds the UI afterward.
 # Returns {ok, error}.
@@ -717,7 +759,7 @@ func _restore_apply_snapshot(snap_path: String) -> Dictionary:
 	# Every valid restore point carries mod_config.cfg (the launcher saves it
 	# before any apply can run). If it is absent the capture failed at apply
 	# time; restoring the rest would revert MCM/files while leaving profiles
-	# untouched -- a mixed state reported as a clean revert. Refuse up front,
+	# untouched. A mixed state reported as a clean revert. Refuse up front,
 	# before anything is mutated.
 	var cfg_snap := snap_path.path_join("mod_config.cfg")
 	if not FileAccess.file_exists(cfg_snap):
@@ -769,10 +811,10 @@ func _restore_apply_snapshot(snap_path: String) -> Dictionary:
 # Find mods declared in the modpack's `sources` field that aren't currently
 # installed locally at the EXACT pinned version. Earlier revision did
 # id-prefix fallback (foo@1.2.3 in modpack treated as satisfied by foo@1.5.0
-# locally), but that defeats version pinning -- the modpack author picked
+# locally), but that defeats version pinning. The modpack author picked
 # 1.2.3 specifically. Now: only an exact profile_key match counts as already
 # installed. A different version of the same mod is treated as missing, so
-# we attempt to download the pinned version. Returns Array of
+# the pinned version is downloaded. Returns Array of
 # {profile_key, mws_id, version}.
 func _get_missing_mods_for_modpack(entry: Dictionary) -> Array:
 	var missing: Array = []
@@ -812,7 +854,7 @@ func _get_missing_mods_for_modpack(entry: Dictionary) -> Array:
 
 	# Walk every profile_key the modpack expects (union of enabled + sources),
 	# so a mod listed in `enabled` but missing from `sources` doesn't get
-	# silently skipped at apply time -- the user sees a clear "no source
+	# silently skipped at apply time. The user sees a clear "no source
 	# info" failure instead of a mystery missing-from-profile entry.
 	var seen: Dictionary = {}
 	var ordered_keys: Array[String] = []
@@ -828,7 +870,7 @@ func _get_missing_mods_for_modpack(entry: Dictionary) -> Array:
 			ordered_keys.append(k)
 
 	for src_key in ordered_keys:
-		# Exact match -- user already has this mod at this version.
+		# Exact match. User already has this mod at this version.
 		if installed_keys.has(src_key):
 			continue
 		# Fallback: case-insensitive (mod_id, version) match. Catches the
@@ -921,8 +963,8 @@ func apply_modpack(entry: Dictionary, tabs: TabContainer, progress: Callable = C
 # Inner apply flow. Split out so the outer wrapper can manage the
 # in-progress flag in one place via a single await + assign.
 func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Callable) -> Dictionary:
-	# Validate the zip BEFORE doing any backup/state mutation. If the zip
-	# is malformed we fail clean -- user's existing state is untouched.
+	# Validate the zip before doing any backup/state mutation. If the zip
+	# is malformed, this fails clean and the user's existing state is untouched.
 	var validation := _validate_modpack(entry)
 	if not bool(validation.get("ok", false)):
 		return validation
@@ -945,13 +987,13 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 	# modpack state -> unload would restore to modpack state instead of
 	# pre-modpack), skip materialize (preserves user edits), skip switch
 	# (pointless, also wipes MCM edits via _restore_mcm_from). Re-apply is
-	# essentially "re-download missing mods" -- which already happened by
+	# essentially "re-download missing mods", which already happened by
 	# this point. Just rebuild Mods to reflect any newly-downloaded mods.
 	var is_reapply := current_active == sanitized
 
-	# Download missing mods BEFORE touching state, so a network failure
+	# Download missing mods before touching state, so a network failure
 	# doesn't leave the user with a half-applied modpack. Failures here
-	# are non-fatal -- mods that fail to download just remain as missing-
+	# are non-fatal. Mods that fail to download just remain as missing-
 	# mod stubs in the Mods tab afterward, which is the same outcome as
 	# applying without sources data at all. We collect per-mod failure
 	# reasons so the user can see what went wrong (network vs filename
@@ -964,14 +1006,14 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 		_log_info("[Modpack] applying " + sanitized + ": " + str(missing.size()) + " mod(s) to install")
 		var total := missing.size()
 		for i in range(total):
-			# If a rate-limit cooldown is armed, wait it out BEFORE the next
+			# If a rate-limit cooldown is armed, wait it out before the next
 			# download instead of letting its metadata lookups fail fast --
 			# otherwise one mid-apply 429 mass-fails every remaining mod in
 			# milliseconds. The wait ticks per second, reports a countdown
 			# via progress, and returns early on cancel (caught just below).
 			if mws_rate_cooldown_seconds() > 0:
 				await _await_mws_rate_cooldown(progress, i + 1, total)
-			# Check the cancel flag BEFORE each download so an in-flight one
+			# Check the cancel flag before each download so an in-flight one
 			# completes (no way to interrupt HTTPRequest mid-await cleanly
 			# without refactoring download_new_mod) but no further ones
 			# start. Returns a partial-success result the UI can surface.
@@ -1019,8 +1061,8 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 				_log_info("[Modpack]   ok: " + str(r.get("file_name", "?")))
 			else:
 				var err: String = str(r.get("error", "unknown"))
-				# "Already have a file named X" means we tried to write a
-				# new copy but the canonical AND renamed-variant filenames
+				# "Already have a file named X" means the writer tried to add a
+				# new copy but the canonical and renamed-variant filenames
 				# are already occupied -- typically because a previous
 				# apply attempt landed the file under one of those names.
 				# Count as installed rather than failed: the user actually
@@ -1042,7 +1084,7 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 				})
 				_log_warning("[Modpack]   failed: " + pk + " -- " + err)
 		# Re-scan _ui_mod_entries so the just-downloaded mods are part of
-		# the list when we materialize and switch into the modpack profile.
+		# the list once the modpack profile is materialized and switched into.
 		_ui_mod_entries = collect_mod_metadata()
 		var cfg_apply := ConfigFile.new()
 		cfg_apply.load(UI_CONFIG_PATH)
@@ -1050,9 +1092,9 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 		if progress.is_valid():
 			progress.call({"current": missing.size(), "total": missing.size(), "mod_name": "", "action": "applying"})
 
-	# Re-check the cancel flag AFTER the download loop: a cancel clicked during
-	# the FINAL (or only) download is otherwise never seen -- the loop-top check
-	# has no next iteration -- and the pack would fully apply while the UI says
+	# Re-check the cancel flag after the download loop: a cancel clicked during
+	# the FINAL (or only) download is otherwise never seen. The loop-top check
+	# has no next iteration, and the pack would fully apply while the UI says
 	# "Cancelling...". Downloads that already landed stay on disk (same contract
 	# as the loop-top cancel); no state below has been mutated yet.
 	if _modpack_apply_cancelled:
@@ -1067,17 +1109,17 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 		}
 
 	if not is_reapply:
-		# Independent, write-once restore point BEFORE any state mutation. This
+		# Independent, write-once restore point before any state mutation. This
 		# is the user-facing safety net (Restore button in the Modpacks tab);
 		# it survives any crash in the apply state machine below.
 		_snapshot_state_before_apply(entry)
 		# 1. Backup current profile sections to the backup slot. profile_keys
 		# are stable across renames so a future "rename profile" wouldn't break
-		# unload, but we capture the current name explicitly for restore_to.
+		# unload, but the current name is captured explicitly for restore_to.
 		var pre_active := _active_profile
 		var cfg := ConfigFile.new()
 		# A missing file is fine (fresh install; the persist below creates it),
-		# but any other load failure means we'd be working from an EMPTY cfg --
+		# but any other load failure would mean working from an empty cfg, and
 		# the persist below would then replace every profile the user has with
 		# nothing. Abort before mutating anything.
 		var cfg_err := cfg.load(UI_CONFIG_PATH)
@@ -1105,8 +1147,16 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 				cfg.set_value(bk_pr, k, cfg.get_value(src_pr, k))
 
 		cfg.set_value("settings", "modpack_backup_profile", pre_active)
-		# Write the active_modpack flag NOW, before applying overrides or
-		# switching profiles, so it acts as the revert trigger if we crash
+		# Record that step 1 ran to completion, independently of whether it had
+		# anything to copy. A user with no regular mods installed has neither
+		# source section (ConfigFile cannot hold a keyless section), so the two
+		# copies above write nothing, and unload used to read that absence as
+		# "backup destroyed" and refuse forever, locking the user inside the
+		# pack with no in-launcher exit. This flag distinguishes "backup is an
+		# empty state, restore it" from "backup is genuinely gone".
+		cfg.set_value("settings", "modpack_backup_valid", true)
+		# Write the active_modpack flag now, before applying overrides or
+		# switching profiles, so it acts as the revert trigger on a crash
 		# mid-apply: the boot reconciler keys off this flag to restore stranded
 		# override files. Re-asserted at step 5 (after the step-4 _switch_profile)
 		# in case the switch rewrites cfg.
@@ -1119,7 +1169,7 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 			_snapshot_mcm_to(backup_profile)
 
 		# 2. If modpack profile doesn't exist, materialize it from the zip.
-		# If it does exist, leave alone -- user's prior edits are preserved.
+		# If it does exist, leave alone. User's prior edits are preserved.
 		cfg.load(UI_CONFIG_PATH)
 		if not cfg.has_section(_profile_sec(modpack_profile, ".enabled")):
 			var mat_result := _materialize_modpack_profile(entry, modpack_profile)
@@ -1137,7 +1187,7 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 
 		# 5. Mark active in cfg (after switch, since _switch_profile rewrites
 		# active_profile in cfg too). Re-assert only when the reload succeeded:
-		# persisting after a failed load would write a cfg containing ONLY the
+		# persisting after a failed load would write a cfg containing only the
 		# active_modpack flag, destroying every profile. The flag is already on
 		# disk from step 1 (and preserved by the step-4 switch), so skipping the
 		# re-assert on a transient read failure is safe.
@@ -1198,7 +1248,7 @@ func _materialize_modpack_profile(entry: Dictionary, profile_name: String) -> Di
 
 	# Values come from third-party profile.json: type-check before bool()/int()
 	# -- both are runtime constructor errors on a present-but-null value, and a
-	# crash HERE is mid-MUTATING (flag set, profile half-written). Junk values
+	# crash here is mid-MUTATING (flag set, profile half-written). Junk values
 	# degrade to disabled / default priority instead of aborting the apply.
 	var enabled_dict: Dictionary = pd.get("enabled", {}) if pd.get("enabled") is Dictionary else {}
 	for k in enabled_dict.keys():
@@ -1226,7 +1276,7 @@ func _materialize_modpack_profile(entry: Dictionary, profile_name: String) -> Di
 	_persist_ui_cfg(cfg)
 
 	# Extract MCM tree into the profile's snapshot slot. _switch_profile
-	# will then restore from this slot when we switch into the profile.
+	# will then restore from this slot on the switch into the profile.
 	var mcm_data: Dictionary = {}
 	for f in files:
 		if not f.begins_with("MCM/") or f.ends_with("/"):
@@ -1248,7 +1298,7 @@ func unload_modpack(tabs: TabContainer) -> Dictionary:
 	# A hard read failure leaves cfg EMPTY, which the check below would
 	# misreport as "No modpack is active" -- false and confusing when the
 	# banner clearly shows one. (The empty cfg cannot reach the persist:
-	# active == "" aborts first. This guard exists for the honest message.)
+	# Active == "" aborts first. This guard exists for the honest message.)
 	var cfg_err := cfg.load(UI_CONFIG_PATH)
 	if cfg_err != OK and cfg_err != ERR_FILE_NOT_FOUND:
 		return {"ok": false, "error": "Cannot read your mod settings file (mod_config.cfg, error %d) -- nothing was unloaded. Restart the game and try again." % cfg_err}
@@ -1270,7 +1320,14 @@ func unload_modpack(tabs: TabContainer) -> Dictionary:
 	# user's pre-apply profile and replace it with nothing. Abort and leave
 	# every profile untouched; the orange state stays visible instead of
 	# silently destroying data.
-	if not cfg.has_section(bk_en) and not cfg.has_section(bk_pr):
+	#
+	# Absent sections are not proof of that, though: applying a pack with no
+	# regular mods installed legitimately produces an empty backup, and
+	# treating it as corruption stranded the user inside the pack. Trust the
+	# apply-time flag when it is present. Falling back to the section check
+	# keeps the guard working for cfgs written before the flag existed.
+	var backup_written := bool(cfg.get_value("settings", "modpack_backup_valid", false))
+	if not backup_written and not cfg.has_section(bk_en) and not cfg.has_section(bk_pr):
 		return {"ok": false,
 				"error": "The backup for this modpack is missing, so nothing was unloaded and your profiles are untouched. To force-remove the modpack, quit the game and delete the active_modpack line from mod_config.cfg."}
 
@@ -1291,12 +1348,13 @@ func unload_modpack(tabs: TabContainer) -> Dictionary:
 	if cfg.has_section(bk_pr):
 		cfg.erase_section(bk_pr)
 	cfg.set_value("settings", "modpack_backup_profile", "")
+	cfg.set_value("settings", "modpack_backup_valid", false)
 	cfg.set_value("settings", "active_modpack", "")
 	_persist_ui_cfg(cfg)
 
 	# 3. Restore non-MCM override files (Preferences.tres etc) from the
 	# backup slot's manifest. Files under MCM/ are never in this manifest
-	# (_modpack_override_path_allowed rejects them at apply time), so this
+	# (_modpack_override_rel rejects them at apply time), so this
 	# step has no ordering dependency on the MCM swap in steps 4-5; those
 	# handle MCM via the per-profile snapshot mechanic.
 	var overrides_ok := _restore_modpack_overrides(backup_profile)
@@ -1304,12 +1362,12 @@ func unload_modpack(tabs: TabContainer) -> Dictionary:
 	# 4. Switch to pre-active profile. _switch_profile snapshots the
 	# (now-modpack) MCM and restores the pre-active's MCM if it has a
 	# snapshot. Vanilla incoming leaves user://MCM/ alone, which is the
-	# right behavior -- the next step overwrites it from the backup
-	# snapshot we took at apply time.
+	# right behavior. The next step overwrites it from the backup
+	# snapshot taken at apply time.
 	_switch_profile(pre_active)
 
 	# 5. Restore the pre-modpack MCM from backup snapshot. This overrides
-	# whatever _switch_profile did with MCM, which is what we want -- the
+	# whatever _switch_profile did with MCM, which is intended. The
 	# backup IS the authoritative pre-modpack MCM.
 	var mcm_ok := true
 	if _has_mcm_snapshot(backup_profile):
@@ -1317,10 +1375,10 @@ func unload_modpack(tabs: TabContainer) -> Dictionary:
 
 	# 6. Wipe the backup slot wholesale -- MCM, overrides, manifest, all
 	# of it. _delete_mcm_snapshot only handles MCM/; the slot now also
-	# carries overrides/ and overrides_manifest.json which we wrote at
+	# carries overrides/ and overrides_manifest.json written at
 	# apply time, so a recursive wipe of the entire profile slot is the
 	# correct cleanup. Only safe once both restores actually consumed the
-	# slot's contents -- otherwise leave the slot in place.
+	# slot's contents. Otherwise leave the slot in place.
 	if overrides_ok and mcm_ok:
 		_remove_dir_recursive(MCM_SNAPSHOT_BASE.path_join(backup_profile))
 	else:
@@ -1337,7 +1395,7 @@ func unload_modpack(tabs: TabContainer) -> Dictionary:
 # failed the first time. After any new successes, re-runs collect to get
 # the new mod files into _ui_mod_entries. Honors _modpack_apply_cancelled
 # at each loop top (set by the retry progress dialog's Cancel button):
-# not-yet-attempted items stay in the failures list so the follow-up
+# Not-yet-attempted items stay in the failures list so the follow-up
 # failure dialog re-lists them -- nothing is silently dropped. Returns
 # {downloaded, failures, cancelled} where failures has the same shape as
 # apply's (still-failed items only).

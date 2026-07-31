@@ -1,4 +1,4 @@
-# Inline source-rewrite generator (Option C / Phase 1 Step A).
+# Inline source-rewrite generator.
 #
 # Produces the full rewritten source of a vanilla script where each hookable
 # method <name> is renamed to _rtv_vanilla_<name> and a new <name> method is
@@ -11,12 +11,12 @@
 # no class_name registry asymmetry, no bug #83542 regardless of what mods
 # do with take_over_path.
 #
-# Caller MUST pass pristine vanilla source (e.g. from .gdc bytecode via
+# Caller must pass pristine vanilla source (e.g. from .gdc bytecode via
 # _read_vanilla_source / _detokenize_script). Passing already-rewritten source
 # produces duplicate-function parse errors.
 
 func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask: Dictionary = {}) -> String:
-	# method_mask (v3.0.1): Dictionary[method_name, true] restricting which
+	# method_mask: Dictionary[method_name, true] restricting which
 	# methods get renamed + wrapped. Empty = wrap every non-static method
 	# (REGISTRY_TARGETS needing whole-script injection, and the user-facing
 	# "[hooks] <path> = *" wildcard sentinel).
@@ -35,10 +35,10 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask
 			continue
 		hookable.append(fe)
 
-	# LOUD mask validation: every declared hook method must correspond to a
+	# Loud mask validation: every declared hook method must correspond to a
 	# non-static vanilla method, or the mod's hook silently never fires --
 	# the "declared a hook, nothing happened, no log" failure mode. (When the
-	# WHOLE mask misses, _generate_hook_pack already warns and skips; this
+	# whole mask misses, _generate_hook_pack already warns and skips; this
 	# covers the partial case where some declared methods match and the rest
 	# would previously vanish without a trace.)
 	if apply_mask:
@@ -67,15 +67,15 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask
 	for fe in hookable:
 		hookable_names[fe["name"]] = true
 
-	# Normalize line endings. IXP ships CRLF-encoded source; our appended
+	# Normalize line endings. IXP ships CRLF-encoded source; the appended
 	# wrappers use LF only. Mixing CRLF and LF in a single file confuses
 	# GDScript's parser with a "tab character for indentation" error (even
-	# when there are no tabs -- the misleading error is triggered by the
+	# when there are no tabs. The misleading error is triggered by the
 	# ending mismatch). Strip all CR so the whole file is pure LF.
 	var src: String = source.replace("\r\n", "\n").replace("\r", "\n")
 
 	# Maximum-compat pass: repair sloppy / Godot-3-era GDScript that the
-	# parser would reject. Runs before our rename+wrapper pipeline so
+	# parser would reject. Runs before the rename+wrapper pipeline so
 	# every downstream step sees valid source. No-op for clean files.
 	var autofix := _rtv_autofix_legacy_syntax(src)
 	src = autofix["source"]
@@ -97,7 +97,7 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask
 	# Loader.gd: convert `const shelters = [...]` -> var so the registry
 	# can append mod shelter names. Scene-path consts (const Cabin = "..."
 	# etc.) stay consts because LoadScene references them directly inside
-	# its body; we inject a mod-lookup prelude into LoadScene instead.
+	# its body. A mod-lookup prelude is injected into LoadScene instead.
 	elif fn == "Loader.gd":
 		src = _rtv_rewrite_loader_shelters(src)
 	# AISpawner.gd: the vanilla if-elif that maps Zone -> agent is rewritten
@@ -109,20 +109,20 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask
 		src = _rtv_rewrite_aispawner_agent_assignments(src)
 
 	# Pass 1: rename top-level "func <name>(" to "func _rtv_vanilla_<name>("
-	# AND rewrite bare super() calls inside that body to super.<name>().
+	# and rewrite bare super() calls inside that body to super.<name>().
 	# Only matches at line start (static methods already filtered). Inner-class
 	# methods (indented) keep their names. class_name stays intact -- scripts
 	# ship at res://Scripts/<Name>.gd matching the PCK's class-cache
 	# registration, and extends-by-path from other scripts needs the target
 	# to carry a class_name to resolve.
 	#
-	# super() rewrite rationale: in IXP's Loader.gd `func CheckVersion(): ...
+	# super() rewrite: in IXP's Loader.gd `func CheckVersion(): ...
 	# return super()`, `super()` means "parent's version of the current
-	# function". After we rename the enclosing func to _rtv_vanilla_CheckVersion,
+	# function". Once the enclosing func is renamed to _rtv_vanilla_CheckVersion,
 	# GDScript's strict reload parser looks for _rtv_vanilla_CheckVersion on the
-	# parent -- which vanilla Loader doesn't have. Rewriting to
+	# parent, which vanilla Loader doesn't have. Rewriting to
 	# `super.CheckVersion()` keeps it resolving to the original method name on
-	# parent (which is now our dispatch wrapper). `super.<explicit_method>()`
+	# parent (which is now the dispatch wrapper). `super.<explicit_method>()`
 	# and `super.OtherMethod()` are already explicit and pass through untouched.
 	var lines: PackedStringArray = src.split("\n")
 	var current_hooked_method: String = ""
@@ -152,11 +152,11 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask
 			continue
 		lines[i] = _rewrite_bare_super(line, current_hooked_method)
 
-	# Rename invariant: every hookable method MUST have been renamed to
+	# Rename invariant: every hookable method must have been renamed to
 	# _rtv_vanilla_<name> by the pass above (renamed_methods records each
-	# rename as it happens -- an O(1) check instead of re-scanning every
+	# rename as it happens. An O(1) check instead of re-scanning every
 	# line per method). If the rename missed one (formatting drift between
-	# the parse and the rename scan -- e.g. extra spaces in the
+	# the parse and the rename scan, e.g. extra spaces in the
 	# declaration), the wrapper appended below DUPLICATES the still-
 	# unrenamed vanilla method and the whole rewritten script fails to
 	# compile, taking every hook on this script down with it. Scream at
@@ -170,7 +170,7 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask
 	# check at the TOP of a specific vanilla function body (e.g., Loader's
 	# LoadScene needs to consult _rtv_mod_scene_paths before the if-elif
 	# chain fires). The function was just renamed to _rtv_vanilla_<Name>,
-	# so we inject right after its signature line.
+	# so the injection goes right after its signature line.
 	var indent := _detect_indent_style(src)
 	lines = _rtv_apply_prelude_injections(parsed.get("filename", ""), lines, "_rtv_vanilla_", indent)
 
@@ -199,7 +199,7 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask
 func _rewrite_bare_super(line: String, method_name: String) -> String:
 	# Strip inline comment/string content before matching to avoid false hits.
 	# Simple heuristic: search the part of the line before the first # (not in
-	# a string). Strings with # are rare enough that we accept false negatives.
+	# a string). Strings with # are rare enough that false negatives are acceptable.
 	var scan_end := line.length()
 	var comment_idx := line.find("#")
 	if comment_idx >= 0:
@@ -267,7 +267,7 @@ func _rtv_leading_indent(line: String) -> String:
 		n += 1
 	return line.substr(0, n)
 
-# Produces ONE inline dispatch wrapper that calls _rtv_vanilla_<name>(...).
+# Produces one inline dispatch wrapper that calls _rtv_vanilla_<name>(...).
 # The wrapper is appended to the rewritten vanilla source, co-existing with
 # the renamed body in the same class -- no inheritance chain, so no
 # _rtv_ready_done flag is needed. `await` is prepended when the vanilla
@@ -306,10 +306,10 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 	var I3: String = indent + indent + indent
 
 	var out := ""
-	# Step C re-entry guard: when a mod's rewritten wrapper fires and its body
+	# Re-entry guard: when a mod's rewritten wrapper fires and its body
 	# calls super() into vanilla's rewritten wrapper, the nested wrapper would
 	# dispatch again. Guard checks _lib._wrapper_active for this hook_base and
-	# if already set, skips ALL dispatch + replace lookup and just runs the
+	# if already set, skips all dispatch + replace lookup and just runs the
 	# vanilla body. One dispatch per logical call regardless of chain depth.
 	if not is_void:
 		out += "%s\n" % sig
@@ -347,8 +347,8 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		out += "%s_lib._wrapper_active[_rtv_wa_key] = true\n" % I1
 		# Save prior _caller so nested-wrapper clobbering inside the
 		# vanilla body (or replace hook) doesn't leak stale values to
-		# whoever called us. Re-set _caller before the post-dispatch so
-		# our post hooks see the correct caller even after nested
+		# whoever called this one. Re-set _caller before the post-dispatch so
+		# post hooks see the correct caller even after nested
 		# wrappers fired during the body.
 		out += "%svar _rtv_prev_caller = _lib._caller\n" % I1
 		out += "%s_lib._caller = self\n" % I1
@@ -358,8 +358,8 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		out += "%sif _repl.size() > 0:\n" % I1
 		out += "%svar _prev_skip = _lib._skip_super\n" % I2
 		out += "%s_lib._skip_super = false\n" % I2
-		# Gated on is_coro via `aw`, NOT unconditional. In GDScript any function
-		# whose body contains `await` IS a coroutine -- so an unconditional
+		# Gated on is_coro via `aw`, not unconditional. In GDScript any function
+		# whose body contains `await` IS a coroutine, so an unconditional
 		# await here turned every wrapped vanilla method into a coroutine, and
 		# every existing caller then failed at PARSE time with "Function X is a
 		# coroutine, so it must be called with await". Runtime cost was nil
@@ -368,8 +368,8 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		# surface -- 384 hook points across 35 scripts in the reported case.
 		#
 		# This does not change the hook contract. docs/wiki/Hooks.md has always
-		# told authors to suspend inside a replace callback ONLY when the
-		# vanilla method they replaced is itself a coroutine -- the wrapper
+		# told authors to suspend inside a replace callback only when the
+		# vanilla method they replaced is itself a coroutine. The wrapper
 		# just failed to enforce it, and marked every wrapped method as a
 		# coroutine to no benefit. Coroutine targets keep full async support.
 		out += "%svar _replret = %s_repl[0].callv(%s)\n" % [I2, aw, args_array]
@@ -383,9 +383,9 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		out += "%s_result = %s%s\n" % [I2, aw, vanilla_call]
 		out += "%s_lib._caller = self\n" % I1
 		# Post hooks for non-void methods get the chained-mutator dispatch:
-		# each callback receives args + [_result], returning non-null to
+		# Each callback receives args + [_result], returning non-null to
 		# replace _result for downstream callbacks. The 2-arg legacy form
-		# (callback declared without trailing _result) still works -- the
+		# (callback declared without trailing _result) still works. The
 		# dispatcher detects arity and calls the appropriate shape, with a
 		# one-shot deprecation warning. See hooks_api._dispatch_post.
 		out += "%s_result = _lib._dispatch_post(\"%s-post\", %s, _result)\n" % [I1, hook_base, args_array]

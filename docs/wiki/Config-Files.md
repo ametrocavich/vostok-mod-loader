@@ -16,7 +16,7 @@ Paste the Windows path into File Explorer's address bar to jump there directly.
 
 Three sentinel files live in the **game's install directory** (next to the `.exe`), not under `user://`. Those are covered separately below.
 
-## `mod_config.cfg` -- your profiles and settings
+## `mod_config.cfg`. Your profiles and settings
 
 This is the user-facing config. The pre-launch UI reads and writes it. Plain INI, safe to inspect or edit by hand.
 
@@ -55,7 +55,7 @@ rtv-coop@5.0.0=10
 harsher-weather@1.0.0=200
 ```
 
-Godot's `ConfigFile` writes a blank line after every section header, quotes String values (like `active_profile="Default"`), and emits bools/ints unquoted. Don't hand-edit the quotes -- the parser is strict about them.
+Godot's `ConfigFile` writes a blank line after every section header, quotes String values (like `active_profile="Default"`), and emits bools/ints unquoted. Don't hand-edit the quotes. The parser is strict about them.
 
 ### Sections
 
@@ -71,15 +71,15 @@ Godot's `ConfigFile` writes a blank line after every section header, quotes Stri
 
 The left-hand identifier for each mod. Two shapes:
 
-- `<mod_id>@<version>` -- mods whose `mod.txt` declares `[mod] id=...`. This is the normal case; every well-formed mod has one. Stable across `.vmz` renames. The version segment may be empty (`scantest_clean@=false`) if `mod.txt` has an `id` but no `version`.
+- `<mod_id>@<version>`. Mods whose `mod.txt` declares `[mod] id=...`. This is the normal case; every well-formed mod has one. Stable across `.vmz` renames. The version segment may be empty (`scantest_clean@=false`) if `mod.txt` has an `id` but no `version`.
 - `zip:<file_name>` -- fallback for mods without a declared `mod_id`. Identity is the archive filename; renaming the `.vmz` orphans the profile entry. Rare -- almost every mod in circulation has a proper `mod.txt`.
 
 See [Mod-Format](Mod-Format) for mod.txt schema. See [Profile-Format](Profile-Format) for the JSON format used inside a modpack's `profile.json`.
 
 ### `active_profile` special values
 
-- `"Default"` -- the profile materialized on first launch. Persistent like every other profile.
-- `"__vanilla__"` -- a legacy value from older versions' Reset to Vanilla; on load the launcher treats it as missing and switches to your first real profile. To boot the game without mods once, use the **Launch vanilla** button in the launcher (it writes a `modloader_disabled_once` file that is auto-cleared on the next launch).
+- `"Default"`. The profile materialized on first launch. Persistent like every other profile.
+- `"__vanilla__"`. A legacy value from older versions' Reset to Vanilla; on load the launcher treats it as missing and switches to your first real profile. To boot the game without mods once, use the **Launch vanilla** button in the launcher (it writes a `modloader_disabled_once` file that is auto-cleared on the next launch).
 
 ### Modpack keys and managed profiles (3.3)
 
@@ -92,14 +92,14 @@ Applying a modpack (see [Modpacks](Modpacks)) reuses the ordinary profile machin
 | `active_modpack` | Sanitized name of the modpack currently applied, or empty/absent if none. While set, the launcher locks the active profile to that pack's managed slot. Clearing this by hand is the manual escape hatch if unload ever refuses. |
 | `modpack_backup_profile` | The profile you were on when you applied the pack -- where **Unload** restores your pre-pack `enabled`/`priority` to. Empty/absent when no pack is active. |
 
-Managed profile sections -- the launcher creates these and the Mods-tab profile dropdown **hides** them, so you normally never see them:
+Managed profile sections. The launcher creates these and the Mods-tab profile dropdown **hides** them, so you normally never see them:
 
 | Section prefix | Meaning |
 |---|---|
 | `[profile.modpack__<name>.enabled]` / `.priority` / `.dep_ignore` | Live state of the applied modpack `<name>`. Edits you make while it's active save here. Kept (not deleted) on unload so a re-apply resumes your edits. |
 | `[profile._before_modpack_<name>.enabled]` / `.priority` | Backup snapshot of your profile taken at apply time. Unload restores from here, then wipes it. If these are gone, unload aborts rather than destroy your real profile. |
 
-`<name>` is the modpack's sanitized name (ASCII letters / digits / space / hyphen / underscore). Don't create profiles of your own named `modpack__*` or `_before_modpack_*` -- the launcher treats those prefixes as reserved and filters them out of the dropdown.
+`<name>` is the modpack's sanitized name (ASCII letters / digits / space / hyphen / underscore). Don't create profiles of your own named `modpack__*` or `_before_modpack_*`. The launcher treats those prefixes as reserved and filters them out of the dropdown.
 
 ### Common tasks
 
@@ -260,7 +260,7 @@ A: `user://` is per-user state (your profiles, generated caches) -- preserved ac
 ## Related
 
 - [Mod-Format](Mod-Format) -- `mod.txt` schema (what each mod declares)
-- [Profile-Format](Profile-Format) -- the JSON format inside a modpack's `profile.json`
+- [Profile-Format](Profile-Format). The JSON format inside a modpack's `profile.json`
 - [Browse](Browse) -- installing mods from ModWorkshop (`user://mws_cache/`)
 - [Modpacks](Modpacks) -- `active_modpack`, the managed profile slots, and `.profile_snapshots`
 - [Architecture](Architecture) -- two-pass boot flow, `override.cfg` lifecycle

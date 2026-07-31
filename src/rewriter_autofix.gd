@@ -14,23 +14,23 @@ func _rtv_is_block_header(trimmed: String) -> bool:
 	return false
 
 # MAXIMUM-COMPAT PASS: rewrite sloppy / Godot-3-era GDScript patterns that
-# Godot 4's parser rejects outright. Runs before our dispatch-wrapper
+# Godot 4's parser rejects outright. Runs before the dispatch-wrapper
 # pipeline so every downstream step sees parser-acceptable source.
 #
 # Handles:
-#   (1) Bodyless block headers (`if X:` with no indented body) -- the
+#   (1) Bodyless block headers (`if X:` with no indented body). The
 #       dominant failure mode in real-world mods (Gotcha #5). Godot 4's
 #       parser raises "Expected indented block after 'X' block". We scan
 #       forward from each block header; if the next non-blank non-comment
-#       line is NOT indented deeper than the header, we inject a `pass`
+#       line is not indented deeper than the header, a `pass` is injected
 #       at header_indent + indent_unit. Semantically safe: the empty
 #       block was already a no-op in the author's intent (or a latent
-#       bug -- we preserve original semantics either way).
+#       bug. We preserve original semantics either way).
 #   (2) `tool` first-line keyword -> `@tool` annotation (Godot 4 moved
 #       it to the annotation namespace).
 #   (3) `onready var` -> `@onready var` (same annotation move).
 #   (4) `export var X = Y` (no type paren) -> `@export var X = Y`. Skips
-#       `export(Type) var ...` -- that needs type-annotation transform
+#       `export(Type) var ...`. That needs type-annotation transform
 #       (risky, can break strict-typed references; leave for future
 #       pass if a real mod trips it).
 #

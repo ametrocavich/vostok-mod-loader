@@ -77,7 +77,7 @@ func _setup_run_entry(entry: Variant) -> Dictionary:
 	if arr.is_empty():
 		return {"verb": "<empty>", "ok": false, "error": "entry is empty"}
 	# String() is the non-converting constructor: a non-String verb (e.g. a
-	# stray int) would be a runtime error that aborts the WHOLE plan mid-run
+	# stray int) would be a runtime error that aborts the whole plan mid-run
 	# instead of isolating to this entry per the contract above.
 	if not (arr[0] is String or arr[0] is StringName):
 		return {"verb": "<malformed>", "ok": false, "error": "verb (1st element) must be a String"}

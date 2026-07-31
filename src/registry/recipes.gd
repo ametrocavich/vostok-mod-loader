@@ -172,7 +172,7 @@ func _override_recipe(id: String, data: Variant) -> bool:
 
 # Resolves whatever the mod passed (String handle or RecipeData Resource) to:
 #   [recipe, patch_key]
-# where patch_key is the stable Variant we use in _registry_patched to
+# where patch_key is the stable Variant _registry_patched uses to
 # track per-field original values. For handles it's the String; for direct
 # refs it's the object's instance_id (int), so distinct Resource instances
 # don't collide.
@@ -261,7 +261,7 @@ func _remove_recipe(id: String) -> bool:
 	reg.erase(id)
 	_registry_registered["recipes"] = reg
 	# Drop the handle's patch stash with the entry (mirrors _remove_event).
-	# Ref-keyed stashes ("ref:<iid>") are left alone -- they track the Resource
+	# Ref-keyed stashes ("ref:<iid>") are left alone. They track the Resource
 	# identity, which outlives the handle.
 	var patched: Dictionary = _registry_patched.get("recipes", {})
 	if patched.has(id):
@@ -274,7 +274,7 @@ func _revert_recipe(id: Variant, fields: Array) -> bool:
 	var did_something := false
 	var ov: Dictionary = _registry_overridden.get("recipes", {})
 	var patched: Dictionary = _registry_patched.get("recipes", {})
-	# Patch key computation matches _resolve_recipe_patch_target so we find the same
+	# Patch key computation matches _resolve_recipe_patch_target so it finds the same
 	# stash entry regardless of whether the caller patches by handle or by ref.
 	var patch_key = null
 	var patch_target: Resource = null

@@ -1,10 +1,10 @@
 # Hooks
 
-Hooks let your mod run code around a vanilla method: before it (`-pre`), after it (`-post`), instead of it (replace), or deferred until after it returns (`-callback`). You register a callback against a hook name like `"controller-jump-pre"`, and the loader arranges for it to fire whenever vanilla `Controller.jump()` runs. Under the hood the loader rewrites the vanilla script with a dispatch wrapper, but you never touch that machinery -- you write one `.hook()` call.
+Hooks let your mod run code around a vanilla method: before it (`-pre`), after it (`-post`), instead of it (replace), or deferred until after it returns (`-callback`). You register a callback against a hook name like `"controller-jump-pre"`, and the loader arranges for it to fire whenever vanilla `Controller.jump()` runs. Under the hood the loader rewrites the vanilla script with a dispatch wrapper, but you never touch that machinery. You write one `.hook()` call.
 
 Use hooks when you want to react to or change vanilla *behavior*. If you want to add or change *data* (items, loot, scenes, recipes), use the [Registry](Registry) instead. If you need to know whether another mod is loaded, see the mod-discovery API below and [Dependencies](Dependencies).
 
-## Quick start -- the 90% case
+## Quick start. The 90% case
 
 A working hook mod needs exactly two things: an `[autoload]` entry in `mod.txt`, and a literal `.hook("...")` call in your own source. No `[hooks]` section, no framework import. The loader scans your `.gd` files for literal `.hook("<stem>-<method>[-pre|-post|-callback]")` strings and wraps those vanilla methods automatically.
 
@@ -63,9 +63,9 @@ Two rules to keep out of trouble:
 1. **Hook names must be a literal string, fully lowercase.** A name built at runtime (concatenation, variable) registers fine but never fires, because the scanner can only enroll literal strings (see [Wrap surface](#wrap-surface----why-hook-alone-is-not-enough)). Mixed-case names enroll the wrap but the runtime key never matches -- write them lowercase.
 2. **Register from `_ready` or later** using the readiness pattern above. Calling `hook()` from `_ready` directly also works (the API exists before mod autoloads run); waiting for `frameworks_ready` additionally guarantees every other mod's autoload has finished, which you need for peer integration (`has_mod`) and registry-backed state. You can also just `await Engine.get_meta("RTVModLib").frameworks_ready`.
 
-Working from an unpacked folder in [Developer Mode](Developer-Mode)? Use the same layout and the same `mod.txt` -- a folder's contents mount at `res://` exactly like the zip you'll ship, so `mods/BigJump/` holds `mod.txt` and `BigJump/Main.gd`, and no paths change when you zip it up. (Before 3.3.1 a dev folder was wrapped under its own name, so folder mods needed an extra prefix that broke the moment you zipped them. If you have a folder mod authored against that, drop the extra prefix.)
+Working from an unpacked folder in [Developer Mode](Developer-Mode)? Use the same layout and the same `mod.txt`. A folder's contents mount at `res://` exactly like the zip you'll ship, so `mods/BigJump/` holds `mod.txt` and `BigJump/Main.gd`, and no paths change when you zip it up. (Before 3.3.1 a dev folder was wrapped under its own name, so folder mods needed an extra prefix that broke the moment you zipped them. If you have a folder mod authored against that, drop the extra prefix.)
 
-If the mod loads but nothing happens in game, check the console log. An `Autoload path not found in archive` line means the `mod.txt` path does not match where the file actually landed -- the loader prints the similar paths it did find, so you can see the correct prefix.
+If the mod loads but nothing happens in game, check the console log. An `Autoload path not found in archive` line means the `mod.txt` path does not match where the file actually landed. The loader prints the similar paths it did find, so you can see the correct prefix.
 
 ## Hook names
 
@@ -115,7 +115,7 @@ All calls on `Engine.get_meta("RTVModLib")`. Source: `src/hooks_api.gd`.
 | `static version() -> String` | Loader version string (e.g. `"3.3.0"`) |
 | `static major_version() / minor_version() / patch_version() -> int` | Numeric components, for feature gating: `if lib.major_version() >= 3:` |
 
-Note: `provides=` rename aliases (see [Mod-Format](Mod-Format)) satisfy dependency resolution but are NOT matched by `has_mod()`/`mod_info()` -- these match only the mod's real `id`. Check both ids if you need to detect a renamed peer. See [Dependencies](Dependencies).
+Note: `provides=` rename aliases (see [Mod-Format](Mod-Format)) satisfy dependency resolution but are NOT matched by `has_mod()`/`mod_info()`. These match only the mod's real `id`. Check both ids if you need to detect a renamed peer. See [Dependencies](Dependencies).
 
 For mods that install hooks alongside registry mutations as one step, `hook_many` is also available as a `["hooks", {name: callback, ...}]` entry inside `lib.setup(plan)`; the plan result entry is `{"verb": "hooks", "ok": bool, "results": {name: id_or_-1}}`. See [Setup-Plans](Setup-Plans).
 
@@ -140,7 +140,7 @@ lib.hook_many({
 
 A bare hook name is the single-owner replace slot. Semantics that surprise people:
 
-- **Your callback runs BEFORE vanilla, not instead of it, unless you call `skip_super()`.** If you don't call `skip_super()`, vanilla runs after your callback and **vanilla's return value wins** -- your return is discarded. Call `lib.skip_super()` inside the callback to suppress vanilla and make your return value the method's result.
+- **Your callback runs BEFORE vanilla, not instead of it, unless you call `skip_super()`.** If you don't call `skip_super()`, vanilla runs after your callback and **vanilla's return value wins**. Your return is discarded. Call `lib.skip_super()` inside the callback to suppress vanilla and make your return value the method's result.
 - **First registration wins.** A second `hook("lootcontainer-generateloot", ...)` returns -1 with only a debug-level log. Check for -1, or probe first with `has_replace()` / `get_replace_owner()` and fall back to pre/post:
 
 ```gdscript
@@ -191,14 +191,14 @@ lib.hook("item-value-post", func(r): return min(r, 200), 100)   # runs second
 
 Limitations:
 
-- **Returning null is the pass-through sentinel** -- you cannot set the result to literal null through a post hook.
+- **Returning null is the pass-through sentinel**. You cannot set the result to literal null through a post hook.
 - **Void methods have no result to mutate**; their post hooks are fire-and-forget. This includes every engine lifecycle method (`_ready`, `_process`, `_physics_process`, `_input`, `_unhandled_input`, `_unhandled_key_input`, `_enter_tree`, `_exit_tree`, `_notification`), which the loader forces void regardless of source annotations.
 
 ## Priorities and dispatch order
 
 - Within one hook name, callbacks run in ascending `priority` (default 100). **Ties are not stable** -- if the order between two of your callbacks (or yours and a peer mod's) matters, use distinct priorities.
 - `hook()`/`unhook()` called from inside a callback affect only FUTURE dispatches: the in-flight dispatch iterates a snapshot, so a hook registered mid-dispatch joins the next dispatch, and an unhooked one still finishes the current pass.
-- Hooks fire **exactly once per logical call** even across `extends` chains: if a mod script extends wrapped vanilla and calls `super()`, a re-entry guard prevents double dispatch. Conversely, a mod override method that does NOT call `super()` suppresses hook dispatch for that method entirely -- that is the documented contract.
+- Hooks fire **exactly once per logical call** even across `extends` chains: if a mod script extends wrapped vanilla and calls `super()`, a re-entry guard prevents double dispatch. Conversely, a mod override method that does NOT call `super()` suppresses hook dispatch for that method entirely. That is the documented contract.
 
 ## Wrap surface -- why `hook()` alone is not enough
 
@@ -224,7 +224,7 @@ This is an opt-in model: when no user mod declares anything, vanilla scripts run
 Declare vanilla paths in `mod.txt` when auto-enrollment cannot see your call:
 
 - `add_hook()` from a normal (runtime) autoload -- pack generation has already read the mask by then.
-- Hook registrations via indirection -- the `.hook()` call site is not in your mod's own source.
+- Hook registrations via indirection. The `.hook()` call site is not in your mod's own source.
 - Hook names built at runtime (concatenation, variables, loops over a list).
 - Methods you want wrapped now but will only register hooks for later, on gameplay events.
 
@@ -248,7 +248,7 @@ Semantics:
 Mods written against [godot-mod-loader](https://github.com/GodotModding/godot-mod-loader) call `add_hook(script_path, method_name, callback, is_before)`. The shim builds the native name `<stem>-<method>-pre|post` (lowercased), enrolls the path into the wrap mask, and calls `hook(name, cb, 100)`. Two traps:
 
 - **Timing:** pack generation reads the wrap mask before normal autoloads run, so `add_hook()` from a regular autoload's `_ready` registers the hook but never gets a wrapper. Fix: call it from a `!`-prefixed early autoload's `_init` (`Name="!res://MyMod/Early.gd"` in `[autoload]` -- see [Mod-Format](Mod-Format)), or declare the path in `[hooks]`.
-- **Paths:** a bare filename normalizes to `res://Scripts/<file>`. If the target lives anywhere else, pass a fully-qualified `res://` path -- otherwise the enrollment silently matches nothing.
+- **Paths:** a bare filename normalizes to `res://Scripts/<file>`. If the target lives anywhere else, pass a fully-qualified `res://` path. Otherwise the enrollment silently matches nothing.
 
 ## Gotchas checklist
 
@@ -268,11 +268,11 @@ Mods written against [godot-mod-loader](https://github.com/GodotModding/godot-mo
 
 Every wrapper holds a re-entrancy guard for the duration of its dispatch, keyed per instance and per hook. The guard exists to stop a `[script_extend]` subclass calling `super()` from re-entering the same wrapper and dispatching your hooks twice.
 
-For a synchronous method the guard is held for microseconds and you will never observe it. For a **coroutine** method it is held across the `await`, so a second call arriving on the same node while the first is suspended sees the guard and takes the vanilla path with no dispatch at all. Verified behavior, not a leak -- the guard is released on every completed path, and the next call after the first finishes dispatches normally.
+For a synchronous method the guard is held for microseconds and you will never observe it. For a **coroutine** method it is held across the `await`, so a second call arriving on the same node while the first is suspended sees the guard and takes the vanilla path with no dispatch at all. Verified behavior, not a leak. The guard is released on every completed path, and the next call after the first finishes dispatches normally.
 
 This is a known limitation rather than a bug we can fix cheaply: with a per-instance key the wrapper cannot distinguish "overlapping call" from "the extends-chain re-entry this guard exists to suppress", and threading a per-logical-call token through rewritten vanilla signatures is not possible without changing those signatures.
 
-Practical impact is small -- it needs a coroutine vanilla method re-entered on the *same node* mid-suspension. If you are hooking one and need every call observed, hook a synchronous method it calls instead, or use a `-callback` hook on the caller.
+Practical impact is small. It needs a coroutine vanilla method re-entered on the *same node* mid-suspension. If you are hooking one and need every call observed, hook a synchronous method it calls instead, or use a `-callback` hook on the caller.
 
 ## Worked examples
 
@@ -312,7 +312,7 @@ version="1.0.0"
 KillTracker="res://KillTracker/Main.gd"
 ```
 
-No `[hooks]` section -- the scanner sees `_lib.hook("ai-death-post", ...)` in Main.gd and enrolls `AI.gd :: death`.
+No `[hooks]` section. The scanner sees `_lib.hook("ai-death-post", ...)` in Main.gd and enrolls `AI.gd :: death`.
 
 ### Post-hook mutator chain
 
@@ -430,7 +430,7 @@ Notes:
 
 - **Void methods** use a structurally similar template but fire `_dispatch("<hook_base>-post", ...)` (return ignored) instead of `_dispatch_post`.
 - **Coroutines**: `await` is prepended to the vanilla call AND the replace-callback call only when the vanilla body itself contains `await`. An unconditional `await` on the replace call was the 3.3.0 regression: it marked every wrapped method a coroutine and broke every non-awaited call site at parse time (fixed in 3.3.1; regression-locked by `check_codegen.sh`).
-- The dispatch helpers (`_dispatch`, `_dispatch_post`, `_dispatch_deferred` in `src/hooks_api.gd`) iterate a `.duplicate()` snapshot of the entry array -- that is what makes mid-dispatch `hook()`/`unhook()` safe.
+- The dispatch helpers (`_dispatch`, `_dispatch_post`, `_dispatch_deferred` in `src/hooks_api.gd`) iterate a `.duplicate()` snapshot of the entry array. That is what makes mid-dispatch `hook()`/`unhook()` safe.
 - `_skip_super` is saved/restored around the replace call, so nested wrapped calls are safe.
 - The legacy-post deprecation warning is one-shot per (hook name, callback object, callback method), so hot-path methods do not spam the log.
 - The `_hooked_bases` refcount (maintained by `hook()`/`unhook()`) is why wrapped-but-unhooked methods cost almost nothing at runtime.
@@ -483,6 +483,6 @@ The loader warns at boot whenever a wrapped path also carries an override claim 
 - [Registry](Registry) -- `lib.register`, `lib.override`, `lib.patch` for data-driven content (items, loot, scenes, recipes)
 - [Dependencies](Dependencies) -- `required=`/`optional=`/`provides=`, load ordering, and how they interact with `has_mod()`
 - [Mod-Format](Mod-Format) -- full `mod.txt` schema including `[hooks]`, `[autoload]` (and the `!` early-autoload prefix), `[script_extend]`, `[registry]`
-- [Setup-Plans](Setup-Plans) -- the declarative `lib.setup(plan)` form, including the `["hooks", {...}]` verb
+- [Setup-Plans](Setup-Plans). The declarative `lib.setup(plan)` form, including the `["hooks", {...}]` verb
 - [Stability-Canaries](Stability-Canaries) -- runtime probes that alarm when the dispatch chain breaks
 - [Limitations](Limitations) -- skip-listed scripts, scene-preload deferral, engine bug workarounds

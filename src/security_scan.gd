@@ -1,18 +1,18 @@
 ## ----- security_scan.gd -----
 ## Lightweight guardrail. Reads each file inside a candidate mod
-## (zip/vmz, pck, or developer-mode folder) WITHOUT mounting it and looks
+## (zip/vmz, pck, or developer-mode folder) without mounting it and looks
 ## for combinations of GDScript patterns that are nearly diagnostic of
 ## known malware: obfuscated string decoding paired with process
 ## spawning, anti-debug crashes, ransomware-setup calls.
 ##
-## This is NOT a virus scanner. It catches the lazy / copy-paste attacks
+## This is not a virus scanner. It catches the lazy / copy-paste attacks
 ## (see the Road to Vostok dropper that motivated this branch); a
 ## determined attacker with the modloader source can evade specific
 ## patterns. Loading is never blocked. Only mods that hit a red trigger
 ## get a "suspicious code" tag in the launcher and a confirmation
 ## dialog at Launch time.
 
-# Source files we run regex content scans on (GDScript text + text-form
+# Source files that get regex content scans (GDScript text plus text-form
 # Godot resources that can embed inline GDScript).
 const _TEXT_SCAN_EXTS: Dictionary = {
 	"gd": true, "tscn": true, "tres": true, "gdshader": true,
@@ -28,7 +28,7 @@ const _BINARY_SCAN_EXTS: Dictionary = {
 # Cap findings per mod so a deliberately-noisy archive can't bury the UI.
 const _MAX_FINDINGS_PER_MOD: int = 50
 
-# Cap individual file size we will fully scan. Almost no legitimate mod
+# Cap on the individual file size that gets a full scan. Almost no legitimate mod
 # script is over a couple hundred KB.
 const _MAX_TEXT_SCAN_BYTES: int = 8 * 1024 * 1024
 
@@ -42,7 +42,7 @@ const _MAX_TEXT_SCAN_BYTES: int = 8 * 1024 * 1024
 #   1. Add an entry below: {id, pattern, description, binary}. `pattern`
 #      is RegEx source, compiled once in _security_compile_rules. Text
 #      scans run it against comment-stripped source
-#      (_strip_gdscript_comments) and record only the FIRST match per
+#      (_strip_gdscript_comments) and record only the first match per
 #      rule per file. Multi-line patterns must use [\s\S] -- RegEx `.`
 #      does not cross newlines.
 #   2. `binary: true` additionally runs the rule over .scn/.res/.gdc
@@ -53,7 +53,7 @@ const _MAX_TEXT_SCAN_BYTES: int = 8 * 1024 * 1024
 #      badge its id must ALSO appear in _RED_SOLO_RULES or in one of the
 #      family arrays (_PROCESS_SPAWN_RULES / _OBFUSCATION_RULES /
 #      _RUNTIME_CODE_RULES) combined by compute_risk_level. Those arrays
-#      repeat the id as a plain string -- a typo there silently drops
+#      repeat the id as a plain string. A typo there silently drops
 #      the rule from the red logic while its findings still log.
 #   4. compute_risk_level also hardcodes the byte_decode_loop +
 #      large_int_array pair check; adding a third obfuscation rule means
@@ -80,7 +80,7 @@ const _SECURITY_RULES: Array = [
 	},
 	{
 		"id": "os_shell_open",
-		# Skip http/https URL literals -- those go through the browser
+		# Skip http/https URL literals. Those go through the browser
 		# (e.g. mods linking to their modworkshop page).
 		"pattern": "\\bOS\\.shell_open\\s*\\((?!\\s*\"https?://)",
 		"description": "Calls OS.shell_open on a path or URI (not an http(s) URL). The OS handler decides what to launch.",
@@ -133,7 +133,7 @@ const _SECURITY_RULES: Array = [
 	# --- Obfuscation signatures (combo with each other or spawn -> red) ---
 	{
 		"id": "byte_decode_loop",
-		# `for <ident> in <expr>:` ... `<acc> += char(<ident>)` -- the
+		# `for <ident> in <expr>:` ... `<acc> += char(<ident>)`. The
 		# string-decoding loop attackers use to hide the real argument
 		# passed to OS.execute or FileAccess.
 		"pattern": "for\\s+\\w+\\s+in[^:]{1,200}:[\\s\\S]{0,200}?\\+=\\s*(?:char|String\\.chr)\\s*\\(",
@@ -142,7 +142,7 @@ const _SECURITY_RULES: Array = [
 	},
 	{
 		"id": "large_int_array",
-		# 16+ comma-separated numeric literals in a single literal -- the
+		# 16+ comma-separated numeric literals in a single literal. The
 		# encoded-payload shape that almost always pairs with byte_decode_loop.
 		"pattern": "\\[\\s*\\d+(?:\\s*,\\s*\\d+){15,}",
 		"description": "Contains a large integer literal (16+ entries). Often appears alongside obfuscated string-decoding loops.",
@@ -151,7 +151,7 @@ const _SECURITY_RULES: Array = [
 ]
 
 # Risk level for a mod's combined findings: clean or red. There is no
-# middle tier -- the UI shows nothing for clean findings (even if
+# middle tier. The UI shows nothing for clean findings (even if
 # individual rules matched) and a red "suspicious code" tag with a
 # launch-time confirmation dialog when red triggers fire.
 const RISK_CLEAN := 0
@@ -264,7 +264,7 @@ func scan_mod(full_path: String, ext: String) -> Array:
 		var cached: Dictionary = _security_scan_cache.get(full_path, {})
 		if not cached.is_empty() and str(cached.get("stamp", "")) == stamp:
 			# duplicate(true) so every caller owns its findings array, same
-			# as the uncached path -- mod entries must never alias each
+			# as the uncached path. Mod entries must never alias each
 			# other's (or the cache's) finding dicts.
 			return (cached.get("findings", []) as Array).duplicate(true)
 	var findings: Array = []
@@ -428,12 +428,12 @@ func _strip_line_comment(line: String) -> String:
 		prev = c
 	return line
 
-# Byte-search inside binary resources or .gdc files. Only runs rules
-# marked `binary: true` -- those whose match is unique enough not to
-# false-positive on legit binary serialized content.
+# Byte-search inside binary resources or .gdc files. Only runs rules marked
+# `binary: true`, which are the ones whose match is distinctive enough not to
+# false-positive on legitimate serialized content.
 func _security_scan_binary(file: String, bytes: PackedByteArray, findings: Array) -> void:
 	# Cap here so zip (post-decompress), folder, and pck callers are all
-	# bounded -- the ascii fallback loop below is too slow for huge blobs.
+	# bounded. The ascii fallback loop below is too slow for huge blobs.
 	if bytes.is_empty() or bytes.size() > _MAX_TEXT_SCAN_BYTES:
 		return
 	var as_text := bytes.get_string_from_utf8()
@@ -481,7 +481,7 @@ func _security_pck_list_with_offsets(pck_path: String) -> Array:
 	var version: int = f.get_32()
 	if version < PACK_FORMAT_V2 or version > PACK_FORMAT_V3:
 		if version == PACK_FORMAT_V4:
-			# Godot 4.7+ export -- the one rejection worth a modder-facing
+			# Godot 4.7+ export. The one rejection worth a modder-facing
 			# message. The stamped engine version u32s follow the format
 			# version in the GDPC header.
 			var ver_major: int = f.get_32()

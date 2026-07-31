@@ -13,7 +13,7 @@ required=["mod_configuration_menu"]
 
 Values are the other mod's `[mod] id` -- **not** its display name, not its filename. (Exception: a mod that never declared an `id` gets its archive filename as its id, extension included, e.g. `CoolMod.zip` -- with two wrinkles: a folder mod defaults to its folder name, and a VostokMods-style `100-CoolMod.vmz` filename defaults to the stripped stem `CoolMod`. Always declare an id, and prefer depending on mods that declare one.) Matching is case-insensitive and whitespace-trimmed; duplicates are dropped.
 
-When the dependency is installed and enabled, the loader guarantees it **loads before your mod**, even if priorities say otherwise (one exception: [dependency cycles](#automatic-ordering-and-cycles), where ordering falls back to priorities). The reorder is minimal and stable: every mod keeps its exact priority position unless a dependency edge forces a hoist. No author or user action needed -- the boot log notes `Load order adjusted: required dependencies load before their dependents.` and the launcher's order panel shows the adjusted order.
+When the dependency is installed and enabled, the loader guarantees it **loads before your mod**, even if priorities say otherwise (one exception: [dependency cycles](#automatic-ordering-and-cycles), where ordering falls back to priorities). The reorder is minimal and stable: every mod keeps its exact priority position unless a dependency edge forces a hoist. No author or user action needed. The boot log notes `Load order adjusted: required dependencies load before their dependents.` and the launcher's order panel shows the adjusted order.
 
 When the dependency is **not** met (missing, disabled, or itself blocked), your mod is skipped -- not loaded at all. The boot log says:
 
@@ -37,7 +37,7 @@ To actually react to the optional mod's presence, check at runtime:
 ```gdscript
 var lib = Engine.get_meta("RTVModLib")
 if lib.has_mod("happy_fireplace"):
-    # integrate -- the mod is loaded, and (because of optional=)
+    # integrate. The mod is loaded, and (because of optional=)
     # it loaded before you
 ```
 
@@ -133,16 +133,16 @@ What your users see, so you can write install instructions that match:
 ## Gotchas
 
 - **No version constraints in `[dependencies]`.** Required entries are bare ids -- presence/enabled is all that is checked. The only version gate is runtime `has_mod(id, min_version)`.
-- **Bare CSV kills the whole `mod.txt`.** `required=a, b` is a parse error for the entire file, not just the key -- your mod loads with no metadata at all. Use `required=["a", "b"]`.
+- **Bare CSV kills the whole `mod.txt`.** `required=a, b` is a parse error for the entire file, not just the key. Your mod loads with no metadata at all. Use `required=["a", "b"]`.
 - **Depend on ids, and declare your own.** A mod without a declared `id` is addressable only by its archive filename (extension included), which changes whenever the user renames the file.
 - **`has_mod()` does not resolve aliases and is case-sensitive**, unlike `[dependencies]` matching. Check the dependency's current declared id.
-- **Cycles warn, they do not block.** If your mod is in a cycle, it still loads -- but ordering falls back to priorities, so do not rely on load order inside a cycle.
+- **Cycles warn, they do not block.** If your mod is in a cycle, it still loads, but ordering falls back to priorities, so do not rely on load order inside a cycle.
 - **Test-as-folder trap:** if a dep you keep as a dev folder suddenly blocks its dependents, check for the `hidden_folder` status (`a dev folder hidden while Developer Mode is off`) -- folder mods disappear from the load set when Developer Mode is off.
 - **Load anyway is a user override you cannot prevent.** Write your mod to fail gracefully (e.g. `has_mod()` check before touching the dep's API) rather than assuming a declared requirement is always present at runtime.
 
 ## See also
 
-- [Mod-Format](Mod-Format) -- the full `mod.txt` key reference, including `[mod] id` and `priority`
+- [Mod-Format](Mod-Format). The full `mod.txt` key reference, including `[mod] id` and `priority`
 - [Hooks](Hooks) -- getting the `RTVModLib` object and the frameworks-ready pattern
 - [Registry](Registry) -- content registration, which also respects load order
 - [Developer-Mode](Developer-Mode) -- folder mods and the `hidden_folder` status

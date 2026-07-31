@@ -150,4 +150,19 @@ if ! ./check_dispatch.sh; then
     echo "FAILED: runtime dispatch harness (see above)" >&2
     exit 1
 fi
+
+# ---------------------------------------------------------------------------
+# GDSC detokenizer harness. Builds synthetic bytecode buffers -- the same
+# logical token stream under a v100 header with v100 indices and under a v101
+# header with v101 indices -- and requires both to reconstruct identically.
+# The detokenizer previously had NO coverage at all, which is how the v100
+# index shift (every index from 83 up sits one lower in v100) survived: the
+# version gate accepts v100, so a v100 .gdc decoded to garbage and was cached
+# as pristine vanilla. Needs no vanilla corpus, so it never skips; ~1s.
+# Self-test: ./check_detok.sh --prove
+# ---------------------------------------------------------------------------
+if ! ./check_detok.sh; then
+    echo "FAILED: detokenizer harness (see above)" >&2
+    exit 1
+fi
 exit 0

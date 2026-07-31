@@ -17,11 +17,11 @@
 ## Per-registry handlers live in src/registry/*.gd. NEW-SECTION CHECKLIST --
 ## adding a registry section touches all of these:
 ##   1. Add a Registry.FOO constant below
-##   2. Add a match-arm in EVERY dispatcher in this file: register, override,
+##   2. Add a match-arm in every dispatcher in this file: register, override,
 ##      patch, _array_op_dispatch, remove, revert, get_entry, and
 ##      _enumerate_vanilla. Verbs the section doesn't support still need an
 ##      explicit warn-and-return-false arm (see 'resources'/'scene_nodes'
-##      arms). A forgotten arm is NOT a compile error -- the call lands in
+##      arms). A forgotten arm is not a compile error. The call lands in
 ##      the `_:` default at runtime, where _warn_unknown_registry names it
 ##      as an unwired section (it cross-checks the Registry const).
 ##   3. Create src/registry/foo.gd with the _register_foo / _override_foo /
@@ -40,7 +40,7 @@
 ##
 ## Timing constraint: Trader / LootContainer / LootSimulation fill local
 ## buckets from LootTables in their `_ready()` and never re-read. Mod authors
-## MUST register loot during their own mod `_ready()`; earlier in the
+## must register loot during their own mod `_ready()`; earlier in the
 ## autoload order; or their entries won't propagate to world loot and
 ## traders. Runtime re-registration after scene load is invisible.
 
@@ -76,7 +76,7 @@ const Registry := {
 #   _registry_registered: reg -> {id -> data}         (newly created entries)
 #   _registry_overridden: reg -> {id -> original}     (full-entry replacements)
 #   _registry_patched:    reg -> {id -> {field -> original_value}}
-# Per-field patch tracking stores the value as it was BEFORE the first patch
+# Per-field patch tracking stores the value as it was before the first patch
 # to that field; subsequent patches to the same field don't overwrite the
 # stash, so revert restores true original state.
 var _registry_registered: Dictionary = {}
@@ -111,7 +111,7 @@ func _warn_unknown_registry(verb: String, registry: String) -> void:
 ## trader_pools). Use this for content that doesn't fit the
 ## weapon/mag/attachment helpers (consumables, keys, tools, ammo).
 ##
-## ALWAYS takes a Dictionary of {id: data}, even for a single registration:
+## Always takes a Dictionary of {id: data}, even for a single registration:
 ##   lib.register_item({"my_potion": {item: ..., scene: ..., loot_tables: [...]}})
 ##
 ## Returns {ok: bool, results: {id: granular_dict}} where each granular_dict
@@ -154,7 +154,7 @@ func register_attachment(entries: Dictionary) -> Dictionary:
 ##     can be reverted or removed independently.
 ##
 ## For weapons you're already registering, the simpler path is the
-## ai_loadout field on register_weapon -- it auto-uses the weapon's
+## ai_loadout field on register_weapon. It auto-uses the weapon's
 ## scene and id, and a single failure mode is reported in result.ai_loadout.
 ##
 ## Per-entry data: {weapon_scene, ai_types[], chance?, replace?}.
@@ -300,7 +300,7 @@ func override(registry: String, id: String, data: Variant) -> bool:
 ## Return contract (current behavior, drifted across handlers -- documented
 ## as-is; convergence is queued as plan item B3): items, sounds, recipes,
 ## events and trader_tasks return true whenever the id resolves, even if
-## EVERY field was rejected as unknown (each bad field warns and is
+## every field was rejected as unknown (each bad field warns and is
 ## skipped). resources and inputs return false unless at least one field
 ## actually applied. scene_nodes validates up front and rejects the whole
 ## patch (returns false, applies nothing) if any field is missing on the
@@ -394,7 +394,7 @@ func prepend(registry: String, id: Variant, field: String, values: Variant, allo
 	return _array_op_dispatch(registry, id, field, "prepend", values, allow_duplicates)
 
 
-## Remove values from an Array field. Removes ALL matching occurrences.
+## Remove values from an Array field. Removes all matching occurrences.
 ## Silent skip if a value isn't present (idempotent).
 func remove_from(registry: String, id: Variant, field: String, values: Variant) -> bool:
 	return _array_op_dispatch(registry, id, field, "remove_from", values, false)
@@ -896,7 +896,7 @@ func has(registry: String, id: String, include_vanilla: bool = true) -> bool:
 	return vanilla.has(id)
 
 ## Just the ids in this registry, as a typed String array. Cheaper than
-## list().keys() because we don't materialize the merged values dict when
+## list().keys() because the merged values dict is not materialized when
 ## the caller doesn't need it.
 func keys(registry: String, include_vanilla: bool = true) -> Array[String]:
 	var out: Array[String] = []
@@ -939,7 +939,7 @@ func find(registry: String, predicate: Callable, include_vanilla: bool = true) -
 
 # Per-registry vanilla source enumerator. Returns id -> entry for every
 # vanilla content item the registry tracks. Pure-mod registries (loot,
-# trader_pools, scene_paths-mod-only, etc.) return {} -- their entries
+# trader_pools, scene_paths-mod-only, etc.) return {}. Their entries
 # are inherently mod-side only.
 func _enumerate_vanilla(registry: String) -> Dictionary:
 	match registry:
@@ -966,8 +966,8 @@ func _enumerate_vanilla(registry: String) -> Dictionary:
 			# dict (_rtv_rewrite_database_constants in
 			# rewriter_registry_inject.gd), leaving the
 			# script constant map with no PackedScene entries. Read the
-			# injected dict first -- the same source _scene_exists_in_vanilla
-			# uses -- and fall back to the const-map walk for the unrewritten
+			# injected dict first. The same source _scene_exists_in_vanilla
+			# uses, and fall back to the const-map walk for the unrewritten
 			# case.
 			var out: Dictionary = {}
 			var db := _database_node()
@@ -1001,7 +1001,7 @@ func _enumerate_vanilla(registry: String) -> Dictionary:
 		"shelters":
 			# Vanilla shelters are the entries in Loader.shelters that pre-
 			# date any mod additions. _rtv_vanilla_shelters captures this
-			# at @onready time. Each shelter "entry" is just its name; we
+			# at @onready time. Each shelter "entry" is just its name, so this
 			# return name -> name for shape consistency.
 			var out: Dictionary = {}
 			var ldr = get_tree().root.get_node_or_null("Loader")
@@ -1015,11 +1015,11 @@ func _enumerate_vanilla(registry: String) -> Dictionary:
 			# loader.gd _register_shelter_or_map); the mod side is handled by
 			# _bulk_mod_entries. There is no vanilla snapshot for maps --
 			# _rtv_vanilla_shelters captures only Loader.shelters, which
-			# lists shelters, not maps -- so the vanilla side is empty.
+			# lists shelters, not maps, so the vanilla side is empty.
 			return {}
 		"recipes":
 			# Vanilla recipes live in Recipes.tres across seven category
-			# arrays. RecipeData has no inherent id -- we synthesize one
+			# arrays. RecipeData has no inherent id. We synthesize one
 			# from "<category>:<recipe.name>" so two recipes with the same
 			# display name in different categories don't collide.
 			var out: Dictionary = {}

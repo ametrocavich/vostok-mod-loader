@@ -44,7 +44,7 @@ func _audio_library() -> Resource:
 # AudioEvent Resource (or null with warning on bad input).
 #
 # AudioEvent's class script is loaded dynamically from the existing library;
-# we don't know its res:// path up front and don't want to hardcode it.
+# its res:// path is not known up front and should not be hardcoded.
 # Pull the class from any existing @export AudioEvent on the library. This
 # also tolerates the game renaming or moving AudioEvent.gd.
 func _coerce_audio_event(id: String, verb: String, data: Variant) -> Resource:
@@ -132,7 +132,7 @@ func _sound_exists_in_vanilla(id: String) -> bool:
 # Lookup precedence: mod overrides > mod registrations > vanilla library
 # field. Overrides on vanilla names live as set() mutations on the library
 # itself; lookups via audioLibrary.get(id) would find them there. To keep
-# the registry self-contained and work for register-only ids too, we route
+# the registry self-contained and working for register-only ids too, route
 # through _registry_registered first, falling back to the library.
 func _lookup_sound(id: String) -> Resource:
 	var reg: Dictionary = _registry_registered.get("sounds", {})
@@ -167,7 +167,7 @@ func _override_sound(id: String, data: Variant) -> bool:
 		return false
 	if not _sound_exists_in_vanilla(id):
 		# Mod-registered ids can't be overridden; that's what a second
-		# register call would be conceptually, but we reject re-register.
+		# register call would be conceptually, but re-register is rejected.
 		# Force mods to revert first.
 		push_warning("[Registry] override('sounds', '%s'): no vanilla AudioLibrary field with that name (register can't be overridden; revert the register first)" % id)
 		return false
@@ -254,7 +254,7 @@ func _revert_sound(id: String, fields: Array) -> bool:
 	var ov: Dictionary = _registry_overridden.get("sounds", {})
 	var patched: Dictionary = _registry_patched.get("sounds", {})
 	var lib := _audio_library()
-	# Full revert: undo override AND clear patches. Order: patches first
+	# Full revert: undo override and clear patches. Order: patches first
 	# (onto whatever's currently resolving, which may be an override), then
 	# override (replaces whole entry with the stashed vanilla).
 	if fields.is_empty():

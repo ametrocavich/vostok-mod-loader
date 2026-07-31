@@ -103,14 +103,14 @@ func _get_hardcoded_class_map() -> Dictionary:
 
 # --- Script enumeration -----------------------------------------------------
 # DirAccess.get_files_at() returns at most 1 entry on res://Scripts/ in
-# Godot 4.6 -- it doesn't enumerate PCK contents. Parse the PCK file table
+# Godot 4.6. It doesn't enumerate PCK contents. Parse the PCK file table
 # directly instead.
 
 # Returns res://Scripts/*.gd paths found in the game's PCK, or [] on failure
 # (encrypted pack, embedded pack, new format, missing file). Callers fall
 # back to _class_name_to_path when empty.
 func _enumerate_game_scripts() -> Array[String]:
-	# Memoized: PCK parsing is non-trivial and we call this from two sites
+	# Memoized: PCK parsing is non-trivial and this is called from two sites
 	# now (early in pass 1/2 so the .hook() merge can resolve class_name-less
 	# stems, plus from _generate_hook_pack as before). Cache keeps the second
 	# call free without forcing the caller to track lookup state.
@@ -166,15 +166,15 @@ func _enumerate_game_scripts() -> Array[String]:
 
 # Script-index disk cache: "<exe mtime>\n<path>\n<path>..." . Lines prefixed
 # "!" carry the PCK's zero-byte .gd entries (the _pck_zero_byte_paths side
-# channel _parse_pck_file_list normally populates) -- a cache hit skips that
+# channel _parse_pck_file_list normally populates). A cache hit skips that
 # parse, so the cache must restore the side channel too or downstream
 # detokenize/hook-gen misdiagnose zero-byte scripts as "game build mismatch".
 #
 # Stamped with the game executable's mtime so a game update invalidates it
-# automatically -- the same key boot.gd checks to wipe hook artifacts. A
+# automatically. The same key boot.gd checks to wipe hook artifacts. A
 # mismatched, missing or unreadable stamp simply falls through to a fresh PCK
 # parse, so the cache can never serve a stale script list; the worst case is
-# the cost we were paying before.
+# the previous cost.
 const _SCRIPT_INDEX_CACHE := "user://modloader_hooks/script_index.txt"
 
 func _script_index_stamp() -> String:
@@ -195,7 +195,7 @@ func _load_script_index_cache() -> Array[String]:
 		var p := lines[i].strip_edges()
 		# Zero-byte side channel ("!"-prefixed): restore into
 		# _pck_zero_byte_paths instead of the script list. Same shape filter
-		# as the plain lines (minus the Scripts/ restriction -- the parser
+		# as the plain lines (minus the Scripts/ restriction. The parser
 		# records zero-byte .gd entries anywhere in the PCK).
 		if p.begins_with("!"):
 			var zb := p.substr(1)
@@ -233,7 +233,7 @@ func _save_script_index_cache(scripts: Array[String]) -> void:
 
 # Collect module-scope `preload("...tscn|scn")` paths from source. Module-scope
 # = line starts at column 0 (no leading whitespace). Such preloads fire at
-# script parse time, BEFORE mod autoloads run overrideScript(). If the
+# script parse time, before mod autoloads run overrideScript(). If the
 # preloaded scene has a Script ext_resource pointing to a path a mod intends
 # to override, the scene bakes a Ref<> to the pre-override vanilla script.
 # take_over_path later clears the vanilla's path_cache, leaving the scene
@@ -329,7 +329,7 @@ func _parse_pck_file_list(pck_path: String) -> PackedStringArray:
 			# Track zero-byte entries so downstream detokenize skips them
 			# silently instead of logging misleading "Cannot read bytes"
 			# warnings. The base game may ship empty .gd entries (e.g.
-			# CasettePlayer.gd in RTV 4.6.1) that we cannot hook and that
+			# CasettePlayer.gd in RTV 4.6.1) that cannot be hooked and that
 			# any preload() call would fail regardless of modloader.
 			if size == 0 and path.ends_with(".gd"):
 				var res_path := path if path.begins_with("res://") else "res://" + path.trim_prefix("/")

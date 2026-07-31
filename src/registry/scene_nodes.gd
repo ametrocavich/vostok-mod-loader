@@ -17,10 +17,10 @@
 ## a special root path get_node_or_null can only walk DOWN from the root,
 ## so root-attached properties would otherwise be unreachable.
 ##
-## How it works: we subscribe to get_tree().node_added at frameworks_ready
+## Subscribes to get_tree().node_added at frameworks_ready
 ## time. Godot sets `node.scene_file_path` on the ROOT of an instantiated
-## scene (and only there); we use that as a cheap filter. When a match
-## fires, we walk our registered node_paths for that scene, resolve each via
+## scene, and only there, which makes a cheap filter. When a match
+## fires, the registered node_paths for that scene are walked and resolved via
 ## get_node_or_null on the scene root, and apply the property patches. The
 ## signal fires BEFORE the node's _ready, so @onready values that depend on
 ## the patched props observe the patched state.
@@ -39,11 +39,11 @@
 # Populated by _patch_scene_node, consumed by _apply_patches_for_scene_root.
 var _scene_node_patches: Dictionary = {}
 
-# Parallel stash for revert: same shape, holds the value the prop had BEFORE
+# Parallel stash for revert: same shape, holds the value the prop had before
 # the first patch on that (scene, node, prop) triple. Subsequent patches to
 # the same prop don't overwrite -- revert restores true original state.
 # Populated inside _apply_patches_for_scene_root the first time a live
-# instance gets a prop set, not at patch() call time (we don't hold the
+# instance gets a prop set, not at patch() call time (nothing holds the
 # instance yet at that point).
 var _scene_node_stash: Dictionary = {}
 
@@ -136,7 +136,7 @@ func _resolve_scene_target(scene_root: Node, node_path: String) -> Node:
 
 # Check property existence at patch-time against a freshly-instantiated
 # probe. We don't require the scene to be in the tree at patch() time
-# mods call this from _ready() before the UI scene loads. Instead we load
+# mods call this from _ready() before the UI scene loads. Instead, load
 # the PackedScene and peek at the target node by instantiating and freeing.
 # This is a per patch() call but only on cold paths (mod boot).
 # Returns true if the (scene, node, props) triple is well-formed, false if
@@ -205,7 +205,7 @@ func _patch_scene_node(id: String, fields: Dictionary) -> bool:
 	_registry_patched["scene_nodes"] = patched
 	# Apply immediately to any scene instance already in the tree. Covers
 	# the case where a mod patches after the scene was instantiated (rare
-	# but legal -- e.g. a config-menu toggle flipping a UI property live).
+	# but legal, e.g. a config-menu toggle flipping a UI property live).
 	_apply_patch_to_live_instances(scene_path)
 	_log_debug("[Registry] patched scene node '%s' (%d field(s))" % [id, fields.size()])
 	return true
@@ -232,7 +232,7 @@ func _walk_for_scene_roots(node: Node, scene_path: String) -> void:
 
 # Revert. Fields-empty: revert every prop on the id. Fields-nonempty:
 # per-field revert. Restoration writes the stashed original value back to
-# every live instance (found via tree walk) AND erases the patch so future
+# every live instance (found via tree walk) and erases the patch so future
 # instantiations see vanilla.
 func _revert_scene_node(id: String, fields: Array) -> bool:
 	var parts := _split_scene_node_id(id)

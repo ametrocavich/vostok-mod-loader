@@ -6,7 +6,7 @@
 # Copies a .vmz to the cache dir as .zip (same content, different extension)
 # so ZIPReader can open it. Returns the cached zip path, or "" on failure.
 # Cache identity is the source's mtime+size, recorded in a <zip>.src sidecar
-# at copy time: ANY mismatch (newer, older, or different size) re-copies, so
+# at copy time: any mismatch (newer, older, or different size) re-copies, so
 # downgrading/restoring a .vmz whose preserved timestamp is older than the
 # cache never mounts the previous version's cached content. A missing or
 # unreadable sidecar (legacy cache, interrupted copy) also forces a re-copy.
@@ -47,8 +47,8 @@ static func _static_vmz_to_zip(vmz_path: String) -> String:
 	var src_len := src.get_length()
 	while src.get_position() < src_len:
 		var chunk := src.get_buffer(65536)
-		# A failed read (yanked device, file shrunk under us) returns an empty
-		# buffer WITHOUT advancing the position -- break instead of spinning
+		# A failed read (yanked device, file shrunk mid-read) returns an empty
+		# buffer without advancing the position -- break instead of spinning
 		# forever; the length re-verification below rejects the truncated copy.
 		if chunk.is_empty():
 			break
@@ -75,7 +75,7 @@ static func _static_vmz_to_zip(vmz_path: String) -> String:
 	# A failed sidecar write just means the next launch re-copies -- safe.
 	return zip_path
 
-# Prints all log lines AND dumps them to user://modloader_filescope.log for
+# Prints all log lines and dumps them to user://modloader_filescope.log for
 # post-mortem inspection. Called from _mount_previous_session after the static
 # init pass finishes (before any normal logging is wired up).
 static func _write_filescope_log(lines: PackedStringArray) -> void:
@@ -116,7 +116,7 @@ static func _read_preserved_cfg_sections(cfg_path: String) -> String:
 	return "\n" + preserved + "\n"
 
 # Converts zip-relative paths to res:// paths for tracked file extensions.
-# Returns "" for paths we don't want to track (hidden files, mod.txt, etc.)
+# Returns "" for paths this does not track (hidden files, mod.txt, etc.)
 func _normalize_to_res_path(zip_path: String) -> String:
 	var path := zip_path.replace("\\", "/")
 	if path.begins_with("res://"):   return path
@@ -211,7 +211,7 @@ func read_mod_config(path: String) -> ConfigFile:
 		zr.close()
 		return null
 	var raw := zr.read_file("mod.txt")
-	# Capture the file list while the reader is still open -- the warning
+	# Capture the file list while the reader is still open. The warning
 	# builder checks declared autoload paths against it so a path that resolves
 	# nowhere shows on the row before launch, instead of only as a boot-log
 	# line after the mod mounted and quietly did nothing.
@@ -293,9 +293,9 @@ func _parse_mod_txt(text: String) -> ConfigFile:
 # already comma-splits and lowercases the result.
 #
 # Already-quoted values (the AI Overhaul pattern) pass through verbatim so
-# we don't change behavior for mods that got the syntax right. Inline
+# behavior is unchanged for mods that got the syntax right. Inline
 # `# comment` / `; comment` on these lines is stripped before wrapping --
-# Variant parser eats it natively for raw values, but once we quote the
+# Variant parser eats it natively for raw values, but once the value is quoted
 # right-hand side a trailing comment becomes part of the string.
 func _quote_unquoted_hooks_values(text: String) -> String:
 	var lines := text.split("\n")
@@ -303,7 +303,7 @@ func _quote_unquoted_hooks_values(text: String) -> String:
 	var in_hooks := false
 	for line in lines:
 		var stripped := line.strip_edges()
-		# Section header: track whether we just entered/left [hooks].
+		# Section header: track entry into and exit from [hooks].
 		if stripped.begins_with("[") and stripped.ends_with("]"):
 			in_hooks = stripped.to_lower() == "[hooks]"
 			out.append(line)
@@ -343,7 +343,7 @@ func _quote_unquoted_hooks_values(text: String) -> String:
 	return "\n".join(out)
 
 # Locate the first line that ConfigFile.parse() would reject. Used only on
-# the failure path -- the per-line probe is O(N) parses but only fires when
+# the failure path. The per-line probe is O(N) parses but only fires when
 # the mod is already broken, and the result lets the launcher tell authors
 # *which* line/section to look at instead of "Invalid mod, re-download".
 func _diagnose_parse_failure(text: String) -> String:
@@ -365,8 +365,8 @@ func _diagnose_parse_failure(text: String) -> String:
 			var section_label := ("[%s]" % current_section) if current_section != "" else "(no section)"
 			return "line %d %s: %s" % [line_num, section_label, _truncate_for_log(stripped)]
 	# Fall-through: per-line probes all passed but the full parse failed.
-	# Could happen with a section-header / multi-line value interaction we
-	# don't model. Return a generic locator so the user at least knows we
+	# Could happen with a section-header / multi-line value interaction this
+	# parser does not model. Return a generic locator so the user knows the loader
 	# detected the failure but couldn't pin the line.
 	return "could not pin line (full parse failed but per-line probes passed)"
 
@@ -388,7 +388,7 @@ func _folder_dev_zip_path(folder_path: String) -> String:
 # True when the cached temp zip still matches the source folder's current
 # content. Compares the folder-state hash recorded in the .src sidecar at
 # zip time against _stable_path_mtime's hash of the folder NOW (newest
-# mtime + file count + per-file path@mtime set hash -- so deletions and
+# mtime + file count + per-file path@mtime set hash, so deletions and
 # timestamp downgrades are caught, not just newer files). A missing zip or
 # sidecar reads as stale, which just forces a rebuild.
 func _folder_dev_zip_current(tmp_zip_path: String) -> bool:
@@ -412,7 +412,7 @@ func _folder_dev_zip_stamp(tmp_zip_path: String) -> String:
 
 func zip_folder_to_temp(folder_path: String) -> String:
 	var tmp_zip_path := _folder_dev_zip_path(folder_path)
-	# Capture the folder-state hash BEFORE zipping (_stable_path_mtime walks
+	# Capture the folder-state hash before zipping (_stable_path_mtime walks
 	# the SOURCE folder for *_dev.zip paths, so this is valid even before the
 	# zip exists). Stamping the pre-zip state means an editor save landing
 	# mid-zip mismatches on the next launch and forces a rebuild, instead of
@@ -436,7 +436,7 @@ func zip_folder_to_temp(folder_path: String) -> String:
 	# runs as a dev folder or as the shipped zip -- "work on the folder, zip it,
 	# upload it" with no path rewrites. (This reverses the v3.1.2 <folder>/ wrap:
 	# a mod authored against that wrap, using res://<folder>/... paths, must drop
-	# the <folder>/ prefix -- or add a real <folder>/ subfolder inside the mod if
+	# the <folder>/ prefix, or add a real <folder>/ subfolder inside the mod if
 	# it wants that namespace. Namespacing is now the author's choice via their
 	# own folder layout, exactly like a zip mod.)
 	var zip_ok := _zip_folder_recursive(zp, folder_path, "")
@@ -459,7 +459,7 @@ func zip_folder_to_temp(folder_path: String) -> String:
 		sf.close()
 	return tmp_zip_path
 
-# Returns false if any entry failed to read or write -- the caller must not
+# Returns false if any entry failed to read or write. The caller must not
 # stamp (or keep) the resulting zip in that case.
 func _zip_folder_recursive(zp: ZIPPacker, disk_path: String, archive_prefix: String) -> bool:
 	var dir := DirAccess.open(disk_path)

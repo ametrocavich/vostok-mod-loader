@@ -4,7 +4,7 @@ The loader needs source access to every vanilla `.gd` it rewrites. For exported 
 
 ## Supported versions
 
-`TOKENIZER_VERSION` 100 (Godot 4.0-4.4) and 101 (Godot 4.5-4.6). Version 102+ isn't supported -- [STABILITY canary B](Stability-Canaries#canary-b-gdsc-tokenizer-version) probes and refuses to generate a hook pack rather than cascading warnings through every script.
+`TOKENIZER_VERSION` 100 (Godot 4.3-4.4) and 101 (Godot 4.5-4.6). Version 102+ isn't supported -- [STABILITY canary B](Stability-Canaries#canary-b-gdsc-tokenizer-version) probes and refuses to generate a hook pack rather than cascading warnings through every script.
 
 ## Binary format
 
@@ -110,7 +110,7 @@ Token type IDs ([gdsc_detokenizer.gd:18-27](https://github.com/ametrocavich/vost
 
 [gdsc_detokenizer.gd:276 `_gdsc_reconstruct`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/gdsc_detokenizer.gd#L276) walks the token stream and rebuilds text line-by-line:
 
-- `line_map[i]` tells the reconstructor when to advance to a new line (inserts blank lines if the next mapped line is more than one ahead). A line jump of more than 10000 aborts reconstruction -- that only happens with a corrupt line map, and looping on raw u32 garbage would spin for billions of iterations ([gdsc_detokenizer.gd:290-297](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/gdsc_detokenizer.gd#L290)).
+- `line_map[i]` tells the reconstructor when to advance to a new line (inserts blank lines if the next mapped line is more than one ahead). A line jump of more than 10000 aborts reconstruction. That only happens with a corrupt line map, and looping on raw u32 garbage would spin for billions of iterations ([gdsc_detokenizer.gd:290-297](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/gdsc_detokenizer.gd#L290)).
 - First visible token on each line reads `col_map[i]` and converts to tabs: `tabs = col / 4`.
 - INDENT (89) / DEDENT (90) tokens are skipped -- column map handles indentation.
 - Spacing is emitted via two lookup tables: `_SPACE_BEFORE` (tokens needing leading space) and `_SPACE_AFTER` (trailing space). Identifiers + literals + annotations + any keyword get a leading space unless preceded by `(`, `[`, `.`, `$`, `~`, `!`, indent, or newline.
@@ -130,7 +130,7 @@ Floats whose string form contains no `.`, `e`, `inf`, or `nan` get a `.0` append
 
 ## Vanilla source cache
 
-The detokenizer caches reconstructed source under `user://modloader_hooks/vanilla/<path>`. Subsequent sessions skip the decode step. Empty results are never cached, and if `store_string` reports a write error the partial cache file is deleted -- a truncated cache would otherwise be trusted as pristine vanilla forever ([gdsc_detokenizer.gd:481-497](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/gdsc_detokenizer.gd#L481)).
+The detokenizer caches reconstructed source under `user://modloader_hooks/vanilla/<path>`. Subsequent sessions skip the decode step. Empty results are never cached, and if `store_string` reports a write error the partial cache file is deleted. A truncated cache would otherwise be trusted as pristine vanilla forever ([gdsc_detokenizer.gd:481-497](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/gdsc_detokenizer.gd#L481)).
 
 ### Why never `load()` during detokenize
 
@@ -146,7 +146,7 @@ The three-method raw-bytes read ([gdsc_detokenizer.gd:124-143](https://github.co
 
 ### Stale-overlay paranoia check
 
-After detokenizing, [gdsc_detokenizer.gd:474-477](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/gdsc_detokenizer.gd#L474) rejects source containing `_rtv_ready_done` or `Engine.get_meta("RTVModLib"` -- that would mean a prior-session overlay contaminated the input:
+After detokenizing, [gdsc_detokenizer.gd:474-477](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/gdsc_detokenizer.gd#L474) rejects source containing `_rtv_ready_done` or `Engine.get_meta("RTVModLib"`. That would mean a prior-session overlay contaminated the input:
 
 ```
 [Hooks] Detokenized source for <path> already contains rewrite markers
@@ -161,4 +161,4 @@ Caveat: a -1 result is treated by hook-pack generation as "no probe" and it proc
 
 ## Zero-byte entries
 
-Some vanilla `.gd` entries are zero bytes in the base game PCK (e.g. `CasettePlayer.gd` in RTV 4.6.1). Detected during PCK enumeration ([pck_enumeration.gd:237-244](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/pck_enumeration.gd#L237)) and recorded in `_pck_zero_byte_paths`. The detokenizer returns empty silently for these paths ([gdsc_detokenizer.gd:114-119](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/gdsc_detokenizer.gd#L114)) rather than logging misleading "Cannot read bytes" warnings -- these files can't be hooked regardless.
+Some vanilla `.gd` entries are zero bytes in the base game PCK (e.g. `CasettePlayer.gd` in RTV 4.6.1). Detected during PCK enumeration ([pck_enumeration.gd:237-244](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/pck_enumeration.gd#L237)) and recorded in `_pck_zero_byte_paths`. The detokenizer returns empty silently for these paths ([gdsc_detokenizer.gd:114-119](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/gdsc_detokenizer.gd#L114)) rather than logging misleading "Cannot read bytes" warnings. These files can't be hooked regardless.

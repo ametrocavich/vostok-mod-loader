@@ -73,7 +73,7 @@ Dependencies flow top-down -- earlier files may not reference code defined later
 Post-concat sanity checks ([build.sh:82-94](https://github.com/ametrocavich/vostok-mod-loader/blob/development/build.sh#L82)):
 
 - **Exactly one `extends` line**, and it must be at the very top ([header.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/header.gd)).
-- **At most one `class_name`** declaration (currently there is none -- the loader is ModLoader autoload).
+- **At most one `class_name`** declaration (currently there is none. The loader is ModLoader autoload).
 
 Missing source file aborts before concat ([build.sh:70-73](https://github.com/ametrocavich/vostok-mod-loader/blob/development/build.sh#L70)).
 

@@ -12,11 +12,11 @@ From the Modpacks tab, the **Save current profile as modpack** button saves your
 
 If any enabled mod isn't linked to ModWorkshop, the dialog warns you first: those mods are still listed in the pack, but whoever applies it will have to install them by hand.
 
-While a modpack is active you can't save a new one -- the button is disabled ("Unload the active modpack first").
+While a modpack is active you can't save a new one. The button is disabled ("Unload the active modpack first").
 
 ## Apply
 
-Click **Apply** on a modpack row: the launcher checks the pack, downloads any mods you're missing, backs up your current setup, and switches you to the pack's setup. A malformed pack fails clean -- your current setup is untouched.
+Click **Apply** on a modpack row: the launcher checks the pack, downloads any mods you're missing, backs up your current setup, and switches you to the pack's setup. A malformed pack fails clean. Your current setup is untouched.
 
 Mods that fail to download show as failures you can retry. A mod the pack has no download link for shows an explicit reason -- "the modpack has no download info for this mod -- install it manually" -- rather than silently vanishing.
 
@@ -26,7 +26,7 @@ Only one modpack can be active at a time. To apply a different pack, **Unload** 
 
 ## Unload
 
-Click **Unload** to go back to exactly the setup you had before applying -- your mods, settings, and any files the pack replaced are restored.
+Click **Unload** to go back to exactly the setup you had before applying. Your mods, settings, and any files the pack replaced are restored.
 
 Your edits to the pack are kept, so re-applying the same pack resumes where you left off rather than resetting to the author's defaults.
 
@@ -53,7 +53,7 @@ The Mods tab shows a banner noting the pack is active and that edits save to the
 
 ## For modpack authors
 
-Everything below is internals -- you don't need any of it to use modpacks.
+Everything below is internals. You don't need any of it to use modpacks.
 
 ### Zip layout
 
@@ -132,6 +132,6 @@ See [Config-Files](Config-Files) for the full key reference.
 ## Related
 
 - [Browse](Browse) -- where Apply downloads missing mods from.
-- [Profile-Format](Profile-Format) -- the metroprofile v1 format inside a modpack's `profile.json`.
+- [Profile-Format](Profile-Format). The metroprofile v1 format inside a modpack's `profile.json`.
 - [Config-Files](Config-Files) -- `active_modpack`, `modpack_backup_profile`, and the managed profile sections on disk.
-- [Mod-Format](Mod-Format) -- the `[updates] modworkshop=<id>` field that feeds `sources`.
+- [Mod-Format](Mod-Format). The `[updates] modworkshop=<id>` field that feeds `sources`.

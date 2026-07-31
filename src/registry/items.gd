@@ -8,7 +8,7 @@
 ##
 ## Vanilla has no central file-string -> ItemData lookup; code passes ItemData
 ## references around directly. So `register` doesn't need to inject anything
-## global: we keep mod-registered items in a dict keyed by `file` and expose
+## global: mod-registered items live in a dict keyed by `file`, exposed
 ## them via get_entry(). `file` is the primary id since vanilla code reads
 ## itemData.file directly.
 
@@ -53,7 +53,7 @@ func _override_item(id: String, data: Variant) -> bool:
 		ov[id] = existing
 		_registry_overridden["items"] = ov
 	# Overrides live in _registry_registered because lookup precedence is
-	# override > register > vanilla, and we key both by id. Track in
+	# override > register > vanilla, both keyed by id. Track in
 	# overridden map so revert can restore; the live value in registered dict
 	# is what lookups hit.
 	var reg: Dictionary = _registry_registered.get("items", {})
@@ -146,9 +146,9 @@ func _revert_item(id: String, fields: Array) -> bool:
 	var did_something := false
 	var ov: Dictionary = _registry_overridden.get("items", {})
 	var patched: Dictionary = _registry_patched.get("items", {})
-	# Full revert: no fields specified -> undo override AND clear all patches.
-	# Order matters: restore patch stash FIRST (onto the currently-resolving
-	# entry, which may be an override), THEN drop the override so lookups
+	# Full revert: no fields specified -> undo override and clear all patches.
+	# Order matters: restore patch stash first (onto the currently-resolving
+	# entry, which may be an override), then drop the override so lookups
 	# fall back to vanilla. Reversing would restore patch values onto vanilla
 	# ItemData, mutating the base resource permanently.
 	if fields.is_empty():
@@ -203,7 +203,7 @@ func _revert_item(id: String, fields: Array) -> bool:
 
 # Lookup precedence: mod registrations (which includes overrides) first, then
 # vanilla. Matches the scenes registry's override > mod > vanilla shape;
-# here overrides live inside the mod-registered dict, so the order collapses
+# Here overrides live inside the mod-registered dict, so the order collapses
 # to "mod entries beat vanilla."
 func _lookup_item(id: String) -> Resource:
 	var reg: Dictionary = _registry_registered.get("items", {})

@@ -1,6 +1,6 @@
 # Profile Format
 
-Specification for the `metroprofile` v1 JSON -- the `profile.json` at the root of a modpack zip. Locked at v3.0.1 release. Payloads written against v1 must keep parsing correctly for the life of the 3.x line.
+Specification for the `metroprofile` v1 JSON. The `profile.json` at the root of a modpack zip. Locked at v3.0.1 release. Payloads written against v1 must keep parsing correctly for the life of the 3.x line.
 
 Changing the shape of v1 would break every modpack zip already shared. Breaking changes require bumping the schema version to `2`.
 
@@ -78,7 +78,7 @@ Parsers written against v1 will exist in the wild indefinitely. Rules for keepin
 
 ## See also
 
-- [Mod-Format](Mod-Format) -- the `mod.txt` schema that generates `profile_key` identities.
-- [Modpacks](Modpacks) -- the user-facing save / share / apply flow.
-- `_profile_to_json_string` + `_export_profile_to_zip` (src/ui.gd) -- the write path.
-- `_validate_modpack` + `_materialize_modpack_profile` (src/modpacks.gd) -- the read / apply path.
+- [Mod-Format](Mod-Format). The `mod.txt` schema that generates `profile_key` identities.
+- [Modpacks](Modpacks). The user-facing save / share / apply flow.
+- `_profile_to_json_string` + `_export_profile_to_zip` (src/ui.gd). The write path.
+- `_validate_modpack` + `_materialize_modpack_profile` (src/modpacks.gd). The read / apply path.

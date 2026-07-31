@@ -12,7 +12,7 @@ How to install the mod loader and get your first mods running.
 3. Create a `mods` folder in that same game folder if there isn't one already.
 4. Launch the game. The mod loader screen appears before the main menu.
 
-That's it -- the loader is installed. From its screen you can turn mods on and off, download new ones, and launch the game.
+That's it. The loader is installed. From its screen you can turn mods on and off, download new ones, and launch the game.
 
 ## Get some mods
 
@@ -24,4 +24,4 @@ Some things mods can't do are engine limits, not bugs -- see [Limitations](Limit
 
 ## Uninstalling
 
-Delete `override.cfg` and `modloader.gd` from the game folder. Your `mods` folder can stay or go -- it's just your downloaded mods.
+Delete `override.cfg` and `modloader.gd` from the game folder. Your `mods` folder can stay or go. It's just your downloaded mods.

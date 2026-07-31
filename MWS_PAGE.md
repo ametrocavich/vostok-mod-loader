@@ -26,7 +26,7 @@ The download contains four files: `modloader.gd`, `override.cfg`, `windows-insta
 ## Manual
 
 1. Right-click Road to Vostok in your Steam library and select `Manage > Browse local files`. Steam opens the game folder.
-2. Copy `modloader.gd` and `override.cfg` into that folder. Do not copy the installer scripts -- they are not needed for a manual install.
+2. Copy `modloader.gd` and `override.cfg` into that folder. Do not copy the installer scripts. They are not needed for a manual install.
 3. If a `mods` folder does not already exist next to them, create one.
 
 ## Upgrading from v2 or earlier

@@ -14,7 +14,7 @@
 # chain walk is needed because mods that override vanilla via
 # take_over_path typically use extends-by-path (no class_name of their
 # own), so their instances report get_global_name() == "". Matching via
-# base chain catches IXP's Controller which extends our class_name
+# base chain catches IXP's Controller, which extends the generated class_name
 # Controller rewrite.
 func _rtv_collect_nodes_by_class(node: Node, cls_name: String, out: Array) -> void:
 	var scr := node.get_script() as GDScript

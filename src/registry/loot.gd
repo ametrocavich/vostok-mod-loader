@@ -20,7 +20,7 @@
 ## ItemData ref so revert can put it back.
 
 # Map short table names -> absolute res:// paths. If a mod passes an already-
-# absolute path, we use it as-is.
+# absolute path, it is used as-is.
 const _LOOT_TABLE_PATHS := {
 	"LT_Master": "res://Loot/LT_Master.tres",
 	# Custom tables (event-driven): res://Loot/Custom/
@@ -109,13 +109,13 @@ func _register_loot(id: String, data: Variant) -> bool:
 		return false
 	# Idempotent append: don't double-insert if the mod's item is already in
 	# the table (e.g., after an editor rebuild). The existing entry isn't
-	# ours to track, so we still fail the register; mod authors should use
+	# not tracked here, so the register still fails; mod authors should use
 	# override if they want to force a swap.
 	if item in table_res.items:
 		push_warning("[Registry] register('loot', '%s'): item is already present in table; use override to swap an existing entry" % id)
 		return false
 	table_res.items.append(item)
-	# Stash what we registered so remove() can locate and strip it.
+	# Stash the registration so remove() can locate and strip it.
 	reg[id] = {"item": item, "table": data["table"], "table_res": table_res}
 	_registry_registered["loot"] = reg
 	_log_debug("[Registry] registered loot '%s' (%s -> %s)" % [id, data["table"], item.get("file")])
@@ -187,7 +187,7 @@ func _remove_loot(id: String) -> bool:
 		table_res.items.remove_at(idx)
 	else:
 		# The entry was registered but something (another mod? editor?)
-		# stripped it from the table already. Clean up our tracking anyway.
+		# stripped it from the table already. Clean up the tracking anyway.
 		push_warning("[Registry] remove('loot', '%s'): item not found in table; tracking cleared" % id)
 	reg.erase(id)
 	_registry_registered["loot"] = reg

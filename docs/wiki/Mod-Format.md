@@ -1,6 +1,6 @@
 # Mod Format
 
-A mod is an archive (`.vmz`, `.zip`, or `.pck`, plus unpacked folders in developer mode). The archive contents mirror the game's `res://` tree -- a file at `MyMod/foo.gd` inside the archive ends up at `res://MyMod/foo.gd` after mounting.
+A mod is an archive (`.vmz`, `.zip`, or `.pck`, plus unpacked folders in developer mode). The archive contents mirror the game's `res://` tree. A file at `MyMod/foo.gd` inside the archive ends up at `res://MyMod/foo.gd` after mounting.
 
 ## Archive types
 
@@ -16,7 +16,7 @@ A mod is an archive (`.vmz`, `.zip`, or `.pck`, plus unpacked folders in develop
 ### Packaging layout
 
 `mod.txt` must sit at the **root** of the archive. An archive whose `mod.txt` is
-buried in a subfolder is rejected as packaged incorrectly -- this is the single
+buried in a subfolder is rejected as packaged incorrectly. This is the single
 most common packaging mistake, and it happens when you zip the folder that holds
 the mod instead of the mod's contents.
 
@@ -162,7 +162,7 @@ Duplicate autoload names are logged and skipped (first wins). Paths not present 
 |---|---|---|
 | `modworkshop` | int | ModWorkshop mod id. Enables the Updates tab for this mod |
 
-Declaring `modworkshop` also makes the mod auto-downloadable when someone applies a modpack that includes it -- the loader records `modworkshop` plus `[mod] version` as the mod's source and fetches it from ModWorkshop on the recipient's machine. Mods without a `modworkshop` id must be installed manually by modpack recipients.
+Declaring `modworkshop` also makes the mod auto-downloadable when someone applies a modpack that includes it. The loader records `modworkshop` plus `[mod] version` as the mod's source and fetches it from ModWorkshop on the recipient's machine. Mods without a `modworkshop` id must be installed manually by modpack recipients.
 
 Version compare uses [mod_discovery.gd `compare_versions`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd) -- splits on `.`, strips `v`/`V` prefix, pads shorter side with `"0"`, lexicographic int comparison.
 
@@ -189,7 +189,7 @@ Quote the value (right-hand side). ConfigFile parses RHS as a Variant literal, s
 
 Method names are case-insensitive (normalized to lowercase on write to match the rewriter's comparison). The wildcard leaves the inner mask empty; the generator reads that as "wrap every non-static method."
 
-Declaring `[hooks]` in one mod is enough to enroll that path for every mod. Other mods that extend or override the same vanilla script compose naturally via Godot's `extends` resolution -- they see the wrapped parent, `super.method(...)` lands on the dispatch wrapper, hooks fire.
+Declaring `[hooks]` in one mod is enough to enroll that path for every mod. Other mods that extend or override the same vanilla script compose naturally via Godot's `extends` resolution. They see the wrapped parent, `super.method(...)` lands on the dispatch wrapper, hooks fire.
 
 ### `[script_extend]` section
 
@@ -226,7 +226,7 @@ Opt-in gate for the registry API (`lib.register`, `lib.override`, `lib.patch`, `
 
 Declaring an empty `[registry]` section tells the loader to wrap `Database.gd`, `Loader.gd`, `AISpawner.gd`, `AI.gd`, `FishPool.gd`, and `Compiler.gd` with the injected fields the registry API needs. Without the declaration these scripts stay vanilla and registry calls no-op (`push_warning` logged).
 
-You don't enumerate what you'll register here -- the section's presence alone enables the subsystem. Use the runtime API to add/override/patch individual entries.
+You don't enumerate what you'll register here. The section's presence alone enables the subsystem. Use the runtime API to add/override/patch individual entries.
 
 ### `[rtvmodlib]` section
 
@@ -235,7 +235,7 @@ You don't enumerate what you'll register here -- the section's presence alone en
 needs=["Controller", "Camera"]
 ```
 
-Historical declaration from tetrahydroc's standalone [rtv-mod-lib](https://github.com/tetrahydroc/rtv-mod-lib) mod, which used it to pick which framework subclass scripts to generate. **Ignored by the current loader** -- the loader does not read this section; it parses as a normal ConfigFile section and is silently ignored, so mods declaring it don't error out. The opt-in wrap surface is driven by `[hooks]`, `.hook()` call scanning, and `[registry]`, not by `needs=`. New mods should use `[hooks]` or the `.hook()` scanner instead.
+Historical declaration from tetrahydroc's standalone [rtv-mod-lib](https://github.com/tetrahydroc/rtv-mod-lib) mod, which used it to pick which framework subclass scripts to generate. **Ignored by the current loader**. The loader does not read this section; it parses as a normal ConfigFile section and is silently ignored, so mods declaring it don't error out. The opt-in wrap surface is driven by `[hooks]`, `.hook()` call scanning, and `[registry]`, not by `needs=`. New mods should use `[hooks]` or the `.hook()` scanner instead.
 
 ### `[script_overrides]` section (legacy alias)
 
@@ -258,7 +258,7 @@ Tracked per-entry in `_last_mod_txt_status` (see [fs_archive.gd `read_mod_config
 | `parse_error` | ConfigFile.parse failed | `mod.txt parse error at <detail>` (or `Invalid mod -- mod.txt failed to parse. Try re-downloading.` when no parse detail is available) |
 | `pck` | N/A (PCK skips mod.txt read) | -- |
 
-UTF-8 BOM is stripped before parsing ([fs_archive.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/fs_archive.gd)) so files saved from Windows editors don't trip ConfigFile. Non-UTF8 bytes elsewhere in `mod.txt` (or any `.gd` inside the archive) produce a Godot C++ warning `"Unicode parsing error, some characters were replaced with U+FFFD"` -- the loader logs `[ModScan] inspecting <file>` immediately before the decode so you can match the warning to the mod.
+UTF-8 BOM is stripped before parsing ([fs_archive.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/fs_archive.gd)) so files saved from Windows editors don't trip ConfigFile. Non-UTF8 bytes elsewhere in `mod.txt` (or any `.gd` inside the archive) produce a Godot C++ warning `"Unicode parsing error, some characters were replaced with U+FFFD"`. The loader logs `[ModScan] inspecting <file>` immediately before the decode so you can match the warning to the mod.
 
 ## Archive packaging gotchas
 
@@ -273,7 +273,7 @@ BAD ZIP: <n> entries use Windows backslash paths.
 
 ### Nested mod.txt
 
-If `mod.txt` isn't at the archive root, packaging is wrong -- the archive probably has an unnecessary wrapper folder. The loader refuses to treat this as a valid mod.
+If `mod.txt` isn't at the archive root, packaging is wrong. The archive probably has an unnecessary wrapper folder. The loader refuses to treat this as a valid mod.
 
 ### Database.gd collision
 

@@ -14,7 +14,7 @@ UI toolbar checkbox in the Mods tab: **Developer mode** ([ui.gd](https://github.
 
 Subdirectories of `<exe>/mods/` are recognized as mod archives and zipped to `user://vmz_mount_cache/<name>_dev.zip` on the fly. Without dev mode, subdirectories are ignored ([mod_discovery.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd)).
 
-The temp zip is only rebuilt when the folder's contents actually changed -- a folder-state hash (newest mtime + file count + per-file path@mtime) is stored in a `.zip.src` sidecar at zip time and compared on each launch (`_folder_dev_zip_current`, fs_archive.gd). Unchanged folders reuse the cached zip and mount; edits, deletions, or timestamp changes force a rebuild on the next launch.
+The temp zip is only rebuilt when the folder's contents actually changed. A folder-state hash (newest mtime + file count + per-file path@mtime) is stored in a `.zip.src` sidecar at zip time and compared on each launch (`_folder_dev_zip_current`, fs_archive.gd). Unchanged folders reuse the cached zip and mount; edits, deletions, or timestamp changes force a rebuild on the next launch.
 
 Folder entries show `[dev folder]` label in red in the UI ([ui.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd)).
 
@@ -65,7 +65,7 @@ Consumed by downstream diagnostics and stored in `_mod_script_analysis`.
 
 ### 5. Override timing warnings
 
-[`_log_override_timing_warnings` in conflict_report.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/conflict_report.gd) (dev-only) logs which mods use `overrideScript()` -- those overrides only apply after scene reload:
+[`_log_override_timing_warnings` in conflict_report.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/conflict_report.gd) (dev-only) logs which mods use `overrideScript()`. Those overrides only apply after scene reload:
 
 ```
 <ModName> uses overrideScript() on: Controller.gd, Camera.gd
@@ -82,7 +82,7 @@ For each mod that uses `overrideScript()` dynamically, loads the declared target
 [OverrideVerify] MyMod | res://Scripts/Controller.gd | resource_path=res://Scripts/Controller.gd src_head=[extends "res://ModBase.gd" | ...]
 ```
 
-Before v3.0.1, this probe classified cache state by method prefix (`_rtv_mod_*` / `_rtv_vanilla_*`). With mod source no longer rewritten under the cutover, there's no in-source signal for STALE/BROKEN classification -- operators read the source head and decide. Layer B node_added probe, AutoloadInstanceProbe auto-swap, and tree-walk fallback were removed along with the Step C pipeline they classified against.
+Mod source is never rewritten, so there is no marker inside a mod's own script to classify cache state against. The probe reports the source head and leaves the judgement to whoever is reading it.
 
 ### 7. Live-probe hooks
 
@@ -140,7 +140,7 @@ Per-hook-base counts accumulate in the loader's `_dispatch_counts` dict (constan
 The gate is applied at:
 
 - `_log_debug` (logging.gd) -- full no-op when off, nothing printed or buffered.
-- The diagnostic entry points in hook_pack.gd -- a single `if not _developer_mode: return` covers the live probes, COMPILE-PROOF, AUTOLOAD-CHECK, the registry probe, IXP-VERIFY, and the 30s timer.
+- The diagnostic entry points in hook_pack.gd. A single `if not _developer_mode: return` covers the live probes, COMPILE-PROOF, AUTOLOAD-CHECK, the registry probe, IXP-VERIFY, and the 30s timer.
 - The conflict summary / report calls in lifecycle.gd.
 - Inside the generated dispatch wrappers, for the `_dispatch_counts` increments.
 

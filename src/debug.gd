@@ -69,8 +69,8 @@ func _test_pack_precedence() -> void:
 		_log_info(TAG + "   PCK's .remap content: " + pre_remap.replace("\n", "|"))
 
 	# --- BUILD TEST PACK ---
-	# IMPORTANT: do NOT call load(TARGET_PATH) here -- that would cache the
-	# bytecode version and prevent our mounted .gd from winning on subsequent
+	# Do not call load(TARGET_PATH) here. That would cache the
+	# bytecode version and prevent the mounted .gd from winning on subsequent
 	# loads. Go straight to detokenize, and explicitly target the .gdc path so
 	# a stale test pack mounted at static init can't pollute the input with
 	# its own rewritten .gd (duplicate-function parse error -> game breaks).
@@ -80,7 +80,7 @@ func _test_pack_precedence() -> void:
 		return
 
 	# Capture PRISTINE IXP/Controller.gd source via ZIPReader directly against
-	# the .vmz -- bypasses the VFS entirely, so we're immune to either
+	# the .vmz. Bypasses the VFS entirely, so it is immune to either
 	#   (a) destructive ops on a previously-mounted test pack leaving stale
 	#       mount entries pointing at a deleted file (old crash path), or
 	#   (b) reading an already-rewritten version from a prior session's pack
@@ -104,23 +104,21 @@ func _test_pack_precedence() -> void:
 	else:
 		_log_info(TAG + " ImmersiveXP.vmz not present, TEST 4B will skip")
 
-	# Step A (2026-04-17): feed the pristine vanilla through the production
-	# generator _rtv_rewrite_vanilla_source(). It renames EVERY non-static
-	# method to _rtv_vanilla_<name> and appends full dispatch wrappers at the
-	# original names. This proves the generator produces runtime-correct
-	# output for all methods (not just Movement like the prior inline
-	# rewrite did).
+	# Feed pristine vanilla through the production generator
+	# _rtv_rewrite_vanilla_source(), which renames every non-static method to
+	# _rtv_vanilla_<name> and appends dispatch wrappers at the original names.
+	# Exercises the generator across all methods rather than a single one.
 	var parsed := _rtv_parse_script(TARGET_PATH.get_file(), vanilla_source)
 	var hookable_count := 0
 	for fe in parsed["functions"]:
 		if not fe["is_static"]:
 			hookable_count += 1
-	_log_info(TAG + " Step A: parsed %d function(s), %d hookable (non-static)" \
+	_log_info(TAG + " parsed %d function(s), %d hookable (non-static)" \
 			% [(parsed["functions"] as Array).size(), hookable_count])
 
 	var rewritten := _rtv_rewrite_vanilla_source(vanilla_source, parsed)
 
-	# Append the test-remap marker (non-hookable callable) so we can verify the
+	# Append the test-remap marker (non-hookable callable) to verify the
 	# compiled class is usable via script.new() + call(marker) below.
 	var marker_block: String = "\n# rtv test-remap marker\nfunc " + MARKER_SYMBOL \
 			+ "() -> String:\n\treturn \"test-remap-ok\"\n"
@@ -161,10 +159,10 @@ func _test_pack_precedence() -> void:
 
 	# === TEST 4B: also pre-wrap ImmersiveXP's Controller.gd ===
 	# When ImmersiveXP's autoload does load("res://ImmersiveXP/Controller.gd")
-	# .take_over_path(vanilla_path), it'll load our pre-wrapped version and
+	# .take_over_path(vanilla_path), it loads the pre-wrapped version and
 	# move THAT to the vanilla path. Hooks fire through the mod's chain.
 	# Uses captured_ixp_source captured at top of function -- reading IXP_PATH
-	# HERE fails after we delete the old test pack zip above (VFS has stale
+	# here fails once the old test pack zip is deleted above (VFS has stale
 	# mount entries pointing at the deleted file).
 	const IXP_PATH := "res://ImmersiveXP/Controller.gd"
 	if not captured_ixp_source.is_empty():
@@ -183,7 +181,7 @@ func _test_pack_precedence() -> void:
 			for line in ixp_lines:
 				ixp_new_lines.append(line)
 			if ixp_renamed:
-				# Detect indentation style: if source uses spaces, our appended
+				# Detect indentation style: if source uses spaces, the appended
 				# wrapper must too (GDScript errors on mixed tabs/spaces).
 				var uses_spaces := false
 				for line in ixp_lines:
@@ -255,8 +253,8 @@ func _test_pack_precedence() -> void:
 	# --- LOAD TESTS ---
 	_log_info(TAG + " === LOAD ATTEMPTS (cache should be cold -- we never pre-loaded) ===")
 
-	# Attempt 1: default load(), same as any game code. If this has our marker,
-	# production scripts will get our version too.
+	# Attempt 1: default load(), same as any game code. If this carries the marker,
+	# production scripts resolve to the same version.
 	var post := load(TARGET_PATH) as GDScript
 	if post:
 		var post_source: String = post.source_code
@@ -335,10 +333,10 @@ func _test_pack_precedence() -> void:
 	if marker_in_method_list and call_returned == "test-remap-ok":
 		_log_info(TAG + " ====== CONFIRMED SUCCESS: rewrite compiled AND callable ======")
 		if vanilla_movement_in_list and wrapper_movement_in_list:
-			_log_info(TAG + " Step A: Movement rename + dispatch wrapper both compiled OK")
+			_log_info(TAG + " Movement rename + dispatch wrapper both compiled OK")
 			_log_info(TAG + " (wrapper prints nothing by itself; [TEST-HOOK-IXP] from IXP-side wrapper is the in-game signal)")
 		else:
-			_log_warning(TAG + " Step A: Movement intercept NOT compiled (vanilla_in=%s, wrapper_in=%s)" \
+			_log_warning(TAG + " Movement intercept NOT compiled (vanilla_in=%s, wrapper_in=%s)" \
 					% [vanilla_movement_in_list, wrapper_movement_in_list])
 	elif marker_in_method_list:
 		_log_info(TAG + " ====== LIKELY SUCCESS: compiled script has marker method ======")

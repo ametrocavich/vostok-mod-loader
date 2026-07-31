@@ -2,7 +2,7 @@
 ##
 ## Pure-aggregator helpers that fan out to primitive registries (ITEMS,
 ## SCENES, LOOT, TRADER_POOLS) and patch related vanilla state. No new
-## state -- mods can drop down to primitives any time. The helpers exist
+## state. Mods can drop down to primitives any time. The helpers exist
 ## to compress the typical 5-10 calls a content mod ends up making into
 ## a single declarative dict.
 ##
@@ -14,7 +14,7 @@
 ##
 ## Three of these (weapon/magazine/attachment) also have Registry consts
 ## (WEAPONS / MAGAZINES / ATTACHMENTS) for symmetry with primitive
-## registries. register_item is method-only -- the bare-Resource form of
+## registries. register_item is method-only. The bare-Resource form of
 ## register('items', ...) already exists, so the bundle helper has a
 ## different name to avoid arg-shape polymorphism.
 ##
@@ -78,7 +78,7 @@ func _register_weapon(id: String, data: Variant) -> Dictionary:
 		_apply_icon(weapon_item, d["icon_path"], id)
 	result["items"] = _register_item(id, weapon_item)
 	if not result["items"]:
-		# Item registration is the foundation; if it failed, abort -- the
+		# Item registration is the foundation; if it failed, abort. The
 		# rest of the fan-out has nothing to attach `compatible` to.
 		return result
 	# Step 2: world scene.
@@ -99,7 +99,7 @@ func _register_weapon(id: String, data: Variant) -> Dictionary:
 			if mag_result.get("item_data") != null:
 				compatible_additions.append(mag_result["item_data"])
 	# Step 5: fits_attachments -- id-only refs. Resolve through _lookup_item
-	# (covers vanilla + mod items). Failures don't abort; append what we can.
+	# (covers vanilla + mod items). Failures don't abort; append what is available.
 	if d.has("fits_attachments") and d["fits_attachments"] is Array:
 		for att_id in d["fits_attachments"]:
 			if not (att_id is String):
@@ -136,7 +136,7 @@ func _register_weapon(id: String, data: Variant) -> Dictionary:
 	# Step 8: AI loadout. Optional. Auto-uses the weapon's scene_path and id;
 	# the caller's ai_loadout dict adds ai_types / chance / replace.
 	# Failure is reported in result.ai_loadout but does not fail the whole
-	# weapon register -- the weapon still spawns as loot, it just won't be
+	# weapon register. The weapon still spawns as loot, it just won't be
 	# carried by AI.
 	if d.has("ai_loadout"):
 		var al: Variant = d["ai_loadout"]
@@ -145,7 +145,7 @@ func _register_weapon(id: String, data: Variant) -> Dictionary:
 			result["ai_loadout"] = false
 		else:
 			# Compose the ai_loadouts entry: pin weapon_scene to this weapon's
-			# already-loaded scene resource so we don't re-load or risk a
+			# already-loaded scene resource to avoid a re-load and the risk of a
 			# scene-id resolution miss.
 			var loadout_data: Dictionary = (al as Dictionary).duplicate()
 			loadout_data["weapon_scene"] = world_scene
@@ -447,7 +447,7 @@ func _register_furniture_bundle(id: String, data: Variant) -> Dictionary:
 		else:
 			result["trader_pools_failed"].append(String(pool_name))
 	# Step 4: optional crafting recipe. Build a fresh RecipeData with
-	# output = [our item], register under recipes/furniture category. Mods
+	# output = [the registered item], filed under the recipes/furniture category. Mods
 	# that just want trader-only furniture skip this.
 	if d.has("recipe"):
 		# Every requested-but-failed path must set result["recipe"] = false so
@@ -472,7 +472,7 @@ func _register_furniture_bundle(id: String, data: Variant) -> Dictionary:
 	return result
 
 # Construct a fresh RecipeData from the modder's recipe dict. Output is
-# implicit (the item we're registering). Returns null if construction
+# implicit (the item being registered). Returns null if construction
 # fails (unlikely; RecipeData.new is reliable, but the typed-array
 # coercion can fail if input contains non-ItemData).
 func _build_furniture_recipe(id: String, output_item: Resource, rd: Dictionary) -> Resource:
@@ -485,7 +485,7 @@ func _build_furniture_recipe(id: String, output_item: Resource, rd: Dictionary) 
 	recipe.set("time", float(rd.get("time", 1.0)))
 	if rd.has("audio"):
 		recipe.set("audio", rd["audio"])
-	# Build a typed input array without naming ItemData -- it's a game class,
+	# Build a typed input array without naming ItemData. It's a game class,
 	# and referencing it here would force-compile vanilla ItemData.gd before
 	# hook-pack activation (see shared.gd's duck-typing note). Instead,
 	# duplicate the fresh recipe's own declared `input` (duplicate() preserves
@@ -502,7 +502,7 @@ func _build_furniture_recipe(id: String, output_item: Resource, rd: Dictionary) 
 	if typed_input.is_empty():
 		return null
 	recipe.set("input", typed_input)
-	# Output is the item we're registering, single-element typed array.
+	# Output is the item being registered, as a single-element typed array.
 	var typed_output: Array = []
 	var declared_output = recipe.get("output")
 	if declared_output is Array:

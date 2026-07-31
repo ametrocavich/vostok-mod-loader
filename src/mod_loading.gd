@@ -7,7 +7,7 @@
 # Attribution side-channel for the hook reconciliation in hook_pack.gd:
 # res_path -> Dictionary[mod_name, true] for every mod that declared a hook
 # on that path (via [hooks] or a scanned .hook() call). _hooked_methods
-# cannot carry this itself -- its inner dict IS the per-method wrap mask and
+# cannot carry this itself. Its inner dict IS the per-method wrap mask and
 # an empty dict is the wildcard sentinel, so the shape can't be extended.
 # Purely diagnostic: never read for wrap decisions. Entries added by
 # hooks_api.add_hook() are not attributed (runtime callers) and report as
@@ -16,8 +16,8 @@ var _hook_declared_by: Dictionary = {}
 
 # Every mod.txt section this loader actually reads, anywhere (load-time
 # handlers below, discovery-time readers in mod_discovery/ui, and the legacy
-# no-op [rtvmodlib]). Used ONLY for the unrecognized-section notice in
-# _process_mod_candidate -- a section missing from this list still parses
+# no-op [rtvmodlib]). Used only for the unrecognized-section notice in
+# _process_mod_candidate. A section missing from this list still parses
 # and still works if something reads it; the notice is a breadcrumb for the
 # two ways a section can silently do nothing: a mod author's typo
 # ([autoloads], [hook]) and a maintainer adding a handler without listing
@@ -26,7 +26,7 @@ const MOD_TXT_KNOWN_SECTIONS: Array[String] = [
 	"mod", "autoload", "hooks", "registry",
 	"script_extend", "script_overrides",
 	"dependencies", "updates",
-	"rtvmodlib",  # legacy, tolerated no-op (pre-v3.0.1 opt-in surface)
+	"rtvmodlib",  # legacy, tolerated no-op
 ]
 
 func load_all_mods(pass_label: String = "") -> void:
@@ -74,11 +74,9 @@ func load_all_mods(pass_label: String = "") -> void:
 	# Account for every mod found on disk, and name the active profile.
 	#
 	# Without this the log jumps straight from "Found 9 mod(s)" to a two-entry
-	# load order with nothing explaining the other seven. That gap cost a full
-	# triage session once already: the answer turned out to be an inactive test
-	# profile in which the mod under investigation was simply disabled, which
-	# no log line anywhere would have revealed. Disabled mods are a normal,
-	# silent state -- so state it.
+	# load order with nothing explaining the other seven. The usual cause is an
+	# active profile in which those mods are simply disabled, and no other log
+	# line reveals that. Disabled is a normal, silent state, so name it.
 	var found_total: int = _ui_mod_entries.size()
 	var enabled_total: int = int(pick["enabled_count"])
 	var loading_total: int = candidates.size()
@@ -123,8 +121,8 @@ func _merge_hook_calls_into_wrap_mask() -> void:
 		var key := sp.get_file().get_basename().to_lower()
 		if not prefix_to_path.has(key):
 			prefix_to_path[key] = sp
-	# Root-cause guard: when BOTH enumeration sources are empty (PCK parse
-	# failed AND no class_name lookup), no prefix can ever resolve. Without
+	# Root-cause guard: when both enumeration sources are empty (PCK parse
+	# failed and no class_name lookup), no prefix can ever resolve. Without
 	# this, every scanned .hook() call below fires its own misleading
 	# "check spelling" warning; the truth is the loader couldn't enumerate
 	# the game's scripts at all, so say that ONCE and stop.
@@ -145,7 +143,7 @@ func _merge_hook_calls_into_wrap_mask() -> void:
 			var method: String = entry["method"]
 			if not prefix_to_path.has(prefix):
 				# Source-scan saw a .hook("<prefix>-<method>-...") call but
-				# we can't resolve <prefix> to any vanilla script. After the
+				# <prefix> resolves to no vanilla script. After the
 				# pass-1/pass-2 reorder this should only fire for genuine
 				# typos or hooks targeting a renamed/removed script -- log
 				# loudly so the mod author isn't debugging a silent miss.
@@ -182,7 +180,7 @@ func _merge_hook_calls_into_wrap_mask() -> void:
 # inline blocks below, in this order -- [hooks], [registry] (+ the
 # implicit B_Loader form), [script_extend]/[script_overrides], then
 # [autoload]. To support a new section:
-#   1. Add a handler block below (runs in BOTH passes; load_all_mods is
+#   1. Add a handler block below (runs in both passes; load_all_mods is
 #      re-entered by _run_pass_2, so handlers must be idempotent across
 #      the state _clear at the top of load_all_mods).
 #   2. Add the section name to MOD_TXT_KNOWN_SECTIONS (constants below the
@@ -198,7 +196,7 @@ func _merge_hook_calls_into_wrap_mask() -> void:
 #      doc block there), not a block here.
 #   5. Document the section in docs/wiki/Mod-Format.md.
 # Forgetting step 1 is silent by design of ConfigFile: unknown sections
-# parse fine and are simply never read -- the notice from step 2 is the
+# parse fine and are simply never read. The notice from step 2 is the
 # only breadcrumb.
 func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 	var file_name: String = c["file_name"]
@@ -217,11 +215,11 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 	var mount_path := full_path
 	var skip_remount := _filescope_mounted.has(full_path)
 	if ext == "folder":
-		# A folder mod's mount identity is its temp _dev.zip -- that is the
+		# A folder mod's mount identity is its temp _dev.zip. That is the
 		# path pass state records and static init file-scope-mounts, so the
 		# re-mount guard must key on it (the folder path itself never appears
 		# in _filescope_mounted; keying on full_path made the guard dead for
-		# folder mods). Decided BEFORE re-zipping: overwriting a VFS-mounted
+		# folder mods). Decided before re-zipping: overwriting a VFS-mounted
 		# zip in place invalidates the mount's file handles (see the hook-pack
 		# regen note on file_access_zip), so only rebuild the zip when the
 		# folder's content actually changed -- in that case the state hash
@@ -238,7 +236,7 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 	# If this archive was already file-scope-mounted at static init, skip the
 	# redundant re-mount. ProjectSettings.load_resource_pack with
 	# replace_files=true (default in _try_mount_pack) would otherwise clobber
-	# any overlay pack we mounted AFTER this archive -- e.g. an inline-hooks
+	# any overlay pack mounted after this archive, e.g. an inline-hooks
 	# overlay whose entries overlap with this mod's archive paths.
 	if skip_remount:
 		_log_debug("  File-scope mount active -- skipping re-mount")
@@ -295,9 +293,9 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 	if not _unknown_sections.is_empty():
 		_log_info("  mod.txt section(s) %s not recognized by this loader -- ignored (typo? see the Mod-Format wiki)" % ", ".join(_unknown_sections))
 
-	# [hooks] static declaration (v3.0.1 opt-in model). Escape hatch for
+	# [hooks] static declaration. Escape hatch for
 	# mods that can't get auto-enrolled via the .hook("prefix-method-...",
-	# cb) scanner -- e.g. godot-mod-loader-compat mods using add_hook()
+	# cb) scanner, e.g. godot-mod-loader-compat mods using add_hook()
 	# from a runtime autoload, or mods registering hooks via callbacks
 	# passed in from elsewhere. Most mods using .hook() directly need no
 	# section here. Formats:
@@ -309,7 +307,7 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 	# method. Method names are lowercased on write because hook_pack.gd
 	# compares vanilla fn names via .to_lower() against the mask.
 	if cfg != null and cfg.has_section("hooks"):
-		# Per-mod tallies for the ONE summary line below. The per-method /
+		# Per-mod tallies for the one summary line below. The per-method /
 		# per-path detail is developer-only (_log_debug): a real mod declares
 		# hundreds of hook points and per-line INFO buried the whole log.
 		var hooks_scripts_declared := 0
@@ -330,7 +328,7 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 			# it, or the wildcard mod's runtime-registered hooks go silent.
 			var wildcard_already := mask_existed and script_mask.is_empty()
 			# Parse method list. "*" anywhere (including mixed with specific
-			# methods) promotes to whole-script wildcard -- the mixed form
+			# methods) promotes to whole-script wildcard. The mixed form
 			# used to silently ignore the wildcard and wrap only the listed
 			# methods, a silent miss for mod authors who wanted "these for
 			# sure, plus anything else I might hook dynamically."
@@ -389,7 +387,7 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 			_log_info("  Hooks: %d method(s) across %d script(s)%s [%s]" \
 					% [hooks_methods_declared, hooks_scripts_declared, wc_tag, mod_name])
 
-	# [registry] opt-in (v3.0.1). Gates Database.gd wrapping + const-to-dict
+	# [registry] opt-in. Gates Database.gd wrapping + const-to-dict
 	# transform on explicit mod declaration. Without this, Database.gd stays
 	# unwrapped and lib.register()/override() will not work. The presence
 	# of the section is sufficient -- body content is parsed by the
@@ -415,9 +413,9 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 			_log_info("  B_Loader-style call detected [%s] -- compat shim active" % mod_name)
 
 	# [script_extend] / [script_overrides] -- full script replacements that
-	# chain via Godot's extends resolution. Both section names accepted
-	# (script_extend is the preferred v3.0.1 name; script_overrides is the
-	# legacy alias kept for backward compat with mods written pre-cutover).
+	# chain via Godot's extends resolution. Both section names are accepted:
+	# script_extend is the current name, script_overrides an alias kept so
+	# older mods keep working.
 	# Each entry: vanilla_path = mod_script_path. Higher-priority mods land
 	# last in the chain (most recent take_over_path wins, extends resolves
 	# to the prior chain tip).
@@ -447,11 +445,9 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 	var keys: PackedStringArray = cfg.get_section_keys("autoload")
 	for key in keys:
 		var autoload_name := str(key)
-		var raw_path := str(cfg.get_value("autoload", key)).lstrip("*").strip_edges()
-		var is_early := raw_path.begins_with("!")
-		if is_early:
-			raw_path = raw_path.lstrip("!")
-		var res_path := raw_path
+		var marker: Array = _split_autoload_marker(str(cfg.get_value("autoload", key)))
+		var res_path: String = marker[0]
+		var is_early: bool = marker[1]
 
 		if res_path == "":
 			_log_warning("  Empty autoload path for '" + autoload_name + "' -- skipped")
@@ -474,7 +470,7 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 				_log_critical("    Similar paths in archive: " + ", ".join(similar))
 			continue
 
-		# Reserve the name only after the path validated -- a skipped autoload
+		# Reserve the name only after the path validated. A skipped autoload
 		# (typo'd path, nothing queued) must not consume the name and block a
 		# later mod's valid autoload with a misleading duplicate warning.
 		_registered_autoload_names[autoload_name] = true
@@ -517,7 +513,7 @@ func _apply_script_overrides() -> void:
 		return
 	# Sort by priority (lowest first, highest last wins take_over_path).
 	# sort_custom is not stable, so break priority ties by append order (seq)
-	# -- the deterministic displayed load order.
+	#. The deterministic displayed load order.
 	_pending_script_overrides.sort_custom(func(a, b):
 		if a["priority"] != b["priority"]:
 			return a["priority"] < b["priority"]
@@ -540,10 +536,10 @@ func _apply_script_overrides() -> void:
 			continue
 
 		# Normalize line endings + autofix legacy syntax. GDScript's strict
-		# reload parser rejects CRLF/LF mixes, bodyless blocks, and Godot-3
-		# annotations; v2.1.0-era mods commonly ship with these and break
+		# reload parser rejects CRLF/LF mixes, bodyless blocks, and Godot 3
+		# annotations, and older mods commonly ship with these and break
 		# take_over_path when loaded as-is. Autofix is a no-op for clean
-		# source so modern mods pay no transform cost.
+		# source, so current mods pay no transform cost.
 		var normalized: String = source.replace("\r\n", "\n").replace("\r", "\n")
 		var af := _rtv_autofix_legacy_syntax(normalized)
 		var fixed_src: String = af["source"]
@@ -605,14 +601,14 @@ func scan_and_register_archive_claims(archive_path: String, mod_name: String,
 		# .hook("<prefix>-<method>[-suffix]") declarations found in source.
 		# Each entry is {prefix, method}; _generate_hook_pack uses this to
 		# populate the per-path per-method wrap mask. A mod declaring zero
-		# hooks AND zero [hooks]/[registry] mod.txt sections leaves the
+		# hooks and zero [hooks]/[registry] mod.txt sections leaves the
 		# wrap surface empty and skips hook pack generation entirely.
 		"hook_calls":              [],  # Array of {prefix, method}
 		# True if the mod's source contains a B_Loader-style call
 		# (Loader.add_shelter / Loader.add_map). The B_Loader compat shim
-		# lives in our injected Loader.gd appendix, but the rewriter only
+		# lives in the injected Loader.gd appendix, but the rewriter only
 		# fires when at least one mod declares [registry]. Detecting these
-		# call patterns lets us auto-treat such mods as registry-declaring
+		# call patterns is enough to auto-treat such mods as registry-declaring
 		# so they Just Work without requiring a mod.txt edit.
 		"calls_bloader_api":       false,
 	}
@@ -725,7 +721,7 @@ func _scan_gd_source(text: String, analysis: Dictionary) -> void:
 		analysis["uses_dynamic_override"] = "take_over_path(" in text
 
 	# UpdateTooltip() is inventory-UI only. World-item tooltips are written directly
-	# by HUD._physics_process from gameData.tooltip -- this override has no effect there.
+	# by HUD._physics_process from gameData.tooltip. This override has no effect there.
 	if not analysis["calls_update_tooltip"]:
 		analysis["calls_update_tooltip"] = "UpdateTooltip" in text
 

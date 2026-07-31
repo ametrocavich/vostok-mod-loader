@@ -1,5 +1,5 @@
 ## ----- constants.gd -----
-## Shared constants and module-scope state (vars, signals) -- the flat
+## Shared constants and module-scope state (vars, signals). The flat
 ## namespace's cross-domain surface. Subsystem-local consts live with
 ## their subsystem instead (gdsc_detokenizer's TK_* table, security_scan's
 ## rule tables, modpacks' MODPACK_* prefixes, mws_api's cache TTLs,
@@ -24,7 +24,7 @@ const MODLOADER_RES_PATH := "res://modloader.gd"
 const MOD_DIR := "mods"
 
 # Tab node names. TabContainer displays the child node's name as the tab
-# title, and the rebuild helpers look tabs up by these exact strings -- so
+# title, and the rebuild helpers look tabs up by these exact strings, so
 # each name is a cross-function contract, not just a label.
 const UI_TAB_MODS := "Mods"
 const UI_TAB_BROWSE := "Browse"
@@ -82,7 +82,7 @@ const MODWORKSHOP_PAGE_URL_TEMPLATE := "https://modworkshop.net/mod/%s"
 const MODLOADER_MODWORKSHOP_ID := 55623
 const MODWORKSHOP_BATCH_SIZE := 100
 const API_CHECK_TIMEOUT := 15.0
-# HTTPRequest.timeout covers the WHOLE transfer, not just connect/stall, and
+# HTTPRequest.timeout covers the whole transfer, not just connect/stall, and
 # mod bodies run to ~256MB -- 30s failed any large mod on a normal connection.
 # 5 minutes is generous enough for big packs on slow links while still
 # bounding a truly dead connection.
@@ -90,7 +90,7 @@ const API_DOWNLOAD_TIMEOUT := 300.0
 
 # Browse-tab API client. Lives in mws_api.gd; constants here so the rest of
 # the codebase can build URLs without re-importing the module's namespace.
-# Empty/default User-Agent gets a 403 from api.modworkshop.net -- the template
+# Empty/default User-Agent gets a 403 from api.modworkshop.net. The template
 # is non-optional. Game ID 864 = Road to Vostok (resolved via /games once,
 # baked here to avoid an extra round-trip on every UI open).
 const MWS_API_BASE := "https://api.modworkshop.net"
@@ -100,7 +100,7 @@ const MWS_PAGE_LIMIT := 50
 # Buffer cap for JSON API responses (list pages run ~100KB at limit=50).
 const MWS_JSON_BODY_LIMIT := 8 * 1024 * 1024
 # The API caps the search query at 150 chars and answers longer values with a
-# 422, which our non-2xx handling would report as a connection problem.
+# 422, which the non-2xx handling would report as a connection problem.
 const MWS_QUERY_MAX_LEN := 150
 const MWS_USER_AGENT_TEMPLATE := "vostok-mod-loader/%s (+https://github.com/ametrocavich/vostok-mod-loader)"
 
@@ -136,7 +136,7 @@ const TRACKED_EXTENSIONS: Array[String] = ["gd", "tscn", "tres", "gdns", "gdnlib
 const PACK_FORMAT_V2 := 2
 const PACK_FORMAT_V3 := 3
 # Godot 4.7+ writes pack format v4 (encrypted-directory salt, sparse
-# bundles). Diagnosis only -- NEVER accepted: the 4.6 engine under us
+# bundles). Diagnosis only, never accepted: the 4.6 engine underneath
 # cannot read v4 packs either, so both parsers keep rejecting it and use
 # this constant to emit a modder-friendly message instead of a generic
 # "unsupported version". See .research/GODOT_47_COMPAT.md section 2.1.
@@ -145,9 +145,16 @@ const PACK_FORMAT_V4 := 4
 # GDSC (compiled .gdc script) tokenizer versions the detokenizer
 # understands. Shared by _detokenize_script (gdsc_detokenizer.gd) and
 # STABILITY canary B in _generate_hook_pack (hook_pack.gd).
-# v100 = Godot 4.0-4.4, v101 = Godot 4.5+ (TOKENIZER_VERSION is still 101
-# in 4.7-stable; see .research/GODOT_47_COMPAT.md section 2.2 -- which is
+# v100 = Godot 4.3-4.4, v101 = Godot 4.5+ (TOKENIZER_VERSION is still 101
+# in 4.7-stable; see .research/GODOT_47_COMPAT.md section 2.2, which is
 # why canary C round-trips real output instead of trusting this number).
+#
+# Caveat on canary B: the version integer alone does not pin a token layout.
+# Two 4.5-dev revisions both report v100/v101 with different tables (ABSTRACT
+# was added in 4.5-dev.4 and removed again before 4.5.0-stable), so
+# "version == 101 therefore safe" is not strictly sound. It only bites on
+# games exported from engine dev builds, which RTV is not, and canary C
+# catches the resulting garbage anyway.
 const GDSC_VERSION_V100 := 100
 const GDSC_VERSION_V101 := 101
 
@@ -205,7 +212,7 @@ var _developer_mode := false
 var _active_profile := "Default"
 var _ui_window: Window = null
 # Bottom-bar label used as a makeshift status hint because Godot's native
-# tooltips get layered behind our always_on_top launcher and aren't visible.
+# tooltips get layered behind the always_on_top launcher and aren't visible.
 var _ui_hint_label: Label = null
 # Launch button kept on self so refresh_launch_button_label can reach it
 # from the mod-enable toggle handler.
@@ -248,10 +255,10 @@ var _last_mod_txt_status := "none"
 # Empty when status != "parse_error".
 var _last_mod_txt_error := ""
 # Side channel: the archive's full file list as res:// paths, captured by
-# read_mod_config while the ZIPReader is still open. Read ONLY by
+# read_mod_config while the ZIPReader is still open. Read only by
 # _build_entry_warnings, which mod_discovery calls immediately after the
 # matching read_mod_config, so it always describes the entry being built.
-# Deliberately not copied into the entry -- a big mod has thousands of paths
+# Deliberately not copied into the entry. A big mod has thousands of paths
 # and every entry is held for the session. Empty for .pck and folder mods.
 var _last_mod_txt_files := {}
 var _database_replaced_by := ""
@@ -299,7 +306,7 @@ var _archive_zip_paths: Dictionary = {}  # bare file_name -> readable zip path
 signal frameworks_ready
 var _hooks: Dictionary = {}              # hook_name -> Array of {callback, priority, id}
 # Dev-mode-only: per-hook_base dispatch counter. Incremented inside each
-# wrapper AFTER the _any_mod_hooked short-circuit when _developer_mode is
+# wrapper after the _any_mod_hooked short-circuit when _developer_mode is
 # true. Summary at 30s timer in _activate_rewritten_scripts pinpoints
 # runaway method calls (e.g. connect-already-connected error spam from a
 # _ready firing thousands of times).
@@ -321,14 +328,14 @@ var _skip_super: bool = false
 var _seq: int = 0
 var _caller: Node = null                 # public: source node of the current dispatch
 var _is_ready: bool = false              # public: true once frameworks_ready has emitted
-# Step C re-entry guard: Set of hook_base currently executing a dispatch
+# Re-entry guard: set of hook_base currently executing a dispatch
 # wrapper. When a rewritten mod script's wrapper fires, then its body calls
 # super() into vanilla's wrapper, the vanilla wrapper sees the base already
 # active and skips dispatch (just runs its body). Prevents double-fire when
 # rewritten subclass scripts chain into rewritten vanilla.
 var _wrapper_active: Dictionary = {}
 # Deprecation-warning suppression for legacy 2-arg post-hook callbacks.
-# Keyed by "<hook_name>::<callback object_id>" so we warn once per (hook,
+# Keyed by "<hook_name>::<callback object_id>" to warn once per (hook,
 # callback) pair across the whole session. Without dedupe, a per-frame
 # wrapped method would spam the log thousands of times.
 var _post_legacy_warned: Dictionary = {}
@@ -336,18 +343,35 @@ var _post_legacy_warned: Dictionary = {}
 # Class + script enumeration state (populated from PCK parse at boot).
 var _class_name_to_path: Dictionary = {} # "Camera" -> "res://Scripts/Camera.gd"
 var _all_game_script_paths: Array[String] = []  # populated by _enumerate_game_scripts from PCK parse; DirAccess can't list PCK contents in 4.6
-var _pck_zero_byte_paths: Dictionary = {}  # res_path -> true for entries the base game PCK ships as 0-byte (e.g. CasettePlayer.gd in RTV 4.6.1). Populated by _parse_pck_file_list; checked by detokenize + hook-gen to skip silently. These files are not hookable and any vanilla or mod preload() of them will fail at engine level -- not a modloader bug.
-var _scripts_with_scene_preloads: Dictionary = {}  # full res:// script path -> PackedStringArray of scene paths; scripts listed here are deferred from eager load+reload in _activate_rewritten_scripts. Rationale: their module-scope preload() fires at parse time; if we force-load them before mod autoloads run overrideScript(), scenes bake Script ext_resources to the pre-override vanilla. take_over_path then orphans those refs and instantiate() produces nodes with vanilla body, not mod body. Deferring to lazy-compile lets mod overrides run first -- the preload chain fires via extends resolution during mod's own overrideScript call, AFTER take_over_path took effect for prior targets. VFS mount precedence still serves our rewrite on lazy-load.
+# res_path -> true for entries the base game PCK ships as 0 bytes, such as
+# CasettePlayer.gd in RTV 4.6.1. Populated by _parse_pck_file_list; detokenize
+# and hook generation check it and skip silently. These files are not hookable,
+# and any vanilla or mod preload() of them fails at the engine level, which is
+# not a modloader bug.
+var _pck_zero_byte_paths: Dictionary = {}
+
+# Full res:// script path -> PackedStringArray of scene paths. Scripts listed
+# here are deferred from the eager load+reload in _activate_rewritten_scripts.
+#
+# Their module-scope preload() fires at parse time. Force-loading them before
+# mod autoloads run overrideScript() makes scenes bake Script ext_resources
+# pointing at the pre-override vanilla; take_over_path then orphans those refs
+# and instantiate() yields nodes running the vanilla body instead of the mod's.
+# Deferring to lazy-compile lets mod overrides run first, so the preload chain
+# fires through extends resolution during the mod's own overrideScript call,
+# after take_over_path has taken effect for earlier targets. VFS mount
+# precedence still serves the rewrite on lazy-load.
+var _scripts_with_scene_preloads: Dictionary = {}
 
 # Script overrides
 var _pending_script_overrides: Array[Dictionary] = []  # {vanilla_path, mod_script_path, mod_name, priority, seq}
 var _applied_script_overrides: Dictionary = {}         # vanilla_path -> true
 
-# Opt-in declarations (v3.0.1 cutover). Populated by the [hooks] parser in
+# Opt-in declarations. Populated by the [hooks] parser in
 # mod_loading.gd and by .hook() call scanning. Drives the wrap surface in
-# _generate_hook_pack. If both are empty AND _any_mod_declared_registry is
-# false, _generate_hook_pack early-returns and no hook pack is produced --
-# the modlist behaves byte-identical to pre-hook-system (v2.1.0) behavior.
+# _generate_hook_pack. If both are empty and _any_mod_declared_registry is
+# false, _generate_hook_pack early-returns and no hook pack is produced, so
+# the game runs against untouched vanilla.
 var _hooked_methods: Dictionary = {}             # res_path -> {method_name: true}
 var _any_mod_declared_registry: bool = false     # set by [registry] parser
 
@@ -373,7 +397,7 @@ var _rtv_re_ret_value: RegEx
 # Mounts previous session's archives at file-scope (before _ready) so autoloads
 # that load after ModLoader can resolve their res:// paths.
 # Returns a dict keyed by the archive path as it appears in pass state -- used
-# by _process_mod_candidate to skip redundant re-mounts that would clobber our
+# by _process_mod_candidate to skip redundant re-mounts that would clobber the
 # own overlay overrides applied at static init (e.g. hook pack for mod scripts).
 var _filescope_mounted: Dictionary = _mount_previous_session()
 
@@ -405,7 +429,7 @@ var _mws_last_transport_failed: bool = false
 # user://mws_cache/discover_snapshot.json so it survives relaunches.
 # Shape: {"data": {popular: Array, latest: Array}, "saved_at_unix": int}.
 # Empty until a successful fetch stores it or mws_discover_snapshot()
-# lazy-loads it from disk. Serves ONLY the discover landing when a live
+# lazy-loads it from disk. Serves only the discover landing when a live
 # fetch fails -- filter/search responses are never snapshotted (the
 # 5-minute _mws_cache above is the only cache they get).
 var _mws_discover_snapshot: Dictionary = {}
@@ -451,12 +475,12 @@ var _mod_update_in_flight: Dictionary = {}
 
 # Recursion guard for _rebuild_modpacks_tab. The rebuild does
 # remove_child + add_child + move_child, all of which can fire tab_changed
-# (when current_tab shifts to a sibling during remove, or when we restore
+# (when current_tab shifts to a sibling during remove, or when restoring
 # it at the end). The tab_changed listener calls _rebuild_modpacks_tab; this
 # flag breaks the cycle so a single rebuild request doesn't recurse forever.
 var _rebuilding_modpacks_tab: bool = false
 
-# Shared re-entrancy guard for ALL in-place tab rebuilds (_rebuild_mods_tab,
+# Shared re-entrancy guard for all in-place tab rebuilds (_rebuild_mods_tab,
 # _rebuild_modpacks_tab, _rebuild_updates_tab). The per-tab flag above is not
 # enough: remove_child shifts current_tab to a SIBLING, so the re-entrant
 # tab_changed can dispatch into a DIFFERENT rebuild helper than the one in
@@ -468,7 +492,7 @@ var _rebuilding_tab_in_place: bool = false
 
 # Mods-tab ModWorkshop meta memo. _mods_load_mws_meta runs fire-and-forget for
 # every MWS row on every _rebuild_mods_tab (checkbox/filter/toggle/profile), and
-# _mws_get_json caches only SUCCESSFUL parses -- so offline/404/rate-limited mods
+# _mws_get_json caches only SUCCESSFUL parses, so offline/404/rate-limited mods
 # would refetch on every rebuild forever, each spawning a live HTTPRequest. Memo
 # successes for the session; gate failed/in-flight ids behind a short retry
 # window so it's at most one attempt per mod per minute regardless of churn.
@@ -477,7 +501,7 @@ var _mods_mws_meta_retry_at: Dictionary = {}    # mod_id -> ticks_msec before wh
 
 # Persisted-meta bookkeeping for the memo above. _mods_mws_meta_saved_at maps
 # mod_id -> unix time the entry was last confirmed by a real /mods/{id} fetch;
-# only ids present here are written to the on-disk sidecar (snapshot-sourced
+# Only ids present here are written to the on-disk sidecar (snapshot-sourced
 # memo entries stay session-only, matching their pre-sidecar behavior), and a
 # stale stamp (> _MODS_META_REFRESH_SEC) triggers the background soft refresh.
 # _mods_meta_sidecar_loaded gates the lazy one-time disk read.
@@ -486,9 +510,9 @@ var _mods_meta_sidecar_loaded: bool = false
 
 # Live Mods-tab row nodes for MWS meta painting, keyed by mod_id. Each value is
 # an Array of {thumb: TextureRect, name_col: VBoxContainer, holder: Dictionary}
-# -- an Array because several installed rows can declare the same workshop id.
+#. An Array because several installed rows can declare the same workshop id.
 # Rebuilt from scratch by build_mods_tab on every (re)build, so an async meta
-# fetch that completes AFTER a rebuild paints the CURRENT row via
+# fetch that completes after a rebuild paints the current row via
 # _mods_apply_mws_meta instead of writing into the freed nodes it captured at
 # call time (which memoized the result but never displayed it). Cleared on
 # launcher close.

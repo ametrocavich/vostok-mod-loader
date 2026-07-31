@@ -4,10 +4,11 @@
 ##
 ## All endpoints documented at github.com/ModWorkshop/site (backend/routes/api.php).
 ## Rate budget per RouteServiceProvider::configureRateLimiting: 90 req/min/IP
-## unauthenticated; x-ratelimit-remaining surfaced on every response. Phase 1 of
-## the Browse + download work: this module only adds NEW endpoints used by the
-## Browse tab. The legacy fetch_latest_modworkshop_versions / download_and_replace_mod
-## in mod_discovery.gd stay where they are until the dedicated migration phase.
+## unauthenticated; x-ratelimit-remaining surfaced on every response.
+##
+## Scope: the endpoints the Browse tab needs. The older
+## fetch_latest_modworkshop_versions / download_and_replace_mod still live in
+## mod_discovery.gd and have not been moved here.
 ##
 ## Conventions:
 ##   - Methods named mws_* are public; _mws_* are private helpers.
@@ -36,7 +37,7 @@
 ##     populated payload to memory + user://mws_cache/discover_snapshot.json
 ##     (_mws_discover_snapshot_store). When a live fetch fails, the Browse
 ##     tab reads mws_discover_snapshot() and renders it behind a cached-
-##     results banner instead of an empty error state. Discover ONLY --
+##     results banner instead of an empty error state. Discover only --
 ##     filter/search responses are never snapshotted.
 
 # Build the request headers for any GET. Identical for every endpoint right now;
@@ -50,7 +51,7 @@ func _mws_default_headers() -> PackedStringArray:
 
 # In-memory response cache helpers. Read evicts expired entries lazily; write
 # replaces any existing entry for the same URL. Failed requests don't write,
-# so a 5xx flake won't poison the cache with a null result -- the next call
+# so a 5xx flake won't poison the cache with a null result. The next call
 # retries the network.
 func _mws_cache_get(url: String) -> Variant:
 	if not _mws_cache.has(url):
@@ -68,7 +69,7 @@ func _mws_cache_put(url: String, data: Variant, ttl_ms: int) -> void:
 	}
 
 # Async GET that parses JSON. Returns the parsed Variant on 2xx with a non-empty
-# body, otherwise null. Caller awaits this -- it spawns its own HTTPRequest as a
+# body, otherwise null. Caller awaits this. It spawns its own HTTPRequest as a
 # child of the modloader autoload, queue_frees on completion. Pass cache_ttl_ms
 # > 0 to read/write the in-memory response cache; 0 bypasses caching entirely.
 func _mws_get_json(url: String, cache_ttl_ms: int = 0, allow_rate_wait: bool = true, allow_transport_retry: bool = true) -> Variant:
@@ -91,8 +92,8 @@ func _mws_get_json(url: String, cache_ttl_ms: int = 0, allow_rate_wait: bool = t
 			return null
 		await get_tree().create_timer(float(cooldown_ms + 100) / 1000.0).timeout
 		# Another in-flight request may have hit a 429 and pushed the cooldown
-		# further out while we waited. Re-check instead of firing into a window
-		# that just closed again -- that request would 429 and re-arm anyway.
+		# further out during the wait. Re-check instead of firing into a window
+		# that just closed again. That request would 429 and re-arm anyway.
 		if _mws_rate_cooldown_ms() > 0:
 			return null
 
@@ -159,8 +160,8 @@ const _MWS_TTL_PRIMARY_MS := 60 * 1000
 
 # 429-aware backoff. The guest budget is 90 req/min/IP; Laravel's throttler
 # answers 429 with Retry-After (seconds) once it's spent, and stamps
-# X-RateLimit-Remaining on every response. On a 429 -- or a 2xx whose
-# Remaining hit 0, i.e. the last request the window allows -- we arm
+# X-RateLimit-Remaining on every response. On a 429, or a 2xx whose
+# Remaining hit 0, i.e. the last request the window allows. We arm
 # _mws_cooldown_until_ms (declared in constants.gd next to _mws_cache).
 # While armed, fresh network calls fail fast to null instead of hammering
 # the API; the response cache still serves, and callers surface
@@ -289,16 +290,16 @@ func mws_discover_snapshot() -> Dictionary:
 	return snap
 
 # RTV-scoped landing page for the Browse tab. Returns
-# {popular: [ModSummary], latest: [ModSummary]} -- NOT wrapped in {data}.
+# {popular: [ModSummary], latest: [ModSummary]} -- not wrapped in {data}.
 #
 # The dedicated /games/{id}/popular-and-latest route is DEAD upstream: the
 # route is commented out in ModWorkshop's routes/api.php and the handler
-# body literally returns `[] //NOT USED` (verified against the site source
+# body literally returns `[] //not USED` (verified against the site source
 # + a live 404, 2026-06-10). Compose the same payload from two working
 # list queries instead -- weekly popularity score for Popular, bump date
 # for Latest -- trimmed to 10 rows each so the landing stays light. Each
 # underlying query goes through mws_list_mods' own cache; null only when
-# BOTH queries fail (offline), matching the old single-endpoint contract.
+# both queries fail (offline), matching the old single-endpoint contract.
 func mws_get_popular_and_latest() -> Variant:
 	var popular: Variant = await mws_list_mods("", "weekly_score", 0, 1)
 	var latest: Variant = await mws_list_mods("", "bumped_at", 0, 1)
@@ -322,7 +323,7 @@ func mws_get_popular_and_latest() -> Variant:
 	var lat_rows: Array = _mws_data_rows(latest).slice(0, 10)
 	var out := {"popular": pop_rows, "latest": lat_rows}
 	# Snapshot only a fully-populated landing: a half payload (one query
-	# flaked) must not clobber an older complete snapshot -- when we're
+	# flaked) must not clobber an older complete snapshot. When
 	# degraded enough to need the snapshot, the complete one serves better.
 	if not pop_rows.is_empty() and not lat_rows.is_empty():
 		# Only restamp when the payload actually changed. Both queries can be
@@ -336,8 +337,8 @@ func mws_get_popular_and_latest() -> Variant:
 
 # Safely pull the "data" array out of a list response. The `as Array` cast
 # would crash if the API returns data:null or a non-array (contract change,
-# partial outage, error page served 2xx) -- the .get() default only covers an
-# ABSENT key, not a present-but-wrong-typed one.
+# partial outage, error page served 2xx). The .get() default only covers an
+# absent key, not a present-but-wrong-typed one.
 func _mws_data_rows(resp: Variant) -> Array:
 	if not (resp is Dictionary):
 		return []
@@ -353,7 +354,7 @@ func _mws_data_rows(resp: Variant) -> Array:
 func mws_list_mods(query: String = "", sort: String = "bumped_at", category_id: int = 0, page: int = 1) -> Variant:
 	var params := PackedStringArray()
 	if query != "":
-		# Clamp rather than let the API 422 -- an over-limit query would surface
+		# Clamp rather than let the API 422. An over-limit query would surface
 		# as "check your connection", a diagnosis no retry can ever fix.
 		params.append("query=" + query.substr(0, MWS_QUERY_MAX_LEN).uri_encode())
 	params.append("sort=" + sort)
@@ -381,7 +382,7 @@ func mws_get_primary_file(mod_id: int) -> Variant:
 # applies use this to fetch the EXACT file the modpack author bundled,
 # not whichever version happens to be primary at install time. Returns
 # null if the version doesn't exist (author deleted it / never uploaded);
-# caller should surface that to the user, NOT silently fall back to
+# caller should surface that to the user, not silently fall back to
 # primary -- silent substitution is exactly what version pinning is meant
 # to prevent.
 func mws_get_file_by_version(mod_id: int, version: String) -> Variant:
@@ -399,7 +400,7 @@ func mws_get_latest_file(mod_id: int) -> Variant:
 
 # Full file history for the mod detail modal. Returns {data: [File], meta} with
 # every uploaded version. Each File has its own version + size + created_at +
-# download_url, so we can render historical versions and (eventually) install
+# download_url, so historical versions can be rendered and (eventually) installed
 # any of them by hitting their download_url directly.
 func mws_list_files(mod_id: int) -> Variant:
 	return await _mws_get_json(MWS_API_BASE + "/mods/" + str(mod_id) + "/files", _MWS_TTL_DETAIL_MS)
@@ -416,8 +417,7 @@ func mws_get_mod(mod_id: int) -> Variant:
 # Build a full URL for an Image record (mod thumbnail or screenshot). Image
 # objects have a .file (storage filename, opaque) and .has_thumb (bool); when
 # has_thumb is true and want_thumb is true, prefer the smaller /thumbs/ variant.
-# Phase 5 (thumbnail caching) calls this; included now so the URL convention has
-# one home.
+# Kept here so the URL convention has a single home.
 func mws_image_url(image_record: Dictionary, want_thumb: bool = false) -> String:
 	var fn: String = str(image_record.get("file", ""))
 	if fn.is_empty():

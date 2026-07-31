@@ -36,7 +36,7 @@ const _AI_LOADOUTS_ENGINE_META_KEY := "_rtv_ai_loadouts"
 const _VALID_AI_CATEGORIES := ["Bandit", "Guard", "Military", "Punisher"]
 
 func _rebuild_ai_loadouts_engine_meta() -> void:
-	# Flat list, not a dict -- the runtime prelude iterates and rolls
+	# Flat list, not a dict. The runtime prelude iterates and rolls
 	# per-entry independently, so per-entry order doesn't carry meaning.
 	# Multiple mods stacking is the expected case; entries are additive.
 	var flat: Array = []
@@ -115,7 +115,7 @@ func _validate_ai_loadout_data(id: String, verb: String, data: Variant):
 		if not (canon in canonical_types):
 			canonical_types.append(canon)
 	# chance: optional, clamp to [0.0, 1.0]. Out-of-range warns but
-	# doesn't reject -- a 0.0 entry is a no-op (legitimate "wired but
+	# doesn't reject. A 0.0 entry is a no-op (legitimate "wired but
 	# disabled" pattern) and a >1.0 entry just always fires.
 	var chance: float = 1.0
 	if d.has("chance"):

@@ -22,7 +22,7 @@
 ## won't appear in the rebind menu until a hook on Inputs-createactions-pre
 ## merges lib.get_entry(INPUTS, id) results into the UI's dict. That hook
 ## isn't installed by this registry; mod authors can install it themselves,
-## or we add it via a loader-installed hook pack later.
+## or a loader-installed hook pack adds it later.
 ##
 ## User keybind persistence: vanilla stores rebinds in user://Preferences.tres
 ## (Preferences.actionEvents). Those persist across mod unload/reload as long
@@ -115,14 +115,14 @@ func _patch_input(id: String, fields: Dictionary) -> bool:
 	if not InputMap.has_action(id):
 		push_warning("[Registry] patch('inputs', '%s'): no such action in InputMap" % id)
 		return false
-	# Patch works on the metadata we track, plus InputMap mutation for the
+	# Patch works on the tracked metadata, plus InputMap mutation for the
 	# event field. Each patchable field maps to specific state:
 	#   display_label -> reg[id]["display_label"]  (UI hint only)
 	#   default_event -> replaces the first event in InputMap
 	#   deadzone      -> InputMap.action_set_deadzone
 	const _patchable := ["display_label", "default_event", "deadzone"]
 	var reg: Dictionary = _registry_registered.get("inputs", {})
-	# If the id isn't in our reg (vanilla action we haven't touched yet),
+	# If the id is not in the registry (an untouched vanilla action),
 	# seed a stub so patch/revert have somewhere to stash label changes.
 	if not reg.has(id):
 		# vanilla_stub marks this as a patch-seeded entry for a vanilla action,
@@ -158,7 +158,7 @@ func _patch_input(id: String, fields: Dictionary) -> bool:
 					push_warning("[Registry] patch('inputs', '%s'): default_event must be InputEvent" % id)
 					continue
 				if not stash.has(fname):
-					# Stash the CURRENT first event from InputMap so revert
+					# Stash the current first event from InputMap so revert
 					# restores exactly what was active, even if vanilla +
 					# override chains exist.
 					var existing := InputMap.action_get_events(id)

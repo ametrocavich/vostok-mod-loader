@@ -26,8 +26,8 @@ Rapid clicks on sort/category are safe: the list always matches the dropdowns.
 
 Each row shows a thumbnail, name, author, and quick stats (downloads / likes), plus an action button on the right:
 
-- **Download** -- the mod is not installed. Click to fetch it into your `mods/` folder.
-- **Installed** / an enable toggle -- the mod is already on disk. Once a ModWorkshop mod is installed, its row flips from a Download button to an enable/disable toggle that works straight from Browse (no need to switch to the Mods tab).
+- **Download**. The mod is not installed. Click to fetch it into your `mods/` folder.
+- **Installed** / an enable toggle. The mod is already on disk. Once a ModWorkshop mod is installed, its row flips from a Download button to an enable/disable toggle that works straight from Browse (no need to switch to the Mods tab).
 
 Clicking the row name opens a **detail dialog**: banner image, full description, a **Files** list (every uploaded version with size and date, primary version flagged), an **Open mod page in browser** button, and a **Download** / **Installed** button mirroring the row.
 
@@ -55,7 +55,7 @@ Closing the launcher (Launch or the X) mid-download is safe: the in-flight downl
 
 ## How dependencies surface
 
-Browse installs exactly the mod you click -- it does **not** auto-install other mods that mod requires. Dependency checks happen in the **Mods** tab after install:
+Browse installs exactly the mod you click. It does **not** auto-install other mods that mod requires. Dependency checks happen in the **Mods** tab after install:
 
 - If an installed mod requires another mod that is missing or disabled, its Mods-tab row turns orange: `won't load -- needs <dep>`.
 - Inline fix buttons appear: **Enable dependency** (turns on a requirement that is installed but disabled) and **Load anyway** (a per-profile override that skips the check for that mod).

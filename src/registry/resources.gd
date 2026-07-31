@@ -3,7 +3,7 @@
 ## Patches arbitrary field values on any vanilla .tres file. Intended as the
 ## generic fallback for Resources that don't have a dedicated registry: stat
 ## tuning files, config-like .tres, anything a mod author wants to tweak
-## without us building a purpose-built registry.
+## without a purpose-built registry for each.
 ##
 ## Usage:
 ##   lib.patch(RESOURCES, "res://Resources/GameData.tres", {"walk_speed": 5.0})
@@ -14,7 +14,7 @@
 ## ensures every `load()` of that path returns the same instance, so
 ## mutating fields on the loaded Resource propagates to all game-side
 ## holders. No register/override/remove; vanilla already defines the
-## Resource; we only mutate fields and track rollback.
+## Resource; only fields are mutated, with rollback tracked.
 ##
 ## Field stash keys per path, so the same path can be patched multiple
 ## times without losing the pre-first-patch value.
