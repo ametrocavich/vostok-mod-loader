@@ -434,6 +434,18 @@ var _mws_last_transport_failed: bool = false
 # 5-minute _mws_cache above is the only cache they get).
 var _mws_discover_snapshot: Dictionary = {}
 
+# Response cache for the generic host transport, keyed by full URL. Absolute
+# URLs already carry their host, so two providers cannot collide and the cache
+# is deliberately not partitioned by provider. Entry shape matches _mws_cache:
+# {data: Variant, expires_at: int (msec)}.
+var _host_cache: Dictionary = {}
+
+# Rate-limit cooldowns, keyed by provider id -> Time.get_ticks_msec() moment
+# that provider's requests may resume. Per-provider rather than global: two
+# hosts have independent budgets, and one global counter would let a 429 from
+# ModWorkshop silently gate every request to a different site.
+var _host_cooldown_until_ms: Dictionary = {}
+
 # Discovered modpacks. Populated lazily by collect_modpack_metadata when
 # the Modpacks tab is built. Each entry: {file_path, file_name, raw_name,
 # sanitized_name, enabled_count, total_count}. See modpacks.gd.

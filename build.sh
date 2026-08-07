@@ -23,7 +23,15 @@ FILES=(
     "$SRC/boot.gd"
     # Mod discovery + loading
     "$SRC/security_scan.gd"
+    # Mod-host seam. types -> transport -> dispatch, then one file per host.
+    # host_api.gd dispatches into adapters defined after it, the same shape
+    # registry.gd already uses for its section handlers.
+    "$SRC/host_types.gd"
+    "$SRC/host_http.gd"
+    "$SRC/host_api.gd"
     "$SRC/mws_api.gd"
+    "$SRC/host_mws.gd"
+    "$SRC/host_vostokmods.gd"
     "$SRC/mod_discovery.gd"
     "$SRC/modpacks.gd"
     "$SRC/mod_loading.gd"
