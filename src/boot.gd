@@ -643,6 +643,32 @@ func _collect_enabled_archive_paths() -> PackedStringArray:
 
 # Uses FileAccess instead of ConfigFile (which erases null keys).
 # ModLoader listed last in [autoload_prepend] = loaded first (reverse insertion).
+## Whether an autoload declaration can be written into override.cfg as a
+## well-formed line.
+##
+## Both halves come from a mod's mod.txt, so both are untrusted. Godot's
+## ProjectSettings parser stops applying entries at the first line it cannot
+## parse, and our own ModLoader= line is written AFTER the mod entries -- so a
+## single mod with a quote, a space or a newline in its autoload name stops the
+## loader itself from ever being registered. The game then launches vanilla,
+## with no mods and nothing on screen to explain why. Rejecting the one bad
+## entry loudly costs that mod its early autoload; writing it costs everyone
+## the whole loader.
+func _autoload_entry_writable(entry_name: String, entry_path: String) -> bool:
+	# Godot turns an autoload name into a singleton identifier, so the
+	# identifier grammar is both the correct test and a superset of "contains
+	# nothing that could break the line".
+	if not entry_name.is_valid_identifier():
+		return false
+	if not entry_path.begins_with("res://"):
+		return false
+	# A quote closes the value early; a backslash starts an escape the parser
+	# will read differently than we wrote it; a newline splits one entry into
+	# two lines, the second of which is garbage.
+	return not (entry_path.contains('"') or entry_path.contains("\\")
+			or entry_path.contains("\n") or entry_path.contains("\r"))
+
+
 func _write_override_cfg(prepend_autoloads: Array[Dictionary]) -> Error:
 	var exe_dir := OS.get_executable_path().get_base_dir()
 	var path := exe_dir.path_join("override.cfg")
@@ -657,7 +683,12 @@ func _write_override_cfg(prepend_autoloads: Array[Dictionary]) -> Error:
 	# can preempt them.
 	lines.append("[autoload_prepend]")
 	for entry in prepend_autoloads:
-		lines.append('%s="*%s"' % [entry["name"], entry["path"]])
+		var entry_name := str(entry.get("name", ""))
+		var entry_path := str(entry.get("path", ""))
+		if not _autoload_entry_writable(entry_name, entry_path):
+			_log_warning("[Boot] Skipping early autoload '%s' -> '%s': the name must be a plain identifier and the path a res:// path with no quotes or newlines. Writing it would corrupt override.cfg." % [entry_name, entry_path])
+			continue
+		lines.append('%s="*%s"' % [entry_name, entry_path])
 	lines.append('ModLoader="*' + MODLOADER_RES_PATH + '"')
 	lines.append("")
 	lines.append("[autoload]")

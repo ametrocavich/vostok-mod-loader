@@ -9,6 +9,11 @@ permissions:
   contents: write
   pull-requests: write
 
+env:
+  # Pinned to the engine the maintainer builds against locally and to ci.yml.
+  # Move all three together.
+  GODOT_VERSION: 4.6.1-stable
+
 jobs:
   release-please:
     runs-on: ubuntu-latest
@@ -36,6 +41,31 @@ jobs:
           chmod +x build.sh
           ./build.sh
 
+      # Put the exact bytes we are about to publish in front of a real GDScript
+      # compiler. ci.yml already gates every PR, but this artifact is BUILT
+      # HERE, so it is not the file any PR checked -- release-please rewrites
+      # MODLOADER_VERSION in src/constants.gd on the way in, and nothing had
+      # ever compiled the result. Users install this file into an autoload; a
+      # parse error in it means their game does not start.
+      - name: Set up Godot
+        if: ${{ steps.release.outputs.release_created }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/godot
+          url="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_linux.x86_64.zip"
+          curl -fsSL -o /tmp/godot.zip "$url"
+          unzip -q -o /tmp/godot.zip -d ~/godot
+          mv ~/godot/Godot_v${GODOT_VERSION}_linux.x86_64 ~/godot/godot
+          chmod +x ~/godot/godot
+
+      - name: Parse-check the artifact being released
+        if: ${{ steps.release.outputs.release_created }}
+        env:
+          GODOT: /home/runner/godot/godot
+        run: |
+          chmod +x check.sh check_*.sh
+          ./check.sh
+
       # Attach the freshly built modloader.gd + the repo's override.cfg to
       # the release, plus the installer scripts so users can grab them from
       # /releases/latest/download/<file> the same way the installers
@@ -52,3 +82,18 @@ jobs:
             windows-installer.bat \
             linux-installer.sh \
             --clobber
+
+      # Publish only once the assets are attached and checked.
+      #
+      # release-please creates the Release as a draft (see
+      # release-please-config.json). Published-first was a live trap: from the
+      # moment a release exists, /releases/latest/download/modloader.gd resolves
+      # to it -- and both installers fetch exactly that URL. A build or upload
+      # failure therefore left every new install hard-failing on a 404, with no
+      # way to self-heal until someone noticed.
+      - name: Publish the release
+        if: ${{ steps.release.outputs.release_created }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag_name }}
+        run: gh release edit "$TAG" --draft=false
