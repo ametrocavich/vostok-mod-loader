@@ -53,6 +53,11 @@ func collect_mod_metadata() -> Array[Dictionary]:
 		# don't show up as malformed mods in the Mods tab; the Modpacks tab
 		# scan picks them up via collect_modpack_metadata.
 		if ext == "zip" and _is_modpack_zip(_mods_dir.path_join(entry_name)):
+			# Say so. A mod zip that happens to carry a profile.json at its
+			# root disappears from the Mods tab here, and without a line in
+			# the log there is nothing to connect "my mod stopped showing up"
+			# to the file that caused it.
+			_log_info("Treating " + entry_name + " as a modpack (profile.json at zip root), not a mod. It appears on the Modpacks tab. If this is meant to be a mod, remove profile.json from the archive root.")
 			continue
 		entries.append(_build_archive_entry(_mods_dir, entry_name, ext))
 	dir.list_dir_end()
@@ -400,6 +405,59 @@ func _build_entry_warnings(entry: Dictionary) -> Array[String]:
 		warnings.append("Invalid mod -- mod.txt is in a subfolder, not at the zip root. Re-zip so mod.txt is at the root.")
 	elif status == "ok":
 		warnings.append_array(_autoload_path_warnings(entry))
+	warnings.append_array(_stale_bake_warnings(entry))
+	warnings.append_array(_missing_id_warnings(entry))
+	return warnings
+
+# Catch a mod.txt with no id=, which makes the archive filename the mod's
+# whole identity.
+#
+# profile_key falls back to "zip:<file_name>" for these (see the CONTRACT note
+# above its construction), and two places then treat that key as unmatchable:
+# _apply_profile_to_entries skips the id-prefix fallback for it, and
+# _dedupe_by_mod_id skips the entry outright. The consequences land on the
+# author, not on the loader:
+#   - Renaming or re-packing under a different filename orphans the mod's
+#     enabled/priority state. On any profile other than Default a mod with no
+#     stored key stays OFF, so the new file is discovered, listed, and silently
+#     not loaded.
+#   - If the previous file is still in the mods folder it is still enabled
+#     under its old key, so the old copy loads and the edits appear to do
+#     nothing.
+#   - Two copies of the same mod cannot be deduplicated, so both mount and the
+#     later one wins for every path they share.
+# Declaring an id fixes all three at once.
+func _missing_id_warnings(entry: Dictionary) -> Array[String]:
+	var warnings: Array[String] = []
+	if not str(entry.get("profile_key", "")).begins_with("zip:"):
+		return warnings
+	if entry.get("mod_txt_status", "none") != "ok":
+		return warnings  # already warned about a broken/absent mod.txt
+	warnings.append("No id= in mod.txt, so this mod is identified by its filename. Renaming or re-packaging it loses its enabled state and load order, and two copies cannot be told apart. Add an id= line under [mod].")
+	return warnings
+
+# Catch an archive that ships Godot's own export bake alongside its sources.
+#
+# A ".gd.remap" file redirects res://Mod/Foo.gd to a compiled .gdc under
+# res://.godot/exported/. Godot honors that redirect on its own, so the game
+# runs the COMPILED copy and the .gd next to it is dead weight. Anyone who
+# zips their project directory picks these up: editing Foo.gd and re-zipping
+# without re-exporting ships a new source and the old bytecode, and the mod
+# keeps running the old code with nothing anywhere saying why.
+#
+# _static_resolve_remaps deliberately leaves these for Godot to resolve
+# lazily, so the loader cannot quietly repoint them at the sources without
+# breaking mods that legitimately ship a baked .godot cache (MCM does). Naming
+# it is the useful thing this can do.
+func _stale_bake_warnings(entry: Dictionary) -> Array[String]:
+	var warnings: Array[String] = []
+	var baked := 0
+	for p: String in _last_mod_txt_files:
+		if p.ends_with(".gd.remap"):
+			baked += 1
+	if baked > 0:
+		warnings.append("Ships %d pre-compiled script%s (.gd.remap + .godot/exported). The game runs the compiled copy, not the .gd files in this archive, so source edits do nothing until you re-export. Delete .godot/ before packing, or re-export every time."
+				% [baked, "" if baked == 1 else "s"])
 	return warnings
 
 # Catch autoload paths that point nowhere inside the mod. Such a mod mounts,
@@ -412,9 +470,9 @@ func _build_entry_warnings(entry: Dictionary) -> Array[String]:
 # immediately downstream of the entry's own read_mod_config (see constants.gd).
 #
 # Deliberately conservative: warns only when the same filename exists at a
-# different path inside the archive, i.e. the prefix is wrong and the right one is known
-# the right one. A path with no counterpart is left alone, since pointing an
-# autoload at a vanilla res:// script (or at a file another mod provides) is
+# different path inside the archive, meaning the prefix is wrong and the right
+# path can be named. A path with no counterpart is left alone, since pointing
+# an autoload at a vanilla res:// script (or at a file another mod provides) is
 # legitimate and must not be flagged.
 # An autoload value in mod.txt may carry two leading markers: "!" to load in
 # Pass 1, ahead of the game's own autoloads, and "*" for Godot's "instantiate
@@ -992,9 +1050,11 @@ func _compare_prerelease(a: String, b: String) -> int:
 # the UI shows both rows and the load-time skip at _process_mod_candidate
 # silently drops one. The user is left to figure out which to delete.
 #
-# Entries with no declared mod_id (profile_key "zip:<file>") and .pck files
-# are passed through untouched: their identity is the filename, which the
-# scan loop already deduped.
+# Mods with no declared id are grouped by normalized filename stem instead,
+# so re-packaging one under a different extension or version suffix does not
+# produce two live copies of the same mod. .pck files stay out: they carry no
+# mod.txt at all, so a name resemblance is the only signal and it is too weak
+# to act on.
 func _dedupe_by_mod_id(entries: Array[Dictionary]) -> Array[Dictionary]:
 	# Group on the same lowercased key the dependency machinery uses
 	# (_entry_mod_key), so ids differing only in case collapse too --
@@ -1002,10 +1062,9 @@ func _dedupe_by_mod_id(entries: Array[Dictionary]) -> Array[Dictionary]:
 	# res:// paths while dependency lookups bind to only one of them.
 	var groups: Dictionary = {}
 	for e in entries:
-		var pk: String = str(e.get("profile_key", ""))
-		if e["ext"] == "pck" or pk.begins_with("zip:"):
+		var mid := _dedupe_group_key(e)
+		if mid.is_empty():
 			continue
-		var mid: String = _entry_mod_key(e)
 		if not groups.has(mid):
 			groups[mid] = []
 		(groups[mid] as Array).append(e)
@@ -1033,16 +1092,56 @@ func _dedupe_by_mod_id(entries: Array[Dictionary]) -> Array[Dictionary]:
 	var seen_ids: Dictionary = {}
 	var out: Array[Dictionary] = []
 	for e in entries:
-		var pk: String = str(e.get("profile_key", ""))
-		if e["ext"] == "pck" or pk.begins_with("zip:"):
+		var mid := _dedupe_group_key(e)
+		if mid.is_empty():
 			out.append(e)
 			continue
-		var mid: String = _entry_mod_key(e)
 		if seen_ids.has(mid):
 			continue
 		seen_ids[mid] = true
 		out.append(winners_by_id[mid])
 	return out
+
+# Identity used to collapse duplicates. "" means "never collapse this entry".
+#
+# A declared id is authoritative. Without one the filename is all there is, so
+# fall back to the normalized stem: that is what lets CoolMod.vmz and
+# CoolMod.zip, or CoolMod_v1.0.zip and CoolMod_v1.1.zip, be recognized as one
+# mod rather than mounting both and letting load order decide which body of
+# code actually runs.
+func _dedupe_group_key(entry: Dictionary) -> String:
+	if str(entry.get("ext", "")) == "pck":
+		return ""
+	if not str(entry.get("profile_key", "")).begins_with("zip:"):
+		return _entry_mod_key(entry)
+	var stem := _normalized_mod_stem(str(entry.get("file_name", "")))
+	return "stem:" + stem if not stem.is_empty() else ""
+
+# Filename reduced to what stays the same across a re-package: extension gone,
+# lowercased, and a trailing version token removed so "CoolMod_v1.2" and
+# "CoolMod-1.3" both reduce to "coolmod".
+#
+# The trailing token must be introduced by a separator or a "v", so "CoolMod2"
+# keeps its digit (it reads as part of the name, and collapsing it would hide a
+# genuinely different mod) while "CoolMod_2", "CoolMod-2" and "CoolModv2" do
+# not. Only ONE token is stripped.
+#
+# What survives has to look like a name: it must contain a letter. Otherwise
+# "1.2" would reduce to "1" and every bare-numeric filename would collapse into
+# the same group. Anything with no name left keeps its full stem, which at
+# worst means no collapse happens.
+func _normalized_mod_stem(file_name: String) -> String:
+	var stem := file_name.get_basename().to_lower().strip_edges()
+	var re := RegEx.new()
+	re.compile("^(.*?)(?:[ _\\-.]+v?|v)[0-9]+(?:[._][0-9]+)*$")
+	var m := re.search(stem)
+	if m != null:
+		var head := m.get_string(1).strip_edges()
+		var named := RegEx.new()
+		named.compile("[a-z]")
+		if named.search(head) != null:
+			return head
+	return stem
 
 # Higher version wins; tiebreak newer mtime, then alphabetically lower filename.
 func _compare_dedup_priority(a: Dictionary, b: Dictionary) -> bool:

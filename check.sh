@@ -165,4 +165,18 @@ if ! ./check_detok.sh; then
     echo "FAILED: detokenizer harness (see above)" >&2
     exit 1
 fi
+
+# ---------------------------------------------------------------------------
+# Mod-identity harness. A mod with no id= in mod.txt is identified by its
+# filename, so re-packaging it under a different extension or version suffix
+# used to mint a second identity: both copies mounted and load order decided
+# which code ran. The fix normalizes the filename to a stem, which can fail in
+# both directions (merging distinct mods, or failing to merge one), so both
+# are pinned here. Needs no vanilla corpus; ~1s.
+# Self-test: ./check_identity.sh --prove
+# ---------------------------------------------------------------------------
+if ! ./check_identity.sh; then
+    echo "FAILED: mod-identity harness (see above)" >&2
+    exit 1
+fi
 exit 0

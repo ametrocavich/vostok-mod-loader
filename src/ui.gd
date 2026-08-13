@@ -281,6 +281,13 @@ func _apply_profile_to_entries(cfg: ConfigFile, profile: String) -> void:
 					"stored":  _version_from_profile_key(resolved_key),
 					"current": entry["version"],
 				}
+		else:
+			# No declared id, so the stored key is the OLD filename. Re-packaging
+			# under a different extension or version suffix would otherwise
+			# orphan the mod's settings, and on a non-Default profile the
+			# fall-through below then leaves the new file switched off -- the
+			# mod is listed, looks installed, and never loads.
+			resolved_key = _find_stored_key_for_zip_stem(cfg, profile, entry["file_name"])
 		if is_vanilla:
 			entry["enabled"] = false
 		elif resolved_key != "" and cfg.has_section_key(en_sec, resolved_key):
@@ -352,6 +359,34 @@ func _find_stored_key_for_mod_id(cfg: ConfigFile, profile: String, mod_id: Strin
 				if key.begins_with(prefix):
 					return key
 	return ""
+
+# Stored "zip:<file_name>" key for a mod with no declared id, matched on the
+# normalized stem so a re-package under a new extension or version suffix keeps
+# its enabled state, priority and dependency override.
+#
+# Ambiguity is resolved by NOT resolving: when two stored keys reduce to the
+# same stem there is no way to tell which one this file continues, and picking
+# the wrong one silently applies another mod's settings. Returning "" instead
+# means the mod falls through to the normal new-mod path, which the user can
+# see and correct.
+func _find_stored_key_for_zip_stem(cfg: ConfigFile, profile: String, file_name: String) -> String:
+	var want := _normalized_mod_stem(file_name)
+	if want.is_empty():
+		return ""
+	var hit := ""
+	for suffix: String in [".enabled", ".priority"]:
+		var sec := _profile_sec(profile, suffix)
+		if not cfg.has_section(sec):
+			continue
+		for key: String in cfg.get_section_keys(sec):
+			if not key.begins_with("zip:"):
+				continue
+			if _normalized_mod_stem(key.trim_prefix("zip:")) != want:
+				continue
+			if hit != "" and hit != key:
+				return ""
+			hit = key
+	return hit
 
 func _version_from_profile_key(key: String) -> String:
 	var at := key.find("@")
