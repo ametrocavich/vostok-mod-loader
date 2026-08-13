@@ -27,8 +27,31 @@
 ## Providers this build can actually dispatch to, in display order. Distinct
 ## from HOST_PROVIDERS_KNOWN, which is the wider set the on-disk parser will
 ## accept: a source may be readable and still not be servable by this build.
+##
+## Dispatchable does not mean browsable: a link-out-only host like Nexus
+## belongs here (its page_url, display name and provenance all dispatch) but
+## can never serve a listing. Anything populating a Browse-style listing
+## control must use host_browse_providers() instead of this list.
 func host_providers() -> PackedStringArray:
-	return PackedStringArray([HOST_MODWORKSHOP, HOST_VOSTOKMODS])
+	return PackedStringArray([HOST_MODWORKSHOP, HOST_VOSTOKMODS, HOST_NEXUS])
+
+
+## Providers whose catalog can populate the Browse tab: host_providers()
+## filtered by caps.browse. The provider switcher MUST be built from this,
+## never from host_providers() directly -- a switcher entry for a host whose
+## every fetch returns UNSUPPORTED is the button-that-can-only-fail the caps
+## model exists to prevent.
+##
+## Placement: this lives in host_api.gd rather than host_types.gd because it
+## composes host_providers() and host_caps(), both defined in this file;
+## host_types.gd is provider-neutral vocabulary and stays free of dispatch
+## knowledge. Synchronous and network-free, safe during widget construction.
+func host_browse_providers() -> PackedStringArray:
+	var out := PackedStringArray()
+	for p in host_providers():
+		if host_caps(p)["browse"]:
+			out.append(p)
+	return out
 
 
 # ----- async operations -----
@@ -44,6 +67,7 @@ func host_list_mods(provider: String, q: Dictionary) -> Dictionary:
 	var out: Dictionary
 	match provider:
 		HOST_MODWORKSHOP: out = await _mwsp_list_mods(q)
+		HOST_NEXUS: out = _nxp_unsupported("host_list_mods")
 		HOST_VOSTOKMODS: out = await _vmp_list_mods(q)
 		_: out = _host_unwired("host_list_mods", provider)
 	return _host_check_result(provider, "host_list_mods", out)
@@ -55,6 +79,7 @@ func host_get_mod(ref: Dictionary) -> Dictionary:
 	var out: Dictionary
 	match provider:
 		HOST_MODWORKSHOP: out = await _mwsp_get_mod(ref)
+		HOST_NEXUS: out = _nxp_unsupported("host_get_mod")
 		HOST_VOSTOKMODS: out = _vmp_unsupported("host_get_mod")
 		_: out = _host_unwired("host_get_mod", provider)
 	return _host_check_result(provider, "host_get_mod", out)
@@ -67,6 +92,7 @@ func host_list_files(ref: Dictionary) -> Dictionary:
 	var out: Dictionary
 	match provider:
 		HOST_MODWORKSHOP: out = await _mwsp_list_files(ref)
+		HOST_NEXUS: out = _nxp_unsupported("host_list_files")
 		HOST_VOSTOKMODS: out = _vmp_unsupported("host_list_files")
 		_: out = _host_unwired("host_list_files", provider)
 	return _host_check_result(provider, "host_list_files", out)
@@ -81,6 +107,7 @@ func host_resolve_file(ref: Dictionary, version: String = "") -> Dictionary:
 	var out: Dictionary
 	match provider:
 		HOST_MODWORKSHOP: out = await _mwsp_resolve_file(ref, version)
+		HOST_NEXUS: out = _nxp_unsupported("host_resolve_file")
 		HOST_VOSTOKMODS: out = _vmp_unsupported("host_resolve_file")
 		_: out = _host_unwired("host_resolve_file", provider)
 	return _host_check_result(provider, "host_resolve_file", out)
@@ -91,6 +118,7 @@ func host_list_categories(provider: String) -> Dictionary:
 	var out: Dictionary
 	match provider:
 		HOST_MODWORKSHOP: out = await _mwsp_list_categories()
+		HOST_NEXUS: out = _nxp_unsupported("host_list_categories")
 		HOST_VOSTOKMODS: out = _vmp_unsupported("host_list_categories")
 		_: out = _host_unwired("host_list_categories", provider)
 	return _host_check_result(provider, "host_list_categories", out)
@@ -107,6 +135,7 @@ func host_latest_versions(provider: String, ids: PackedStringArray, on_progress:
 	var out: Dictionary
 	match provider:
 		HOST_MODWORKSHOP: out = await _mwsp_latest_versions(ids, on_progress)
+		HOST_NEXUS: out = _nxp_unsupported("host_latest_versions")
 		HOST_VOSTOKMODS: out = _vmp_unsupported("host_latest_versions")
 		_: out = _host_unwired("host_latest_versions", provider)
 	return _host_check_result(provider, "host_latest_versions", out)
@@ -123,6 +152,7 @@ func host_latest_versions(provider: String, ids: PackedStringArray, on_progress:
 func host_display_name(provider: String) -> String:
 	match provider:
 		HOST_MODWORKSHOP: return "ModWorkshop"
+		HOST_NEXUS: return "Nexus Mods"
 		HOST_VOSTOKMODS: return "VostokMods"
 		_: return provider
 
@@ -130,6 +160,7 @@ func host_display_name(provider: String) -> String:
 func host_caps(provider: String) -> Dictionary:
 	match provider:
 		HOST_MODWORKSHOP: return _mwsp_caps()
+		HOST_NEXUS: return _nxp_caps()
 		HOST_VOSTOKMODS: return _vmp_caps()
 		_: return host_empty_caps()
 
@@ -141,6 +172,7 @@ func host_mod_page_url(ref: Dictionary) -> String:
 		return ""
 	match str(ref["provider"]):
 		HOST_MODWORKSHOP: return _mwsp_mod_page_url(str(ref["id"]))
+		HOST_NEXUS: return _nxp_mod_page_url(str(ref["id"]))
 		HOST_VOSTOKMODS: return _vmp_mod_page_url(str(ref["id"]))
 		_: return ""
 
@@ -152,6 +184,7 @@ func host_mod_page_url(ref: Dictionary) -> String:
 func host_note_rate_headers(provider: String, status: int, headers: PackedStringArray) -> void:
 	match provider:
 		HOST_MODWORKSHOP: _mwsp_note_rate_headers(status, headers)
+		HOST_NEXUS: _nxp_note_rate_headers(status, headers)
 		HOST_VOSTOKMODS: _vmp_note_rate_headers(status, headers)
 
 
@@ -159,6 +192,7 @@ func host_note_rate_headers(provider: String, status: int, headers: PackedString
 func _host_scalars(provider: String) -> Dictionary:
 	match provider:
 		HOST_MODWORKSHOP: return _mwsp_scalars()
+		HOST_NEXUS: return _nxp_scalars()
 		HOST_VOSTOKMODS: return _vmp_scalars()
 		_: return host_empty_scalars()
 

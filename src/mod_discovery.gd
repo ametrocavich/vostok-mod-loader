@@ -1652,17 +1652,139 @@ func _looks_like_pck(path: String) -> bool:
 	return magic == PackedByteArray([0x47, 0x44, 0x50, 0x43])
 
 
-# Serialize a [mod_sources] cache value: {modworkshop_id, version} as JSON,
-# omitting version when empty. Dictionary insertion order is stable, so the
-# output string is identical for identical inputs.
-func _serialize_mod_source(mws_id: int, version: String) -> String:
-	var payload: Dictionary = {"modworkshop_id": mws_id}
+# ----- provider-qualified mod sources ------------------------------------
+#
+# Canonical in-memory record: {"provider": String, "id": String,
+# "version": String}, every field always present (the host_types.gd rule);
+# provider "" is the single "no source" test. Three disk surfaces carry it:
+#   mod.txt [updates]        source="<provider>:<id>", plus the legacy
+#                            modworkshop=<int>, which is read FOREVER
+#   mod_config.cfg           [mod_sources] <profile_key> = <json>
+#   modpack profile.json     "sources": {<profile_key>: <record>}
+# The JSON record is {provider, id, modworkshop_id?, version?}.
+# modworkshop_id is a compat MIRROR emitted IFF provider == "modworkshop":
+# profile.json is mailed between users, and a pre-source loader reading a
+# mirrored id on a non-ModWorkshop record would download whatever mod owns
+# that number on ModWorkshop.
+
+## mod.txt `source=` value -> canonical record (version ""), {} on reject.
+## Delegates to host_ref_from_key (host_types.gd) -- ONE parser for the
+## wire key and the disk key, so the two grammars cannot drift. Inherits
+## its rules: split on the FIRST colon, provider from the known list, id a
+## non-empty opaque String, and a bare value with no colon rejected, never
+## defaulted to modworkshop.
+func _parse_source_token(raw: String) -> Dictionary:
+	var ref := host_ref_from_key(raw.strip_edges())
+	if ref.is_empty():
+		return {}
+	return {"provider": str(ref["provider"]), "id": str(ref["id"]), "version": ""}
+
+
+## The one reader of a mod.txt source declaration. source= wins; the legacy
+## modworkshop= key has no sunset. A malformed source= falls through to the
+## legacy key so a dual-written mod with a typo keeps updating instead of
+## going dark.
+##
+## The legacy value must be a PURE integer (is_valid_int): String.to_int()
+## tolerates trailing junk, so it would mint id 12 out of "12abc" -- and a
+## qualified value pasted into the wrong key must read as no-source, not as
+## someone else's ModWorkshop id.
+func _mod_source_from_cfg(cfg: ConfigFile) -> Dictionary:
+	if cfg == null:
+		return {"provider": "", "id": "", "version": ""}
+	var version := str(cfg.get_value("mod", "version", "")).strip_edges()
+	if cfg.has_section_key("updates", "source"):
+		var rec := _parse_source_token(str(cfg.get_value("updates", "source", "")))
+		if not rec.is_empty():
+			rec["version"] = version
+			return rec
+	if cfg.has_section_key("updates", "modworkshop"):
+		var legacy := str(cfg.get_value("updates", "modworkshop", "")).strip_edges()
+		if legacy.is_valid_int() and legacy.to_int() > 0:
+			# Round-trip through int so "0123"/"+123" normalize to the same
+			# id string the wire produces; ids double as dictionary keys.
+			return {"provider": HOST_MODWORKSHOP, "id": str(legacy.to_int()), "version": version}
+	return {"provider": "", "id": "", "version": ""}
+
+
+## Normalize a [mod_sources]/profile.json record of either era. Provider is
+## first and ABSOLUTE: when a "provider" key is present, modworkshop_id is
+## never consulted, even as a fallback -- a stale mirror left by a
+## hand-edit must not resolve a vostokmods mod to a ModWorkshop download.
+## Only a record with NO "provider" key takes the legacy modworkshop_id
+## path.
+func _normalize_source_record(v: Variant) -> Dictionary:
+	if not (v is Dictionary):
+		return {"provider": "", "id": "", "version": ""}
+	var rec: Dictionary = v
+	var ver_raw: Variant = rec.get("version", "")
+	var version := str(ver_raw) if ver_raw is String else ""
+	if rec.has("provider"):
+		var provider := str(rec.get("provider", ""))
+		var id := str(rec.get("id", "")).strip_edges()
+		if HOST_PROVIDERS_KNOWN.has(provider) and not id.is_empty():
+			return {"provider": provider, "id": id, "version": version}
+		return {"provider": "", "id": "", "version": ""}
+	# Legacy {"modworkshop_id": N}. JSON numbers arrive as float;
+	# hand-edited packs have carried null and quoted "12345". int(null) is
+	# a runtime error and to_int() on arbitrary text invents ids, so only
+	# ints, floats and pure-integer strings are accepted.
+	var mws_raw: Variant = rec.get("modworkshop_id", 0)
+	var mws_id := 0
+	if mws_raw is int:
+		mws_id = mws_raw
+	elif mws_raw is float:
+		mws_id = int(mws_raw)
+	elif mws_raw is String and str(mws_raw).strip_edges().is_valid_int():
+		mws_id = str(mws_raw).strip_edges().to_int()
+	if mws_id > 0:
+		return {"provider": HOST_MODWORKSHOP, "id": str(mws_id), "version": version}
+	return {"provider": "", "id": "", "version": ""}
+
+
+## A record's ModWorkshop integer id, or 0. The ONLY place a source record
+## becomes an int: provider must be modworkshop and the id all digits.
+## Everything that still speaks int mws_id (download_new_mod, the Browse
+## install map, update checks) funnels through here, so the "is this really
+## a ModWorkshop number" test cannot fork.
+func _source_mws_id(rec: Dictionary) -> int:
+	if str(rec.get("provider", "")) != HOST_MODWORKSHOP:
+		return 0
+	var id := str(rec.get("id", ""))
+	if not id.is_valid_int():
+		return 0
+	var n := id.to_int()
+	return n if n > 0 else 0
+
+
+## Dictionary payload shared by the [mod_sources] cache and profile.json
+## `sources`, so the mirror rule cannot fork between the two writers.
+## Key order is FIXED -- provider, id, modworkshop_id, version -- because
+## _persist_mod_sources_for_entries and _persist_single_mod_source diff the
+## serialized string against the stored one to decide whether to rewrite
+## mod_config.cfg; a reordered payload would rewrite the file every scan.
+func _mod_source_payload(rec: Dictionary) -> Dictionary:
+	var payload: Dictionary = {
+		"provider": str(rec.get("provider", "")),
+		"id": str(rec.get("id", "")),
+	}
+	var mws_id := _source_mws_id(rec)
+	if mws_id > 0:
+		payload["modworkshop_id"] = mws_id
+	var version := str(rec.get("version", ""))
 	if not version.is_empty():
 		payload["version"] = version
-	return JSON.stringify(payload)
+	return payload
 
 
-# Persist source info ([updates] modworkshop= + version) for any scanned mod
+# Serialize a [mod_sources] cache value. Godot Dictionaries keep insertion
+# order and JSON.stringify preserves it, so identical records always
+# serialize to the identical string.
+func _serialize_mod_source_rec(rec: Dictionary) -> String:
+	return JSON.stringify(_mod_source_payload(rec))
+
+
+# Persist source info ([updates] source= or legacy modworkshop=, + version) for any scanned mod
 # into mod_config.cfg's [mod_sources] section. Lets missing-mod stubs offer
 # Download for mods that were once installed but have since been removed --
 # the file is gone, the cache remembers the source.
@@ -1683,17 +1805,13 @@ func _persist_mod_sources_for_entries(entries: Array[Dictionary]) -> void:
 		return
 	var changed := false
 	for entry in entries:
-		var cfg2: ConfigFile = entry.get("cfg")
-		if cfg2 == null or not cfg2.has_section_key("updates", "modworkshop"):
-			continue
-		var mws_id := int(str(cfg2.get_value("updates", "modworkshop", "0")))
-		if mws_id <= 0:
+		var src := _mod_source_from_cfg(entry.get("cfg"))
+		if src["provider"] == "":
 			continue
 		var pk: String = str(entry.get("profile_key", ""))
 		if pk == "":
 			continue
-		var version_str := str(cfg2.get_value("mod", "version", "")).strip_edges()
-		var serialized := _serialize_mod_source(mws_id, version_str)
+		var serialized := _serialize_mod_source_rec(src)
 		var current := str(cfg.get_value("mod_sources", pk, ""))
 		if current != serialized:
 			cfg.set_value("mod_sources", pk, serialized)
@@ -1702,9 +1820,11 @@ func _persist_mod_sources_for_entries(entries: Array[Dictionary]) -> void:
 		_persist_ui_cfg(cfg)
 
 
-# Read the persisted [mod_sources] cache as {profile_key -> {modworkshop_id,
-# version}}. Empty when no cache exists. Caller can layer active-modpack
-# zip sources on top if they want modpack data to take precedence.
+# Read the persisted [mod_sources] cache as {profile_key -> canonical
+# {provider, id, version}}. Entries from either record era normalize on the
+# way out, so no consumer sees a raw modworkshop_id again. Empty when no
+# cache exists. Caller can layer active-modpack zip sources on top if they
+# want modpack data to take precedence.
 func _get_persisted_mod_sources() -> Dictionary:
 	var out: Dictionary = {}
 	var cfg := ConfigFile.new()
@@ -1716,17 +1836,17 @@ func _get_persisted_mod_sources() -> Dictionary:
 		var raw := str(cfg.get_value("mod_sources", key, ""))
 		if raw == "":
 			continue
-		var parsed: Variant = JSON.parse_string(raw)
-		if parsed is Dictionary:
-			out[key] = parsed
+		var rec := _normalize_source_record(JSON.parse_string(raw))
+		if rec["provider"] != "":
+			out[key] = rec
 	return out
 
 
 # Add a single source entry to the cache. Used by modpack apply to record
 # sources for mods the modpack references but doesn't have installed yet
 # (so a download failure or skip still leaves the source recoverable later).
-func _persist_single_mod_source(profile_key: String, mws_id: int, version: String) -> void:
-	if profile_key.is_empty() or mws_id <= 0:
+func _persist_single_mod_source(profile_key: String, rec: Dictionary) -> void:
+	if profile_key.is_empty() or str(rec.get("provider", "")) == "":
 		return
 	var cfg := ConfigFile.new()
 	var load_err := cfg.load(UI_CONFIG_PATH)
@@ -1738,7 +1858,7 @@ func _persist_single_mod_source(profile_key: String, mws_id: int, version: Strin
 				+ ") -- skipped recording the mod source for '" + profile_key
 				+ "' so the config backup stays usable.")
 		return
-	var serialized := _serialize_mod_source(mws_id, version)
+	var serialized := _serialize_mod_source_rec(rec)
 	var current := str(cfg.get_value("mod_sources", profile_key, ""))
 	if current != serialized:
 		cfg.set_value("mod_sources", profile_key, serialized)

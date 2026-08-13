@@ -940,29 +940,38 @@ func _rename_mcm_snapshot(old_name: String, new_name: String) -> void:
 # introduced; the modloader sniffs the contents on load. Format chosen so
 # someone with a zip viewer can inspect what they're about to import.
 
-# Per-mod MWS source URLs derived from the [updates] modworkshop= field +
-# [mod] version= in each mod.txt. Embedded in saved profile.json under
-# "sources" so an import can look up where to fetch missing mods AND pin
-# the exact version the modpack author had installed (download_new_mod
-# uses /files/{version} when version is set, else /files/primary). Forward-
-# compatible v1 metroprofile field -- old parsers ignore it.
+# Per-mod source records derived from each mod.txt's [updates] section plus
+# [mod] version=. Embedded in saved profile.json under "sources" so an import
+# can look up where to fetch missing mods AND pin the exact version the
+# modpack author had installed. Forward-compatible v1 metroprofile field --
+# old parsers ignore what they do not know.
+#
+# _mod_source_payload is what emits the legacy modworkshop_id mirror, and it
+# emits it only for ModWorkshop records. That rule matters most right here:
+# profile.json is the artifact users mail each other, and a mirror written
+# for a non-ModWorkshop mod would make an older loader download whatever
+# ModWorkshop mod happens to carry that number.
+## The ModWorkshop id a mod's mod.txt declares, or 0 for anything else --
+## no declaration, a malformed one, or a mod hosted somewhere other than
+## ModWorkshop.
+##
+## Every surface that keys off an MWS id goes through here rather than reading
+## [updates] modworkshop= itself. Two reasons, both of which were live bugs:
+## _mod_source_from_cfg is the only reader that sees the newer
+## source="provider:id" declaration, and it validates the id instead of
+## letting int(str(...)) mint 12 out of "12abc" and update a mod from a
+## stranger's upload.
+func _entry_mws_id(cfg: ConfigFile) -> int:
+	return _source_mws_id(_mod_source_from_cfg(cfg))
+
+
 func _build_profile_sources() -> Dictionary:
 	var sources: Dictionary = {}
 	for entry in _ui_mod_entries:
-		var cfg2: ConfigFile = entry.get("cfg")
-		if cfg2 == null:
+		var rec := _mod_source_from_cfg(entry.get("cfg"))
+		if str(rec["provider"]) == "":
 			continue
-		if not cfg2.has_section_key("updates", "modworkshop"):
-			continue
-		var mws_id := int(str(cfg2.get_value("updates", "modworkshop", "0")))
-		if mws_id <= 0:
-			continue
-		var pk: String = entry["profile_key"]
-		var src_entry: Dictionary = {"modworkshop_id": mws_id}
-		var version_str := str(cfg2.get_value("mod", "version", "")).strip_edges()
-		if not version_str.is_empty():
-			src_entry["version"] = version_str
-		sources[pk] = src_entry
+		sources[str(entry["profile_key"])] = _mod_source_payload(rec)
 	return sources
 
 # Read the persisted preferred author name from mod_config.cfg. Used to
@@ -977,21 +986,19 @@ func _save_preferred_author(author: String) -> void:
 	_set_ui_cfg_value("settings", "preferred_author", author)
 
 
-# Mods that are enabled in the active profile but whose mod.txt doesn't
-# carry [updates] modworkshop=N. These get written to profile.enabled in the
-# exported modpack zip but not to profile.sources, so anyone applying the
-# modpack on a clean install would see them as unresolved missing-mod stubs.
-# Returned for the save-as-modpack pre-confirm so the user is warned before
-# sharing a partial modpack. Each entry is {mod_name, profile_key}.
-func _enabled_mods_without_modworkshop_id() -> Array:
+# Mods that are enabled in the active profile but whose mod.txt declares no
+# source at all -- neither [updates] source= nor the legacy modworkshop= key.
+# These get written to profile.enabled in the exported modpack zip but not to
+# profile.sources, so anyone applying the modpack on a clean install would see
+# them as unresolved missing-mod stubs. Returned for the save-as-modpack
+# pre-confirm so the user is warned before sharing a partial modpack. Each
+# entry is {mod_name, profile_key}.
+func _enabled_mods_without_source() -> Array:
 	var out: Array = []
 	for entry in _ui_mod_entries:
 		if not bool(entry.get("enabled", false)):
 			continue
-		var cfg2: ConfigFile = entry.get("cfg")
-		var has_id := false
-		if cfg2 != null and cfg2.has_section_key("updates", "modworkshop"):
-			has_id = int(str(cfg2.get_value("updates", "modworkshop", "0"))) > 0
+		var has_id := str(_mod_source_from_cfg(entry.get("cfg"))["provider"]) != ""
 		if not has_id:
 			out.append({
 				"mod_name": str(entry.get("mod_name", "?")),
@@ -1438,7 +1445,7 @@ func _missing_mods_in_active_profile() -> Array[String]:
 #      mod file is deleted.
 #   2. Active modpack's profile.json sources -- overlays the cache, since
 #      the modpack zip is canonical for the currently-active modpack.
-# Returns Dictionary{profile_key -> {modworkshop_id, version}}.
+# Returns Dictionary{profile_key -> {provider, id, version}}, normalized.
 func _missing_mod_sources_combined() -> Dictionary:
 	var out: Dictionary = _get_persisted_mod_sources()
 	var active := get_active_modpack()
@@ -1462,8 +1469,14 @@ func _missing_mod_sources_combined() -> Dictionary:
 			return out
 		var sources_v: Variant = (parsed_v as Dictionary).get("sources", {})
 		if sources_v is Dictionary:
+			# Normalize on the way in. _get_persisted_mod_sources already
+			# returns canonical {provider, id, version} records, and a
+			# modpack zip may carry either era's shape, so overlaying raw
+			# values would leave callers reading a map with two shapes in it.
 			for k in (sources_v as Dictionary).keys():
-				out[str(k)] = (sources_v as Dictionary)[k]
+				var rec := _normalize_source_record((sources_v as Dictionary)[k])
+				if str(rec["provider"]) != "":
+					out[str(k)] = rec
 		return out
 	return out
 
@@ -2443,7 +2456,7 @@ func build_modpacks_tab(tabs: TabContainer) -> Control:
 	hdr_row.add_child(save_modpack_btn)
 	save_modpack_btn.pressed.connect(func():
 		var profile_to_save := _active_profile
-		var orphans := _enabled_mods_without_modworkshop_id()
+		var orphans := _enabled_mods_without_source()
 		_show_save_modpack_dialog(profile_to_save, orphans, tabs)
 	)
 
@@ -2945,7 +2958,10 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 	var enabled_map: Dictionary = parsed.get("enabled", {}) if parsed.get("enabled") is Dictionary else {}
 	var sources_map: Dictionary = parsed.get("sources", {}) if parsed.get("sources") is Dictionary else {}
 	var total := enabled_map.size()
-	var enabled_count := 0
+	# enabled_map comes from a third-party profile.json; a hand-edited pack
+	# can carry null/String values and bool(null) is a runtime constructor
+	# error in Godot 4. _count_truthy (modpacks.gd) type-checks per value.
+	var enabled_count := _count_truthy(enabled_map)
 	var installed_count := 0
 	var missing_count := 0
 
@@ -2954,8 +2970,6 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 		installed_keys[str(ient.get("profile_key", ""))] = true
 
 	for k_v in enabled_map.keys():
-		if bool(enabled_map[k_v]):
-			enabled_count += 1
 		if installed_keys.has(str(k_v)):
 			installed_count += 1
 		else:
@@ -2995,10 +3009,11 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 		sorted_keys.sort()
 		for k_v in sorted_keys:
 			var k: String = str(k_v)
-			var en: bool = bool(enabled_map[k_v])
+			var en: bool = _json_truthy(enabled_map[k_v])
 			var installed: bool = installed_keys.has(k)
-			var src_data: Dictionary = sources_map.get(k_v, {}) if sources_map.get(k_v) is Dictionary else {}
-			var has_source: bool = int(src_data.get("modworkshop_id", 0)) > 0
+			# Either era's record shape; the normalizer decides which.
+			var src_rec := _normalize_source_record(sources_map.get(k_v))
+			var has_source: bool = str(src_rec["provider"]) != ""
 
 			var mod_row := HBoxContainer.new()
 			mod_row.add_theme_constant_override("separation", SP_M)
@@ -5014,8 +5029,15 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			var src_mws_id: int = 0
 			var src_version: String = ""
 			if src_v is Dictionary:
+				# Canonical {provider, id, version} by the time it gets here
+				# (_missing_mod_sources_combined normalizes both of its
+				# inputs), so the untrusted-JSON handling lives in
+				# _normalize_source_record rather than at this read. That
+				# matters: this runs under show_mod_ui() on the pass-1 path,
+				# where int(null) on a hand-edited profile.json would block
+				# the main menu.
 				var src: Dictionary = src_v
-				src_mws_id = int(src.get("modworkshop_id", 0))
+				src_mws_id = _source_mws_id(src)
 				src_version = str(src.get("version", ""))
 			if src_mws_id > 0:
 				var dl_btn := Button.new()
@@ -5178,9 +5200,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		# Browse. Non-MWS mods get a same-width spacer so the name column stays
 		# aligned across every row.
 		var row_cfg: ConfigFile = entry.get("cfg")
-		var row_mws_id := 0
-		if row_cfg != null and row_cfg.has_section_key("updates", "modworkshop"):
-			row_mws_id = int(str(row_cfg.get_value("updates", "modworkshop", "0")))
+		var row_mws_id := _entry_mws_id(row_cfg)
 		var mws_holder: Dictionary = {}
 		var thumb_ref: TextureRect = null
 		# EVERY row gets a real thumbnail cell, captioned "no thumbnail" from
@@ -5759,9 +5779,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			var cfg: ConfigFile = entry.get("cfg")
 			if cfg == null:
 				continue
-			if not cfg.has_section_key("updates", "modworkshop"):
-				continue
-			var mws_id := int(str(cfg.get_value("updates", "modworkshop", "0")))
+			var mws_id := _entry_mws_id(cfg)
 			if mws_id > 0:
 				out[mws_id] = entry
 		return out
@@ -5780,10 +5798,8 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			var cfg: ConfigFile = entry.get("cfg")
 			if cfg == null:
 				continue
-			if not cfg.has_section_key("updates", "modworkshop"):
-				continue
-			var entry_mws := int(str(cfg.get_value("updates", "modworkshop", "0")))
-			if entry_mws != mws_id:
+			var entry_mws := _entry_mws_id(cfg)
+			if entry_mws <= 0 or entry_mws != mws_id:
 				continue
 			# Same content-mod guard as the Mods-tab checkbox: disabling a
 			# mod that registers game content can stop an existing save that
@@ -5815,7 +5831,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	perform_download_for_item = func(item: Dictionary):
 		var mod_data: Dictionary = item["mod_data"]
 		var get_btn = item.get("get_btn")
-		var mws_id := int(mod_data.get("id", 0))
+		var mws_id := _json_int(mod_data, "id")
 		state["downloading_id"] = mws_id
 		if is_instance_valid(get_btn):
 			get_btn.disabled = true
@@ -5958,7 +5974,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 
 	var on_get: Callable
 	on_get = func(mod_data: Dictionary, get_btn: Button):
-		var mws_id := int(mod_data.get("id", 0))
+		var mws_id := _json_int(mod_data, "id")
 		if int(state["downloading_id"]) != -1:
 			# Another download is in flight. Queue this one (unless it's the
 			# same mod already in-flight or already queued -- silent dedup).
@@ -6009,7 +6025,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		for mod_data in mods:
 			if not (mod_data is Dictionary):
 				continue
-			var mws_id := int((mod_data as Dictionary).get("id", 0))
+			var mws_id := _json_int(mod_data as Dictionary, "id")
 			var entry_or_null: Variant = install_map.get(mws_id)
 			list.add_child(_browse_render_mod_row(mod_data, entry_or_null, on_get, on_toggle))
 			list.add_child(HSeparator.new())
@@ -6081,7 +6097,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			for mod_data in popular:
 				if not (mod_data is Dictionary):
 					continue
-				var mws_id := int((mod_data as Dictionary).get("id", 0))
+				var mws_id := _json_int(mod_data as Dictionary, "id")
 				list.add_child(_browse_render_mod_row(mod_data, install_map.get(mws_id), on_get, on_toggle))
 				list.add_child(HSeparator.new())
 		if not latest.is_empty():
@@ -6097,7 +6113,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			for mod_data in latest:
 				if not (mod_data is Dictionary):
 					continue
-				var mws_id := int((mod_data as Dictionary).get("id", 0))
+				var mws_id := _json_int(mod_data as Dictionary, "id")
 				list.add_child(_browse_render_mod_row(mod_data, install_map.get(mws_id), on_get, on_toggle))
 				list.add_child(HSeparator.new())
 		if cached_at > 0:
@@ -6169,9 +6185,9 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			var seen := {}
 			for r in acc:
 				if r is Dictionary:
-					seen[int((r as Dictionary).get("id", 0))] = true
+					seen[_json_int(r as Dictionary, "id")] = true
 			for r in rows:
-				if not (r is Dictionary) or not seen.has(int((r as Dictionary).get("id", 0))):
+				if not (r is Dictionary) or not seen.has(_json_int(r as Dictionary, "id")):
 					acc.append(r)
 			rows = acc
 		state["loaded_rows"] = rows
@@ -6205,9 +6221,11 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		# as _mws_data_rows applies to the sibling data field.
 		var meta_v: Variant = (data as Dictionary).get("meta")
 		var meta: Dictionary = meta_v if meta_v is Dictionary else {}
-		var current_page: int = int(meta.get("current_page", page))
-		var last_page: int = int(meta.get("last_page", current_page))
-		var total: int = int(meta.get("total", rows.size()))
+		# Same hazard one level down: meta's own fields can be present-but-
+		# null, and int(null) is a runtime error. _json_int type-checks.
+		var current_page: int = _json_int(meta, "current_page", page)
+		var last_page: int = _json_int(meta, "last_page", current_page)
+		var total: int = _json_int(meta, "total", rows.size())
 		state["next_page"] = current_page + 1
 		state["has_more"] = current_page < last_page
 		clear_browse_banner.call()
@@ -6379,9 +6397,7 @@ func _refresh_browse_installed_rows(root: Node) -> void:
 		var cfg: ConfigFile = entry.get("cfg")
 		if cfg == null:
 			continue
-		if not cfg.has_section_key("updates", "modworkshop"):
-			continue
-		var mws_id := int(str(cfg.get_value("updates", "modworkshop", "0")))
+		var mws_id := _entry_mws_id(cfg)
 		if mws_id > 0:
 			by_id[mws_id] = entry
 	var stack: Array = [root]
@@ -6429,6 +6445,14 @@ func _refresh_browse_installed_rows(root: Node) -> void:
 func _json_int(d: Dictionary, key: String, fallback: int = 0) -> int:
 	var v: Variant = d.get(key)
 	return int(v) if (v is int or v is float) else fallback
+
+
+# Guarded truthiness for a single untrusted JSON value: bool(null) is a
+# runtime constructor error in Godot 4. Same per-value rule _count_truthy
+# (modpacks.gd) applies across a whole dictionary; use that for tallies
+# and this for one value.
+func _json_truthy(v: Variant) -> bool:
+	return (v is bool and v) or ((v is int or v is float) and v != 0)
 
 
 # Render one row in the Browse tab list. Pulls from a ModSummary dict (live
@@ -6552,8 +6576,8 @@ func _browse_render_mod_row(mod_data: Dictionary, install_entry: Variant, on_get
 		enable_check.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		# Tag with the mws id so _refresh_browse_installed_rows can re-derive
 		# this baked-at-render-time state when the tab is shown again.
-		enable_check.set_meta("browse_mws_id", int(mod_data.get("id", 0)))
-		var captured_mws_id := int(mod_data.get("id", 0))
+		enable_check.set_meta("browse_mws_id", _json_int(mod_data, "id"))
+		var captured_mws_id := _json_int(mod_data, "id")
 		var captured_check := enable_check
 		enable_check.toggled.connect(func(on: bool):
 			on_toggle.call(captured_mws_id, on, captured_check)
@@ -6567,7 +6591,7 @@ func _browse_render_mod_row(mod_data: Dictionary, install_entry: Variant, on_get
 		# Tag with the mws id so _refresh_browse_installed_rows can flip this
 		# to Installed if the mod arrives behind the tab's back (modpack
 		# apply, retry downloads).
-		get_btn.set_meta("browse_mws_id", int(mod_data.get("id", 0)))
+		get_btn.set_meta("browse_mws_id", _json_int(mod_data, "id"))
 		var captured := mod_data
 		var captured_btn := get_btn
 		get_btn.pressed.connect(func():
@@ -7090,7 +7114,7 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 	files_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	box.add_child(files_list)
 
-	var mod_id := int(mod_data.get("id", 0))
+	var mod_id := _json_int(mod_data, "id")
 	# Pin Get + Open-page to the dialog's native button bar (alongside Close)
 	# so they stay visible regardless of scroll position. add_button returns
 	# the actual Button so its text/disabled state can change during the install
@@ -7105,10 +7129,8 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 	# button reflects reality -- enable toggling lives on the list row.
 	var already_installed := false
 	for entry in _ui_mod_entries:
-		var cfg_e: ConfigFile = entry.get("cfg")
-		if cfg_e == null or not cfg_e.has_section_key("updates", "modworkshop"):
-			continue
-		if int(str(cfg_e.get_value("updates", "modworkshop", "0"))) == mod_id:
+		var entry_id := _entry_mws_id(entry.get("cfg"))
+		if entry_id > 0 and entry_id == mod_id:
 			already_installed = true
 			break
 	var get_btn := d.add_button("Installed" if already_installed else "Download", true, "")
@@ -7441,9 +7463,7 @@ func build_updates_tab() -> Control:
 		if cfg == null:
 			continue
 		var version := str(cfg.get_value("mod", "version", ""))
-		var mw_id := 0
-		if cfg.has_section_key("updates", "modworkshop"):
-			mw_id = int(str(cfg.get_value("updates", "modworkshop", "")))
+		var mw_id := _entry_mws_id(cfg)
 
 		var row := HBoxContainer.new()
 		list.add_child(row)
@@ -7685,9 +7705,7 @@ func _run_updates_check_for_mods() -> Dictionary:
 		# duplicate beside the folder), so never flag them for updates.
 		if str(entry.get("ext", "")) == "folder":
 			continue
-		if not cfg.has_section_key("updates", "modworkshop"):
-			continue
-		var mw_id := int(str(cfg.get_value("updates", "modworkshop", "0")))
+		var mw_id := _entry_mws_id(cfg)
 		if mw_id <= 0:
 			continue
 		var version := str(cfg.get_value("mod", "version", "")).strip_edges()

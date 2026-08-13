@@ -481,8 +481,14 @@ func _build_furniture_recipe(id: String, output_item: Resource, rd: Dictionary) 
 		push_warning("[Registry] register_furniture('%s'): failed to load RecipeData.gd; recipe skipped" % id)
 		return null
 	var recipe: Resource = script.new()
-	recipe.set("name", String(rd.get("name", id)))
-	recipe.set("time", float(rd.get("time", 1.0)))
+	# rd is a mod-supplied dict on the boot path. .get()'s default only
+	# covers an ABSENT key: a present-but-null (or junk-typed) value flows
+	# through, and float(null) / String(null) are runtime constructor
+	# errors in Godot 4. Type-check before coercing.
+	var name_raw: Variant = rd.get("name")
+	recipe.set("name", name_raw if name_raw is String else id)
+	var time_raw: Variant = rd.get("time")
+	recipe.set("time", float(time_raw) if (time_raw is int or time_raw is float) else 1.0)
 	if rd.has("audio"):
 		recipe.set("audio", rd["audio"])
 	# Build a typed input array without naming ItemData. It's a game class,

@@ -815,7 +815,8 @@ func _restore_apply_snapshot(snap_path: String) -> Dictionary:
 # 1.2.3 specifically. Now: only an exact profile_key match counts as already
 # installed. A different version of the same mod is treated as missing, so
 # the pinned version is downloaded. Returns Array of
-# {profile_key, mws_id, version}.
+# {profile_key, mws_id, version, source}; mws_id stays an int for the
+# download tail and is 0 for any non-ModWorkshop source.
 func _get_missing_mods_for_modpack(entry: Dictionary) -> Array:
 	var missing: Array = []
 	var file_path: String = str(entry.get("file_path", ""))
@@ -883,34 +884,35 @@ func _get_missing_mods_for_modpack(entry: Dictionary) -> Array:
 			var src_ver := src_key.substr(at_pos + 1)
 			if installed_id_ver.has(src_id_l + "@" + src_ver):
 				continue
-		var src_data: Dictionary = sources.get(src_key, {}) if sources.get(src_key) is Dictionary else {}
-		# JSON numbers arrive as float; a hand-edited pack can carry null.
-		# int(null) is a runtime constructor error, so type-check first.
-		var mws_raw = src_data.get("modworkshop_id", 0)
-		var mws_id: int = int(mws_raw) if (mws_raw is int or mws_raw is float) else 0
-		# Version is OPTIONAL and only used when explicit. Earlier revision
-		# fell back to parsing the suffix off the profile_key, but that
-		# silently turned legacy modpacks (which only have modworkshop_id
-		# and no version field) into strict-pinned downloads against old
-		# versions that have since been replaced upstream -- mass failures.
-		# Now: only honor the version when the modpack author chose to
-		# include it (modloader-produced modpacks do; legacy ones don't).
-		# Present-but-null (or non-String) degrades to "" = primary download,
-		# not a bogus "<null>" pin.
-		var ver_raw = src_data.get("version", "")
-		var version: String = str(ver_raw) if ver_raw is String else ""
+		var src_data: Variant = sources.get(src_key)
+		# Normalization handles both record eras and every hand-edit shape
+		# seen in the wild (float ids, null, quoted numbers). Version is
+		# OPTIONAL and only honored when the record carries it: deriving it
+		# from the profile_key suffix turned legacy modpacks into
+		# strict-pinned downloads against versions replaced upstream --
+		# mass failures.
+		var src_rec := _normalize_source_record(src_data)
+		var version: String = str(src_rec["version"])
 		# Cache the source so a missing-mod stub on this profile (or a
 		# future profile referencing the same key) can offer Download
-		# without re-reading the modpack zip.
-		_persist_single_mod_source(src_key, mws_id, version)
-		var item := {"profile_key": src_key, "mws_id": mws_id, "version": version}
+		# without re-reading the modpack zip. Non-ModWorkshop sources are
+		# cached too: they become downloadable the day their provider gains
+		# a download endpoint.
+		_persist_single_mod_source(src_key, src_rec)
+		var mws_id := _source_mws_id(src_rec)
+		var item := {"profile_key": src_key, "mws_id": mws_id, "version": version, "source": src_rec}
 		if mws_id <= 0:
-			# No downloadable source. Surface it to apply_modpack so the
+			# Not downloadable today. Surface it to apply_modpack so the
 			# user sees an explanatory failure row instead of a missing
 			# mod with no explanation.
 			item["unreachable"] = true
-			item["unreachable_reason"] = ("the modpack has no download info for this mod -- install it manually" if src_data.is_empty()
-					else "the modpack has no ModWorkshop ID for this mod -- install it manually")
+			if str(src_rec["provider"]) != "" and str(src_rec["provider"]) != HOST_MODWORKSHOP:
+				item["unreachable_reason"] = "this mod is hosted on " + str(src_rec["provider"]) \
+						+ ", which this loader cannot download from yet -- install it manually"
+			elif not (src_data is Dictionary) or (src_data as Dictionary).is_empty():
+				item["unreachable_reason"] = "the modpack has no download info for this mod -- install it manually"
+			else:
+				item["unreachable_reason"] = "the modpack has no ModWorkshop ID for this mod -- install it manually"
 		missing.append(item)
 	return missing
 

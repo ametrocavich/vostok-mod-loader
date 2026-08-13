@@ -223,9 +223,14 @@ func _mwsp_resolve_file(ref: Dictionary, version: String) -> Dictionary:
 	if version != "":
 		var pinned: Variant = await mws_get_file_by_version(mod_id, version)
 		if not (pinned is Dictionary):
-			# The author deleted that upload, or never made it. Say so rather
-			# than falling back to the current file: substituting a different
-			# version is precisely what pinning exists to prevent.
+			# The wrapped client collapses offline, rate-limited and 5xx into
+			# the same null a genuine 404 produces, so ask it which happened
+			# first. Reporting "that version is gone" for what is really a
+			# dropped connection pushes the user into installing a DIFFERENT
+			# version -- the exact substitution pinning exists to prevent.
+			if _mws_last_transport_failed or mws_rate_cooldown_seconds() > 0:
+				return _mwsp_failure()
+			# Genuinely absent: the author deleted that upload or never made it.
 			return host_err(HOST_ERR_VERSION_NOT_FOUND, 404,
 					"version %s is not available" % version)
 		return _mwsp_file_result(pinned)
@@ -277,15 +282,24 @@ func _mwsp_list_categories() -> Dictionary:
 func _mwsp_latest_versions(ids: PackedStringArray, on_progress: Callable) -> Dictionary:
 	var versions := {}
 	var done := 0
+	var failures := 0
 	for id in ids:
 		var ref := host_ref(HOST_MODWORKSHOP, id)
 		var res := await _mwsp_resolve_file(ref, "")
 		done += 1
 		if not res["ok"]:
-			# A rate limit will not clear within this loop, so stop and hand
-			# back what we have rather than spending the rest of the list on
-			# certain failures.
-			if str(res["code"]) == HOST_ERR_RATE_LIMITED:
+			failures += 1
+			# Neither a rate limit nor a dead connection clears inside this
+			# loop, so stop rather than spend the rest of the list on certain
+			# failures -- offline, that is one doomed request per installed
+			# mod, each with its own timeout and retry.
+			var code := str(res["code"])
+			if code == HOST_ERR_RATE_LIMITED or code == HOST_ERR_OFFLINE:
+				# Nothing resolved at all: report the failure instead of an
+				# empty success, which the Updates tab would render as the
+				# far more damaging "everything is up to date".
+				if versions.is_empty():
+					return res
 				return host_ok(versions)
 			continue
 		var file: Dictionary = res["data"]
@@ -296,4 +310,11 @@ func _mwsp_latest_versions(ids: PackedStringArray, on_progress: Callable) -> Dic
 		versions[key] = version
 		if on_progress.is_valid():
 			on_progress.call({"done": done, "total": ids.size(), "partial": {key: version}})
+	# Every single mod failed for its own reason (all 404, all malformed).
+	# An empty success here means "checked everything, nothing to update",
+	# which is the one answer the user must not be given when in truth we
+	# learned nothing at all.
+	if versions.is_empty() and failures > 0:
+		return host_err(HOST_ERR_BAD_RESPONSE, 0,
+				"could not read a version for any of the %d mods checked" % failures)
 	return host_ok(versions)

@@ -20,12 +20,13 @@
 ## format so the two cannot drift apart.
 
 const HOST_MODWORKSHOP := "modworkshop"
+const HOST_NEXUS := "nexus"
 const HOST_VOSTOKMODS := "vostokmods"
 
 ## Every provider the loader will parse from disk or dispatch to. An id whose
 ## provider is not on this list is rejected at parse time rather than guessed
 ## at, so a typo fails loudly instead of resolving to the wrong host.
-const HOST_PROVIDERS_KNOWN: Array[String] = ["modworkshop", "vostokmods"]
+const HOST_PROVIDERS_KNOWN: Array[String] = ["modworkshop", "nexus", "vostokmods"]
 
 # Failure codes. Each one exists because some caller branches on it
 # differently; a code nobody distinguishes belongs merged into another.

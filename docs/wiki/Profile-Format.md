@@ -37,7 +37,7 @@ The JSON lives as plain UTF-8 `profile.json` at the root of a modpack zip, along
 | `exported_at` | no | String | ISO datetime when exported. Advisory only. |
 | `description` | no | String | Author-provided modpack description (save-as-modpack dialog). Omitted when empty. |
 | `author` | no | String | Author handle from the save-as-modpack dialog. Omitted when empty. |
-| `sources` | no | Dictionary | `profile_key -> {modworkshop_id: int, version?: String}`. Auto-derived from each installed mod's `[updates] modworkshop=` + `[mod] version=`; lets modpack apply download missing mods from ModWorkshop and pin exact versions. Only enabled mods' sources are written. |
+| `sources` | no | Dictionary | `profile_key -> {provider: String, id: String, modworkshop_id?: int, version?: String}`. Auto-derived from each installed mod's `[updates] source=` (or legacy `modworkshop=`) + `[mod] version=`; lets modpack apply download missing mods and pin exact versions. Only enabled mods' sources are written. The legacy `modworkshop_id` mirror is emitted **if and only if** `provider == "modworkshop"`, so an older loader reading a non-ModWorkshop record treats it as source-less instead of downloading an unrelated ModWorkshop mod of the same number. |
 | `dep_ignore` | no | Dictionary | `profile_key -> true`, sparse (true-only entries). "Load anyway" dependency overrides; re-materialized on modpack apply. |
 
 Like `sources`, the `priority` and `dep_ignore` dictionaries are filtered to the enabled set on export.

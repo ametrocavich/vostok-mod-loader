@@ -92,8 +92,8 @@ A modpack's `profile.json` uses the metroprofile v1 format -- see [Profile-Forma
     "scarce_loot@1.4.0":    50
   },
   "sources": {
-    "harsher_ai@2.1.0":   { "modworkshop_id": 12345, "version": "2.1.0" },
-    "scarce_loot@1.4.0":  { "modworkshop_id": 67890 }
+    "harsher_ai@2.1.0":   { "provider": "modworkshop", "id": "12345", "modworkshop_id": 12345, "version": "2.1.0" },
+    "scarce_loot@1.4.0":  { "provider": "modworkshop", "id": "67890", "modworkshop_id": 67890 }
   },
   "dep_ignore": {
     "harsher_ai@2.1.0": true
@@ -109,10 +109,14 @@ Required fields are validated before apply touches any state: `metroprofile` mus
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `modworkshop_id` | int | yes (to be downloadable) | ModWorkshop mod id. `<= 0` or absent means the mod can't be auto-installed; it shows up as an unresolved missing-mod stub. |
-| `version` | string | no | Exact version to pin. When set, apply fetches `/files/<version>`; when absent, it fetches the author's primary file. |
+| `provider` | string | yes (new format) | Host token: `modworkshop`, `vostokmods`, or `nexus`. |
+| `id` | string | yes (new format) | That host's mod id. |
+| `modworkshop_id` | int | mirror | Legacy compatibility mirror, written **only** when `provider == "modworkshop"`. An older loader reads this; a newer one reads `provider`+`id`. Absent for non-ModWorkshop mods so an old loader does not download the wrong one. |
+| `version` | string | no | Exact version to pin. When set, apply fetches that version; when absent, it fetches the author's primary file. |
 
-> The on-disk field name is `modworkshop_id` (not `mws_id`). The launcher's auto-generated modpacks include `version`; older / hand-written ones may carry only `modworkshop_id`, in which case the primary file is fetched. `sources` is built from each installed mod's `[updates] modworkshop=` and `[mod] version=`, so a mod with no `[updates] modworkshop` in its `mod.txt` gets no source entry and can't be auto-installed from the pack.
+A record with neither a resolvable `provider`+`id` nor a positive `modworkshop_id` can't be auto-installed and shows up as an unresolved missing-mod stub.
+
+> Each source record is `{provider, id, modworkshop_id?, version?}`. The `modworkshop_id` mirror is written only for ModWorkshop-hosted mods (it lets an older loader read the pack); other providers carry `provider` + `id` and no mirror. The launcher's auto-generated modpacks include `version`; older / hand-written ones may carry only the id, in which case the primary file is fetched. `sources` is built from each installed mod's `[updates] source=` (or the legacy `modworkshop=`) plus `[mod] version=`, so a mod that declares EITHER key gets a source entry and can be auto-installed; a mod that declares no source at all gets no entry and must be installed manually.
 
 At apply time, only an exact `profile_key` match (or a case-insensitive `mod_id@version` match) counts as already-installed; a different version of the same mod is treated as missing and the pinned version is fetched, landing beside the copy already there (rename-on-collision). A mod listed in `enabled` but absent from `sources` (or with no `modworkshop_id`) is surfaced as an explicit failure row -- "the modpack has no download info for this mod -- install it manually" -- rather than silently vanishing.
 

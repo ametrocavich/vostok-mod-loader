@@ -73,6 +73,7 @@ MyModMain="res://MyMod/Main.gd"
 EarlyNode="!res://MyMod/Early.gd"
 
 [updates]
+source="modworkshop:12345"
 modworkshop=12345
 
 [dependencies]
@@ -160,9 +161,24 @@ Duplicate autoload names are logged and skipped (first wins). Paths not present 
 
 | Key | Type | Meaning |
 |---|---|---|
-| `modworkshop` | int | ModWorkshop mod id. Enables the Updates tab for this mod |
+| `source` | String | Where this mod is hosted, as `"<provider>:<id>"`. Enables the Updates tab and modpack auto-download. Preferred over `modworkshop`. |
+| `modworkshop` | int | Legacy ModWorkshop mod id. Still read forever; equivalent to `source="modworkshop:<id>"`. |
 
-Declaring `modworkshop` also makes the mod auto-downloadable when someone applies a modpack that includes it. The loader records `modworkshop` plus `[mod] version` as the mod's source and fetches it from ModWorkshop on the recipient's machine. Mods without a `modworkshop` id must be installed manually by modpack recipients.
+`source` is the provider-qualified form. The provider is a known host token (currently `modworkshop`; `vostokmods` and `nexus` are recognized) and the id is that host's mod id. The provider is matched case-insensitively, and a value with no colon is rejected rather than guessed -- so `source="12345"` is an error, not a ModWorkshop id.
+
+For a ModWorkshop mod, declare BOTH keys during the compatibility window:
+
+```
+[updates]
+source="modworkshop:12345"
+modworkshop=12345
+```
+
+The `modworkshop=` line keeps older loaders working; the `source=` line is what newer loaders read first. A mod hosted anywhere OTHER than ModWorkshop must declare ONLY `source=` and must NOT add a `modworkshop=` line -- an older loader would otherwise treat that number as a ModWorkshop id and download an unrelated mod.
+
+Declaring a source also makes the mod auto-downloadable when someone applies a modpack that includes it (from ModWorkshop today; other providers as their download support lands). The loader records the source plus `[mod] version` and fetches it on the recipient's machine. Mods with no source must be installed manually by modpack recipients.
+
+Note: quote your `[mod] version`. An unquoted `version = 1.10` is read as the number 1.1 and the trailing zero is lost, which corrupts the exact version a modpack pins.
 
 Version compare uses [mod_discovery.gd `compare_versions`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd) -- splits on `.`, strips `v`/`V` prefix, pads shorter side with `"0"`, lexicographic int comparison.
 
