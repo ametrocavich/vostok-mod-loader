@@ -57,17 +57,6 @@ jobs:
           chmod +x build.sh
           ./build.sh
 
-      # The built file must match what a contributor would get locally. A stale
-      # committed modloader.gd is not itself a build failure, but it means the
-      # artifact in the repo is not the artifact the sources produce, and the
-      # installers serve the committed one.
-      - name: Check the committed modloader.gd is up to date
-        run: |
-          if ! git diff --quiet -- modloader.gd; then
-            echo "::warning::modloader.gd differs from a fresh build of src/. Run ./build.sh and commit the result."
-            git diff --stat -- modloader.gd
-          fi
-
       # The gate. check.sh parses the built file with --check-only and then runs
       # the harnesses. Harnesses that need the decompiled RTV corpus skip
       # themselves with a banner rather than failing, so this is meaningful

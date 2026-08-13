@@ -118,6 +118,12 @@ func host_ref_from_key(key: String) -> Dictionary:
 ## dictionary key that never matches the one read back from mod.txt. Every id
 ## crossing the seam goes through here.
 func _host_id_str(v: Variant) -> String:
+	# str(null) is the literal "<null>", which is non-empty and would sail
+	# through every host_ref_valid check as though it were a real id -- then
+	# show up in a URL and as a dictionary key. A host that sends a null id is
+	# saying it has no id, so say that back.
+	if v == null:
+		return ""
 	if v is float:
 		return str(int(v))
 	if v is int:

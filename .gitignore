@@ -11,3 +11,15 @@ modloader.gd.tmp
 .research/
 .fable_fixes/
 release/
+
+# Security proof-of-concept mods, used to test that the scanner actually
+# catches what it claims to. These are WORKING malicious mods.
+#
+# Tracked here rather than only in .git/info/exclude, which is per-clone and
+# never shared: without this line the next contributor's clone has no such
+# exclusion, and `git add -A` would publish a working backdoor to a public
+# repository.
+poc/
+
+# Vendored upstream reference source, not ours to ship.
+godot-mod-loader-src/

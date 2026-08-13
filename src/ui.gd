@@ -1991,6 +1991,22 @@ func _wire_hint(c: Control, text: String) -> void:
 # Modal opens from the red "suspicious code" tag on a mod row. Lists the
 # specific patterns the scanner matched. Dismiss-only. The actual
 # launch-time gate lives in _confirm_red_launch.
+## Whether the scanner reported that it could not read part of this mod.
+##
+## Distinct from a risk verdict: RISK_CLEAN means "read it, found nothing",
+## while this means "could not read it at all". Both currently render as
+## RISK_CLEAN, so without this the two are indistinguishable to the user --
+## which is the more dangerous of the two being silent.
+func _entry_has_unscannable_code(entry: Dictionary) -> bool:
+	var findings: Variant = entry.get("security_findings")
+	if not (findings is Array):
+		return false
+	for f in (findings as Array):
+		if f is Dictionary and str((f as Dictionary).get("rule", "")) == "compiled_script":
+			return true
+	return false
+
+
 func _show_security_findings_dialog(entry: Dictionary) -> void:
 	var findings: Array = entry.get("security_findings", [])
 	if findings.is_empty():
@@ -5419,6 +5435,24 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			name_col.add_child(sec_btn)
 			var captured_entry := entry
 			sec_btn.pressed.connect(func(): _show_security_findings_dialog(captured_entry))
+		elif _entry_has_unscannable_code(entry):
+			# Not a risk verdict -- the opposite. The scanner could not read
+			# this mod's compiled bytecode, so it has no opinion, and the
+			# absence of a badge would read as "checked, nothing found".
+			# Dim rather than red: shipping compiled code is not an accusation,
+			# and treating it as one would tag every legitimately built mod.
+			var unscanned_btn := Button.new()
+			unscanned_btn.text = "not scanned"
+			unscanned_btn.flat = true
+			unscanned_btn.tooltip_text = "This mod ships compiled code the scanner cannot read. Nothing was checked."
+			unscanned_btn.add_theme_color_override("font_color", COL_TEXT_DIM)
+			unscanned_btn.add_theme_color_override("font_hover_color", COL_TEXT_HI)
+			unscanned_btn.add_theme_font_size_override("font_size", FS_BODY)
+			unscanned_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+			unscanned_btn.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+			name_col.add_child(unscanned_btn)
+			var captured_unscanned := entry
+			unscanned_btn.pressed.connect(func(): _show_security_findings_dialog(captured_unscanned))
 
 		var spin := SpinBox.new()
 		spin.min_value = PRIORITY_MIN
