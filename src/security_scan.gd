@@ -436,6 +436,33 @@ func _security_scan_binary(file: String, bytes: PackedByteArray, findings: Array
 	# bounded. The ascii fallback loop below is too slow for huge blobs.
 	if bytes.is_empty() or bytes.size() > _MAX_TEXT_SCAN_BYTES:
 		return
+
+	# Compiled GDScript defeats every rule below, and silence would be read as
+	# a clean bill of health.
+	#
+	# The rules are source-level patterns -- \bOS\.execute\s*\( and friends.
+	# A .gdc file is TOKENIZED bytecode: the identifiers OS and execute live in
+	# a string table as separate entries, and the dot and parenthesis are token
+	# bytes, not text. So the pattern cannot match however the bytes are
+	# flattened, and a .gdc dropper calling OS.execute scans CLEAN today.
+	#
+	# Say so instead. A scanner whose silence cannot be trusted is worse than
+	# no scanner, because the user reads the absence of findings as safety.
+	#
+	# The real fix is to reconstruct the source with the GDSC detokenizer this
+	# project already carries (gdsc_detokenizer.gd) and run the full text rules
+	# over it -- an ability most scanners do not have. That needs a bytes-level
+	# entry point; _detokenize_script currently reads from a path.
+	if _security_is_gdsc(bytes):
+		if findings.size() < _MAX_FINDINGS_PER_MOD:
+			findings.append({
+				"rule": "compiled_script",
+				"file": file,
+				"line": 0,
+				"preview": "(compiled GDScript bytecode)",
+				"description": "Compiled GDScript (.gdc) that this scanner cannot read. Its contents were NOT checked -- treat this mod as unscanned unless you trust its author.",
+			})
+		return
 	var as_text := bytes.get_string_from_utf8()
 	if as_text.is_empty():
 		var out := PackedByteArray()
@@ -462,6 +489,14 @@ func _security_scan_binary(file: String, bytes: PackedByteArray, findings: Array
 			"preview": "(matched in binary file)",
 			"description": rule["description"],
 		})
+
+## Whether a blob is compiled GDScript, by its GDSC magic rather than by its
+## extension -- the extension is attacker-controlled and the magic is not.
+func _security_is_gdsc(bytes: PackedByteArray) -> bool:
+	if bytes.size() < 4:
+		return false
+	return bytes.slice(0, 4).get_string_from_ascii() == _GDSC_MAGIC
+
 
 # PCK file-table parser that also returns per-entry offset+size so the
 # scanner can read individual blobs without mounting the pck.
