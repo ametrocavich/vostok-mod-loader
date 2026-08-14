@@ -179,4 +179,21 @@ if ! ./check_identity.sh; then
     echo "FAILED: mod-identity harness (see above)" >&2
     exit 1
 fi
+
+# ---------------------------------------------------------------------------
+# Host-seam harness: the provider-neutral host records, the "provider:id"
+# grammar shared by the wire key and mod.txt's source=, and the on-disk source
+# record of every era (legacy int/float/quoted/null modworkshop_id, and both
+# provider-qualified shapes). Pins the two rules a refactor breaks silently:
+# serialization converges in ONE pass so mod_config.cfg is not rewritten every
+# scan, and the legacy modworkshop_id mirror is emitted IFF provider ==
+# modworkshop -- the rule whose failure downloads a stranger's mod for a
+# different user. This is the first coverage the ~19k-line launcher side has
+# ever had. Needs no vanilla corpus, so it never skips; ~1s.
+# Self-test: ./check_host.sh --prove
+# ---------------------------------------------------------------------------
+if ! ./check_host.sh; then
+    echo "FAILED: host-seam harness (see above)" >&2
+    exit 1
+fi
 exit 0
