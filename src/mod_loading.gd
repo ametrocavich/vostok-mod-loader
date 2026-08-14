@@ -458,17 +458,25 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 			continue
 
 		if _archive_file_sets.has(file_name) and not _archive_file_sets[file_name].has(res_path):
-			_log_critical("  Autoload path not found in archive: " + res_path)
-			_log_critical("    Declared in mod.txt but missing from: " + file_name)
-			# Log similar paths to help mod authors diagnose typos / case mismatches.
-			var similar: Array[String] = []
-			var target_file := res_path.get_file().to_lower()
-			for p: String in _archive_file_sets[file_name]:
-				if p.get_file().to_lower() == target_file:
-					similar.append(p)
-			if similar.size() > 0:
-				_log_critical("    Similar paths in archive: " + ", ".join(similar))
-			continue
+			# The path is not in the mod's OWN archive -- but discovery
+			# explicitly blesses pointing an autoload at a vanilla res:// script
+			# or at a file another mod provides (dependencies mount earlier by
+			# load order). Only treat it as a packaging error when the resource
+			# genuinely does not exist anywhere.
+			if ResourceLoader.exists(res_path):
+				pass
+			else:
+				_log_critical("  Autoload path not found: " + res_path)
+				_log_critical("    Declared in mod.txt but missing from " + file_name + " and not provided by any mod or the game")
+				# Log similar paths to help mod authors diagnose typos / case mismatches.
+				var similar: Array[String] = []
+				var target_file := res_path.get_file().to_lower()
+				for p: String in _archive_file_sets[file_name]:
+					if p.get_file().to_lower() == target_file:
+						similar.append(p)
+				if similar.size() > 0:
+					_log_critical("    Similar paths in archive: " + ", ".join(similar))
+				continue
 
 		# Reserve the name only after the path validated. A skipped autoload
 		# (typo'd path, nothing queued) must not consume the name and block a

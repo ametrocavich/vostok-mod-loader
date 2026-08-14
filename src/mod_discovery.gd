@@ -1713,7 +1713,15 @@ func _parse_source_token(raw: String) -> Dictionary:
 	var ref := host_ref_from_key(raw.strip_edges())
 	if ref.is_empty():
 		return {}
-	return {"provider": str(ref["provider"]), "id": str(ref["id"]), "version": ""}
+	var provider := str(ref["provider"])
+	var id := str(ref["id"])
+	# Canonicalize a ModWorkshop id the same way the legacy path does, so
+	# source="modworkshop:0123" and the legacy modworkshop=123 produce the
+	# identical id string. Without this they build different host_ref_keys and
+	# an update check silently never matches. Other providers' ids are opaque.
+	if provider == HOST_MODWORKSHOP and id.is_valid_int():
+		id = str(id.to_int())
+	return {"provider": provider, "id": id, "version": ""}
 
 
 ## The one reader of a mod.txt source declaration. source= wins; the legacy
@@ -1759,6 +1767,10 @@ func _normalize_source_record(v: Variant) -> Dictionary:
 		var provider := str(rec.get("provider", ""))
 		var id := str(rec.get("id", "")).strip_edges()
 		if HOST_PROVIDERS_KNOWN.has(provider) and not id.is_empty():
+			# Match the legacy path's id canonicalization so a record read from
+			# either era builds the same host_ref_key. Other providers opaque.
+			if provider == HOST_MODWORKSHOP and id.is_valid_int():
+				id = str(id.to_int())
 			return {"provider": provider, "id": id, "version": version}
 		return {"provider": "", "id": "", "version": ""}
 	# Legacy {"modworkshop_id": N}. JSON numbers arrive as float;

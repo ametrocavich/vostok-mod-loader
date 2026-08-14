@@ -241,6 +241,13 @@ func _finish_single_pass() -> void:
 	_register_rtv_modlib_meta()
 	_generate_hook_pack()
 	for entry in _pending_autoloads:
+		# Same guard the two-pass and existing-mounts finish paths already
+		# apply: an autoload that engine boot already loaded from a prior
+		# session's override.cfg would otherwise be instantiated a second time
+		# (Godot renames the duplicate and both run), doubling the mod's hooks.
+		if get_tree().root.has_node(entry["name"]):
+			_log_info("  Autoload '%s' already in tree -- skipped" % entry["name"])
+			continue
 		_instantiate_autoload(entry["mod_name"], entry["name"], entry["path"])
 	if _developer_mode:
 		_log_override_timing_warnings()

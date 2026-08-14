@@ -94,6 +94,12 @@ func _hnet_header_value(headers: PackedStringArray, header_name: String) -> Stri
 ## through to a returned error.
 func _hnet_get_json(provider: String, url: String, ttl_ms: int = 0,
 		allow_rate_wait: bool = true, allow_transport_retry: bool = true) -> Dictionary:
+	# An HTTPRequest added under a node that is not in the tree never gets
+	# _process, so request_completed never fires and the timeout never ticks:
+	# the caller would suspend forever. Fail fast instead. The per-branch
+	# get_tree() checks below cover the points reached after an await.
+	if not is_inside_tree():
+		return host_err(HOST_ERR_OFFLINE, 0, "loader is not in the scene tree")
 	if ttl_ms > 0:
 		var cached: Variant = _hnet_cache_get(url)
 		if cached != null:
