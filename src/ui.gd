@@ -3239,7 +3239,9 @@ func _show_remove_mod_confirm(entry: Dictionary, tabs: TabContainer) -> void:
 			d.queue_free()
 			if _delete_mod_file_and_cleanup(entry):
 				_reload_entries_for_active_profile()
-				_rebuild_mods_tab(tabs),
+				_rebuild_mods_tab(tabs)
+			else:
+				_show_error_dialog("Could not delete mod", "Could not remove %s. If this mod is enabled, its archive is mounted and the file stays locked while the game is open -- disable it, relaunch the game, then delete." % str(entry.get("file_name", "the mod"))),
 		func(): d.queue_free())
 	d.popup_centered()
 

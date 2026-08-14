@@ -1176,6 +1176,13 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 		if not cfg.has_section(_profile_sec(modpack_profile, ".enabled")):
 			var mat_result := _materialize_modpack_profile(entry, modpack_profile)
 			if not bool(mat_result.get("ok", false)):
+				# Step 1 set active_modpack as the crash-revert trigger, but
+				# nothing after it has taken effect on this clean return. Clear
+				# it, or every later tab rebuild reads it and renders the pack
+				# as Active -- Unload button, "changes save to the modpack"
+				# banner -- while the user's own profile is still the live one.
+				cfg.set_value("settings", "active_modpack", "")
+				_persist_ui_cfg(cfg)
 				return mat_result
 
 		# 3. Apply override files (anything in the zip outside profile.json
