@@ -407,6 +407,42 @@ func _build_entry_warnings(entry: Dictionary) -> Array[String]:
 		warnings.append_array(_autoload_path_warnings(entry))
 	warnings.append_array(_stale_bake_warnings(entry))
 	warnings.append_array(_missing_id_warnings(entry))
+	warnings.append_array(_source_declaration_warnings(entry))
+	return warnings
+
+# A mod.txt that DECLARES a source but declares it wrong gets no source at
+# all, and silently: no update check, no Browse install-state, no page link.
+# host_types.gd promises "a typo fails loudly", but the parser returns {} with
+# no word to the author. Name the problem on the mod's row so the author fixes
+# their own file instead of assuming the loader is broken.
+func _source_declaration_warnings(entry: Dictionary) -> Array[String]:
+	var warnings: Array[String] = []
+	if entry.get("mod_txt_status", "none") != "ok":
+		return warnings  # already warned about a broken/absent mod.txt
+	var cfg_v: Variant = entry.get("cfg")
+	if not (cfg_v is ConfigFile):
+		return warnings
+	var cfg: ConfigFile = cfg_v
+
+	if cfg.has_section_key("updates", "source"):
+		var raw := str(cfg.get_value("updates", "source", "")).strip_edges()
+		if _parse_source_token(raw).is_empty():
+			warnings.append("mod.txt has an unrecognized [updates] source=\"%s\". Use \"<provider>:<id>\" with a known provider (%s), e.g. \"modworkshop:12345\". This mod will not update or show where it came from." % [raw, ", ".join(HOST_PROVIDERS_KNOWN)])
+	elif cfg.has_section_key("updates", "modworkshop"):
+		var legacy := str(cfg.get_value("updates", "modworkshop", "")).strip_edges()
+		if not (legacy.is_valid_int() and legacy.to_int() > 0):
+			warnings.append("mod.txt [updates] modworkshop=\"%s\" is not a valid ModWorkshop id. This mod will not update." % legacy)
+
+	# An unquoted version reaches us already coerced to a float by ConfigFile's
+	# parser -- 1.10 arrives as 1.1, 1.0 as 1 -- and the original text is gone.
+	# It only causes harm when the mod is sourced (the corrupted string becomes
+	# an exact modpack pin / update-compare key), so warn only then, to keep it
+	# off the rows where the version is merely cosmetic.
+	var has_source := cfg.has_section_key("updates", "source") or cfg.has_section_key("updates", "modworkshop")
+	if has_source and cfg.has_section_key("mod", "version"):
+		if typeof(cfg.get_value("mod", "version")) == TYPE_FLOAT:
+			var as_num := str(cfg.get_value("mod", "version"))
+			warnings.append("mod.txt [mod] version is unquoted and was read as the number %s, which loses trailing zeros (1.10 becomes 1.1). Quote it: version = \"%s\"." % [as_num, as_num])
 	return warnings
 
 # Catch a mod.txt with no id=, which makes the archive filename the mod's

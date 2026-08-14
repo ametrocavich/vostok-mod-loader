@@ -1213,11 +1213,15 @@ func _show_modpack_saved_dialog(display_name: String, mod_count: int, path: Stri
 # Walk the source tree and write every file into the zip under zip_prefix.
 # Subdirectories are recursed; symlinks aren't followed (DirAccess never
 # does in Godot 4). Hidden entries (starts with ".") are skipped.
-func _add_dir_to_zip(packer: ZIPPacker, fs_path: String, zip_prefix: String) -> void:
+func _add_dir_to_zip(packer: ZIPPacker, fs_path: String, zip_prefix: String) -> bool:
 	var dir := DirAccess.open(fs_path)
 	if dir == null:
-		return
+		# Told the directory exists but cannot open it: the snapshot the
+		# recipient needs would be silently missing, so this is a failure,
+		# not something to skip past.
+		return false
 	dir.list_dir_begin()
+	var ok := true
 	while true:
 		var name := dir.get_next()
 		if name == "":
@@ -1227,17 +1231,23 @@ func _add_dir_to_zip(packer: ZIPPacker, fs_path: String, zip_prefix: String) -> 
 		var src_full := fs_path.path_join(name)
 		var zip_path := zip_prefix + "/" + name
 		if dir.current_is_dir():
-			_add_dir_to_zip(packer, src_full, zip_path)
+			if not _add_dir_to_zip(packer, src_full, zip_path):
+				ok = false
 		else:
 			var f := FileAccess.open(src_full, FileAccess.READ)
 			if f == null:
+				ok = false
 				continue
 			var bytes := f.get_buffer(f.get_length())
 			f.close()
 			if packer.start_file(zip_path) == OK:
-				packer.write_file(bytes)
+				if packer.write_file(bytes) != OK:
+					ok = false
 				packer.close_file()
+			else:
+				ok = false
 	dir.list_dir_end()
+	return ok
 
 # Build a profile zip at output_path. Includes profile.json (with sources) +
 # MCM/ snapshot of user://MCM/. Returns {"ok": true, "mod_count": int} or
@@ -1259,13 +1269,27 @@ func _export_profile_to_zip(profile_name: String, output_path: String, descripti
 		if FileAccess.file_exists(output_path):
 			DirAccess.remove_absolute(output_path)
 		return {"error": "Failed to write profile.json."}
-	packer.write_file(json_str.to_utf8_buffer())
+	var wrote_json := packer.write_file(json_str.to_utf8_buffer())
 	packer.close_file()
+	if wrote_json != OK:
+		packer.close()
+		if FileAccess.file_exists(output_path):
+			DirAccess.remove_absolute(output_path)
+		return {"error": "Failed while writing the modpack (out of disk space?)."}
 
+	var mcm_ok := true
 	if DirAccess.dir_exists_absolute(MCM_SOURCE_DIR):
-		_add_dir_to_zip(packer, MCM_SOURCE_DIR, "MCM")
+		mcm_ok = _add_dir_to_zip(packer, MCM_SOURCE_DIR, "MCM")
 
-	packer.close()
+	# close() writes the zip's central directory -- without it the archive is
+	# unreadable. A failure here, or an incomplete MCM snapshot, means the
+	# recipient gets a corrupt or partial pack, so do NOT report success:
+	# the corruption would otherwise surface only on someone else's machine.
+	var close_err := packer.close()
+	if close_err != OK or not mcm_ok:
+		if FileAccess.file_exists(output_path):
+			DirAccess.remove_absolute(output_path)
+		return {"error": "The modpack could not be written completely. Check disk space and try again."}
 	# Count the enabled mods from the payload just written so the caller can
 	# say "saved with N mods" without re-deriving it. Parse failure is
 	# non-fatal. The save succeeded; the count is simply reported as unknown.
@@ -1520,9 +1544,14 @@ func _sanitize_profile_name(raw: String) -> String:
 	for i in trimmed.length():
 		var c := trimmed.substr(i, 1)
 		var u := trimmed.unicode_at(i)
-		var is_alpha := (u >= 65 and u <= 90) or (u >= 97 and u <= 122)
+		# A cased letter in ANY script changes under case folding, so this
+		# admits Cyrillic (and Greek, etc.) names instead of stripping them to
+		# empty and refusing the save -- RTV has a large Russian-speaking
+		# community, and a received pack with a Cyrillic name was failing to
+		# apply for the same reason.
+		var is_letter := c.to_lower() != c.to_upper()
 		var is_digit := u >= 48 and u <= 57
-		if is_alpha or is_digit or c == " " or c == "-" or c == "_":
+		if is_letter or is_digit or c == " " or c == "-" or c == "_":
 			out += c
 	return out
 
