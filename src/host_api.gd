@@ -75,6 +75,8 @@ func host_list_mods(provider: String, q: Dictionary) -> Dictionary:
 
 ## Full detail for one mod. Data is a ModDetail record.
 func host_get_mod(ref: Dictionary) -> Dictionary:
+	if not host_ref_valid(ref):
+		return host_err(HOST_ERR_NOT_FOUND, 0, "invalid mod reference")
 	var provider := str(ref.get("provider", ""))
 	var out: Dictionary
 	match provider:
@@ -88,6 +90,8 @@ func host_get_mod(ref: Dictionary) -> Dictionary:
 ## Every downloadable version of one mod, newest first. Data is an Array of
 ## FileRecord. Only meaningful when caps.file_history is true.
 func host_list_files(ref: Dictionary) -> Dictionary:
+	if not host_ref_valid(ref):
+		return host_err(HOST_ERR_NOT_FOUND, 0, "invalid mod reference")
 	var provider := str(ref.get("provider", ""))
 	var out: Dictionary
 	match provider:
@@ -103,6 +107,8 @@ func host_list_files(ref: Dictionary) -> Dictionary:
 ## HOST_ERR_VERSION_NOT_FOUND rather than silently substituting another --
 ## silent substitution is the failure pinning exists to prevent.
 func host_resolve_file(ref: Dictionary, version: String = "") -> Dictionary:
+	if not host_ref_valid(ref):
+		return host_err(HOST_ERR_NOT_FOUND, 0, "invalid mod reference")
 	var provider := str(ref.get("provider", ""))
 	var out: Dictionary
 	match provider:

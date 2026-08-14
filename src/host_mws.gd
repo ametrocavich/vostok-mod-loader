@@ -66,7 +66,11 @@ func _mwsp_note_rate_headers(status: int, headers: PackedStringArray) -> void:
 	_mws_note_rate_headers(status, headers)
 	var wait_s := _hnet_header_value(headers, "Retry-After").to_int()
 	if status == 429:
-		host_arm_cooldown(HOST_MODWORKSHOP, clampi(wait_s, 1, 900) * 1000)
+		# An absent or HTTP-date Retry-After gives wait_s == 0. Pass 0 through
+		# so host_arm_cooldown applies its 60-second default, matching the old
+		# client; clamping 0 up to 1 would arm a 1-second cooldown that the
+		# transport's own guard then treats as "wait it out" and retries into.
+		host_arm_cooldown(HOST_MODWORKSHOP, clampi(wait_s, 1, 900) * 1000 if wait_s > 0 else 0)
 		return
 	var remaining := _hnet_header_value(headers, "X-RateLimit-Remaining")
 	# A 2xx with nothing left succeeded, but it was the last request this
@@ -141,7 +145,10 @@ func _mwsp_file(v: Variant) -> Dictionary:
 	var rec: Dictionary = v
 	f["id"] = _host_id_str(rec.get("id", ""))
 	f["version"] = str(rec.get("version", "")).strip_edges()
-	f["download_url"] = str(rec.get("download_url", ""))
+	# _host_str, not str: a null download_url must read as "" so
+	# _mwsp_file_result returns HOST_ERR_NO_FILE, not "<null>" which is
+	# non-empty and would sail through as a real url.
+	f["download_url"] = _host_str(rec.get("download_url"))
 	f["size"] = _host_count(rec.get("size"))
 	f["created_at"] = str(rec.get("created_at", ""))
 	f["filename_hint"] = _mwsp_filename_hint(f["download_url"])

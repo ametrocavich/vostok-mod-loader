@@ -416,7 +416,7 @@ func _register_furniture_bundle(id: String, data: Variant) -> Dictionary:
 	if item_data == null:
 		push_warning("[Registry] register_furniture('%s'): failed to load item from '%s'" % [id, d["item_path"]])
 		return result
-	if "type" in item_data and String(item_data.get("type")) != "Furniture":
+	if "type" in item_data and str(item_data.get("type")) != "Furniture":
 		push_warning("[Registry] register_furniture('%s'): ItemData.type is '%s', expected 'Furniture'. Item won't be routed to the catalog grid on purchase. Fix the .tres or the player will get inventory items instead." % [id, item_data.get("type")])
 	if d.has("icon_path"):
 		_apply_icon(item_data, d["icon_path"], id)
@@ -522,7 +522,12 @@ func _build_furniture_recipe(id: String, output_item: Resource, rd: Dictionary) 
 	# Optional proximity flags.
 	for flag in ["heat", "workbench", "testbench", "shelter"]:
 		if rd.has(flag):
-			recipe.set(flag, bool(rd[flag]))
+			# rd is mod-supplied and routinely deserialized from JSON, where
+			# {"heat": null} is ordinary. bool(null) is a runtime constructor
+			# error that would abort the whole recipe on the boot path, so
+			# read truthiness the same null-tolerant way the rest of this file
+			# guards name and time.
+			recipe.set(flag, _json_truthy(rd[flag]))
 	return recipe
 
 # -------- shared helpers --------

@@ -102,7 +102,11 @@ func host_ref_from_key(key: String) -> Dictionary:
 	var sep := key.find(":")
 	if sep <= 0:
 		return {}
-	var provider := key.substr(0, sep)
+	# Lowercase the provider half so a hand-authored source="ModWorkshop:12"
+	# resolves instead of silently going source-less. The known set is a closed
+	# lowercase list with no case-colliding members, so this cannot resolve to
+	# the wrong host. The id half stays case-sensitive and opaque.
+	var provider := key.substr(0, sep).strip_edges().to_lower()
 	if not HOST_PROVIDERS_KNOWN.has(provider):
 		return {}
 	var id := key.substr(sep + 1).strip_edges()
@@ -117,6 +121,14 @@ func host_ref_from_key(key: String) -> Dictionary:
 ## and a plain str() yields "12345.0" -- at once a broken URL segment and a
 ## dictionary key that never matches the one read back from mod.txt. Every id
 ## crossing the seam goes through here.
+## str() that reads a JSON null as the empty sentinel rather than the literal
+## "<null>". Every normalizer field flows through this, so a host that sends a
+## null download_url or name produces "" -- which the empty-field checks catch
+## -- instead of a non-empty "<null>" that passes them and reaches a URL.
+func _host_str(v: Variant) -> String:
+	return "" if v == null else str(v)
+
+
 func _host_id_str(v: Variant) -> String:
 	# str(null) is the literal "<null>", which is non-empty and would sail
 	# through every host_ref_valid check as though it were a real id -- then

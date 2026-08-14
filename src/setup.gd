@@ -173,7 +173,10 @@ func _setup_dispatch_array_op(verb: String, arr: Array) -> Dictionary:
 	var reg: String = String(arr[1])
 	var field: String = String(arr[2])
 	var entries: Dictionary = arr[3]
-	var allow_dups: bool = arr.size() == 5 and bool(arr[4])
+	# arr is mod-supplied; an explicit null 5th element makes bool(null) a
+	# runtime error that would abort the whole setup plan mid-way, unlike the
+	# predicate path which already guards null. Read it null-tolerantly.
+	var allow_dups: bool = arr.size() == 5 and _json_truthy(arr[4])
 	var res: Dictionary
 	match verb:
 		"append":      res = append_many(reg, field, entries, allow_dups)
