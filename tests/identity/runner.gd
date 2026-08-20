@@ -114,6 +114,31 @@ func _t4_distinct_mods_stay_distinct(ml: Object) -> void:
 	]))
 	_assert(out.size() == 3, "T4: three distinct mods must stay three entries, got %d" % out.size())
 
+	# A trailing number after a SPACE reads as part of the name, not a version.
+	# "Ammo Pack 1" and "Ammo Pack 2" are two different mods; collapsing them
+	# DELETES one from the list, and which one survives is decided by mtime, so
+	# it can flip between sessions. An underscore or hyphen is a packaging
+	# convention and still means a version; a space is prose.
+	var named: Array = ml._dedupe_by_mod_id(_entries([
+		{"file": "Ammo Pack 1.zip", "ver": ""},
+		{"file": "Ammo Pack 2.zip", "ver": ""},
+	]))
+	_assert(named.size() == 2,
+			"T4: 'Ammo Pack 1' and 'Ammo Pack 2' are distinct mods, got %d entries" % named.size())
+	# ... while an explicit version marker after a space still collapses.
+	var versioned: Array = ml._dedupe_by_mod_id(_entries([
+		{"file": "Ammo Pack v1.zip", "ver": ""},
+		{"file": "Ammo Pack v2.zip", "ver": ""},
+	]))
+	_assert(versioned.size() == 1,
+			"T4: 'Ammo Pack v1/v2' is one mod at two versions, got %d entries" % versioned.size())
+	var dotted: Array = ml._dedupe_by_mod_id(_entries([
+		{"file": "Ammo Pack 1.2.zip", "ver": ""},
+		{"file": "Ammo Pack 1.3.zip", "ver": ""},
+	]))
+	_assert(dotted.size() == 1,
+			"T4: 'Ammo Pack 1.2/1.3' is one mod at two versions, got %d entries" % dotted.size())
+
 # A declared id still takes precedence over any filename resemblance.
 func _t5_declared_id_still_wins(ml: Object) -> void:
 	var a := _entry("Totally.zip", "")

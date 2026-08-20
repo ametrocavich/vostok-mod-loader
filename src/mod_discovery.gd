@@ -1169,7 +1169,17 @@ func _dedupe_group_key(entry: Dictionary) -> String:
 func _normalized_mod_stem(file_name: String) -> String:
 	var stem := file_name.get_basename().to_lower().strip_edges()
 	var re := RegEx.new()
-	re.compile("^(.*?)(?:[ _\\-.]+v?|v)[0-9]+(?:[._][0-9]+)*$")
+	# Four ways a trailing token reads as a version, and one way it does not.
+	#   _ - .  separator, optional v   CoolMod_v1.2, CoolMod-1.3, CoolMod_2
+	#   space + explicit v             Ammo Pack v2
+	#   space + a DOTTED number        Ammo Pack 1.2
+	#   v attached to the name         CoolModv2
+	# A space followed by a bare integer is deliberately NOT a version: "Ammo
+	# Pack 1" and "Ammo Pack 2" are two different mods, and collapsing them
+	# deletes one from the list with the survivor decided by mtime, so it can
+	# flip between sessions. Underscore and hyphen are packaging conventions;
+	# a space is prose.
+	re.compile("^(.*?)(?:[_\\-.]+v?[0-9]+(?:[._][0-9]+)*| +v[0-9]+(?:[._][0-9]+)*| +[0-9]+(?:[._][0-9]+)+|v[0-9]+(?:[._][0-9]+)*)$")
 	var m := re.search(stem)
 	if m != null:
 		var head := m.get_string(1).strip_edges()
