@@ -88,16 +88,29 @@ const MWS_ROW_JSON := """
  "thumbnail": {"file": "abc123.png", "has_thumb": true}}
 """
 
-# The VostokMods /api/mods row quoted verbatim in host_vostokmods.gd's header
-# (the single confirmed response), with the elided thumbnail filename filled
-# in. followersCount is present ON PURPOSE: the adapter deliberately does NOT
-# map it onto likes, and T2 pins that.
+# A VostokMods ModCard row, shaped from the site's own listing route rather
+# than inferred from one observed response. followersCount is present ON
+# PURPOSE: the adapter deliberately does NOT map it onto likes, and T2 pins
+# that. `group` on a category is the discriminator between a real category and
+# a tag, which the row mixes together.
 const VM_ROW_JSON := """
-{"id": 4, "slug": "example", "name": "Example", "author": "Ovrrde",
- "categories": [{"slug": "category-1", "name": "Category 1"}],
+{"id": "m_4", "slug": "example", "name": "Example", "summary": "An example mod.",
+ "author": "Ovrrde", "authorId": "ovrrde",
+ "categories": [{"slug": "tag-1", "name": "Tag One", "group": "tags"},
+                {"slug": "category-1", "name": "Category 1", "group": "categories"}],
  "thumbnailUrl": "https://files.vostokmods.net/mods/4/screenshots/example.png",
- "downloadsCount": 1, "followersCount": 1,
- "updatedAt": "2026-08-07T06:05:11.420Z"}
+ "downloadsCount": 1, "followersCount": 7, "viewsCount": 42,
+ "createdAt": "2026-08-01T00:00:00.000Z",
+ "updatedAt": "2026-08-07T06:05:11.420Z", "latestGameVersion": null}
+"""
+
+# The same row with the nullable fields actually null. thumbnailUrl is null
+# whenever a mod has no screenshot, which is the common case for a new upload.
+const VM_ROW_NULLS_JSON := """
+{"id": "m_5", "slug": "nulls", "name": "Nulls", "summary": null,
+ "author": "Ovrrde", "categories": [], "thumbnailUrl": null,
+ "downloadsCount": 0, "followersCount": 0, "viewsCount": 0,
+ "createdAt": null, "updatedAt": null, "latestGameVersion": null}
 """
 
 # --- Tests -------------------------------------------------------------------
@@ -150,27 +163,34 @@ func _t2_vm_summary(ml: Object) -> void:
 	var s: Variant = ml._vmp_summary(row)
 	_assert_same_keys(ml, s, "T2")
 	var key := str(ml.host_ref_key(s["ref"]))
-	_assert(key == "vostokmods:4",
-			"T2: JSON float id normalizes to ref vostokmods:4 (got %s)" % key)
+	# IDENTITY IS THE SLUG, not the numeric id. Every VostokMods route --
+	# detail, download, public page -- is slug-keyed and the numeric id
+	# addresses nothing, so a ref built from the id would 404 everywhere.
+	_assert(key == "vostokmods:example",
+			"T2: ref identity is the SLUG (got %s)" % key)
 	_assert(str(s["name"]) == "Example", "T2: name (got %s)" % str(s["name"]))
 	_assert(str(s["author_name"]) == "Ovrrde",
 			"T2: author is a bare display string (got %s)" % str(s["author_name"]))
+	_assert(str(s["short_description"]) == "An example mod.",
+			"T2: summary maps to short_description (got %s)" % str(s["short_description"]))
 	_assert(s["downloads"] is int and int(s["downloads"]) == 1,
 			"T2: downloads is int 1 (got %s)" % str(s["downloads"]))
 	# The deliberate NON-mapping: a follow is a subscription, not an
 	# endorsement, so followersCount must NOT surface as likes.
 	_assert(s["likes"] is int and int(s["likes"]) == -1,
 			"T2: followersCount must NOT map onto likes (got %s)" % str(s["likes"]))
-	_assert(s["views"] is int and int(s["views"]) == -1,
-			"T2: views stays -1 'not reported' (got %s)" % str(s["views"]))
+	_assert(s["views"] is int and int(s["views"]) == 42,
+			"T2: views maps from viewsCount (got %s)" % str(s["views"]))
 	_assert(str(s["version"]) == "",
-			"T2: version sentinel '' -- the listing has no version field")
-	_assert(str(s["published_at"]) == "",
-			"T2: published_at sentinel '' -- not in the listing")
+			"T2: version sentinel '' -- the listing carries no version")
+	_assert(str(s["published_at"]) == "2026-08-01T00:00:00.000Z",
+			"T2: published_at maps from createdAt (got %s)" % str(s["published_at"]))
 	_assert(str(s["updated_at"]) == "2026-08-07T06:05:11.420Z",
 			"T2: updated_at maps from updatedAt (got %s)" % str(s["updated_at"]))
+	# The row mixes categories and tags; `group` is the discriminator, so the
+	# category must win even though the tag is listed first.
 	_assert(str(s["category_name"]) == "Category 1",
-			"T2: first categories[] entry shown (got %s)" % str(s["category_name"]))
+			"T2: group=categories wins over an earlier tag (got %s)" % str(s["category_name"]))
 	var thumb: Variant = s["thumbnail"]
 	_assert(str(thumb["url"]) == "https://files.vostokmods.net/mods/4/screenshots/example.png",
 			"T2: thumbnailUrl passes through absolute (got %s)" % str(thumb["url"]))
@@ -178,8 +198,25 @@ func _t2_vm_summary(ml: Object) -> void:
 			"T2: no separate thumb size -> thumb_url ''")
 	_assert(str(thumb["cache_key"]) == "",
 			"T2: no immutability promise -> cache_key '' (never disk-cached)")
-	_assert(str(s["short_description"]) == "",
-			"T2: short_description sentinel ''")
+
+	# The nullable-field row. thumbnailUrl is null for any mod with no
+	# screenshot, and str(null) is the literal "<null>" -- non-empty, so it
+	# would be treated as a real URL and fetched.
+	var nrow: Variant = JSON.parse_string(VM_ROW_NULLS_JSON)
+	_assert(nrow is Dictionary, "T2n: nullable fixture JSON parses")
+	var n: Variant = ml._vmp_summary(nrow)
+	_assert_same_keys(ml, n, "T2n")
+	_assert(str(ml.host_ref_key(n["ref"])) == "vostokmods:nulls",
+			"T2n: slug identity still resolves with every other field null")
+	var nthumb: Variant = n["thumbnail"]
+	_assert(str(nthumb["url"]) == "",
+			"T2n: null thumbnailUrl -> '' never '<null>' (got %s)" % str(nthumb["url"]))
+	_assert(str(n["short_description"]) == "",
+			"T2n: null summary -> '' (got %s)" % str(n["short_description"]))
+	_assert(str(n["updated_at"]) == "",
+			"T2n: null updatedAt -> '' (got %s)" % str(n["updated_at"]))
+	_assert(str(n["category_name"]) == "",
+			"T2n: empty categories -> '' (got %s)" % str(n["category_name"]))
 
 # A null id means "this host has no id for this row". str(null) is the literal
 # "<null>", which is non-empty and would sail through host_ref_valid, so this
@@ -236,9 +273,9 @@ func _t5_ref_grammar(ml: Object) -> void:
 			"T5: modworkshop:12345 parses (got %s)" % str(r))
 	_assert(str(ml.host_ref_key(r)) == "modworkshop:12345",
 			"T5: host_ref_key is the inverse of host_ref_from_key")
-	var r2: Variant = ml.host_ref_from_key("vostokmods:4")
-	_assert(str(r2.get("provider", "")) == "vostokmods" and str(r2.get("id", "")) == "4",
-			"T5: vostokmods:4 parses (got %s)" % str(r2))
+	var r2: Variant = ml.host_ref_from_key("vostokmods:example")
+	_assert(str(r2.get("provider", "")) == "vostokmods" and str(r2.get("id", "")) == "example",
+			"T5: vostokmods:example parses (got %s)" % str(r2))
 	# Ids are opaque and may themselves contain colons: split on the FIRST.
 	var r3: Variant = ml.host_ref_from_key("nexus:collection/riverwood:v2")
 	_assert(str(r3.get("id", "")) == "collection/riverwood:v2",
@@ -303,11 +340,11 @@ func _t7_modtxt_reader(ml: Object) -> void:
 	var cases := [
 		# [label, mod.txt text, want provider, want id, want version]
 		["source= alone",
-				'[mod]\nversion="1.2"\n\n[updates]\nsource="vostokmods:4"\n',
-				"vostokmods", "4", "1.2"],
+				'[mod]\nversion="1.2"\n\n[updates]\nsource="vostokmods:example"\n',
+				"vostokmods", "example", "1.2"],
 		["dual-written: source= wins",
-				'[updates]\nsource="vostokmods:4"\nmodworkshop=777\n',
-				"vostokmods", "4", ""],
+				'[updates]\nsource="vostokmods:example"\nmodworkshop=777\n',
+				"vostokmods", "example", ""],
 		["legacy modworkshop= int",
 				'[updates]\nmodworkshop=777\n',
 				"modworkshop", "777", ""],

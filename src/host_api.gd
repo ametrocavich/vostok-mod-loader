@@ -82,7 +82,7 @@ func host_get_mod(ref: Dictionary) -> Dictionary:
 	match provider:
 		HOST_MODWORKSHOP: out = await _mwsp_get_mod(ref)
 		HOST_NEXUS: out = _nxp_unsupported("host_get_mod")
-		HOST_VOSTOKMODS: out = _vmp_unsupported("host_get_mod")
+		HOST_VOSTOKMODS: out = await _vmp_get_mod(ref)
 		_: out = _host_unwired("host_get_mod", provider)
 	return _host_check_result(provider, "host_get_mod", out)
 
@@ -97,7 +97,7 @@ func host_list_files(ref: Dictionary) -> Dictionary:
 	match provider:
 		HOST_MODWORKSHOP: out = await _mwsp_list_files(ref)
 		HOST_NEXUS: out = _nxp_unsupported("host_list_files")
-		HOST_VOSTOKMODS: out = _vmp_unsupported("host_list_files")
+		HOST_VOSTOKMODS: out = await _vmp_list_files(ref)
 		_: out = _host_unwired("host_list_files", provider)
 	return _host_check_result(provider, "host_list_files", out)
 
@@ -114,7 +114,7 @@ func host_resolve_file(ref: Dictionary, version: String = "") -> Dictionary:
 	match provider:
 		HOST_MODWORKSHOP: out = await _mwsp_resolve_file(ref, version)
 		HOST_NEXUS: out = _nxp_unsupported("host_resolve_file")
-		HOST_VOSTOKMODS: out = _vmp_unsupported("host_resolve_file")
+		HOST_VOSTOKMODS: out = await _vmp_resolve_file(ref, version)
 		_: out = _host_unwired("host_resolve_file", provider)
 	return _host_check_result(provider, "host_resolve_file", out)
 
@@ -125,7 +125,7 @@ func host_list_categories(provider: String) -> Dictionary:
 	match provider:
 		HOST_MODWORKSHOP: out = await _mwsp_list_categories()
 		HOST_NEXUS: out = _nxp_unsupported("host_list_categories")
-		HOST_VOSTOKMODS: out = _vmp_unsupported("host_list_categories")
+		HOST_VOSTOKMODS: out = await _vmp_list_categories()
 		_: out = _host_unwired("host_list_categories", provider)
 	return _host_check_result(provider, "host_list_categories", out)
 
@@ -142,7 +142,7 @@ func host_latest_versions(provider: String, ids: PackedStringArray, on_progress:
 	match provider:
 		HOST_MODWORKSHOP: out = await _mwsp_latest_versions(ids, on_progress)
 		HOST_NEXUS: out = _nxp_unsupported("host_latest_versions")
-		HOST_VOSTOKMODS: out = _vmp_unsupported("host_latest_versions")
+		HOST_VOSTOKMODS: out = await _vmp_latest_versions(ids, on_progress)
 		_: out = _host_unwired("host_latest_versions", provider)
 	return _host_check_result(provider, "host_latest_versions", out)
 

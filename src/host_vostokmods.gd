@@ -1,156 +1,367 @@
 ## ----- host_vostokmods.gd -----
 ## VostokMods adapter (vostokmods.net).
 ##
-## STATUS: listing only. VostokMods publishes no API documentation, and its
-## robots.txt disallows /api to automated clients, so nothing here was
-## reverse-engineered by probing. Every field below was read off a single
-## response to GET /api/mods, which is the whole of what is confirmed:
+## Written against the site's own route definitions, not guessed from responses.
+## Endpoint contracts are in .research/VOSTOKMODS_API.md.
 ##
-##   {"mods":[{"id":4,"slug":"example","name":"Example","author":"Ovrrde",
-##     "categories":[{"slug":"category-1","name":"Category 1"}],
-##     "thumbnailUrl":"https://files.vostokmods.net/mods/4/screenshots/...png",
-##     "downloadsCount":1,"followersCount":1,
-##     "updatedAt":"2026-08-07T06:05:11.420Z"}],
-##    "total":1,"page":1,"pageCount":1}
+## The identity of a mod here is its SLUG, not its numeric id. Every route --
+## detail, download, and the public page -- is slug-keyed, and the numeric id
+## addresses nothing. So a ref is host_ref("vostokmods", "<slug>") and mod.txt
+## declares source="vostokmods:my-mod-slug". The tradeoff is that a slug can
+## change if the author renames a mod where a numeric id would not; that is
+## accepted because a numeric id cannot address any endpoint.
 ##
-## Detail, file history, version resolution and download are therefore
-## UNSUPPORTED rather than guessed: their dispatch arms in host_api.gd return
-## _vmp_unsupported until the site's maintainer supplies the endpoints. A mod
-## cannot be installed from this host yet, and the UI will say so rather than
-## offering a button that can only fail.
-##
-## What is genuinely unknown, in the order it needs answering:
-##   1. the mod-detail endpoint, and whether a download url appears in it
-##   2. how versions are expressed (the listing has no version field at all)
-##   3. the search and sort parameters, if any
-##   4. whether categories can be filtered on, and how tags are distinguished
-##      from categories -- the listing mixes both into one `categories` array
-##   5. the public mod-page URL (/mods/example and /mods/4 both 404)
+## The host scans every upload and refuses to serve a file whose scan is not
+## clean. Each version carries `downloadable`, and this adapter offers only
+## versions where it is true -- an unclean version is treated as having no
+## file rather than being downloaded and scanned again on the user's machine.
 
 const VM_API_BASE := "https://vostokmods.net/api"
+const VM_SITE_BASE := "https://vostokmods.net"
 
-# Listing responses are small, but the tab is re-entered often enough that a
-# short cache saves a request per sort flip. Matches the ModWorkshop TTL.
+# Tuned like the ModWorkshop TTLs: listings go stale as mods are bumped, mod
+# detail rarely changes, categories almost never.
 const _VM_TTL_LIST_MS := 5 * 60 * 1000
+const _VM_TTL_DETAIL_MS := 30 * 60 * 1000
+const _VM_TTL_CATEGORIES_MS := 60 * 60 * 1000
+
+# The listing schema caps `q` at 100 characters and defaults `limit` to 24.
+const _VM_QUERY_MAX_LEN := 100
+const _VM_PAGE_SIZE := 24
 
 
 func _vmp_caps() -> Dictionary:
 	var caps := host_empty_caps()
 	caps["browse"] = true
+	caps["search"] = true
+	caps["categories"] = true
+	caps["file_history"] = true
+	caps["version_pin"] = true
+	caps["page_url"] = true
 	caps["total_count"] = true
-	caps["metrics"] = PackedStringArray(["downloads"])
-	# Everything else stays false. search, categories, file_history,
-	# version_pin and page_url are not "not built yet" -- they are unconfirmed,
-	# and declaring a capability the host may not have would put controls in
-	# the UI that fail when pressed.
+	# The listing applies `sort` and `q` independently, so a search keeps the
+	# chosen order and needs no client-side re-sort.
+	caps["metrics"] = PackedStringArray(["downloads", "views"])
 	return caps
 
 
 func _vmp_scalars() -> Dictionary:
 	var s := host_empty_scalars()
-	# No sort parameter is known, so the Browse tab renders no sort control
-	# and no landing sections for this host: it opens straight into the
-	# listing. Both empty arrays are a supported state, not a placeholder.
-	s["sorts"] = []
-	s["landing_sections"] = []
-	# The one observed response returned every row it had, so the real page
-	# size is unknown. The seam only uses this to size its own requests, and
-	# the host reports pageCount regardless, so a wrong guess costs nothing.
-	s["page_size"] = 50
+	# Keys are the API's sort enum verbatim. An unrecognized value falls back
+	# to the default server-side rather than erroring, but there is no reason
+	# to rely on that.
+	s["sorts"] = [
+		{"key": "updated", "label": "Recently updated"},
+		{"key": "downloads", "label": "Most downloaded"},
+		{"key": "views", "label": "Most viewed"},
+		{"key": "followers", "label": "Most followed"},
+		{"key": "newest", "label": "Newest"},
+	]
+	s["landing_sections"] = [
+		{"key": "popular", "title": "Popular", "sort_key": "downloads", "limit": 10},
+		{"key": "latest", "title": "Recently updated", "sort_key": "updated", "limit": 10},
+	]
+	s["query_max_len"] = _VM_QUERY_MAX_LEN
+	s["page_size"] = _VM_PAGE_SIZE
+	# Version info only arrives with the whole mod detail, so an update check
+	# costs one request per mod.
+	s["version_batch_size"] = 1
 	return s
 
 
-## No confirmed public page URL: /mods/example and /mods/4 both answer 404, so
-## the site's routes are not derivable from the listing payload. Returning ""
-## hides the button rather than opening a dead link.
-func _vmp_mod_page_url(_id: String) -> String:
-	return ""
+func _vmp_mod_page_url(slug: String) -> String:
+	if slug.is_empty():
+		return ""
+	# Singular /mod/, not /mods/ -- the listing route is plural, the page is not.
+	return VM_SITE_BASE + "/mod/" + slug.uri_encode()
 
 
-## No rate-limit headers were present on the observed response, and the site
-## sits behind Cloudflare, whose limits are not announced in-band. The
-## transport still arms a default cooldown on any 429 it sees; there is simply
-## no header dialect to read ahead of one.
+## The host announces no rate-limit dialect: no Retry-After, no X-RateLimit-*.
+## The shared transport arms its default cooldown on any 429 it sees, which is
+## the right behavior when the budget is unknown; there is simply nothing to
+## read ahead of one.
 func _vmp_note_rate_headers(_status: int, _headers: PackedStringArray) -> void:
 	pass
 
 
-## Result for an operation whose endpoint is not documented yet. Distinct from
-## HOST_ERR_UNWIRED, which means the capability claims to exist and the wiring
-## is missing -- our bug. This is the honest "we do not know the endpoint".
-func _vmp_unsupported(op: String) -> Dictionary:
-	return host_err(HOST_ERR_UNSUPPORTED, 0,
-			"VostokMods has not published the endpoint %s needs" % op)
+# ----- normalizers -----
 
-
-## Listing row -> ModSummary.
+## Listing row or detail object -> ModSummary. Both payloads share these field
+## names, so detail reuses this and adds only what it carries extra.
 ##
-## The host reports followersCount, which is deliberately NOT mapped onto
-## `likes`: a follow is a subscription, not an endorsement, and rendering it
-## as likes would misreport the number to users comparing hosts.
+## followersCount is deliberately NOT mapped onto `likes`: a follow is a
+## subscription, not an endorsement, and showing it as likes would misreport
+## the number to a user comparing hosts.
 func _vmp_summary(v: Variant) -> Dictionary:
 	var s := host_empty_summary()
 	if not (v is Dictionary):
 		return s
 	var row: Dictionary = v
-	var id := _host_id_str(row.get("id", ""))
-	if id.is_empty():
+	var slug := _host_str(row.get("slug")).strip_edges()
+	if slug.is_empty():
 		return s
-	s["ref"] = host_ref(HOST_VOSTOKMODS, id)
-	s["name"] = str(row.get("name", ""))
+	s["ref"] = host_ref(HOST_VOSTOKMODS, slug)
+	s["name"] = _host_str(row.get("name"))
 	if s["name"] == "":
-		s["name"] = id
-	# `author` is a bare display string here, not a user object.
-	s["author_name"] = str(row.get("author", ""))
+		s["name"] = slug
+	# `author` is the owner's display name; authorId is their username.
+	s["author_name"] = _host_str(row.get("author"))
+	s["short_description"] = _host_str(row.get("summary"))
 	s["downloads"] = _host_count(row.get("downloadsCount"))
-	s["updated_at"] = str(row.get("updatedAt", ""))
-	# The categories array mixes categories and tags with no field telling
-	# them apart, so the first entry is shown and the rest are dropped, which
-	# is what the single-category row layout can display anyway.
-	var cats: Variant = row.get("categories")
-	if cats is Array and not (cats as Array).is_empty():
-		var first: Variant = (cats as Array)[0]
-		if first is Dictionary:
-			s["category_name"] = str((first as Dictionary).get("name", ""))
-	# thumbnailUrl is already absolute, so there is no URL to compose and no
-	# separate thumbnail size. The empty cache_key means "do not write this to
-	# the disk cache": the filename carries an upload timestamp and looks
-	# stable, but the host has promised nothing, and serving a stale image
-	# from disk forever is worse than re-fetching one.
-	s["thumbnail"] = host_image(str(row.get("thumbnailUrl", "")), "", "")
+	s["views"] = _host_count(row.get("viewsCount"))
+	s["updated_at"] = _host_str(row.get("updatedAt"))
+	s["published_at"] = _host_str(row.get("createdAt"))
+	s["category_name"] = _vmp_primary_category(row.get("categories"))
+	# thumbnailUrl is null when a mod has no screenshot, so _host_str rather
+	# than str: the literal "<null>" is non-empty and would be fetched as a URL.
+	# No separate thumbnail size is served, and the empty cache_key means the
+	# image is not written to the disk cache -- the host promises nothing about
+	# the URL staying pinned to the same bytes.
+	s["thumbnail"] = host_image(_host_str(row.get("thumbnailUrl")), "", "")
 	return s
 
 
-## The only confirmed operation.
-##
-## `query`, `sort_key` and `category_ref` are accepted and ignored: the host's
-## parameter names are unknown, and passing a guessed one would silently
-## return an unfiltered listing that looks like a working search. caps.search
-## and caps.categories are false so the UI does not offer either.
-func _vmp_list_mods(q: Dictionary) -> Dictionary:
-	# Page number inferred from the response's own `page` / `pageCount`
-	# fields, not from a documented parameter. If it turns out to be wrong,
-	# the first page is returned repeatedly and has_more terminates the walk.
-	var page := maxi(1, str(q.get("cursor", "")).to_int())
-	var url := VM_API_BASE + "/mods" + _hnet_query({"page": page})
+## The categories array mixes real categories and tags. `group` is the
+## discriminator the site itself sorts by, so prefer the first entry in a
+## category-ish group and fall back to the first entry of any group.
+func _vmp_primary_category(v: Variant) -> String:
+	if not (v is Array):
+		return ""
+	var first_any := ""
+	for c in (v as Array):
+		if not (c is Dictionary):
+			continue
+		var rec: Dictionary = c
+		var name := _host_str(rec.get("name"))
+		if name.is_empty():
+			continue
+		if first_any.is_empty():
+			first_any = name
+		if _host_str(rec.get("group")).to_lower().begins_with("categor"):
+			return name
+	return first_any
 
-	var res := await _hnet_get_json(HOST_VOSTOKMODS, url, _VM_TTL_LIST_MS)
+
+## One entry of a detail payload's versions[] -> FileRecord.
+##
+## downloadUrl arrives relative to the site root and 302-redirects to storage;
+## HTTPRequest follows that on its own.
+func _vmp_file(v: Variant) -> Dictionary:
+	var f := host_empty_file()
+	if not (v is Dictionary):
+		return f
+	var rec: Dictionary = v
+	f["id"] = _host_str(rec.get("id"))
+	f["version"] = _host_str(rec.get("version")).strip_edges()
+	var rel := _host_str(rec.get("downloadUrl"))
+	if not rel.is_empty():
+		f["download_url"] = rel if rel.begins_with("http") else VM_SITE_BASE + rel
+	f["size"] = _host_count(rec.get("fileSize"))
+	f["created_at"] = _host_str(rec.get("createdAt"))
+	f["filename_hint"] = _host_str(rec.get("fileName")).get_file()
+	return f
+
+
+## Whether the host will actually serve this version. It scans uploads and
+## refuses anything not clean, so an unclean version has no file as far as we
+## are concerned -- downloading it is not an option we can offer.
+func _vmp_downloadable(v: Variant) -> bool:
+	return v is Dictionary and _json_truthy((v as Dictionary).get("downloadable"))
+
+
+# ----- operations -----
+
+func _vmp_list_mods(q: Dictionary) -> Dictionary:
+	var params := {"page": maxi(1, str(q.get("cursor", "")).to_int())}
+	var query := str(q.get("query", ""))
+	if query != "":
+		# Clamp rather than let the schema reject it: an over-long query would
+		# surface as a connection error no retry could fix.
+		params["q"] = query.substr(0, _VM_QUERY_MAX_LEN)
+	var sort_key := str(q.get("sort_key", ""))
+	if sort_key != "":
+		params["sort"] = sort_key
+	var category := str(q.get("category_ref", ""))
+	if category != "":
+		# The filter takes comma-separated category SLUGS.
+		params["categories"] = category
+	var limit := int(q.get("limit", 0))
+	if limit > 0:
+		params["limit"] = limit
+
+	var res := await _hnet_get_json(HOST_VOSTOKMODS, VM_API_BASE + "/mods" + _hnet_query(params), _VM_TTL_LIST_MS)
 	if not res["ok"]:
 		return res
-	var payload: Variant = res["data"]
-	if not (payload is Dictionary):
+	var body: Variant = res["data"]
+	if not (body is Dictionary):
 		return host_err(HOST_ERR_BAD_RESPONSE, 0, "VostokMods sent an unexpected response")
-	var body: Dictionary = payload
 
-	var raw_rows: Variant = body.get("mods")
 	var rows := []
+	var raw_rows: Variant = (body as Dictionary).get("mods")
 	if raw_rows is Array:
 		for row in (raw_rows as Array):
 			var summary := _vmp_summary(row)
+			# A row with no slug cannot be opened or downloaded, so it is
+			# dropped rather than rendered as a dead entry.
 			if host_ref_valid(summary["ref"]):
 				rows.append(summary)
 
-	var page_count := _host_count(body.get("pageCount"))
-	var has_more := page_count > page
+	var page := _host_count((body as Dictionary).get("page"))
+	var page_count := _host_count((body as Dictionary).get("pageCount"))
+	var has_more := page > 0 and page_count > page
 	return host_ok(host_page(rows, has_more, str(page + 1) if has_more else "",
-			_host_count(body.get("total"))))
+			_host_count((body as Dictionary).get("total"))))
+
+
+## Shared fetch for every operation that needs the mod detail: versions arrive
+## only as part of it, so detail, file history and resolve all go through here
+## and share one cache entry.
+func _vmp_detail(slug: String) -> Dictionary:
+	if slug.is_empty():
+		return host_err(HOST_ERR_NOT_FOUND, 0, "no mod slug")
+	var url := VM_API_BASE + "/mods/" + slug.uri_encode()
+	var res := await _hnet_get_json(HOST_VOSTOKMODS, url, _VM_TTL_DETAIL_MS)
+	if not res["ok"]:
+		return res
+	if not (res["data"] is Dictionary):
+		return host_err(HOST_ERR_BAD_RESPONSE, 0, "VostokMods sent an unexpected response")
+	return res
+
+
+func _vmp_get_mod(ref: Dictionary) -> Dictionary:
+	var res := await _vmp_detail(str(ref["id"]))
+	if not res["ok"]:
+		return res
+	var row: Dictionary = res["data"]
+
+	var detail := host_empty_detail()
+	detail.merge(_vmp_summary(row), true)
+	# Screenshots are ordered by the author; the first doubles as the banner.
+	var shots: Variant = row.get("screenshots")
+	if shots is Array and not (shots as Array).is_empty():
+		var first: Variant = (shots as Array)[0]
+		if first is Dictionary:
+			detail["banner"] = host_image(_host_str((first as Dictionary).get("url")), "", "")
+	# `description` is markdown; the host also renders HTML, but the seam's
+	# contract is BBCode and the launcher already has a markdown converter.
+	detail["description"] = _markdown_to_bbcode(_host_str(row.get("description")))
+	var versions: Variant = row.get("versions")
+	if versions is Array:
+		for v in (versions as Array):
+			if _vmp_downloadable(v):
+				detail["version"] = _host_str((v as Dictionary).get("version")).strip_edges()
+				detail["default_file_id"] = _host_str((v as Dictionary).get("id"))
+				break
+	return host_ok(detail)
+
+
+func _vmp_list_files(ref: Dictionary) -> Dictionary:
+	var res := await _vmp_detail(str(ref["id"]))
+	if not res["ok"]:
+		return res
+	var files := []
+	var versions: Variant = (res["data"] as Dictionary).get("versions")
+	if versions is Array:
+		for v in (versions as Array):
+			if not _vmp_downloadable(v):
+				continue
+			var f := _vmp_file(v)
+			if str(f["download_url"]) != "":
+				files.append(f)
+	return host_ok(files)
+
+
+func _vmp_resolve_file(ref: Dictionary, version: String) -> Dictionary:
+	var res := await _vmp_detail(str(ref["id"]))
+	if not res["ok"]:
+		return res
+	var versions: Variant = (res["data"] as Dictionary).get("versions")
+	if not (versions is Array):
+		return host_err(HOST_ERR_NO_FILE, 0, "that mod has no downloadable file")
+
+	if version != "":
+		for v in (versions as Array):
+			if not (v is Dictionary):
+				continue
+			if _host_str((v as Dictionary).get("version")).strip_edges() != version:
+				continue
+			# The version exists. Refusing to serve it is a different answer
+			# from not having it, and the user can act on the difference.
+			if not _vmp_downloadable(v):
+				return host_err(HOST_ERR_NO_FILE, 0,
+						"version %s has not passed the host's malware scan" % version)
+			return _vmp_file_result(v)
+		return host_err(HOST_ERR_VERSION_NOT_FOUND, 404,
+				"version %s is not available" % version)
+
+	# versions[] is newest-first, so the first downloadable entry is current.
+	for v in (versions as Array):
+		if _vmp_downloadable(v):
+			return _vmp_file_result(v)
+	return host_err(HOST_ERR_NO_FILE, 0, "that mod has no downloadable file")
+
+
+func _vmp_file_result(v: Variant) -> Dictionary:
+	var f := _vmp_file(v)
+	if str(f["download_url"]) == "":
+		return host_err(HOST_ERR_NO_FILE, 0, "that mod has no downloadable file")
+	return host_ok(f)
+
+
+## Categories are a flat list the host orders by group. The seam's tree shape
+## carries the group as the parent so the filter can render two levels without
+## the adapter inventing a hierarchy.
+func _vmp_list_categories() -> Dictionary:
+	var res := await _hnet_get_json(HOST_VOSTOKMODS, VM_API_BASE + "/categories", _VM_TTL_CATEGORIES_MS)
+	if not res["ok"]:
+		return res
+	var rows: Variant = res["data"]
+	if not (rows is Array):
+		return host_err(HOST_ERR_BAD_RESPONSE, 0, "VostokMods sent an unexpected response")
+	var out := []
+	for r in (rows as Array):
+		if not (r is Dictionary):
+			continue
+		var rec: Dictionary = r
+		# The filter matches on slug, so the slug is the id the seam carries.
+		var slug := _host_str(rec.get("slug")).strip_edges()
+		if slug.is_empty():
+			continue
+		out.append(host_category(slug, _host_str(rec.get("name")), _host_str(rec.get("group"))))
+	return host_ok(out)
+
+
+## One detail request per mod: version data only arrives with the whole mod, and
+## there is no batch endpoint. Results stream so a failure part-way still leaves
+## the user with the answers already collected.
+func _vmp_latest_versions(ids: PackedStringArray, on_progress: Callable) -> Dictionary:
+	var versions := {}
+	var done := 0
+	var failures := 0
+	for slug in ids:
+		var ref := host_ref(HOST_VOSTOKMODS, slug)
+		var res := await _vmp_resolve_file(ref, "")
+		done += 1
+		if not res["ok"]:
+			failures += 1
+			# Neither a rate limit nor a dead connection clears inside this
+			# loop, so stop rather than spend the rest of the list on certain
+			# failures.
+			var code := str(res["code"])
+			if code == HOST_ERR_RATE_LIMITED or code == HOST_ERR_OFFLINE:
+				if versions.is_empty():
+					return res
+				return host_ok(versions)
+			continue
+		var version := str((res["data"] as Dictionary)["version"])
+		if version == "":
+			continue
+		var key := host_ref_key(ref)
+		versions[key] = version
+		if on_progress.is_valid():
+			on_progress.call({"done": done, "total": ids.size(), "partial": {key: version}})
+	# Learning nothing must not render as "everything is up to date".
+	if versions.is_empty() and failures > 0:
+		return host_err(HOST_ERR_BAD_RESPONSE, 0,
+				"could not read a version for any of the %d mods checked" % failures)
+	return host_ok(versions)
