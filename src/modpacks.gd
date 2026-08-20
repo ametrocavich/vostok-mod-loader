@@ -958,7 +958,12 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 
 		# 2. Materialize the modpack profile from the zip unless the slot
 		# already exists (preserves the user's prior edits).
-		cfg.load(UI_CONFIG_PATH)
+		var cfg2_err := cfg.load(UI_CONFIG_PATH)
+		if cfg2_err != OK:
+			# Anything persisted from an unloaded cfg would write a near-empty
+			# file over every profile. Abort before mutating; step 1's
+			# active_modpack flag stays set and the boot reconciler clears it.
+			return {"ok": false, "error": "Cannot read settings (error %d) -- nothing was changed." % cfg2_err}
 		if not cfg.has_section(_profile_sec(modpack_profile, ".enabled")):
 			var mat_result := _materialize_modpack_profile(entry, modpack_profile)
 			if not bool(mat_result.get("ok", false)):
