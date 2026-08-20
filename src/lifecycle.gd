@@ -153,6 +153,21 @@ func _run_pass_1() -> void:
 	# rebuilt. Single-pass paths (_finish_single_pass, _finish_with_existing_mounts)
 	# generate before activating hooks.
 
+	if archive_paths.size() > 0 and _crash_breaker_tripped():
+		# The last MAX_RESTART_COUNT restarts all died before finishing, and
+		# nothing about this launch differs from those, so restarting again
+		# just repeats the crash. Fall back to a single pass: mods that can
+		# load still load, the launcher stays reachable, and the player can
+		# disable the offending mod instead of watching the game close
+		# instantly forever.
+		_log_critical("Restart loop detected (%d consecutive crashed restarts) -- staying single-pass this launch. Disable recently added mods if the game is unstable." % _static_read_crash_streak())
+		_static_write_crash_streak(0)
+		_restore_clean_override_cfg()
+		if FileAccess.file_exists(PASS_STATE_PATH):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(PASS_STATE_PATH))
+		await _finish_single_pass()
+		return
+
 	if archive_paths.size() > 0:
 		_log_info("Preparing two-pass restart -- %d archive(s)" % archive_paths.size())
 		if sections.prepend.size() > 0:
@@ -287,7 +302,6 @@ func _run_pass_2() -> void:
 			else:
 				_log_warning("[Overrides] Malformed entry in pass state -- skipped")
 	_apply_script_overrides()
-	_clear_restart_counter()
 	_compile_regex()
 	_build_class_name_lookup()
 	# See _run_pass_1: enumerate before load_all_mods so filename-stem
@@ -363,6 +377,13 @@ func _run_pass_2() -> void:
 	# Pass 2 reached cleanup. Clear the dirty marker so the next launch knows
 	# this one finished without crashing. If reload_current_scene below fails,
 	# the marker should still go: the state on disk is consistent by now.
+	# Clear the restart streak HERE, not at the top of Pass 2. Clearing it
+	# before load_all_mods and autoload instantiation -- the window where a mod
+	# actually crashes -- meant every crashed launch recorded a streak of zero
+	# and the breaker could never trip. It belongs with the other end-of-pass
+	# cleanup, alongside dropping the dirty marker: both say "this pass
+	# finished".
+	_clear_restart_counter()
 	if FileAccess.file_exists(PASS2_DIRTY_PATH):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(PASS2_DIRTY_PATH))
 	if not _filescope_mounted.is_empty() or not _archive_file_sets.is_empty() or _pending_autoloads.size() > 0:

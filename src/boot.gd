@@ -51,10 +51,13 @@
 ##
 ## Pass 2 (the restarted process): archives were already mounted by THIS
 ## process's static init. Writes PASS2_DIRTY_PATH first thing, restores
-## script overrides from pass state, clears restart_count, re-runs
-## discovery + load_all_mods + hook pack generate/activate, instantiates
-## autoloads, deletes the heartbeat, clears the dirty marker. Never
-## shows the UI.
+## script overrides from pass state, re-runs discovery + load_all_mods +
+## hook pack generate/activate, instantiates autoloads, deletes the
+## heartbeat, then clears the restart streak and the dirty marker TOGETHER
+## at the end. The clear is deliberately last: doing it at Pass 2 entry
+## put it before load_all_mods and autoload instantiation, the window
+## where a mod actually crashes, so every crashed launch recorded a streak
+## of zero. Never shows the UI.
 ##
 ## Sentinel / state files (who writes, who clears):
 ##   DISABLED_FILE       exe dir; user-created. Permanent vanilla mode.
@@ -66,6 +69,11 @@
 ##                       by _persist_hook_pack_state; read at static init
 ##                       and by Pass 2. Holds archive_paths, mods_hash,
 ##                       hook_pack_path/wrapped_paths, restart_count.
+##                       DELETED by the crashed-Pass-2 wipe.
+##   CRASH_STREAK_PATH   user://; consecutive crashed restart attempts,
+##                       bumped by _write_pass_state, cleared by
+##                       _clear_restart_counter. Its own file precisely so
+##                       the wipe above cannot erase it.
 ##   HEARTBEAT_PATH      user://; written right before the Pass 1 ->
 ##                       Pass 2 restart, deleted by every finish path. A
 ##                       survivor at the next Pass 1 means the previous
@@ -78,10 +86,13 @@
 ##   - Pass 1 before the restart branch: no heartbeat written; next
 ##     launch is a normal Pass 1.
 ##   - Between the restart and Pass 2's finish: heartbeat survives;
-##     _check_crash_recovery warns, and once restart_count reaches
-##     MAX_RESTART_COUNT it resets override.cfg + pass state to break
-##     the restart loop. restart_count is cleared early in Pass 2, so
-##     crashes later in Pass 2 are covered by the dirty marker instead.
+##     _check_crash_recovery warns. The streak itself lives in
+##     CRASH_STREAK_PATH, NOT in pass state -- the crashed-Pass-2 wipe
+##     deletes pass state, which is the very event being counted, so a
+##     counter kept there could never survive to trip. Once the streak
+##     reaches MAX_RESTART_COUNT, Pass 1 refuses the two-pass restart and
+##     stays single-pass, leaving the launcher reachable so the player can
+##     disable the offending mod. Every clean finish resets it to zero.
 ##   - Pass 2 after the dirty marker: next static init force-wipes state
 ##     (step 2 above); the launch after that regenerates fresh.
 ##   - While DISABLED_ONCE_FILE is pending: the sentinel persists until
@@ -104,10 +115,53 @@ static func _is_modloader_disabled() -> bool:
 		return true
 	return FileAccess.file_exists(exe_dir.path_join(DISABLED_ONCE_FILE))
 
+## Consecutive crashed restart attempts. Static because static init reads it
+## before any instance exists, and because _static_force_vanilla_state -- which
+## must NOT erase it -- lives in the same static world.
+static func _static_read_crash_streak() -> int:
+	if not FileAccess.file_exists(CRASH_STREAK_PATH):
+		return 0
+	var f := FileAccess.open(CRASH_STREAK_PATH, FileAccess.READ)
+	if f == null:
+		return 0
+	var text := f.get_as_text().strip_edges()
+	f.close()
+	# Hand-editable file: anything that is not a plain non-negative integer
+	# reads as "no streak" rather than tripping the breaker on garbage.
+	return maxi(0, text.to_int()) if text.is_valid_int() else 0
+
+
+## value <= 0 removes the file, so "no streak" leaves nothing behind on disk.
+static func _static_write_crash_streak(value: int) -> void:
+	if value <= 0:
+		if FileAccess.file_exists(CRASH_STREAK_PATH):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(CRASH_STREAK_PATH))
+		return
+	var f := FileAccess.open(CRASH_STREAK_PATH, FileAccess.WRITE)
+	if f == null:
+		return
+	f.store_string(str(value))
+	f.close()
+
+
+## Whether the two-pass restart must be refused because the last
+## MAX_RESTART_COUNT attempts all died before finishing.
+##
+## Pass 1 arms a restart, Pass 2 crashes, static init wipes and hands back to
+## Pass 1, which regenerates from the same mod list and restarts into the same
+## crash. Nothing in that cycle changes, so without this the loop is infinite
+## and the player sees the game close instantly, forever, with no way back in.
+func _crash_breaker_tripped() -> bool:
+	return _static_read_crash_streak() >= MAX_RESTART_COUNT
+
+
 # Force all persistent state back to a vanilla baseline: clean override.cfg,
 # delete pass state, wipe the hook pack directory. Safe to call when any of
 # these artifacts are missing. Shared cleanup for the disabled sentinel,
 # crashed-Pass-2 recovery, and (via instance wrapper) the UI reset button.
+#
+# Deliberately does NOT touch CRASH_STREAK_PATH: this runs on the crashed-Pass-2
+# path, which is the one event the streak exists to count.
 static func _static_force_vanilla_state(reason: String, log_lines: PackedStringArray) -> void:
 	log_lines.append("[FileScope] RESET (" + reason + "): forcing vanilla state")
 	_static_reset_override_cfg(log_lines)
@@ -773,6 +827,10 @@ func _write_pass_state(archive_paths: PackedStringArray, state_hash: String = ""
 	cfg.load(PASS_STATE_PATH)
 	var count: int = cfg.get_value("state", "restart_count", 0)
 	cfg.set_value("state", "restart_count", count + 1)
+	# Mirror the attempt into the durable streak. restart_count is the
+	# in-pass-state copy and is erased by the crashed-Pass-2 wipe; this one
+	# outlives it, and is what _crash_breaker_tripped reads.
+	_static_write_crash_streak(_static_read_crash_streak() + 1)
 	cfg.set_value("state", "mods_hash", state_hash)
 	cfg.set_value("state", "archive_paths", archive_paths)
 	cfg.set_value("state", "modloader_version", MODLOADER_VERSION)
@@ -958,6 +1016,11 @@ func _restore_clean_override_cfg() -> void:
 		_log_critical("Cannot write override.cfg -- game dir may be read-only: " + exe_dir)
 
 func _clear_restart_counter() -> void:
+	# Clear the durable streak first and unconditionally. The early return
+	# below is guarded on pass state existing and on restart_count already
+	# being 0, and a launch that finished cleanly after the crash wipe has
+	# neither -- so folding this in below would leave the streak set forever.
+	_static_write_crash_streak(0)
 	var cfg := ConfigFile.new()
 	if cfg.load(PASS_STATE_PATH) == OK:
 		# Skip the save when already 0. This runs on the hash-match fast

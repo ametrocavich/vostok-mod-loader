@@ -196,4 +196,21 @@ if ! ./check_host.sh; then
     echo "FAILED: host-seam harness (see above)" >&2
     exit 1
 fi
+
+# ---------------------------------------------------------------------------
+# Boot-state harness: the crash-loop breaker. Pass 1 arms a restart, Pass 2
+# crashes, static init wipes and hands back to Pass 1, which regenerates from
+# the same mod list and restarts into the same crash -- an infinite loop the
+# player experiences as the game closing instantly, forever. The breaker only
+# works if the streak survives that wipe, so this pins: the counter lives
+# outside the file the wipe deletes, one crash does not trip it, MAX_RESTART_
+# COUNT crashes do, a clean finish resets it to zero, and the counter clear
+# stays OUT of Pass 2's crash window. Written test-first against the invariant
+# and red until the fix landed. No network, no corpus; ~1s.
+# Self-test: ./check_boot_state.sh --prove
+# ---------------------------------------------------------------------------
+if ! ./check_boot_state.sh; then
+    echo "FAILED: boot-state harness (see above)" >&2
+    exit 1
+fi
 exit 0

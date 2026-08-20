@@ -57,6 +57,13 @@ const DISABLED_FILE := "modloader_disabled"
 # game runs vanilla once and reverts to normal modded flow afterward.
 const DISABLED_ONCE_FILE := "modloader_disabled_once"
 const MAX_RESTART_COUNT := 2
+# Consecutive crashed two-pass restart attempts, as a bare integer.
+#
+# Deliberately its OWN file rather than a key in PASS_STATE_PATH. The
+# crashed-Pass-2 branch of static init DELETES pass state -- which is precisely
+# the moment the streak has to survive -- so a counter living there is wiped by
+# the very event it exists to count, and the breaker could never trip.
+const CRASH_STREAK_PATH := "user://modloader_crash_streak"
 
 # --- Hook pack / rewriter cache ---
 
