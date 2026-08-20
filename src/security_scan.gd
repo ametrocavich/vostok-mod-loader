@@ -454,13 +454,22 @@ func _security_scan_binary(file: String, bytes: PackedByteArray, findings: Array
 	# over it -- an ability most scanners do not have. That needs a bytes-level
 	# entry point; _detokenize_script currently reads from a path.
 	if _security_is_gdsc(bytes):
+		# ONCE per mod, not once per file. Every walker stops at
+		# _MAX_FINDINGS_PER_MOD, so a per-file notice let an archive of fifty
+		# .gdc decoys exhaust the budget before the scan ever reached the
+		# plaintext script carrying the payload -- and the mod still came back
+		# CLEAN, because this notice is deliberately not a RED rule. The
+		# disclosure is about the mod, so one entry says it.
+		for existing in findings:
+			if existing is Dictionary and str((existing as Dictionary).get("rule", "")) == "compiled_script":
+				return
 		if findings.size() < _MAX_FINDINGS_PER_MOD:
 			findings.append({
 				"rule": "compiled_script",
 				"file": file,
 				"line": 0,
 				"preview": "(compiled GDScript bytecode)",
-				"description": "Compiled GDScript (.gdc) that this scanner cannot read. Its contents were NOT checked -- treat this mod as unscanned unless you trust its author.",
+				"description": "This mod ships compiled GDScript (.gdc) that the scanner cannot read, starting with this file. Compiled code was NOT checked -- treat this mod as unscanned unless you trust its author.",
 			})
 		return
 	var as_text := bytes.get_string_from_utf8()

@@ -2042,7 +2042,12 @@ func _show_security_findings_dialog(entry: Dictionary) -> void:
 		return
 	var d := AcceptDialog.new()
 	var mod_name := str(entry.get("mod_name", "?"))
-	d.title = "Suspicious code in " + mod_name
+	# "Could not read" and "found something dangerous" are different claims and
+	# must not share a title. A mod that merely ships compiled code reaches this
+	# dialog from the dim "not scanned" chip, and calling that suspicious
+	# accuses every legitimately-built mod.
+	var accusing := int(entry.get("risk_level", 0)) == 2
+	d.title = ("Suspicious code in " if accusing else "Not fully scanned: ") + mod_name
 	d.ok_button_text = "Close"
 	d.min_size = Vector2(580, 420)
 
@@ -2058,10 +2063,16 @@ func _show_security_findings_dialog(entry: Dictionary) -> void:
 	scroll.add_child(body)
 
 	var intro := Label.new()
-	intro.text = "The scanner found patterns in this mod's code that are commonly used by malware " \
-			+ "(obfuscated string decoding combined with process spawning, anti-debug calls, etc.). " \
-			+ "If you don't trust this mod, do not enable it."
-	intro.add_theme_color_override("font_color", COL_ERR)
+	if accusing:
+		intro.text = "The scanner found patterns in this mod's code that are commonly used by malware " \
+				+ "(obfuscated string decoding combined with process spawning, anti-debug calls, etc.). " \
+				+ "If you don't trust this mod, do not enable it."
+	else:
+		intro.text = "The scanner did not find anything dangerous, but it could not read part of " \
+				+ "this mod -- compiled scripts are opaque to it. This is not an accusation: " \
+				+ "plenty of legitimate mods ship compiled code. It only means the check below " \
+				+ "is incomplete, so judge this mod by whether you trust its author."
+	intro.add_theme_color_override("font_color", COL_ERR if accusing else COL_TEXT_DIM)
 	intro.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	intro.add_theme_font_size_override("font_size", FS_BODY)
 	body.add_child(intro)

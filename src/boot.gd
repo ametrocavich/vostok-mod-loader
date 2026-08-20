@@ -660,7 +660,14 @@ func _autoload_entry_writable(entry_name: String, entry_path: String) -> bool:
 	# nothing that could break the line".
 	if not entry_name.is_valid_identifier():
 		return false
-	if not entry_path.begins_with("res://"):
+	# res:// is the in-archive path, but an early autoload living inside a mod
+	# archive is EXTRACTED to EARLY_AUTOLOAD_DIR first (see
+	# _ensure_early_autoload_on_disk) because Godot must load it before any
+	# archive is mounted. That extracted user:// path is the normal case for a
+	# packaged mod, not an anomaly -- rejecting it dropped every mod-supplied
+	# early autoload from [autoload_prepend] and blamed the mod for a path the
+	# loader itself synthesized.
+	if not (entry_path.begins_with("res://") or entry_path.begins_with(EARLY_AUTOLOAD_DIR + "/")):
 		return false
 	# A quote closes the value early; a backslash starts an escape the parser
 	# will read differently than we wrote it; a newline splits one entry into
