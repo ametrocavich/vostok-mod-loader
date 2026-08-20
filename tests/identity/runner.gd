@@ -42,6 +42,16 @@ const STEM_CASES: Array = [
 	# Names that carry no version token at all.
 	["A Mod With Spaces.zip", "a mod with spaces"],
 	["under_score.zip", "under_score"],
+	# A trailing integer after a SPACE stays part of the name: "Ammo Pack 1" and
+	# "Ammo Pack 2" are different mods. An explicit v, or a dotted version, still
+	# strips. These pin the STEM, not just the collapse -- a same-stem assertion
+	# alone cannot tell "ammo pack" from "ammo pack 1", since both spellings
+	# collapse the pair either way.
+	["Ammo Pack 1.zip", "ammo pack 1"],
+	["Ammo Pack 2.zip", "ammo pack 2"],
+	["Ammo Pack v2.zip", "ammo pack"],
+	["Ammo Pack 1.2.zip", "ammo pack"],
+	["Ammo Pack 10.zip", "ammo pack 10"],
 ]
 
 var _failures: PackedStringArray = []

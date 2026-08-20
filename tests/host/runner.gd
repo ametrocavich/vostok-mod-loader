@@ -65,6 +65,8 @@ func _run() -> void:
 	_t5_ref_grammar(ml)
 	_t6_source_round_trip(ml)
 	_t7_modtxt_reader(ml)
+	_t8_vm_pure_surface(ml)
+	_t9_caps_match_wiring(ml)
 
 	_finish()
 
@@ -382,6 +384,121 @@ func _t7_modtxt_reader(ml: Object) -> void:
 
 # The "every field always present" rule: a normalizer's output must carry
 # exactly the key set host_empty_summary declares, no more, no fewer.
+
+# T8: the pure half of the VostokMods adapter. The seam has no live consumer
+# yet, so nothing has ever executed these; the async operations need a network
+# and stay out of reach here, but everything below is a pure function and has
+# no excuse for being untested.
+func _t8_vm_pure_surface(ml: Object) -> void:
+	# Page URL. /mod/ is SINGULAR -- the plural path 404s, which is the whole
+	# reason this capability was once believed unsupported.
+	var url: String = str(ml._vmp_mod_page_url("example"))
+	_assert(url == "https://vostokmods.net/mod/example",
+			"T8: mod page url is /mod/{slug} (got %s)" % url)
+	_assert(str(ml._vmp_mod_page_url("")) == "",
+			"T8: empty slug yields '' so the UI hides the button")
+
+	# A version entry from a detail payload.
+	var vrow: Variant = JSON.parse_string("""
+	{"id": "v_9", "version": "1.4.0", "fileName": "coolmod-1.4.0.zip",
+	 "fileSize": 20480, "createdAt": "2026-08-10T00:00:00.000Z",
+	 "downloadUrl": "/api/mods/example/versions/1.4.0/download",
+	 "downloadable": true, "scanStatus": "clean"}
+	""")
+	_assert(vrow is Dictionary, "T8: version fixture parses")
+	var f: Variant = ml._vmp_file(vrow)
+	_assert(str(f["download_url"]) == "https://vostokmods.net/api/mods/example/versions/1.4.0/download",
+			"T8: relative downloadUrl is absolutized (got %s)" % str(f["download_url"]))
+	_assert(str(f["version"]) == "1.4.0", "T8: version (got %s)" % str(f["version"]))
+	_assert(str(f["filename_hint"]) == "coolmod-1.4.0.zip",
+			"T8: filename_hint from fileName (got %s)" % str(f["filename_hint"]))
+	_assert(f["size"] is int and int(f["size"]) == 20480,
+			"T8: size from fileSize (got %s)" % str(f["size"]))
+	_assert(ml._vmp_downloadable(vrow), "T8: a clean version is downloadable")
+
+	# A version the host refuses to serve. It must not become a file record:
+	# download_url would 404, and the user would see a failed download instead
+	# of the real reason.
+	var dirty: Variant = JSON.parse_string("""
+	{"id": "v_10", "version": "1.5.0", "fileName": "bad.zip", "fileSize": 1,
+	 "downloadUrl": "/api/mods/example/versions/1.5.0/download",
+	 "downloadable": false, "scanStatus": "flagged"}
+	""")
+	_assert(not ml._vmp_downloadable(dirty),
+			"T8: a non-clean version is NOT downloadable")
+	_assert(not ml._vmp_downloadable(JSON.parse_string('{"version": "x"}')),
+			"T8: a version with no downloadable flag is not downloadable")
+	_assert(not ml._vmp_downloadable(null), "T8: null is not downloadable")
+
+	# A null downloadUrl must read as absent, not as the literal "<null>",
+	# which is non-empty and would be requested as a real URL.
+	var nullurl: Variant = ml._vmp_file(JSON.parse_string('{"id": "v_11", "downloadUrl": null}'))
+	_assert(str(nullurl["download_url"]) == "",
+			"T8: null downloadUrl -> '' never '<null>' (got %s)" % str(nullurl["download_url"]))
+	var nofile: Variant = ml._vmp_file_result(JSON.parse_string('{"id": "v_12", "downloadUrl": null}'))
+	_assert(not nofile["ok"] and str(nofile["code"]) == ml.HOST_ERR_NO_FILE,
+			"T8: a record with no url resolves to NO_FILE, never a bad ok")
+
+	# group is the discriminator between a real category and a tag.
+	var cats: Variant = JSON.parse_string("""
+	[{"slug": "t", "name": "Tag", "group": "tags"},
+	 {"slug": "c", "name": "Cat", "group": "categories"}]
+	""")
+	_assert(str(ml._vmp_primary_category(cats)) == "Cat",
+			"T8: group=categories wins over an earlier tag")
+	_assert(str(ml._vmp_primary_category(JSON.parse_string("[]"))) == "",
+			"T8: no categories -> ''")
+
+	# Scalars must agree with the API's own schema, or a request is rejected
+	# for a reason the user reads as a connection failure.
+	var sc: Variant = ml._vmp_scalars()
+	_assert(int(sc["query_max_len"]) == 100, "T8: q is capped at 100 by the schema")
+	_assert(int(sc["page_size"]) == 24, "T8: default limit is 24")
+	var allowed := ["downloads", "followers", "views", "newest", "updated"]
+	_assert((sc["sorts"] as Array).size() > 0, "T8: sorts is non-empty")
+	for opt in (sc["sorts"] as Array):
+		_assert(allowed.has(str((opt as Dictionary)["key"])),
+				"T8: sort key '%s' is not in the API enum" % str((opt as Dictionary)["key"]))
+	for sec in (sc["landing_sections"] as Array):
+		_assert(allowed.has(str((sec as Dictionary)["sort_key"])),
+				"T8: landing sort_key '%s' is not in the API enum" % str((sec as Dictionary)["sort_key"]))
+
+
+# T9: a capability is a PROMISE the UI acts on -- it hides controls for what is
+# off and offers them for what is on. A cap that disagrees with its wiring puts
+# a button on screen that can only fail, which is the exact failure the whole
+# capability model exists to prevent. Nothing checked the two against each
+# other until now.
+func _t9_caps_match_wiring(ml: Object) -> void:
+	# Each host has its own id grammar, and a page-URL builder is right to
+	# refuse an id that cannot be one of its own (Nexus ids are integers,
+	# VostokMods ids are slugs). Probe each with an id IT would accept, or the
+	# check measures the fixture rather than the wiring.
+	var sample := {
+		ml.HOST_MODWORKSHOP: "12345",
+		ml.HOST_VOSTOKMODS: "example-slug",
+		ml.HOST_NEXUS: "51",
+	}
+	for provider in ml.host_providers():
+		var caps: Variant = ml.host_caps(provider)
+		_assert(sample.has(provider),
+				"T9: no sample id for provider '%s' -- add one when adding a host" % provider)
+		var page := str(ml.host_mod_page_url(ml.host_ref(provider, str(sample.get(provider, "1")))))
+		if bool(caps["page_url"]):
+			_assert(page != "",
+					"T9: %s claims page_url but builds no URL" % provider)
+		else:
+			_assert(page == "",
+					"T9: %s denies page_url but built '%s'" % [provider, page])
+		# A browsable host must offer something to sort by or an explicitly
+		# empty list; a non-browsable one must not advertise sorts.
+		var sorts: Array = ml.host_sorts(provider)
+		if not bool(caps["browse"]):
+			_assert(sorts.is_empty(),
+					"T9: %s cannot browse but advertises %d sort(s)" % [provider, sorts.size()])
+		_assert(str(ml.host_display_name(provider)) != "",
+				"T9: %s has no display name" % provider)
+
 func _assert_same_keys(ml: Object, s: Variant, label: String) -> void:
 	var want: Array = (ml.host_empty_summary() as Dictionary).keys()
 	want.sort()
@@ -406,7 +523,7 @@ func _fail(msg: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("[host] PASS: %d assertion(s) across T1..T7" % _assertions)
+		print("[host] PASS: %d assertion(s) across T1..T9" % _assertions)
 		quit(0)
 		return
 	for m in _failures:

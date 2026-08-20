@@ -60,9 +60,11 @@ func _nxp_note_rate_headers(_status: int, _headers: PackedStringArray) -> void:
 	pass
 
 
-## Result for every network operation. Unlike _vmp_unsupported this is not
-## "endpoint not documented yet" -- it is a permanent, deliberate refusal,
-## and the copy points at the one thing that does work.
+## Result for every network operation. This is not "we have not built it yet"
+## -- it is a permanent, deliberate refusal, and the copy points at the one
+## thing that does work. (The VostokMods adapter once had a twin of this for
+## endpoints whose shape was unknown; that is gone, since its API is now
+## implemented in full.)
 func _nxp_unsupported(op: String) -> Dictionary:
 	return host_err(HOST_ERR_UNSUPPORTED, 0,
 			"Nexus Mods is link-out only; %s cannot be served. Use the mod's Nexus page instead." % op)
