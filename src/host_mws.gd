@@ -1,14 +1,9 @@
 ## ----- host_mws.gd -----
-## ModWorkshop adapter: the reference implementation of the host seam.
-##
-## For now these functions wrap the existing mws_api.gd client and normalize
-## its payloads into the records in host_types.gd. The client itself moves in
-## here once every caller has been migrated off the mws_* names, at which
-## point mws_api.gd is deleted; keeping the wrap thin is what makes that a
-## deletion rather than a rewrite.
-##
-## Endpoint behavior is documented in mws_api.gd. What lives here is only the
-## translation: MWS vocabulary in, seam vocabulary out.
+## ModWorkshop adapter: reference implementation of the host seam. Wraps the
+## mws_api.gd client and normalizes its payloads into host_types.gd records;
+## the client moves in here (and mws_api.gd is deleted) once every caller has
+## migrated off the mws_* names, so keep the wrap thin. Endpoint behavior is
+## documented in mws_api.gd.
 
 func _mwsp_caps() -> Dictionary:
 	var caps := host_empty_caps()
@@ -19,8 +14,8 @@ func _mwsp_caps() -> Dictionary:
 	caps["version_pin"] = true
 	caps["page_url"] = true
 	caps["total_count"] = true
-	# The API ignores `sort` whenever `query` is non-empty, so the Browse tab
-	# re-sorts search results client-side to honor the chosen order.
+	# The API ignores `sort` when `query` is non-empty; Browse re-sorts
+	# search results client-side.
 	caps["sort_ignored_with_query"] = true
 	caps["metrics"] = PackedStringArray(["downloads", "likes", "views"])
 	return caps
@@ -28,8 +23,7 @@ func _mwsp_caps() -> Dictionary:
 
 func _mwsp_scalars() -> Dictionary:
 	var s := host_empty_scalars()
-	# Menu order, and the single definition of it. "Featured" is deliberately
-	# absent: it is not a sort but the curated landing below.
+	# Menu order. "Featured" is not a sort; it is the curated landing below.
 	s["sorts"] = [
 		{"key": "bumped_at", "label": "Recently updated"},
 		{"key": "downloads", "label": "Most downloaded"},
@@ -37,8 +31,8 @@ func _mwsp_scalars() -> Dictionary:
 		{"key": "views", "label": "Most viewed"},
 		{"key": "published_at", "label": "Newest"},
 	]
-	# The dedicated popular-and-latest route is dead upstream (see the note in
-	# mws_api.gd), so the landing is two ordinary list queries composed here.
+	# The popular-and-latest route is dead upstream (see mws_api.gd), so the
+	# landing is two ordinary list queries.
 	s["landing_sections"] = [
 		{"key": "popular", "title": "Popular this week", "sort_key": "weekly_score", "limit": 10},
 		{"key": "latest", "title": "Latest", "sort_key": "bumped_at", "limit": 10},
@@ -56,33 +50,28 @@ func _mwsp_mod_page_url(id: String) -> String:
 	return MODWORKSHOP_PAGE_URL_TEMPLATE % id
 
 
-## Rate-limit dialect: Laravel answers a spent budget with 429 + Retry-After
-## in seconds, and stamps X-RateLimit-Remaining on every response.
-##
-## Only reached once MWS traffic moves onto the shared transport. Until then
-## the wrapped client arms its own cooldown, which is what
-## _mwsp_failure() reads.
+## Laravel dialect: 429 + Retry-After in seconds, X-RateLimit-Remaining on
+## every response. Only reached once MWS traffic moves onto the shared
+## transport; until then the wrapped client arms its own cooldown, which is
+## what _mwsp_failure() reads.
 func _mwsp_note_rate_headers(status: int, headers: PackedStringArray) -> void:
 	_mws_note_rate_headers(status, headers)
 	var wait_s := _hnet_header_value(headers, "Retry-After").to_int()
 	if status == 429:
-		# An absent or HTTP-date Retry-After gives wait_s == 0. Pass 0 through
-		# so host_arm_cooldown applies its 60-second default, matching the old
-		# client; clamping 0 up to 1 would arm a 1-second cooldown that the
-		# transport's own guard then treats as "wait it out" and retries into.
+		# An absent or HTTP-date Retry-After gives wait_s == 0; pass 0 through
+		# so host_arm_cooldown applies its 60s default. Clamping 0 up to 1
+		# would arm a 1s cooldown the transport waits out and retries into.
 		host_arm_cooldown(HOST_MODWORKSHOP, clampi(wait_s, 1, 900) * 1000 if wait_s > 0 else 0)
 		return
 	var remaining := _hnet_header_value(headers, "X-RateLimit-Remaining")
-	# A 2xx with nothing left succeeded, but it was the last request this
-	# window allows. Success responses do not say when the window resets, so
-	# assume a full minute rather than spend the next request on a certain 429.
+	# A 2xx with 0 remaining was the last request this window allows; success
+	# responses do not say when the window resets, so assume a full minute.
 	if remaining.is_valid_int() and remaining.to_int() <= 0:
 		host_arm_cooldown(HOST_MODWORKSHOP, 0)
 
 
-## Turn the wrapped client's "null means something went wrong" into a code.
-## The client keeps just enough state to tell the three cases apart, and this
-## is the only place that knowledge is needed.
+## Turn the wrapped client's null-on-failure into a code; the client keeps
+## just enough state to tell the three cases apart.
 func _mwsp_failure() -> Dictionary:
 	var cooldown := mws_rate_cooldown_seconds()
 	if cooldown > 0:
@@ -94,11 +83,9 @@ func _mwsp_failure() -> Dictionary:
 
 # ----- normalizers -----
 
-## MWS Image record ({file, has_thumb}) -> ImageRef.
-##
-## `file` is an opaque storage filename that never changes for a given image,
-## which is exactly the immutability the disk thumbnail cache needs, so it
-## doubles as the cache key.
+## MWS Image record ({file, has_thumb}) -> ImageRef. `file` is an opaque
+## storage filename that never changes for a given image, so it doubles as
+## the disk cache key.
 func _mwsp_image(v: Variant) -> Dictionary:
 	if not (v is Dictionary):
 		return host_image("", "", "")
@@ -146,8 +133,7 @@ func _mwsp_file(v: Variant) -> Dictionary:
 	f["id"] = _host_id_str(rec.get("id", ""))
 	f["version"] = str(rec.get("version", "")).strip_edges()
 	# _host_str, not str: a null download_url must read as "" so
-	# _mwsp_file_result returns HOST_ERR_NO_FILE, not "<null>" which is
-	# non-empty and would sail through as a real url.
+	# _mwsp_file_result returns HOST_ERR_NO_FILE.
 	f["download_url"] = _host_str(rec.get("download_url"))
 	f["size"] = _host_count(rec.get("size"))
 	f["created_at"] = str(rec.get("created_at", ""))
@@ -155,8 +141,7 @@ func _mwsp_file(v: Variant) -> Dictionary:
 	return f
 
 
-## Storage links carry the real filename in a ?filename= parameter. Reading it
-## here means the install tail takes a hint field and parses no URLs.
+## Storage links carry the real filename in a ?filename= parameter.
 func _mwsp_filename_hint(download_url: String) -> String:
 	var q := download_url.find("?filename=")
 	if q < 0:
@@ -167,8 +152,7 @@ func _mwsp_filename_hint(download_url: String) -> String:
 # ----- operations -----
 
 func _mwsp_list_mods(q: Dictionary) -> Dictionary:
-	# MWS pages by number; the seam speaks cursors, so the page number is
-	# carried as a cursor string and converted back here.
+	# MWS pages by number; the seam speaks cursors, so convert here.
 	var page := maxi(1, str(q.get("cursor", "")).to_int())
 	var raw: Variant = await mws_list_mods(
 		str(q.get("query", "")),
@@ -181,8 +165,7 @@ func _mwsp_list_mods(q: Dictionary) -> Dictionary:
 	var rows := []
 	for row in _mws_data_rows(raw):
 		var summary := _mwsp_summary(row)
-		# A row without a resolvable id cannot be opened, downloaded or
-		# tracked, so it is dropped rather than rendered as a dead entry.
+		# A row without a resolvable id cannot be opened or downloaded; drop it.
 		if host_ref_valid(summary["ref"]):
 			rows.append(summary)
 
@@ -199,7 +182,7 @@ func _mwsp_get_mod(ref: Dictionary) -> Dictionary:
 	if not (raw is Dictionary):
 		return _mwsp_failure()
 	# /mods/{id} returns the object directly, but callers also feed listing
-	# rows through here, so unwrap a {data} envelope when one is present.
+	# rows through here; unwrap a {data} envelope when present.
 	var row: Dictionary = raw
 	var inner: Variant = row.get("data")
 	if inner is Dictionary:
@@ -230,21 +213,18 @@ func _mwsp_resolve_file(ref: Dictionary, version: String) -> Dictionary:
 	if version != "":
 		var pinned: Variant = await mws_get_file_by_version(mod_id, version)
 		if not (pinned is Dictionary):
-			# The wrapped client collapses offline, rate-limited and 5xx into
-			# the same null a genuine 404 produces, so ask it which happened
-			# first. Reporting "that version is gone" for what is really a
-			# dropped connection pushes the user into installing a DIFFERENT
-			# version -- the exact substitution pinning exists to prevent.
+			# The client collapses offline, rate-limited and 5xx into the same
+			# null a real 404 produces; ask it which happened before reporting
+			# "that version is gone" for what may be a dropped connection.
 			if _mws_last_transport_failed or mws_rate_cooldown_seconds() > 0:
 				return _mwsp_failure()
-			# Genuinely absent: the author deleted that upload or never made it.
+			# Genuinely absent: the author deleted the upload or never made it.
 			return host_err(HOST_ERR_VERSION_NOT_FOUND, 404,
 					"version %s is not available" % version)
 		return _mwsp_file_result(pinned)
 
-	# Author-pinned default first. /files/latest sorts by an author-controlled
-	# display_order and can return an OLDER file, so it is the fallback for
-	# mods whose author never designated a primary, not the first choice.
+	# Author-pinned default first; /files/latest can return an older file
+	# (see mws_api.gd), so it is only the fallback.
 	var primary: Variant = await mws_get_primary_file(mod_id)
 	if primary is Dictionary:
 		return _mwsp_file_result(primary)
@@ -275,17 +255,15 @@ func _mwsp_list_categories() -> Dictionary:
 		var id := _host_id_str(rec.get("id", ""))
 		if id.is_empty():
 			continue
-		# parent_id arrives as null for top-level nodes, which _host_id_str
-		# renders as "" -- the seam's own "no parent" sentinel.
+		# parent_id is null for top-level nodes; "" is the seam's sentinel.
 		var parent: Variant = rec.get("parent_id")
 		var parent_id := "" if parent == null else _host_id_str(parent)
 		out.append(host_category(id, str(rec.get("name", "")), parent_id))
 	return host_ok(out)
 
 
-## One request per mod: there is no batch endpoint. Results are streamed so a
-## rate limit part-way through still leaves the user with the answers already
-## collected instead of nothing.
+## One request per mod: there is no batch endpoint. Results stream so a rate
+## limit part-way through still leaves the answers already collected.
 func _mwsp_latest_versions(ids: PackedStringArray, on_progress: Callable) -> Dictionary:
 	var versions := {}
 	var done := 0
@@ -297,14 +275,12 @@ func _mwsp_latest_versions(ids: PackedStringArray, on_progress: Callable) -> Dic
 		if not res["ok"]:
 			failures += 1
 			# Neither a rate limit nor a dead connection clears inside this
-			# loop, so stop rather than spend the rest of the list on certain
-			# failures -- offline, that is one doomed request per installed
-			# mod, each with its own timeout and retry.
+			# loop; stop rather than spend the rest of the list on certain
+			# failures.
 			var code := str(res["code"])
 			if code == HOST_ERR_RATE_LIMITED or code == HOST_ERR_OFFLINE:
-				# Nothing resolved at all: report the failure instead of an
-				# empty success, which the Updates tab would render as the
-				# far more damaging "everything is up to date".
+				# Nothing resolved: report the failure, not an empty success
+				# the Updates tab would render as "everything is up to date".
 				if versions.is_empty():
 					return res
 				return host_ok(versions)
@@ -317,10 +293,8 @@ func _mwsp_latest_versions(ids: PackedStringArray, on_progress: Callable) -> Dic
 		versions[key] = version
 		if on_progress.is_valid():
 			on_progress.call({"done": done, "total": ids.size(), "partial": {key: version}})
-	# Every single mod failed for its own reason (all 404, all malformed).
-	# An empty success here means "checked everything, nothing to update",
-	# which is the one answer the user must not be given when in truth we
-	# learned nothing at all.
+	# Every mod failed for its own reason (all 404, all malformed); learning
+	# nothing must not read as "checked everything, nothing to update".
 	if versions.is_empty() and failures > 0:
 		return host_err(HOST_ERR_BAD_RESPONSE, 0,
 				"could not read a version for any of the %d mods checked" % failures)

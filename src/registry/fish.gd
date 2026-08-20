@@ -1,35 +1,21 @@
 ## ----- registry/fish.gd -----
+## Vanilla FishPool._ready() picks random fish from an editor-populated
+## `species: Array[PackedScene]`. The rewriter injects a prelude that reads
+## Engine.get_meta("_rtv_fish_species") and appends matching entries to
+## `species` before the spawn loop, so one registration reaches every pool.
 ##
-## Vanilla FishPool.gd is a MeshInstance3D placed in scenes (several per map)
-## with an `@export var species: Array[PackedScene]` populated in the editor.
-## At _ready() it picks 1-10 random fish from species and instantiates them.
+## Data: {scene: PackedScene, pool_id: String} -- pool_id "all" (default)
+## or a specific pool Node name like "FP_2". Verbs: register, remove,
+## revert (remove alias); override/patch aren't meaningful for a flat list.
 ##
-## The rewriter injects a prelude at the top of FishPool._ready() that
-## reads Engine.get_meta("_rtv_fish_species", []) and appends matching
-## entries to the local `species` array before the random-spawn loop. So
-## mods register once and every pool picks it up without editor edits.
-##
-## Data shape:
-##   {scene: PackedScene, pool_id: String}
-## where pool_id is either "all" (every FishPool instance gets this scene)
-## or a specific Node name like "FP_2" (only that one pool).
-##
-## Verbs: register, remove, revert (remove alias). Override/patch not
-## meaningful for a flat list of {scene, pool_id} tuples.
-##
-## Timing: FishPool is a scene Node, not an autoload. Its _ready() fires
-## when its containing scene loads. Mods must register before entering the
-## map scene; mod autoload _ready() is fine, as the main menu loads
-## first and any map scene comes later.
+## Timing: FishPool._ready() fires on map-scene load, so registering from a
+## mod autoload _ready() is early enough (the main menu loads first).
 
 const _FISH_ENGINE_META_KEY := "_rtv_fish_species"
 
 func _rebuild_fish_engine_meta() -> void:
-	# Flatten all id registrations into a flat Array for the prelude loop.
-	# Each entry is {scene, pool_id}. Preserving registration order keeps
-	# behavior deterministic across mod load orders (prelude appends in
-	# array order; dedupe by scene ensures same scene via multiple ids
-	# doesn't multiply spawn weight).
+	# Flat {scene, pool_id} list in registration order for the prelude loop;
+	# order keeps behavior deterministic across mod load orders.
 	var flat: Array = []
 	var reg: Dictionary = _registry_registered.get("fish_species", {})
 	for id in reg.keys():
@@ -52,8 +38,7 @@ func _register_fish_species(id: String, data: Variant) -> bool:
 	if not (scene is PackedScene):
 		push_warning("[Registry] register('fish_species', '%s'): scene is not a PackedScene" % id)
 		return false
-	# Default pool_id to "all" if not given; most mods want their fish
-	# in every pool. Explicit pool names override for fine-grained placement.
+	# pool_id defaults to "all"; most mods want their fish in every pool.
 	var pool_id: String = "all"
 	if d.has("pool_id"):
 		if not (d["pool_id"] is String):

@@ -26,21 +26,18 @@ func _test_post_autoload_verify() -> void:
 	_log_info(TAG + "     global_name: '" + str(s.get_global_name()) + "'")
 	_log_info(TAG + "     script instance_id: " + str(s.get_instance_id()))
 
-	# Verified 2026-04-17: explicit load(IXP_PATH, REUSE/IGNORE) triggers
-	# #83542 after IXP's take_over_path (cache cold -> fresh compile ->
-	# find_class("Controller") fails against the IXP overlay at vanilla path).
-	# FileAccess-only ground truth avoids the forced recompile.
+	# Explicit load(IXP_PATH, REUSE/IGNORE) triggers #83542 after IXP's
+	# take_over_path (cold cache -> fresh compile -> find_class("Controller")
+	# fails). FileAccess-only ground truth avoids the forced recompile.
 	const IXP_PATH := "res://ImmersiveXP/Controller.gd"
 	if FileAccess.file_exists(IXP_PATH):
 		var bytes := FileAccess.get_file_as_bytes(IXP_PATH)
 		var txt := bytes.get_string_from_utf8()
 		_log_info(TAG + "   FileAccess IXP/Controller.gd: " + str(bytes.size()) + " bytes, has marker: " + str("TEST-HOOK-IXP" in txt))
 
-# =============================================================================
-# TEMPORARY: Pack-over-bytecode precedence test. Gated behind a setting flag
-# in mod_config.cfg. Remove after verifying whether mounting .gd + .gd.remap
-# beats the PCK's .gdc + .gd.remap for a specific resource path.
-# =============================================================================
+# TEMPORARY: pack-over-bytecode precedence test, gated behind a flag in
+# mod_config.cfg. Remove after verifying whether a mounted .gd + .gd.remap
+# beats the PCK's .gdc + .gd.remap for a given resource path.
 
 func _load_test_pack_flag() -> bool:
 	var cfg := ConfigFile.new()
@@ -69,22 +66,18 @@ func _test_pack_precedence() -> void:
 		_log_info(TAG + "   PCK's .remap content: " + pre_remap.replace("\n", "|"))
 
 	# --- BUILD TEST PACK ---
-	# Do not call load(TARGET_PATH) here. That would cache the
-	# bytecode version and prevent the mounted .gd from winning on subsequent
-	# loads. Go straight to detokenize, and explicitly target the .gdc path so
-	# a stale test pack mounted at static init can't pollute the input with
-	# its own rewritten .gd (duplicate-function parse error -> game breaks).
+	# No load(TARGET_PATH) here: that caches the bytecode version and stops
+	# the mounted .gd winning later. Detokenize the .gdc path explicitly so a
+	# stale test pack mounted at static init can't feed back its own
+	# rewritten .gd (duplicate-function parse error).
 	var vanilla_source := _detokenize_script(GDC_PATH)
 	if vanilla_source.is_empty():
 		_log_critical(TAG + " FAIL: could not detokenize vanilla source")
 		return
 
-	# Capture PRISTINE IXP/Controller.gd source via ZIPReader directly against
-	# the .vmz. Bypasses the VFS entirely, so it is immune to either
-	#   (a) destructive ops on a previously-mounted test pack leaving stale
-	#       mount entries pointing at a deleted file (old crash path), or
-	#   (b) reading an already-rewritten version from a prior session's pack
-	#       that got mounted at static init (double-rewrite duplicate funcs).
+	# Capture pristine IXP/Controller.gd via ZIPReader against the .vmz,
+	# bypassing the VFS: stale mount entries from a deleted prior test pack,
+	# or an already-rewritten prior-session copy, would poison the input.
 	var mods_dir := OS.get_executable_path().get_base_dir().path_join(MOD_DIR)
 	var ixp_vmz_path := mods_dir.path_join("ImmersiveXP.vmz")
 	var captured_ixp_source := ""
@@ -104,10 +97,9 @@ func _test_pack_precedence() -> void:
 	else:
 		_log_info(TAG + " ImmersiveXP.vmz not present, TEST 4B will skip")
 
-	# Feed pristine vanilla through the production generator
-	# _rtv_rewrite_vanilla_source(), which renames every non-static method to
-	# _rtv_vanilla_<name> and appends dispatch wrappers at the original names.
-	# Exercises the generator across all methods rather than a single one.
+	# Feed pristine vanilla through the production generator, which renames
+	# each non-static method to _rtv_vanilla_<name> and appends dispatch
+	# wrappers at the original names.
 	var parsed := _rtv_parse_script(TARGET_PATH.get_file(), vanilla_source)
 	var hookable_count := 0
 	for fe in parsed["functions"]:
@@ -118,8 +110,7 @@ func _test_pack_precedence() -> void:
 
 	var rewritten := _rtv_rewrite_vanilla_source(vanilla_source, parsed)
 
-	# Append the test-remap marker (non-hookable callable) to verify the
-	# compiled class is usable via script.new() + call(marker) below.
+	# Append a marker method to verify the compiled class via new() + call().
 	var marker_block: String = "\n# rtv test-remap marker\nfunc " + MARKER_SYMBOL \
 			+ "() -> String:\n\treturn \"test-remap-ok\"\n"
 	rewritten += marker_block
@@ -158,12 +149,10 @@ func _test_pack_precedence() -> void:
 			zp.close_file()
 
 	# === TEST 4B: also pre-wrap ImmersiveXP's Controller.gd ===
-	# When ImmersiveXP's autoload does load("res://ImmersiveXP/Controller.gd")
-	# .take_over_path(vanilla_path), it loads the pre-wrapped version and
-	# move THAT to the vanilla path. Hooks fire through the mod's chain.
-	# Uses captured_ixp_source captured at top of function -- reading IXP_PATH
-	# here fails once the old test pack zip is deleted above (VFS has stale
-	# mount entries pointing at the deleted file).
+	# IXP's autoload take_over_path's its own Controller.gd onto the vanilla
+	# path; pre-wrapping it makes hooks fire through the mod's chain. Uses
+	# captured_ixp_source from above -- reading IXP_PATH here fails once the
+	# old test pack zip is deleted (stale VFS mount entries).
 	const IXP_PATH := "res://ImmersiveXP/Controller.gd"
 	if not captured_ixp_source.is_empty():
 		var ixp_source := captured_ixp_source
@@ -181,8 +170,8 @@ func _test_pack_precedence() -> void:
 			for line in ixp_lines:
 				ixp_new_lines.append(line)
 			if ixp_renamed:
-				# Detect indentation style: if source uses spaces, the appended
-				# wrapper must too (GDScript errors on mixed tabs/spaces).
+				# Match the source's indentation style; GDScript errors on
+				# mixed tabs/spaces.
 				var uses_spaces := false
 				for line in ixp_lines:
 					var line_str2 := str(line)
@@ -203,8 +192,8 @@ func _test_pack_precedence() -> void:
 				zp.start_file("ImmersiveXP/Controller.gd")
 				zp.write_file(ixp_rewritten.to_utf8_buffer())
 				zp.close_file()
-				# Also ship .gd.remap pointing back at .gd in case ImmersiveXP
-				# shipped a remap (mod archives from Godot export often do).
+				# Ship a .gd.remap pointing back at .gd in case IXP shipped a
+				# remap (Godot-exported mod archives often do).
 				zp.start_file("ImmersiveXP/Controller.gd.remap")
 				zp.write_file("[remap]\npath=\"res://ImmersiveXP/Controller.gd\"\n".to_utf8_buffer())
 				zp.close_file()
@@ -240,7 +229,6 @@ func _test_pack_precedence() -> void:
 		if gd_bytes.size() > 0:
 			var first_80 := gd_bytes.slice(0, 80).get_string_from_utf8()
 			_log_info(TAG + "   .gd first 80 bytes: " + first_80.replace("\n", "|"))
-	# Also verify IXP path post-mount
 	const IXP_PATH_CHECK := "res://ImmersiveXP/Controller.gd"
 	if FileAccess.file_exists(IXP_PATH_CHECK):
 		var ixp_bytes := FileAccess.get_file_as_bytes(IXP_PATH_CHECK)
@@ -253,8 +241,8 @@ func _test_pack_precedence() -> void:
 	# --- LOAD TESTS ---
 	_log_info(TAG + " === LOAD ATTEMPTS (cache should be cold -- we never pre-loaded) ===")
 
-	# Attempt 1: default load(), same as any game code. If this carries the marker,
-	# production scripts resolve to the same version.
+	# Attempt 1: default load(), same as any game code; if this carries the
+	# marker, production scripts resolve to the same version.
 	var post := load(TARGET_PATH) as GDScript
 	if post:
 		var post_source: String = post.source_code
@@ -294,8 +282,8 @@ func _test_pack_precedence() -> void:
 	var call_returned: Variant = null
 	var call_err := ""
 	if post and marker_in_method_list:
-		# Script.new() for Node-derived scripts creates a new instance; must free() it.
-		# Wrap in a safety check -- CharacterBody3D init may fail without scene context.
+		# new() on a Node-derived script needs freeing; CharacterBody3D init
+		# may fail without scene context.
 		var inst = null
 		var new_ok := false
 		inst = post.new() if post.can_instantiate() else null
@@ -309,7 +297,6 @@ func _test_pack_precedence() -> void:
 			else:
 				call_err = "instance lacks marker method despite class having it"
 				_log_info(TAG + "   " + call_err)
-			# Clean up -- don't leak Node instances
 			if inst is Node:
 				(inst as Node).queue_free()
 			else:

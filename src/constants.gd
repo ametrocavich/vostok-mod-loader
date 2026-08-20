@@ -1,21 +1,11 @@
 ## ----- constants.gd -----
-## Shared constants and module-scope state (vars, signals). The flat
-## namespace's cross-domain surface. Subsystem-local consts live with
-## their subsystem instead (gdsc_detokenizer's TK_* table, security_scan's
-## rule tables, modpacks' MODPACK_* prefixes, mws_api's cache TTLs,
-## boot.gd's EARLY_AUTOLOAD_DIR); add a constant HERE only when more than
-## one domain file reads it. All top-level names share one namespace
-## across src/*.gd (build.sh concatenation), so they must be globally
-## unique. A const whose initializer references another const must be
-## declared after it -- for cross-file references that means earlier in
-## build.sh's FILES order.
+## Shared constants and module-scope state. Add a constant here only when more
+## than one domain file reads it; subsystem-local consts live with their
+## subsystem. build.sh concatenates src/*.gd into one namespace, so top-level
+## names must be globally unique, and a const referencing another const must
+## be declared after it (for cross-file references: earlier in FILES order).
 
-# release-please bumps MODLOADER_VERSION automatically via Conventional Commits:
-#   feat: ... -> minor bump
-#   fix: ...  -> patch bump
-#   feat!: or BREAKING CHANGE: -> major bump
-# The major/minor/patch accessors parse this single source of truth so mods can
-# compare against it without hand-maintaining a second set of constants.
+# release-please bumps MODLOADER_VERSION; the major/minor/patch accessors parse it.
 # x-release-please-start-version
 const MODLOADER_VERSION := "3.3.1"
 # x-release-please-end
@@ -23,18 +13,13 @@ const MODLOADER_VERSION := "3.3.1"
 const MODLOADER_RES_PATH := "res://modloader.gd"
 const MOD_DIR := "mods"
 
-# Tab node names. TabContainer displays the child node's name as the tab
-# title, and the rebuild helpers look tabs up by these exact strings, so
-# each name is a cross-function contract, not just a label.
+# Tab node names; rebuild helpers look tabs up by these exact strings.
 const UI_TAB_MODS := "Mods"
 const UI_TAB_BROWSE := "Browse"
 const UI_TAB_MODPACKS := "Modpacks"
 const UI_TAB_UPDATES := "Updates"
 
-# Dependency ids satisfied by the mod loader itself. Mod authors copy
-# "requires Metro Mod Loader" from their ModWorkshop page into
-# [dependencies]; blocking a mod because the loader "isn't installed"
-# would be absurd, so these ids always count as present.
+# Dependency ids satisfied by the mod loader itself; always count as present.
 const LOADER_ID_ALIASES: Array[String] = [
 	"metro_mod_loader", "metromodloader", "vostok_mod_loader",
 	"mod_loader", "modloader", "mml", "rtvmodlib",
@@ -43,8 +28,7 @@ const LOADER_ID_ALIASES: Array[String] = [
 
 const TMP_DIR := "user://vmz_mount_cache"
 const UI_CONFIG_PATH := "user://mod_config.cfg"
-# Sentinel value for `[settings] active_profile` written by Reset to Vanilla.
-# Has no stored sections -- `_apply_profile_to_entries` treats it as "all off".
+# Reset-to-Vanilla sentinel for `[settings] active_profile`; treated as all-off.
 const VANILLA_PROFILE := "__vanilla__"
 const CONFLICT_REPORT_PATH := "user://modloader_conflicts.txt"
 const PASS_STATE_PATH := "user://mod_pass_state.cfg"
@@ -52,29 +36,19 @@ const HEARTBEAT_PATH := "user://modloader_heartbeat.txt"
 const PASS2_DIRTY_PATH := "user://modloader_pass2_dirty"
 const SAFE_MODE_FILE := "modloader_safe_mode"
 const DISABLED_FILE := "modloader_disabled"
-# Same effect as DISABLED_FILE but auto-cleared by the modloader on the
-# next launch -- written by the launcher's "Launch Vanilla" button so the
-# game runs vanilla once and reverts to normal modded flow afterward.
+# DISABLED_FILE, but auto-cleared after one launch ("Launch Vanilla" button).
 const DISABLED_ONCE_FILE := "modloader_disabled_once"
 const MAX_RESTART_COUNT := 2
-# Consecutive crashed two-pass restart attempts, as a bare integer.
-#
-# Deliberately its OWN file rather than a key in PASS_STATE_PATH. The
-# crashed-Pass-2 branch of static init DELETES pass state -- which is precisely
-# the moment the streak has to survive -- so a counter living there is wiped by
-# the very event it exists to count, and the breaker could never trip.
+# Consecutive crashed two-pass restarts. Its own file, not a pass-state key:
+# the crashed-Pass-2 wipe deletes pass state, the very event being counted.
 const CRASH_STREAK_PATH := "user://modloader_crash_streak"
 
 # --- Hook pack / rewriter cache ---
 
 const HOOK_PACK_DIR := "user://modloader_hooks"
-# Hook pack filename: "<prefix>_<timestamp_ms>.zip". A fresh filename per
-# _generate_hook_pack call sidesteps ProjectSettings.load_resource_pack's
-# path-dedup (a same-path re-mount is a no-op and the VFS keeps stale file
-# offsets from the original mount -- FileAccess reads return prior-session
-# bytes even though ZIPPacker rewrote the file on disk). Different filename
-# = new mount = fresh offsets. Orphan files from prior sessions are cleaned
-# up at static-init in _mount_previous_session before any mount happens.
+# "<prefix>_<timestamp_ms>.zip". A fresh filename per generate sidesteps
+# load_resource_pack's path-dedup (a same-path re-mount is a no-op with stale
+# VFS offsets); orphans are swept at static init.
 const HOOK_PACK_PREFIX := "framework_pack"
 const HOOK_PACK_MOUNT_BASE := "res://modloader_hooks"
 const VANILLA_CACHE_DIR := "user://modloader_hooks/vanilla"
@@ -83,48 +57,32 @@ const VANILLA_CACHE_DIR := "user://modloader_hooks/vanilla"
 const MODWORKSHOP_VERSIONS_URL := "https://api.modworkshop.net/mods/versions"
 const MODWORKSHOP_DOWNLOAD_URL_TEMPLATE := "https://api.modworkshop.net/mods/%s/download"
 const MODWORKSHOP_PAGE_URL_TEMPLATE := "https://modworkshop.net/mod/%s"
-# ModWorkshop ID for this modloader itself. Used by the launcher's self-update
-# check to flag when the installed MODLOADER_VERSION is older than what's
-# published on ModWorkshop. Set to <= 0 to disable the check entirely.
+# ModWorkshop ID of the modloader itself (self-update check); <= 0 disables it.
 const MODLOADER_MODWORKSHOP_ID := 55623
 const MODWORKSHOP_BATCH_SIZE := 100
 const API_CHECK_TIMEOUT := 15.0
-# HTTPRequest.timeout covers the whole transfer, not just connect/stall, and
-# mod bodies run to ~256MB -- 30s failed any large mod on a normal connection.
-# 5 minutes is generous enough for big packs on slow links while still
-# bounding a truly dead connection.
+# HTTPRequest.timeout covers the whole transfer; mod bodies run to ~256MB.
 const API_DOWNLOAD_TIMEOUT := 300.0
 
-# Browse-tab API client. Lives in mws_api.gd; constants here so the rest of
-# the codebase can build URLs without re-importing the module's namespace.
-# Empty/default User-Agent gets a 403 from api.modworkshop.net. The template
-# is non-optional. Game ID 864 = Road to Vostok (resolved via /games once,
-# baked here to avoid an extra round-trip on every UI open).
+# MWS API (mws_api.gd): an empty/default User-Agent gets a 403; game 864 = RTV.
 const MWS_API_BASE := "https://api.modworkshop.net"
 const MWS_STORAGE_BASE := "https://storage.modworkshop.net"
 const MWS_RTV_GAME_ID := 864
 const MWS_PAGE_LIMIT := 50
 # Buffer cap for JSON API responses (list pages run ~100KB at limit=50).
 const MWS_JSON_BODY_LIMIT := 8 * 1024 * 1024
-# The API caps the search query at 150 chars and answers longer values with a
-# 422, which the non-2xx handling would report as a connection problem.
+# The API caps search queries at 150 chars and answers longer ones with a 422.
 const MWS_QUERY_MAX_LEN := 150
 const MWS_USER_AGENT_TEMPLATE := "vostok-mod-loader/%s (+https://github.com/ametrocavich/vostok-mod-loader)"
 
 # --- Profile / modpack snapshot storage ---
 
-# Per-profile MCM snapshot storage. Switching profiles rotates the contents of
-# user://MCM/ in and out of these per-profile slots, so MCM settings stay
-# bound to the profile that authored them. Vanilla is exempt -- switching to
-# Vanilla snapshots the OUTGOING profile's MCM but leaves user://MCM/ alone.
+# Per-profile MCM snapshot slots; profile switches rotate user://MCM/ through
+# them. Vanilla is exempt: it snapshots the outgoing profile only.
 const MCM_SOURCE_DIR := "user://MCM"
 const MCM_SNAPSHOT_BASE := "user://.profile_snapshots"
 
-# Independent, write-once restore points taken right before a modpack apply.
-# Distinct from MCM_SNAPSHOT_BASE (which the apply/unload state machine reads
-# and rewrites): nothing but the snapshot/restore code touches these, so they
-# survive any crash-window bug as a guaranteed recovery point. Only the most
-# recent MODPACK_SNAPSHOT_KEEP are retained; older ones are pruned on apply.
+# Write-once restore points taken before a modpack apply; newest MODPACK_SNAPSHOT_KEEP kept.
 const MODPACK_SNAPSHOT_DIR := "user://.modpack_backups"
 const MODPACK_SNAPSHOT_KEEP := 5
 
@@ -136,42 +94,21 @@ const TRACKED_EXTENSIONS: Array[String] = ["gd", "tscn", "tres", "gdns", "gdnlib
 
 # --- Supported engine binary formats (GDPC pack + GDSC script versions) ---
 
-# GDPC pack format versions the .pck header parsers accept. Shared by
-# _parse_pck_file_list (pck_enumeration.gd) and
-# _security_pck_list_with_offsets (security_scan.gd) so the two bounds
-# checks cannot drift. V2 = Godot 4.0-4.5, V3 = Godot 4.6.
+# Pack formats both .pck parsers accept. V2 = Godot 4.0-4.5, V3 = 4.6.
 const PACK_FORMAT_V2 := 2
 const PACK_FORMAT_V3 := 3
-# Godot 4.7+ writes pack format v4 (encrypted-directory salt, sparse
-# bundles). Diagnosis only, never accepted: the 4.6 engine underneath
-# cannot read v4 packs either, so both parsers keep rejecting it and use
-# this constant to emit a modder-friendly message instead of a generic
-# "unsupported version". See .research/GODOT_47_COMPAT.md section 2.1.
+# Godot 4.7+ format: never accepted, used only for a modder-friendly message.
 const PACK_FORMAT_V4 := 4
 
-# GDSC (compiled .gdc script) tokenizer versions the detokenizer
-# understands. Shared by _detokenize_script (gdsc_detokenizer.gd) and
-# STABILITY canary B in _generate_hook_pack (hook_pack.gd).
-# v100 = Godot 4.3-4.4, v101 = Godot 4.5+ (TOKENIZER_VERSION is still 101
-# in 4.7-stable; see .research/GODOT_47_COMPAT.md section 2.2, which is
-# why canary C round-trips real output instead of trusting this number).
-#
-# Caveat on canary B: the version integer alone does not pin a token layout.
-# Two 4.5-dev revisions both report v100/v101 with different tables (ABSTRACT
-# was added in 4.5-dev.4 and removed again before 4.5.0-stable), so
-# "version == 101 therefore safe" is not strictly sound. It only bites on
-# games exported from engine dev builds, which RTV is not, and canary C
-# catches the resulting garbage anyway.
+# GDSC tokenizer versions the detokenizer understands. v100 = Godot 4.3-4.4,
+# v101 = 4.5+. The integer alone does not pin a token layout, which is why
+# canary C round-trips real output instead of trusting it.
 const GDSC_VERSION_V100 := 100
 const GDSC_VERSION_V101 := 101
 
 # --- Rewriter skip lists + codegen tables ---
 
-# Scripts skipped from rewrite. Dispatch-wrapper overhead and set_script
-# semantics break these specific use patterns. Inherited from tetra's original
-# RTVLib skip_list and still applicable to the source-rewrite system:
-# coroutines, short-lived effect instances, and @tool scripts all need to
-# stay untouched to preserve game behavior.
+# Skipped from rewrite; wrapper overhead / set_script break these (per-entry notes).
 const RTV_SKIP_LIST: Array[String] = [
 	"TreeRenderer.gd",     # @tool script -- editor-only, no runtime hooks needed
 	"MuzzleFlash.gd",      # 50ms flash effect -- dispatch overhead breaks timing
@@ -182,8 +119,7 @@ const RTV_SKIP_LIST: Array[String] = [
 	"Explosion.gd",        # await + @onready -- coroutine dies, particles don't emit
 ]
 
-# Resource scripts serialized to user:// -- wrapping breaks save files.
-# ResourceSaver embeds the script path; saves would become mod-dependent.
+# Serialized to user:// -- ResourceSaver embeds the script path; wrapping breaks saves.
 const RTV_RESOURCE_SERIALIZED_SKIP: Array[String] = [
 	"CharacterSave.gd", "ContainerSave.gd", "FurnitureSave.gd",
 	"ItemSave.gd", "Preferences.gd", "ShelterSave.gd",
@@ -191,8 +127,7 @@ const RTV_RESOURCE_SERIALIZED_SKIP: Array[String] = [
 	"Validator.gd", "WorldSave.gd",
 ]
 
-# Resource scripts loaded from res:// only -- no hook point needed.
-# Mods should hook the call sites instead of wrapping the data class.
+# res://-only data scripts; mods should hook the call sites instead.
 const RTV_RESOURCE_DATA_SKIP: Array[String] = [
 	"AIWeaponData.gd", "AttachmentData.gd", "AudioEvent.gd", "AudioLibrary.gd",
 	"CasetteData.gd", "CatData.gd", "EventData.gd", "Events.gd",
@@ -204,8 +139,7 @@ const RTV_RESOURCE_DATA_SKIP: Array[String] = [
 	"TraderData.gd", "WeaponData.gd",
 ]
 
-# Engine lifecycle methods are always void; codegen uses this list to pick
-# the void template regardless of return-type detection.
+# Always-void engine lifecycle methods; codegen picks the void template for these.
 const RTV_ENGINE_VOID_METHODS: Array[String] = [
 	"_ready", "_process", "_physics_process", "_input",
 	"_unhandled_input", "_unhandled_key_input",
@@ -218,89 +152,46 @@ var _mods_dir: String = ""
 var _developer_mode := false
 var _active_profile := "Default"
 var _ui_window: Window = null
-# Bottom-bar label used as a makeshift status hint because Godot's native
-# tooltips get layered behind the always_on_top launcher and aren't visible.
+# Status-hint label; native tooltips layer behind the always_on_top launcher.
 var _ui_hint_label: Label = null
-# Launch button kept on self so refresh_launch_button_label can reach it
-# from the mod-enable toggle handler.
 var _ui_launch_btn: Button = null
-# Mods-tab list scroller, kept on self so _rebuild_mods_tab can carry the
-# scroll position across teardown -- without this, toggling a mod halfway
-# down a long list snapped the view back to the top.
+# Kept on self so _rebuild_mods_tab can carry scroll position across teardown.
 var _ui_mods_scroll: ScrollContainer = null
-# Modpacks-tab list scroller, same carry-across-rebuild pattern for
-# _rebuild_modpacks_tab (row actions rebuild the whole tab).
 var _ui_modpacks_scroll: ScrollContainer = null
 # Debounce guard for priority-spinbox saves (see _schedule_priority_save).
 var _priority_save_pending: bool = false
-# Self-update check state. _modloader_latest_version is populated by
-# _check_modloader_update_async once the API responds; empty until then or
-# when the check fails. _ui_update_alert_btn is the inline LinkButton in the
-# launch row -- always shows the installed version dim by default, swaps to
-# an orange "update available" prompt when the API reports a newer release.
-# Both cleared on UI close.
+# Self-update check state; both cleared on UI close.
 var _modloader_latest_version: String = ""
 var _ui_update_alert_btn: LinkButton = null
 var _has_loaded := false
-# Result of the most recent mod.txt read (read_mod_config /
-# read_mod_config_folder in fs_archive.gd; mod_discovery sets "pck" for
-# .pck mods, which carry no mod.txt). Values:
-#   "none"            no mod.txt found (or nothing parsed yet)
-#   "ok"              parsed successfully
-#   "parse_error"     ConfigFile rejected it, or mod.txt was empty;
-#                     details in _last_mod_txt_error when available
-#   "nested:<path>"   mod.txt buried in a subfolder = bad packaging
-#   "pck"             .pck mod, no mod.txt expected
-# Copied per-entry into candidate dicts as "mod_txt_status" by
-# mod_discovery; consumed by its warning builder and by
-# _process_mod_candidate's boot-log messages. New status values need
-# both consumers checked.
+# Most recent mod.txt read result: "none", "ok", "parse_error" (details in
+# _last_mod_txt_error), "nested:<path>", "pck". Copied into candidates as
+# "mod_txt_status"; new values need both mod_discovery consumers checked.
 var _last_mod_txt_status := "none"
-# Detailed parse-failure diagnostic written by _parse_mod_txt when ConfigFile
-# rejects mod.txt. Plumbed into UI warnings + boot-log messages so authors
-# see *which* line/section broke instead of a generic "Invalid mod" prompt.
-# Empty when status != "parse_error".
+# Author-facing parse diagnostic; empty unless status == "parse_error".
 var _last_mod_txt_error := ""
-# Side channel: the archive's full file list as res:// paths, captured by
-# read_mod_config while the ZIPReader is still open. Read only by
-# _build_entry_warnings, which mod_discovery calls immediately after the
-# matching read_mod_config, so it always describes the entry being built.
-# Deliberately not copied into the entry. A big mod has thousands of paths
-# and every entry is held for the session. Empty for .pck and folder mods.
+# Archive file list captured by read_mod_config, read only by the next
+# _build_entry_warnings call. Not stored per entry. Empty for .pck/folder.
 var _last_mod_txt_files := {}
 var _database_replaced_by := ""
-# Post-boot UI re-open state. _boot_complete flips true once Pass 1 / Pass 2 /
-# single-pass finish paths finalize. Once true, any mutation of mod_config.cfg
-# via the launcher UI sets _dirty_since_boot, which the main-menu reopen flow
-# uses to decide whether to restart on UI close.
+# Once _boot_complete, UI mutations set _dirty_since_boot; reopen flow restarts on close.
 var _boot_complete: bool = false
 var _dirty_since_boot: bool = false
 
-# Mods-tab filter state. _mods_filter_text narrows by name substring (cleared
-# only on game restart; survives _rebuild_mods_tab). _mods_hide_disabled is
-# per-profile, loaded by _apply_profile_to_entries from
-# profile.<name>.settings.hide_disabled and written on toggle.
-# _mods_filter_focus_pending lets the search input reclaim focus after the
-# text_changed rebuild so the user can keep typing without re-clicking.
+# Mods-tab filter state. _mods_hide_disabled is per-profile; focus_pending
+# lets the search input reclaim focus after the text_changed rebuild.
 var _mods_filter_text: String = ""
 var _mods_hide_disabled: bool = false
 var _mods_filter_focus_pending: bool = false
 
 var _ui_mod_entries: Array[Dictionary] = []
-# profile_keys for folder mods that exist on disk but were skipped from entries
-# because developer mode is off. Orphan-scan treats these as present so
-# disabling dev mode doesn't spam the UI with false "missing" rows for dev
-# mods the user still has installed.
+# Dev-mode-hidden folder mods; orphan-scan treats them as present.
 var _hidden_folder_profile_keys: Dictionary = {}
 var _hidden_folder_ids: Dictionary = {}
 var _pending_autoloads: Array[Dictionary] = []
 var _report_lines: Array[String] = []
-# Loaded mods, keyed by mod_id. Value is a Dictionary with at least
-# {version, file_name, priority, mod_name, dependencies}; populated by mod_loading.
-# Public read API: lib.has_mod(id, ?min_version), lib.mod_info(id),
-# lib.loaded_mods(). Code that just checks presence still works via
-# Dict.has() since the key membership is unchanged from when the value
-# was a bare `true`.
+# Loaded mods: mod_id -> {version, file_name, priority, mod_name, dependencies}.
+# Public read API: lib.has_mod, lib.mod_info, lib.loaded_mods.
 var _loaded_mod_ids: Dictionary = {}
 var _registered_autoload_names: Dictionary = {}
 var _override_registry: Dictionary = {}
@@ -312,73 +203,47 @@ var _archive_zip_paths: Dictionary = {}  # bare file_name -> readable zip path
 # lowercase. A bare name (no suffix) is a replace hook (first-wins).
 signal frameworks_ready
 var _hooks: Dictionary = {}              # hook_name -> Array of {callback, priority, id}
-# Dev-mode-only: per-hook_base dispatch counter. Incremented inside each
-# wrapper after the _any_mod_hooked short-circuit when _developer_mode is
-# true. Summary at 30s timer in _activate_rewritten_scripts pinpoints
-# runaway method calls (e.g. connect-already-connected error spam from a
-# _ready firing thousands of times).
+# Dev-mode per-hook_base dispatch counter (30s summary pinpoints runaway calls).
 var _dispatch_counts: Dictionary = {}
-# Fast-path short-circuit: flipped true the first time any mod calls hook().
-# Dispatch wrappers skip the full _wrapper_active/_caller/_dispatch path
-# when no mod has hooked anything at all. Sticky -- stays true once set.
-# Same approach as godot-mod-loader's `_ModLoaderHooks.any_mod_hooked`.
+# Sticky flag: until any mod calls hook(), wrappers skip dispatch entirely.
 var _any_mod_hooked: bool = false
-# Per-hook-base reference count. Keyed by hook_base ("<script>-<method>"
-# lowercase, no -pre/-post/-callback suffix). Incremented when hook() registers
-# any variant under that base, decremented (and erased at 0) by unhook(). The
-# generated wrapper short-circuits when _hooked_bases.has(base) is false, so a
-# wrapped method that nobody actually hooks costs one Dictionary.has() per call
-# instead of the full _wrapper_active/_caller/_dispatch pipeline.
+# Per-hook-base refcount, keyed by "<script>-<method>" lowercase (no suffix);
+# erased at 0 by unhook(). Wrappers short-circuit on _hooked_bases.has(base),
+# so an unhooked wrapped method costs one Dictionary.has() per call.
 var _hooked_bases: Dictionary = {}
 var _next_id: int = 1
 var _skip_super: bool = false
 var _seq: int = 0
 var _caller: Node = null                 # public: source node of the current dispatch
 var _is_ready: bool = false              # public: true once frameworks_ready has emitted
-# Re-entry guard: set of hook_base currently executing a dispatch
-# wrapper. When a rewritten mod script's wrapper fires, then its body calls
-# super() into vanilla's wrapper, the vanilla wrapper sees the base already
-# active and skips dispatch (just runs its body). Prevents double-fire when
-# rewritten subclass scripts chain into rewritten vanilla.
+# Re-entry guard: hook_bases currently executing a wrapper. Prevents
+# double-fire when a rewritten subclass super()s into rewritten vanilla.
 var _wrapper_active: Dictionary = {}
-# Deprecation-warning suppression for legacy 2-arg post-hook callbacks.
-# Keyed by "<hook_name>::<callback object_id>" to warn once per (hook,
-# callback) pair across the whole session. Without dedupe, a per-frame
-# wrapped method would spam the log thousands of times.
+# Warn-once dedupe for legacy 2-arg post-hook callbacks, keyed by
+# "<hook_name>::<callback object_id>".
 var _post_legacy_warned: Dictionary = {}
 
 # Class + script enumeration state (populated from PCK parse at boot).
 var _class_name_to_path: Dictionary = {} # "Camera" -> "res://Scripts/Camera.gd"
 var _all_game_script_paths: Array[String] = []  # populated by _enumerate_game_scripts from PCK parse; DirAccess can't list PCK contents in 4.6
-# res_path -> true for entries the base game PCK ships as 0 bytes, such as
-# CasettePlayer.gd in RTV 4.6.1. Populated by _parse_pck_file_list; detokenize
-# and hook generation check it and skip silently. These files are not hookable,
-# and any vanilla or mod preload() of them fails at the engine level, which is
-# not a modloader bug.
+# res_path -> true for scripts the PCK ships as 0 bytes (e.g.
+# CasettePlayer.gd in RTV 4.6.1); not hookable, skipped silently.
 var _pck_zero_byte_paths: Dictionary = {}
 
-# Full res:// script path -> PackedStringArray of scene paths. Scripts listed
-# here are deferred from the eager load+reload in _activate_rewritten_scripts.
-#
-# Their module-scope preload() fires at parse time. Force-loading them before
-# mod autoloads run overrideScript() makes scenes bake Script ext_resources
-# pointing at the pre-override vanilla; take_over_path then orphans those refs
-# and instantiate() yields nodes running the vanilla body instead of the mod's.
-# Deferring to lazy-compile lets mod overrides run first, so the preload chain
-# fires through extends resolution during the mod's own overrideScript call,
-# after take_over_path has taken effect for earlier targets. VFS mount
-# precedence still serves the rewrite on lazy-load.
+# res:// script path -> scene paths; these are deferred from the eager
+# load+reload in _activate_rewritten_scripts. Their module-scope preload()
+# fires at parse time, so force-loading before mod overrides run would bake
+# scenes against pre-override vanilla; deferring to lazy-compile lets
+# overrides land first, and VFS precedence still serves the rewrite.
 var _scripts_with_scene_preloads: Dictionary = {}
 
 # Script overrides
 var _pending_script_overrides: Array[Dictionary] = []  # {vanilla_path, mod_script_path, mod_name, priority, seq}
 var _applied_script_overrides: Dictionary = {}         # vanilla_path -> true
 
-# Opt-in declarations. Populated by the [hooks] parser in
-# mod_loading.gd and by .hook() call scanning. Drives the wrap surface in
-# _generate_hook_pack. If both are empty and _any_mod_declared_registry is
-# false, _generate_hook_pack early-returns and no hook pack is produced, so
-# the game runs against untouched vanilla.
+# Opt-in declarations from the [hooks] parser and .hook() scanning; drive the
+# wrap surface in _generate_hook_pack. All empty -> no hook pack, untouched
+# vanilla.
 var _hooked_methods: Dictionary = {}             # res_path -> {method_name: true}
 var _any_mod_declared_registry: bool = false     # set by [registry] parser
 
@@ -401,138 +266,86 @@ var _rtv_re_param_name: RegEx
 var _rtv_re_var: RegEx
 var _rtv_re_ret_value: RegEx
 
-# Mounts previous session's archives at file-scope (before _ready) so autoloads
-# that load after ModLoader can resolve their res:// paths.
-# Returns a dict keyed by the archive path as it appears in pass state -- used
-# by _process_mod_candidate to skip redundant re-mounts that would clobber the
-# own overlay overrides applied at static init (e.g. hook pack for mod scripts).
+# Mounts the previous session's archives at file-scope (before _ready). Keyed
+# by pass-state path; _process_mod_candidate skips re-mounts that would
+# clobber static-init overlays.
 var _filescope_mounted: Dictionary = _mount_previous_session()
 
-# Browse-tab API response cache. Keyed by full URL (query params included so
-# different searches / pages / categories are distinct entries). Per-session
-# memory only -- thumbnails persist to user://mws_cache/thumbs/, but JSON
-# responses don't because the install state computed on top of them is
-# session-scoped (rebuilds across launches anyway). Each entry is
-# {data: Variant, expires_at: int (msec)}; expired entries get evicted on
-# read in _mws_cache_get.
+# Browse-tab API response cache, keyed by full URL. Session memory only.
+# Entry: {data: Variant, expires_at: int (msec)}; evicted on read.
 var _mws_cache: Dictionary = {}
 
-# 429-aware backoff state for the MWS client. When a response comes back
-# 429 (or X-RateLimit-Remaining shows the guest budget spent) mws_api.gd
-# sets this to the Time.get_ticks_msec() moment requests may resume; until
-# then fresh network calls fail fast (the response cache above still
-# serves) and callers surface mws_rate_limit_message(). 0 = no cooldown.
+# 429 backoff: ticks_msec moment requests may resume; until then network
+# calls fail fast and the cache above still serves. 0 = no cooldown.
 var _mws_cooldown_until_ms: int = 0
 
-# Whether the most recent _mws_get_json call failed at the transport layer
-# (connection refused / timeout / DNS) rather than getting an HTTP response.
-# Reset at the top of every call, set true only on RESULT_SUCCESS failure.
-# Lets download callers tell "you're offline" apart from a genuine HTTP 404
-# ("mod has no downloadable file") so the offline copy stays honest.
+# Whether the last _mws_get_json failed at the transport layer, letting
+# callers tell "offline" apart from a genuine HTTP 404.
 var _mws_last_transport_failed: bool = false
 
-# Last-good Browse discover landing (offline grace). Written by mws_api.gd
-# after every fully-populated mws_get_popular_and_latest, both here and to
-# user://mws_cache/discover_snapshot.json so it survives relaunches.
-# Shape: {"data": {popular: Array, latest: Array}, "saved_at_unix": int}.
-# Empty until a successful fetch stores it or mws_discover_snapshot()
-# lazy-loads it from disk. Serves only the discover landing when a live
-# fetch fails -- filter/search responses are never snapshotted (the
-# 5-minute _mws_cache above is the only cache they get).
+# Last-good Browse discover landing (offline grace); mirrored to
+# user://mws_cache/discover_snapshot.json. Shape: {"data": {popular, latest},
+# "saved_at_unix"}. Serves only the discover landing on a failed live fetch;
+# filter/search responses are never snapshotted.
 var _mws_discover_snapshot: Dictionary = {}
 
-# Response cache for the generic host transport, keyed by full URL. Absolute
-# URLs already carry their host, so two providers cannot collide and the cache
-# is deliberately not partitioned by provider. Entry shape matches _mws_cache:
-# {data: Variant, expires_at: int (msec)}.
+# Generic host-transport response cache, keyed by full URL (absolute, so
+# providers cannot collide). Entry shape matches _mws_cache.
 var _host_cache: Dictionary = {}
 
-# Rate-limit cooldowns, keyed by provider id -> Time.get_ticks_msec() moment
-# that provider's requests may resume. Per-provider rather than global: two
-# hosts have independent budgets, and one global counter would let a 429 from
-# ModWorkshop silently gate every request to a different site.
+# Rate-limit cooldowns, provider id -> ticks_msec resume moment.
+# Per-provider: hosts have independent budgets.
 var _host_cooldown_until_ms: Dictionary = {}
 
-# Discovered modpacks. Populated lazily by collect_modpack_metadata when
-# the Modpacks tab is built. Each entry: {file_path, file_name, raw_name,
-# sanitized_name, enabled_count, total_count}. See modpacks.gd.
+# Discovered modpacks, populated lazily by collect_modpack_metadata. Entry:
+# {file_path, file_name, raw_name, sanitized_name, enabled_count, total_count}.
 var _modpack_entries: Array[Dictionary] = []
 
-# Mutex flag for the modpack apply flow. Set true at the START of any apply,
-# cleared in a deferred at completion. Prevents two concurrent applies (e.g.
-# user clicks Apply on Modpack B while Modpack A is mid-download) from
-# racing on cfg writes + the backup slot. UI also gates Apply buttons on
-# this so the second click never fires the lambda in the first place.
+# Mutex for the modpack apply flow; prevents concurrent applies racing on cfg
+# writes + the backup slot. UI also gates Apply buttons on it.
 var _modpack_apply_in_progress: bool = false
-# Set true by the apply progress dialog's Cancel button. apply_modpack
-# checks between downloads and bails with a "cancelled" error if set.
-# Cleared at the start of every apply.
+# Set by the apply dialog's Cancel button; apply_modpack checks between
+# downloads. Cleared at the start of every apply.
 var _modpack_apply_cancelled: bool = false
 
-# Update-check results. Keyed by profile_key, value = {latest_version,
-# mw_id, full_path, mod_name}. Populated by the Updates tab's check or the
-# Mods tab's check-updates affordance. Mods tab rows read this to show
-# inline "update available" badges + per-row Update button without having
-# to switch tabs. Survives across rebuilds (module-scope) but resets on
-# launcher close. mw_id == 0 entries are not stored (nothing to fetch).
+# Update-check results: profile_key -> {latest_version, mw_id, full_path,
+# mod_name}. Read by Mods-tab rows for inline badges; resets on launcher
+# close. mw_id == 0 entries are not stored.
 var _mod_updates_state: Dictionary = {}
 var _mod_updates_check_in_progress: bool = false
 
-# Set when an Updates-tab check changes _mod_updates_state while the Mods tab
-# is off-screen; the tab_changed listener rebuilds the Mods tab on next show so
-# the per-row update badges actually appear (instead of waiting for some
-# unrelated action to trigger a rebuild). Cleared by that rebuild.
+# Set when a check changes _mod_updates_state while the Mods tab is
+# off-screen; the tab_changed listener rebuilds it on next show.
 var _mods_badges_dirty: bool = false
 
-# profile_keys with a badge-triggered update download in flight. A mid-download
-# _rebuild_mods_tab (e.g. from a filter keystroke) re-creates the Update button
-# as a fresh enabled control while the pk is still in _mod_updates_state, so
-# without this guard a second click would start a duplicate concurrent download
-# of the same mod. The pressed handler refuses re-entry for a pk already here,
-# and the rebuilt badge renders as a disabled "Updating..." button.
+# profile_keys with an update download in flight. A mid-download rebuild
+# re-creates the Update button enabled, so without this a second click would
+# start a duplicate download; rebuilt badges render disabled instead.
 var _mod_update_in_flight: Dictionary = {}
 
-# Recursion guard for _rebuild_modpacks_tab. The rebuild does
-# remove_child + add_child + move_child, all of which can fire tab_changed
-# (when current_tab shifts to a sibling during remove, or when restoring
-# it at the end). The tab_changed listener calls _rebuild_modpacks_tab; this
-# flag breaks the cycle so a single rebuild request doesn't recurse forever.
+# Recursion guard for _rebuild_modpacks_tab: child moves fire tab_changed,
+# whose listener calls _rebuild_modpacks_tab again.
 var _rebuilding_modpacks_tab: bool = false
 
-# Shared re-entrancy guard for all in-place tab rebuilds (_rebuild_mods_tab,
-# _rebuild_modpacks_tab, _rebuild_updates_tab). The per-tab flag above is not
-# enough: remove_child shifts current_tab to a SIBLING, so the re-entrant
-# tab_changed can dispatch into a DIFFERENT rebuild helper than the one in
-# flight (e.g. removing the Updates tab lands current_tab on Modpacks, which
-# then calls _rebuild_modpacks_tab mid-mutation -> "Parent node is busy
-# adding/removing children"). The tab_changed listener bails while this is set,
-# so no rebuild can nest inside another regardless of which tab it targets.
+# Shared re-entrancy guard for all in-place tab rebuilds. The per-tab flag is
+# not enough: remove_child shifts current_tab to a sibling, so the re-entrant
+# tab_changed can dispatch into a different rebuild helper mid-mutation
+# ("Parent node is busy adding/removing children").
 var _rebuilding_tab_in_place: bool = false
 
-# Mods-tab ModWorkshop meta memo. _mods_load_mws_meta runs fire-and-forget for
-# every MWS row on every _rebuild_mods_tab (checkbox/filter/toggle/profile), and
-# _mws_get_json caches only SUCCESSFUL parses, so offline/404/rate-limited mods
-# would refetch on every rebuild forever, each spawning a live HTTPRequest. Memo
-# successes for the session; gate failed/in-flight ids behind a short retry
-# window so it's at most one attempt per mod per minute regardless of churn.
+# Mods-tab MWS meta memo. _mws_get_json caches only successful parses, so
+# failed ids would refetch on every rebuild; memo successes for the session
+# and gate failures behind a retry window (one attempt per mod per minute).
 var _mods_mws_meta_by_id: Dictionary = {}       # mod_id -> mod object (successes only)
 var _mods_mws_meta_retry_at: Dictionary = {}    # mod_id -> ticks_msec before which not to refetch
 
-# Persisted-meta bookkeeping for the memo above. _mods_mws_meta_saved_at maps
-# mod_id -> unix time the entry was last confirmed by a real /mods/{id} fetch;
-# Only ids present here are written to the on-disk sidecar (snapshot-sourced
-# memo entries stay session-only, matching their pre-sidecar behavior), and a
-# stale stamp (> _MODS_META_REFRESH_SEC) triggers the background soft refresh.
-# _mods_meta_sidecar_loaded gates the lazy one-time disk read.
+# Sidecar bookkeeping: mod_id -> unix time of last real /mods/{id} fetch.
+# Only ids here reach the on-disk sidecar; a stale stamp triggers the
+# background soft refresh. _mods_meta_sidecar_loaded gates the lazy read.
 var _mods_mws_meta_saved_at: Dictionary = {}
 var _mods_meta_sidecar_loaded: bool = false
 
-# Live Mods-tab row nodes for MWS meta painting, keyed by mod_id. Each value is
-# an Array of {thumb: TextureRect, name_col: VBoxContainer, holder: Dictionary}
-#. An Array because several installed rows can declare the same workshop id.
-# Rebuilt from scratch by build_mods_tab on every (re)build, so an async meta
-# fetch that completes after a rebuild paints the current row via
-# _mods_apply_mws_meta instead of writing into the freed nodes it captured at
-# call time (which memoized the result but never displayed it). Cleared on
-# launcher close.
+# Live Mods-tab row nodes for MWS meta painting: mod_id -> Array of {thumb,
+# name_col, holder} (several rows can share a workshop id). Rebuilt every
+# (re)build so a late async fetch paints current rows, not freed ones.
 var _mods_meta_nodes: Dictionary = {}

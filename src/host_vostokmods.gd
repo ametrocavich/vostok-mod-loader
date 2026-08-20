@@ -1,26 +1,20 @@
 ## ----- host_vostokmods.gd -----
-## VostokMods adapter (vostokmods.net).
+## VostokMods adapter (vostokmods.net). Endpoint contracts are in
+## .research/VOSTOKMODS_API.md.
 ##
-## Written against the site's own route definitions, not guessed from responses.
-## Endpoint contracts are in .research/VOSTOKMODS_API.md.
+## A mod's identity here is its slug, not its numeric id: every route is
+## slug-keyed and the id addresses nothing, so a ref is
+## host_ref("vostokmods", "<slug>") and mod.txt declares
+## source="vostokmods:my-mod-slug". A rename can change the slug; accepted,
+## since the id cannot address any endpoint.
 ##
-## The identity of a mod here is its SLUG, not its numeric id. Every route --
-## detail, download, and the public page -- is slug-keyed, and the numeric id
-## addresses nothing. So a ref is host_ref("vostokmods", "<slug>") and mod.txt
-## declares source="vostokmods:my-mod-slug". The tradeoff is that a slug can
-## change if the author renames a mod where a numeric id would not; that is
-## accepted because a numeric id cannot address any endpoint.
-##
-## The host scans every upload and refuses to serve a file whose scan is not
-## clean. Each version carries `downloadable`, and this adapter offers only
-## versions where it is true -- an unclean version is treated as having no
-## file rather than being downloaded and scanned again on the user's machine.
+## The host scans uploads and refuses to serve versions whose scan is not
+## clean (`downloadable` false); this adapter treats those as having no file.
 
 const VM_API_BASE := "https://vostokmods.net/api"
 const VM_SITE_BASE := "https://vostokmods.net"
 
-# Tuned like the ModWorkshop TTLs: listings go stale as mods are bumped, mod
-# detail rarely changes, categories almost never.
+# Like the ModWorkshop TTLs: listings go stale fast, detail rarely, categories almost never.
 const _VM_TTL_LIST_MS := 5 * 60 * 1000
 const _VM_TTL_DETAIL_MS := 30 * 60 * 1000
 const _VM_TTL_CATEGORIES_MS := 60 * 60 * 1000
@@ -39,17 +33,14 @@ func _vmp_caps() -> Dictionary:
 	caps["version_pin"] = true
 	caps["page_url"] = true
 	caps["total_count"] = true
-	# The listing applies `sort` and `q` independently, so a search keeps the
-	# chosen order and needs no client-side re-sort.
+	# `sort` and `q` apply independently; search needs no client-side re-sort.
 	caps["metrics"] = PackedStringArray(["downloads", "views"])
 	return caps
 
 
 func _vmp_scalars() -> Dictionary:
 	var s := host_empty_scalars()
-	# Keys are the API's sort enum verbatim. An unrecognized value falls back
-	# to the default server-side rather than erroring, but there is no reason
-	# to rely on that.
+	# Keys are the API's sort enum verbatim.
 	s["sorts"] = [
 		{"key": "updated", "label": "Recently updated"},
 		{"key": "downloads", "label": "Most downloaded"},
@@ -63,8 +54,7 @@ func _vmp_scalars() -> Dictionary:
 	]
 	s["query_max_len"] = _VM_QUERY_MAX_LEN
 	s["page_size"] = _VM_PAGE_SIZE
-	# Version info only arrives with the whole mod detail, so an update check
-	# costs one request per mod.
+	# Versions only arrive with the mod detail: one request per update check.
 	s["version_batch_size"] = 1
 	return s
 
@@ -76,22 +66,18 @@ func _vmp_mod_page_url(slug: String) -> String:
 	return VM_SITE_BASE + "/mod/" + slug.uri_encode()
 
 
-## The host announces no rate-limit dialect: no Retry-After, no X-RateLimit-*.
-## The shared transport arms its default cooldown on any 429 it sees, which is
-## the right behavior when the budget is unknown; there is simply nothing to
-## read ahead of one.
+## The host announces no rate-limit dialect (no Retry-After, no
+## X-RateLimit-*); the shared transport's default cooldown on 429 is all
+## there is.
 func _vmp_note_rate_headers(_status: int, _headers: PackedStringArray) -> void:
 	pass
 
 
 # ----- normalizers -----
 
-## Listing row or detail object -> ModSummary. Both payloads share these field
-## names, so detail reuses this and adds only what it carries extra.
-##
-## followersCount is deliberately NOT mapped onto `likes`: a follow is a
-## subscription, not an endorsement, and showing it as likes would misreport
-## the number to a user comparing hosts.
+## Listing row or detail object -> ModSummary (both share these field names).
+## followersCount is not mapped onto `likes`: a follow is a subscription,
+## not an endorsement.
 func _vmp_summary(v: Variant) -> Dictionary:
 	var s := host_empty_summary()
 	if not (v is Dictionary):
@@ -112,18 +98,15 @@ func _vmp_summary(v: Variant) -> Dictionary:
 	s["updated_at"] = _host_str(row.get("updatedAt"))
 	s["published_at"] = _host_str(row.get("createdAt"))
 	s["category_name"] = _vmp_primary_category(row.get("categories"))
-	# thumbnailUrl is null when a mod has no screenshot, so _host_str rather
-	# than str: the literal "<null>" is non-empty and would be fetched as a URL.
-	# No separate thumbnail size is served, and the empty cache_key means the
-	# image is not written to the disk cache -- the host promises nothing about
-	# the URL staying pinned to the same bytes.
+	# thumbnailUrl is null when a mod has no screenshot. No separate thumb
+	# size is served, and the empty cache_key keeps the image out of the disk
+	# cache: the host promises nothing about the URL staying the same bytes.
 	s["thumbnail"] = host_image(_host_str(row.get("thumbnailUrl")), "", "")
 	return s
 
 
-## The categories array mixes real categories and tags. `group` is the
-## discriminator the site itself sorts by, so prefer the first entry in a
-## category-ish group and fall back to the first entry of any group.
+## The categories array mixes real categories and tags; `group` is the
+## discriminator. Prefer a category-ish group, else the first entry of any.
 func _vmp_primary_category(v: Variant) -> String:
 	if not (v is Array):
 		return ""
@@ -142,10 +125,8 @@ func _vmp_primary_category(v: Variant) -> String:
 	return first_any
 
 
-## One entry of a detail payload's versions[] -> FileRecord.
-##
-## downloadUrl arrives relative to the site root and 302-redirects to storage;
-## HTTPRequest follows that on its own.
+## One entry of a detail payload's versions[] -> FileRecord. downloadUrl is
+## site-root-relative and 302-redirects to storage; HTTPRequest follows it.
 func _vmp_file(v: Variant) -> Dictionary:
 	var f := host_empty_file()
 	if not (v is Dictionary):
@@ -162,9 +143,7 @@ func _vmp_file(v: Variant) -> Dictionary:
 	return f
 
 
-## Whether the host will actually serve this version. It scans uploads and
-## refuses anything not clean, so an unclean version has no file as far as we
-## are concerned -- downloading it is not an option we can offer.
+## Whether the host will actually serve this version (see header).
 func _vmp_downloadable(v: Variant) -> bool:
 	return v is Dictionary and _json_truthy((v as Dictionary).get("downloadable"))
 
@@ -175,15 +154,15 @@ func _vmp_list_mods(q: Dictionary) -> Dictionary:
 	var params := {"page": maxi(1, str(q.get("cursor", "")).to_int())}
 	var query := str(q.get("query", ""))
 	if query != "":
-		# Clamp rather than let the schema reject it: an over-long query would
-		# surface as a connection error no retry could fix.
+		# Clamp rather than let the schema reject it: an over-long query
+		# would surface as a connection error.
 		params["q"] = query.substr(0, _VM_QUERY_MAX_LEN)
 	var sort_key := str(q.get("sort_key", ""))
 	if sort_key != "":
 		params["sort"] = sort_key
 	var category := str(q.get("category_ref", ""))
 	if category != "":
-		# The filter takes comma-separated category SLUGS.
+		# The filter takes comma-separated category slugs.
 		params["categories"] = category
 	var limit := int(q.get("limit", 0))
 	if limit > 0:
@@ -201,8 +180,7 @@ func _vmp_list_mods(q: Dictionary) -> Dictionary:
 	if raw_rows is Array:
 		for row in (raw_rows as Array):
 			var summary := _vmp_summary(row)
-			# A row with no slug cannot be opened or downloaded, so it is
-			# dropped rather than rendered as a dead entry.
+			# A row with no slug cannot be opened or downloaded; drop it.
 			if host_ref_valid(summary["ref"]):
 				rows.append(summary)
 
@@ -213,9 +191,8 @@ func _vmp_list_mods(q: Dictionary) -> Dictionary:
 			_host_count((body as Dictionary).get("total"))))
 
 
-## Shared fetch for every operation that needs the mod detail: versions arrive
-## only as part of it, so detail, file history and resolve all go through here
-## and share one cache entry.
+## Shared fetch: versions arrive only with the mod detail, so detail, file
+## history and resolve all go through here and share one cache entry.
 func _vmp_detail(slug: String) -> Dictionary:
 	if slug.is_empty():
 		return host_err(HOST_ERR_NOT_FOUND, 0, "no mod slug")
@@ -242,8 +219,7 @@ func _vmp_get_mod(ref: Dictionary) -> Dictionary:
 		var first: Variant = (shots as Array)[0]
 		if first is Dictionary:
 			detail["banner"] = host_image(_host_str((first as Dictionary).get("url")), "", "")
-	# `description` is markdown; the host also renders HTML, but the seam's
-	# contract is BBCode and the launcher already has a markdown converter.
+	# `description` is markdown; the seam's contract is BBCode.
 	detail["description"] = _markdown_to_bbcode(_host_str(row.get("description")))
 	var versions: Variant = row.get("versions")
 	if versions is Array:
@@ -285,8 +261,8 @@ func _vmp_resolve_file(ref: Dictionary, version: String) -> Dictionary:
 				continue
 			if _host_str((v as Dictionary).get("version")).strip_edges() != version:
 				continue
-			# The version exists. Refusing to serve it is a different answer
-			# from not having it, and the user can act on the difference.
+			# The version exists but the host refuses to serve it -- a
+			# different answer from not having it.
 			if not _vmp_downloadable(v):
 				return host_err(HOST_ERR_NO_FILE, 0,
 						"version %s has not passed the host's malware scan" % version)
@@ -308,9 +284,8 @@ func _vmp_file_result(v: Variant) -> Dictionary:
 	return host_ok(f)
 
 
-## Categories are a flat list the host orders by group. The seam's tree shape
-## carries the group as the parent so the filter can render two levels without
-## the adapter inventing a hierarchy.
+## Categories are a flat list ordered by group; the group is carried as the
+## parent so the filter can render two levels.
 func _vmp_list_categories() -> Dictionary:
 	var res := await _hnet_get_json(HOST_VOSTOKMODS, VM_API_BASE + "/categories", _VM_TTL_CATEGORIES_MS)
 	if not res["ok"]:
@@ -331,9 +306,8 @@ func _vmp_list_categories() -> Dictionary:
 	return host_ok(out)
 
 
-## One detail request per mod: version data only arrives with the whole mod, and
-## there is no batch endpoint. Results stream so a failure part-way still leaves
-## the user with the answers already collected.
+## One detail request per mod: no batch endpoint. Results stream so a
+## failure part-way still leaves the answers already collected.
 func _vmp_latest_versions(ids: PackedStringArray, on_progress: Callable) -> Dictionary:
 	var versions := {}
 	var done := 0
@@ -344,9 +318,7 @@ func _vmp_latest_versions(ids: PackedStringArray, on_progress: Callable) -> Dict
 		done += 1
 		if not res["ok"]:
 			failures += 1
-			# Neither a rate limit nor a dead connection clears inside this
-			# loop, so stop rather than spend the rest of the list on certain
-			# failures.
+			# Rate limit / offline will not clear mid-loop; stop.
 			var code := str(res["code"])
 			if code == HOST_ERR_RATE_LIMITED or code == HOST_ERR_OFFLINE:
 				if versions.is_empty():

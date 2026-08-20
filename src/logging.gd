@@ -1,39 +1,18 @@
 ## ----- logging.gd -----
-## Thin logging helpers used by every domain. Each helper both emits via
-## Godot's print/push_* and appends to _report_lines for the conflict report.
+## Logging helpers. Each _log_* both emits via print/push_* and appends to
+## _report_lines for the conflict report; _log_debug only in developer mode.
+## Direct push_warning calls (most of the registry layer) reach the console
+## only, never the report. _write_filescope_log is static-init only: prints +
+## writes user://modloader_filescope.log.
 ##
-## SINK CONTRACT -- what lands where:
-##   _log_info(msg)      print        + _report_lines
-##   _log_warning(msg)   push_warning + _report_lines
-##   _log_critical(msg)  push_error   + _report_lines
-##   _log_debug(msg)     print        + _report_lines, but only when
-##                       _developer_mode is true; otherwise a full no-op.
-##   push_warning(...)   direct calls (most of the registry layer today)
-##                       reach the Godot console/debugger only. They
-##                       never appear in the conflict report. scene_nodes.gd
-##                       mixes both sinks; the registry layer has no single
-##                       convention yet.
-##   _write_filescope_log  static-init only (fs_archive.gd/boot.gd):
-##                       prints + writes user://modloader_filescope.log.
-##                       Use for code that runs before instance state
-##                       exists.
-##
-## The conflict report (CONFLICT_REPORT_PATH) is written by
-## _write_conflict_report only when _developer_mode is on, at the end of
-## each finish path. Two implicit rules follow:
-##   - load_all_mods() CLEARS _report_lines at its start, so anything
-##     logged earlier in a pass never reaches the report file.
-##   - registry verbs called from gameplay-time hooks run after the report
-##     was written, so lines appended then are never flushed. _report_append
-##     caps the buffer for that reason: a mod calling a logging registry verb
-##     every frame would otherwise grow it for the whole session.
-## Convention for new code: boot/discovery/loading-path events an
-## operator should see in the report -> _log_*. Author-facing complaints
-## from mod-called API verbs at runtime -> push_warning.
+## The conflict report is written only in developer mode, at the end of each
+## finish path. load_all_mods() clears _report_lines at its start, and lines
+## appended after the report is written are never flushed -- _report_append
+## caps the buffer for that reason. Convention: boot/discovery/loading events
+## -> _log_*; author-facing complaints from mod-called verbs -> push_warning.
 
-# Upper bound on the in-memory report buffer. Boot fills a few hundred lines;
-# the cap only engages when something logs continuously after the report has
-# already been written, which is always a runaway caller.
+# Report buffer cap; boot fills a few hundred lines, so hitting it means a
+# runaway caller.
 const REPORT_LINES_MAX := 5000
 
 func _report_append(line: String) -> void:

@@ -1,21 +1,10 @@
 ## ----- framework_wrappers.gd -----
-## Helper for walking the scene tree by class_name after source-rewrite hook
-## packs apply. Used by hook_pack.gd's post-apply verification to find nodes
-## whose attached script descends from a given class_name.
-##
-## The legacy extends-wrapper pipeline (node_added / Framework<X>.gd /
-## _activate_hooked_scripts / _register_override / _connect_node_swap /
-## _deferred_swap) was removed in 3.0.1 -- dead code under the
-## source-rewrite model. The surviving helper below is the only live code
-## still referenced from this file.
+## Scene-tree walk by class_name, used by hook_pack.gd's post-apply
+## verification.
 
-# Recursively walk the scene tree, collecting nodes whose attached script
-# (or any ancestor in its extends chain) has the given class_name. Base
-# chain walk is needed because mods that override vanilla via
-# take_over_path typically use extends-by-path (no class_name of their
-# own), so their instances report get_global_name() == "". Matching via
-# base chain catches IXP's Controller, which extends the generated class_name
-# Controller rewrite.
+# Collect nodes whose attached script (or any ancestor in its extends chain)
+# has the given class_name. The base-chain walk matters: take_over_path mod
+# scripts usually extend by path, so get_global_name() == "" on the instance.
 func _rtv_collect_nodes_by_class(node: Node, cls_name: String, out: Array) -> void:
 	var scr := node.get_script() as GDScript
 	if scr != null:

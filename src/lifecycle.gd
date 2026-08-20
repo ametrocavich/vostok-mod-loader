@@ -8,10 +8,8 @@ func _ready() -> void:
 	if _has_loaded:
 		return
 	_has_loaded = true
-	# Honor disabled sentinel. Static init already cleaned persistent state,
-	# so the loader sits idle for this session. The user removes the persistent file
-	# to re-enable; the one-shot variant is auto-cleared here so the next
-	# launch goes through the normal flow.
+	# Disabled sentinel: static init already cleaned state, so sit idle. The
+	# one-shot variant is cleared here so the next launch is normal.
 	if _is_modloader_disabled():
 		var exe_dir := OS.get_executable_path().get_base_dir()
 		var once_path := exe_dir.path_join(DISABLED_ONCE_FILE)
@@ -23,9 +21,8 @@ func _ready() -> void:
 		return
 	await get_tree().process_frame
 	_compile_regex()
-	# Hook _load_all_mods completion to mount the test pack after mod re-mounts.
-	# (Test pack mounted before _run_pass_2 gets overwritten when load_all_mods
-	# re-mounts ImmersiveXP.vmz with replace_files=true.)
+	# The test pack must mount after load_all_mods re-mounts archives;
+	# replace_files=true would overwrite it.
 	var is_pass_2 := "--modloader-restart" in OS.get_cmdline_user_args()
 	if _load_test_pack_flag() and not is_pass_2:
 		_test_pack_precedence()
@@ -39,10 +36,8 @@ func _ready() -> void:
 		await get_tree().create_timer(1.0).timeout
 		_test_post_autoload_verify()
 
-# Shared restart helper. Used by Pass 1's two-pass bootstrap, Reset to Vanilla,
-# and the post-boot main-menu reopen flow. `clean_pass1` strips
-# --modloader-restart so the next run is a clean Pass 1 rather than a Pass 2
-# expecting stale state.
+# Shared restart helper. `clean_pass1` strips --modloader-restart so the next
+# run is a clean Pass 1 rather than a Pass 2 expecting stale state.
 func _modloader_restart(clean_pass1: bool) -> void:
 	var args: Array = []
 	if clean_pass1:
@@ -52,18 +47,12 @@ func _modloader_restart(clean_pass1: bool) -> void:
 	else:
 		args = Array(OS.get_cmdline_args())
 	# Godot's arg parser consumes --rendering-driver / --rendering-method
-	# (main.cpp:1272,1280) and does not push them back to main_args, so
-	# OS.get_cmdline_args() returns the stripped list. Without re-injecting,
-	# the relaunch loses the Steam launch option and Godot falls back to the
-	# default driver (D3D12 on Windows). Visible on fresh-install first
-	# launch; subsequent launches short-circuit on the mod-state hash and
-	# never restart.
+	# (main.cpp:1272,1280) and OS.get_cmdline_args() returns the stripped
+	# list; without re-injecting, the relaunch loses the Steam launch option.
 	_preserve_engine_driver_args(args)
-	# OS.get_cmdline_args() excludes everything after "--". Those live only in
-	# OS.get_cmdline_user_args() (the same split Pass-2 detection in _ready
-	# relies on). Forward the player's original user args so restarts are
-	# command-line-transparent, stripping the loader's sentinel and re-appending it
-	# only for the Pass-1 -> Pass-2 bootstrap.
+	# Args after "--" live only in OS.get_cmdline_user_args(). Forward them,
+	# stripping the loader sentinel and re-appending it only for the
+	# Pass-1 -> Pass-2 bootstrap.
 	var user_args: Array = []
 	for ua in OS.get_cmdline_user_args():
 		if ua != "--modloader-restart":
@@ -77,10 +66,8 @@ func _modloader_restart(clean_pass1: bool) -> void:
 	get_tree().quit()
 
 func _preserve_engine_driver_args(args: Array) -> void:
-	# Scoped to the two flags RTV's Steam launch-option presets actually set
-	# ([DirectX] / [Vulkan] / [Compatibility] pick --rendering-driver and/or
-	# --rendering-method). If the user didn't pass a flag, querying returns
-	# Godot's default (no-op); if they did, that choice is preserved.
+	# Only the two flags RTV's Steam launch-option presets set. Querying
+	# returns Godot's default when no flag was passed, so this is a no-op then.
 	if not args.has("--rendering-driver"):
 		var driver := RenderingServer.get_current_rendering_driver_name()
 		if not driver.is_empty():
@@ -100,10 +87,8 @@ func reopen_mod_ui() -> void:
 		return
 	_dirty_since_boot = false
 	await show_mod_ui()
-	# Flush a pending debounced priority save before deciding to restart --
-	# a priority edit made <0.4s before closing the reopened UI hasn't set
-	# _dirty_since_boot yet, so the restart (and the value taking effect this
-	# session) would otherwise be silently skipped.
+	# Flush a pending debounced priority save first: an edit made just before
+	# close hasn't set _dirty_since_boot yet.
 	if _priority_save_pending:
 		_priority_save_pending = false
 		_save_ui_config()
@@ -117,12 +102,9 @@ func _run_pass_1() -> void:
 	_check_safe_mode()
 	_compile_regex()
 	_build_class_name_lookup()
-	# Populate _all_game_script_paths now so the .hook() prefix resolver in
-	# _merge_hook_calls_into_wrap_mask (run from load_all_mods below) can
-	# fall back to filename-stem matches for vanilla scripts without
-	# class_name (Flashlight, NVG, Interface, ...). Previously this only
-	# ran inside _generate_hook_pack, so source-scanned hooks on
-	# class_name-less scripts were silently dropped.
+	# Populate _all_game_script_paths before load_all_mods so the .hook()
+	# resolver can fall back to filename-stem matches for class_name-less
+	# vanilla scripts (Flashlight, NVG, ...).
 	_enumerate_game_scripts()
 	_load_developer_mode_setting()
 	_ui_mod_entries = collect_mod_metadata()
@@ -148,18 +130,12 @@ func _run_pass_1() -> void:
 		await _finish_with_existing_mounts()
 		return
 
-	# Do not generate framework wrappers here. If a restart follows, the work is
-	# wasted. Pass 2 will generate after archives are mounted + class lookup
-	# rebuilt. Single-pass paths (_finish_single_pass, _finish_with_existing_mounts)
-	# generate before activating hooks.
+	# No wrapper generation here: a restart would waste it. Pass 2 and the
+	# single-pass finish paths each generate at the right point.
 
 	if archive_paths.size() > 0 and _crash_breaker_tripped():
-		# The last MAX_RESTART_COUNT restarts all died before finishing, and
-		# nothing about this launch differs from those, so restarting again
-		# just repeats the crash. Fall back to a single pass: mods that can
-		# load still load, the launcher stays reachable, and the player can
-		# disable the offending mod instead of watching the game close
-		# instantly forever.
+		# Restarting again would repeat the crash. Single pass keeps the
+		# launcher reachable so the player can disable the offending mod.
 		_log_critical("Restart loop detected (%d consecutive crashed restarts) -- staying single-pass this launch. Disable recently added mods if the game is unstable." % _static_read_crash_streak())
 		_static_write_crash_streak(0)
 		_restore_clean_override_cfg()
@@ -172,18 +148,12 @@ func _run_pass_1() -> void:
 		_log_info("Preparing two-pass restart -- %d archive(s)" % archive_paths.size())
 		if sections.prepend.size() > 0:
 			_log_info("  %d early autoload(s) in [autoload_prepend]" % sections.prepend.size())
-		# Generate hook pack NOW, before restart, so next session's static-init
-		# mount has a fresh pack for the current mod set. Without this, when
-		# the pack is missing (first-ever session, after Reset, after mod-set
-		# change) Godot pins class_name scripts (Camera, WeaponRig, Door, etc.)
-		# as PCK-bytecode during [autoload_prepend] boot and Pass 2's fallback
-		# (CACHE_MODE_IGNORE + take_over_path) can't recover them. Verified
-		# 2026-04-17: 40/126 rewrites silently die after Reset otherwise.
-		# defer_activation=true: write the zip + persist pass_state, but skip
-		# mount + reload()/take_over_path. Pass 1's GDScriptCache is already
-		# polluted by the PCK's pre-compiled class_name scripts, so activation
-		# here would fire a misleading "hooks WILL NOT fire" STABILITY alarm
-		# seconds before Pass 2's fresh engine gets 126/126 inline-live.
+		# Generate the hook pack before the restart so next session's
+		# static-init mount has a fresh pack; without one, Godot pins
+		# class_name scripts as PCK bytecode during [autoload_prepend] boot
+		# and Pass 2 cannot recover them. defer_activation=true skips
+		# mount/activation: Pass 1's GDScriptCache is already polluted, so
+		# activating here would fire a misleading stability alarm.
 		_register_rtv_modlib_meta()
 		_generate_hook_pack(true)
 		_write_heartbeat()
@@ -203,13 +173,9 @@ func _run_pass_1() -> void:
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(PASS_STATE_PATH))
 		_restore_clean_override_cfg()
 	else:
-		# Pass state can be missing while override.cfg still carries stale mod
-		# [autoload_prepend] entries (e.g. a _write_pass_state save failure in
-		# a prior session, after override.cfg was already written). Gating the
-		# reset purely on pass state would leave Godot trying to load those
-		# mod autoloads on every future launch with all mods disabled. Compare
-		# against the clean baseline so the common no-mods launch does not
-		# rewrite the file every time.
+		# override.cfg can carry stale mod entries even without pass state.
+		# Compare against the clean baseline so the common no-mods launch does
+		# not rewrite the file every time.
 		var cfg_path := OS.get_executable_path().get_base_dir().path_join("override.cfg")
 		if FileAccess.file_exists(cfg_path):
 			var cur := FileAccess.get_file_as_string(cfg_path)
@@ -221,10 +187,9 @@ func _run_pass_1() -> void:
 	await _finish_single_pass()
 
 func _finish_with_existing_mounts() -> void:
-	# Register meta + generate the framework pack before mod autoloads run so
-	# Engine.get_meta("RTVModLib") is live by the time they call .hook().
-	# Script overrides were already applied in _run_pass_1() before the hash
-	# check; no need to re-apply from pass state.
+	# Register meta + generate the pack before mod autoloads run so
+	# Engine.get_meta("RTVModLib") is live when they call .hook(). Script
+	# overrides were already applied in _run_pass_1().
 	_boot_complete = true
 	_register_rtv_modlib_meta()
 	_generate_hook_pack()
@@ -239,11 +204,8 @@ func _finish_with_existing_mounts() -> void:
 		_write_conflict_report()
 	_emit_frameworks_ready()
 	_delete_heartbeat()
-	# This session came up fine without a restart -- clear any restart_count
-	# left over from a previously crashed restart cycle (only Pass 2 cleared
-	# it before). A stale count of 1 would otherwise survive every hash-match
-	# session, and the next legitimate restart cycle's single crash would put
-	# the counter at MAX_RESTART_COUNT and trip the breaker one crash early.
+	# Clear any leftover restart_count: a stale count surviving hash-match
+	# sessions would trip the breaker one crash early next cycle.
 	_clear_restart_counter()
 	if not _filescope_mounted.is_empty() or not _archive_file_sets.is_empty() or _pending_autoloads.size() > 0:
 		var err := get_tree().reload_current_scene()
@@ -256,10 +218,8 @@ func _finish_single_pass() -> void:
 	_register_rtv_modlib_meta()
 	_generate_hook_pack()
 	for entry in _pending_autoloads:
-		# Same guard the two-pass and existing-mounts finish paths already
-		# apply: an autoload that engine boot already loaded from a prior
-		# session's override.cfg would otherwise be instantiated a second time
-		# (Godot renames the duplicate and both run), doubling the mod's hooks.
+		# An autoload already loaded from a prior session's override.cfg would
+		# otherwise be instantiated twice, doubling the mod's hooks.
 		if get_tree().root.has_node(entry["name"]):
 			_log_info("  Autoload '%s' already in tree -- skipped" % entry["name"])
 			continue
@@ -270,9 +230,7 @@ func _finish_single_pass() -> void:
 		_write_conflict_report()
 	_emit_frameworks_ready()
 	_delete_heartbeat()
-	# Same rationale as _finish_with_existing_mounts: session finished, so a
-	# leftover restart_count from a crashed cycle is stale. No-op when pass
-	# state was already deleted (_clear_restart_counter skips a missing file).
+	# Session finished; a leftover restart_count is stale.
 	_clear_restart_counter()
 	if not _archive_file_sets.is_empty() or _pending_autoloads.size() > 0:
 		var err := get_tree().reload_current_scene()
@@ -304,8 +262,7 @@ func _run_pass_2() -> void:
 	_apply_script_overrides()
 	_compile_regex()
 	_build_class_name_lookup()
-	# See _run_pass_1: enumerate before load_all_mods so filename-stem
-	# fallback in _merge_hook_calls_into_wrap_mask is populated.
+	# See _run_pass_1: enumerate before load_all_mods for the filename-stem fallback.
 	_enumerate_game_scripts()
 	_load_developer_mode_setting()
 	_ui_mod_entries = collect_mod_metadata()
@@ -314,16 +271,11 @@ func _run_pass_2() -> void:
 	load_all_mods("Pass 2")
 	_register_rtv_modlib_meta()
 	_generate_hook_pack()
-	# After load_all_mods re-mounts mod archives (wiping the IXP/Controller
-	# override), remount the already-generated test pack to re-apply.
-	# Godot dedupes load_resource_pack by path, so mounting the same
-	# filename twice is a no-op. Copy to a different filename each time.
+	# Re-apply the test pack after load_all_mods re-mounts archives. Godot
+	# dedupes load_resource_pack by path, so copy to a fresh filename.
 	if _load_test_pack_flag():
-		# Sweep reapply copies from prior sessions first -- each Pass 2 creates
-		# a uniquely named copy (to defeat the path dedupe above) and nothing
-		# else in the loader deletes them, so they accumulate in user:// forever.
-		# Prior sessions' mounts don't survive process restart, so removal is
-		# safe; the copy made below gets a fresh unique name.
+		# Sweep prior sessions' reapply copies first; nothing else deletes
+		# them and they accumulate in user:// forever.
 		var user_dir_abs := ProjectSettings.globalize_path("user://")
 		var user_dir := DirAccess.open(user_dir_abs)
 		if user_dir != null:
@@ -342,8 +294,7 @@ func _run_pass_2() -> void:
 			var src := FileAccess.open(src_abs, FileAccess.READ)
 			var dst := FileAccess.open(reapply_abs, FileAccess.WRITE)
 			if src and dst:
-				# store_buffer returns success since Godot 4.3; a short write
-				# (disk full) would otherwise mount a truncated zip below.
+				# A short write (disk full) would otherwise mount a truncated zip.
 				var write_ok := dst.store_buffer(src.get_buffer(src.get_length()))
 				src.close()
 				dst.close()
@@ -374,15 +325,9 @@ func _run_pass_2() -> void:
 		_write_conflict_report()
 	_emit_frameworks_ready()
 	_delete_heartbeat()
-	# Pass 2 reached cleanup. Clear the dirty marker so the next launch knows
-	# this one finished without crashing. If reload_current_scene below fails,
-	# the marker should still go: the state on disk is consistent by now.
-	# Clear the restart streak HERE, not at the top of Pass 2. Clearing it
-	# before load_all_mods and autoload instantiation -- the window where a mod
-	# actually crashes -- meant every crashed launch recorded a streak of zero
-	# and the breaker could never trip. It belongs with the other end-of-pass
-	# cleanup, alongside dropping the dirty marker: both say "this pass
-	# finished".
+	# End-of-pass cleanup: clear the streak and drop the dirty marker.
+	# Clearing at Pass 2 entry would precede load_all_mods and autoload
+	# instantiation -- the crash window -- so the breaker could never trip.
 	_clear_restart_counter()
 	if FileAccess.file_exists(PASS2_DIRTY_PATH):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(PASS2_DIRTY_PATH))
@@ -391,12 +336,9 @@ func _run_pass_2() -> void:
 		if err != OK:
 			_log_critical("reload_current_scene() failed with error " + str(err))
 			return
-	# Windows hands foreground away when the Pass-1 process dies, so the
-	# relaunched window comes up behind whatever grabbed it (nothing in the
-	# boot path ever asks for it back). Wait a couple of frames so the OS has
-	# mapped the window, then ask for focus once. grab_focus can be denied by
-	# Windows foreground-activation rules; request_attention is the fallback
-	# (flashes the taskbar button instead).
+	# Windows hands foreground away when the Pass-1 process dies. Wait for the
+	# OS to map the window, then ask for focus once; request_attention is the
+	# fallback when foreground-activation rules deny grab_focus.
 	await get_tree().process_frame
 	await get_tree().process_frame
 	var win := get_window()

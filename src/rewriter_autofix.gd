@@ -1,6 +1,5 @@
-# Detects whether a stripped line is a block-opening header (ends with ':'
-# and starts with a block keyword). Used by _rtv_autofix_legacy_syntax to
-# decide where to inject a `pass` when a block body is missing.
+# True when a stripped line is a block-opening header (ends with ':' and
+# starts with a block keyword).
 func _rtv_is_block_header(trimmed: String) -> bool:
 	if not trimmed.ends_with(":"):
 		return false
@@ -13,27 +12,15 @@ func _rtv_is_block_header(trimmed: String) -> bool:
 		return true
 	return false
 
-# MAXIMUM-COMPAT PASS: rewrite sloppy / Godot-3-era GDScript patterns that
-# Godot 4's parser rejects outright. Runs before the dispatch-wrapper
-# pipeline so every downstream step sees parser-acceptable source.
-#
-# Handles:
-#   (1) Bodyless block headers (`if X:` with no indented body). The
-#       dominant failure mode in real-world mods (Gotcha #5). Godot 4's
-#       parser raises "Expected indented block after 'X' block". We scan
-#       forward from each block header; if the next non-blank non-comment
-#       line is not indented deeper than the header, a `pass` is injected
-#       at header_indent + indent_unit. Semantically safe: the empty
-#       block was already a no-op in the author's intent (or a latent
-#       bug. We preserve original semantics either way).
-#   (2) `tool` first-line keyword -> `@tool` annotation (Godot 4 moved
-#       it to the annotation namespace).
-#   (3) `onready var` -> `@onready var` (same annotation move).
-#   (4) `export var X = Y` (no type paren) -> `@export var X = Y`. Skips
-#       `export(Type) var ...`. That needs type-annotation transform
-#       (risky, can break strict-typed references; leave for future
-#       pass if a real mod trips it).
-#
+# Rewrites Godot-3-era GDScript patterns that Godot 4's parser rejects,
+# before the dispatch-wrapper pipeline runs. Handles:
+#   (1) Bodyless block headers: inject `pass` where the next non-blank
+#       non-comment line is not indented deeper (semantics preserved --
+#       the empty block was already a no-op).
+#   (2) `tool` -> `@tool`, (3) `onready var` -> `@onready var`,
+#   (4) `export var` -> `@export var`. `export(Type) var` is left alone:
+#       it needs a type-annotation transform that can break strict-typed
+#       references.
 # Source must be LF-normalized by the caller.
 func _rtv_autofix_legacy_syntax(source: String) -> Dictionary:
 	var lines: PackedStringArray = source.split("\n")
@@ -45,20 +32,14 @@ func _rtv_autofix_legacy_syntax(source: String) -> Dictionary:
 	var fix_export := 0
 	var fix_base := 0
 
-	# Pre-pass: track which method a line belongs to, so `base(...)` inside
-	# a method body can be rewritten to `super.<method>(...)`. Godot 3's
-	# `base()` is no longer valid in Godot 4; parser fails with
-	# `Function "base()" not found in base self` and the failure cascades
-	# through chain-via-extends. Single autofix converts the common case.
+	# Track the enclosing method so Godot 3's `base(...)` (invalid in
+	# Godot 4) can be rewritten to `super.<method>(...)`.
 	var current_method: String = ""
 	var method_line_indent: String = ""
 
 	for i in lines.size():
 		var line: String = lines[i]
 
-		# Track enclosing method for `base()` rewrite. Top-level line (no
-		# indent) with `func <name>(` opens a method; top-level line without
-		# that closes the prior method's scope.
 		var lead := _rtv_leading_indent(line)
 		if lead.is_empty() and not line.strip_edges().is_empty():
 			var stripped_top := line.strip_edges()
@@ -68,21 +49,18 @@ func _rtv_autofix_legacy_syntax(source: String) -> Dictionary:
 					current_method = stripped_top.substr(5, open_paren - 5).strip_edges()
 					method_line_indent = ""
 			elif stripped_top.begins_with("static func ") or stripped_top.begins_with("@"):
-				# Skip static funcs and annotations (they don't open a "self"
-				# method where base() would resolve).
+				# Static funcs and annotations don't open a "self" method
+				# where base() would resolve.
 				current_method = ""
 			else:
 				current_method = ""
 
-		# Rewrite `base(` / `base (` to `super.<method>(` when inside a
-		# method body. Don't touch literal `.base(` calls (already qualified).
 		if not current_method.is_empty() and "base" in line:
 			var rewritten := _rtv_rewrite_bare_base(line, current_method)
 			if rewritten != line:
 				line = rewritten
 				fix_base += 1
 
-		# Annotation migrations (line-local rewrites).
 		lead = _rtv_leading_indent(line)
 		var body_text := line.substr(lead.length())
 		if i == 0 and body_text.strip_edges() == "tool":
@@ -131,31 +109,21 @@ func _rtv_autofix_legacy_syntax(source: String) -> Dictionary:
 		"base": fix_base,
 	}
 
-# Rewrite bare `base(args)` or `base (args)` in a line to `super.<method>(args)`.
-# Skips `self.base(`, `<ident>.base(`, etc. -- only rewrites standalone `base(`
-# (possibly preceded by `=`, `+`, `(`, `[`, `,`, or whitespace). Per-line so
-# strings/comments past a `#` stay unchanged.
+# Rewrite standalone `base(args)` to `super.<method>(args)`; qualified
+# `.base(` and anything past a `#` stay unchanged.
 #
-# Chained-call form `base(...).<chained>(<args>)`: Godot 3's `base()` returned
-# the parent instance, so mods wrote `base().Foo(x)` to call parent's Foo.
-# A plain substitution ("super.<enclosing>") would yield
-# "super.<enclosing>().Foo(x)" -- syntactically valid but chained onto the
-# void return of enclosing's super call, which is wrong (parent's Foo never
-# runs with the passed args, and the chained .Foo(x) fires on null). We
-# detect the chain and rewrite to "super.<chained>(<args>)", which is how
-# Godot 4 expresses "call parent's <chained> method" directly.
+# Chained form: Godot 3's base() returned the parent instance, so mods
+# wrote `base().Foo(x)`. A plain substitution would chain .Foo(x) onto the
+# void return of the super call, so `base().<chained>(...)` is rewritten
+# to `super.<chained>(...)` instead.
 func _rtv_rewrite_bare_base(line: String, method_name: String) -> String:
 	var comment_start := line.find("#")
 	var head: String = line if comment_start < 0 else line.substr(0, comment_start)
 	var tail: String = "" if comment_start < 0 else line.substr(comment_start)
-	# Walk from left to right looking for the word `base` not preceded by a
-	# letter/digit/underscore/dot (i.e. not part of an identifier or already
-	# qualified). Replace with `super.<method>`.
 	var i := 0
 	var rewritten := ""
 	while i < head.length():
 		if i + 4 <= head.length() and head.substr(i, 4) == "base":
-			# Check preceding character (word-boundary).
 			var prev_ok := true
 			if i > 0:
 				var pc := head[i - 1]
@@ -167,21 +135,14 @@ func _rtv_rewrite_bare_base(line: String, method_name: String) -> String:
 					prev_ok = false
 				elif pc == "_" or pc == ".":
 					prev_ok = false
-			# Check trailing char is `(` or whitespace-then-`(`.
 			var j := i + 4
 			while j < head.length() and (head[j] == " " or head[j] == "\t"):
 				j += 1
 			if prev_ok and j < head.length() and head[j] == "(":
-				# Chained-call detection: find matching `)` for base(),
-				# peek past it for `.<ident>(`. If present, rewrite the
-				# entire `base().<ident>` region to `super.<ident>`.
-				# Only empty-parens base() gets the chain absorb -- with
-				# args, the arg is meaningful (call parent's enclosing
-				# method with it) and must be preserved. `base(arg).foo(x)`
-				# falls through to the plain `super.<enclosing>(arg)` path,
-				# which yields `super.<enclosing>(arg).foo(x)` -- still
-				# semantically correct (Godot 4's super() returns the
-				# parent method's value so chaining works).
+				# Chain absorb applies only to empty-parens base(); with
+				# args the call is meaningful, and `base(arg).foo(x)` falls
+				# through to `super.<enclosing>(arg).foo(x)`, still correct
+				# since super() returns the parent method's value.
 				var close_idx := _rtv_find_matching_paren(head, j)
 				if close_idx > j and head.substr(j + 1, close_idx - j - 1).strip_edges().is_empty():
 					var k := close_idx + 1
@@ -206,10 +167,8 @@ func _rtv_rewrite_bare_base(line: String, method_name: String) -> String:
 		i += 1
 	return rewritten + tail
 
-# Scans from an open paren at open_idx and returns the index of the matching
-# close paren, or -1 if not found. Tracks double-quoted strings so parens
-# inside "..." don't affect depth. Used by _rtv_rewrite_bare_base to span
-# `base(...)` before checking for a chained `.<method>(...)` call.
+# Index of the paren matching the one at open_idx, or -1. Tracks string
+# literals so parens inside them don't affect depth.
 func _rtv_find_matching_paren(s: String, open_idx: int) -> int:
 	if open_idx >= s.length() or s[open_idx] != "(":
 		return -1
@@ -245,8 +204,7 @@ func _rtv_find_matching_paren(s: String, open_idx: int) -> int:
 		i += 1
 	return -1
 
-# True for identifier-continuation chars (ASCII [A-Za-z0-9_]). Non-ASCII
-# identifiers aren't legal in GDScript so ASCII coverage is sufficient.
+# True for ASCII identifier chars; GDScript identifiers are ASCII-only.
 func _rtv_is_ident_char(c: String) -> bool:
 	if c == "_":
 		return true
@@ -258,24 +216,12 @@ func _rtv_is_ident_char(c: String) -> bool:
 		return true
 	return false
 
-# Comment out `<var>.reload()` lines inside mod helper functions that also
-# call `take_over_path`. Rationale: mod override helpers (RTVCoop's _override,
-# CustomItemTest's override_script, etc.) often do:
-#   var script = load(modPath); script.reload(); script.take_over_path(gamePath)
-# The reload() call is a no-op unless source changed between load and call.
-# Our hook pack owns the mod subclass source, so reload is always redundant.
-# Worse: if the mod had already set_script(script) on a live node earlier
-# (RTVCoop does this for /root/Loader), reload fails at gdscript.cpp:756 with
-# "Cannot reload script while instances exist." take_over_path succeeds right
-# after, so the override still works, but the error spams stderr each launch.
-# Stripping the reload eliminates the error with no behavior change.
-#
-# Scope: only strips lines where the stripped-edges content ends with
-# ".reload()" AND the enclosing function body contains ".take_over_path(".
-# Comments out with a "# modloader stripped" note so the change is visible
-# if a mod author inspects the rewritten source.
-#
-# Source must be LF-normalized by the caller.
+# Comment out bare `<var>.reload()` lines inside functions that also call
+# take_over_path. The hook pack owns the mod subclass source, so reload is
+# redundant; and if the mod already set_script() a live node (RTVCoop does),
+# reload fails at gdscript.cpp:756 "Cannot reload script while instances
+# exist" and spams stderr each launch. take_over_path still succeeds, so
+# stripping is behavior-neutral. Source must be LF-normalized by the caller.
 func _rtv_strip_helper_reload(source: String) -> Dictionary:
 	var lines: PackedStringArray = source.split("\n")
 	var out: PackedStringArray = PackedStringArray()
@@ -287,7 +233,6 @@ func _rtv_strip_helper_reload(source: String) -> Dictionary:
 			out.append(line)
 			i += 1
 			continue
-		# Collect function body: header + subsequent indented lines.
 		var start: int = i
 		var end: int = i + 1
 		while end < lines.size():
@@ -295,7 +240,6 @@ func _rtv_strip_helper_reload(source: String) -> Dictionary:
 			if bl.length() > 0 and not (bl[0] == "\t" or bl[0] == " "):
 				break
 			end += 1
-		# Does this function body call take_over_path anywhere?
 		var has_tov: bool = false
 		for k in range(start, end):
 			if ".take_over_path(" in lines[k]:
@@ -305,9 +249,7 @@ func _rtv_strip_helper_reload(source: String) -> Dictionary:
 			for k in range(start, end):
 				var bl: String = lines[k]
 				var trimmed: String = bl.strip_edges()
-				# Match bare `<ident>.reload()` statement lines (nothing else
-				# on the line). Preserves the original indent and leaves a
-				# comment trail.
+				# Bare `<ident>.reload()` statement lines only.
 				if trimmed.ends_with(".reload()") and not trimmed.begins_with("#"):
 					var before_paren: int = trimmed.find(".reload()")
 					var ident_part: String = trimmed.substr(0, before_paren)

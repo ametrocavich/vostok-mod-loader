@@ -1,27 +1,16 @@
 ## ----- registry/events.gd -----
-##
-## Events.tres holds a single `events: Array[EventData]` that EventSystem.gd
-## const-preloads and filters into per-type buckets (dynamic/trader/special)
-## at _ready(). Same timing constraint as loot / recipes: mods must register
-## during their own _ready() for additions to propagate into EventSystem's
-## buckets before the first GetAvailableEvents() call.
-##
-## EventData has no unique id (name isn't unique; vanilla can have duplicate
-## names across days). Registry uses mod-chosen handles like loot / recipes.
-##
-## Data shapes:
+## Events.tres holds one `events: Array[EventData]` that EventSystem.gd
+## const-preloads and filters into per-type buckets at _ready() -- same
+## timing constraint as loot/recipes: register during mod _ready().
+## EventData has no unique id (names duplicate across days), so the
+## registry id is a mod-chosen handle.
 ##   register: {event: EventData}
 ##   override: {event: EventData, replaces: EventData}
-##   patch:    id can be a String handle OR an EventData Resource ref
-##             directly; lets mods patch vanilla events in one call
-##             without registering a handle first.
+##   patch: id is a String handle or an EventData ref directly.
 ##
-## Caveat for mod authors: EventData.function is a method name resolved on
-## EventSystem via Callable(self, event.function). Registering a new event
-## whose function string refers to a method EventSystem doesn't have will
-## make that event a no-op when it fires. Either reuse a vanilla function
-## name (FighterJet, ActivateTrader, etc.) or hook EventSystem to inject
-## your own handler.
+## Caveat: EventData.function resolves as Callable(EventSystem, function),
+## so a function name EventSystem doesn't have makes the event a no-op.
+## Reuse a vanilla name or hook EventSystem to inject a handler.
 
 const _EVENTS_PATH := "res://Events/Events.tres"
 
@@ -40,9 +29,8 @@ func _events_resource() -> Resource:
 	_events_cache = res
 	return res
 
-# Shape check: consistent with other registries' _looks_like_* helpers.
-# Probes function/possibility/day -- EventData also declares name and type,
-# but those exist on too many other Resource classes to discriminate.
+# Shape heuristic on function/possibility/day; name and type exist on too
+# many other Resource classes to discriminate.
 func _looks_like_event_data(res: Resource) -> bool:
 	return _object_has_property(res, "function") \
 			and _object_has_property(res, "possibility") \
@@ -132,11 +120,9 @@ func _override_event(id: String, data: Variant) -> bool:
 	_log_debug("[Registry] overrode event '%s'" % id)
 	return true
 
-# Resolves whatever the mod passed (String handle or EventData ref) to:
-#   [event, patch_key]
-# where patch_key is the stable Variant used in _registry_patched to track
-# per-field original values. For handles it's the String; for direct refs
-# it's "ref:<instance_id>" so distinct Resource instances don't collide.
+# Resolve a String handle or EventData ref to [event, patch_key].
+# patch_key is the handle, or "ref:<instance_id>" for direct refs so
+# distinct Resource instances don't collide.
 func _resolve_event_patch_target(id: Variant) -> Array:
 	if id is String:
 		var reg: Dictionary = _registry_registered.get("events", {})
@@ -218,11 +204,9 @@ func _remove_event(id: String) -> bool:
 				arr.remove_at(idx)
 			else:
 				push_warning("[Registry] remove('events', '%s'): event not found in array; tracking cleared" % id)
-	# Drop the handle's patch stash: the event is leaving the registry, so its
-	# stashed originals are dead state. Leaving them would poison a later
-	# re-registration under the same handle (_patch_event's first-write-wins
-	# stash at this key would keep the OLD event's values, and revert would
-	# write them onto the NEW event).
+	# Drop the handle's patch stash: revert after a re-registration under
+	# the same handle would otherwise write the old event's values onto the
+	# new one.
 	var patched: Dictionary = _registry_patched.get("events", {})
 	if patched.has(id):
 		patched.erase(id)
@@ -236,7 +220,7 @@ func _revert_event(id: Variant, fields: Array) -> bool:
 	var did_something := false
 	var ov: Dictionary = _registry_overridden.get("events", {})
 	var patched: Dictionary = _registry_patched.get("events", {})
-	# Resolve patch key + target (matches _resolve_event_patch_target).
+	# Key computation matches _resolve_event_patch_target.
 	var patch_key = null
 	var patch_target: Resource = null
 	if id is String:

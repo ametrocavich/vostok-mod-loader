@@ -1,44 +1,22 @@
 ## ----- registry/ai.gd -----
+## Vanilla AISpawner.gd hardcodes a zone -> agent-scene if-elif. The
+## rewriter turns each `agent = <name>` into
+## `agent = _rtv_resolve_ai_type(zone, <name>)`, and the injected resolver
+## reads Engine.get_meta("_rtv_ai_overrides") -- Engine meta because
+## AISpawner is a per-scene Node3D with many independent instances. Zone
+## keys are String names matching the Zone enum ("Area05", "BorderZone",
+## "Vostok"); the resolver converts via Zone.keys()[zone_int].
 ##
-## Vanilla AISpawner.gd hardcodes a zone -> agent-scene mapping:
-##   if zone == Zone.Area05: agent = bandit
-##   elif zone == Zone.BorderZone: agent = guard
-##   elif zone == Zone.Vostok: agent = military
-##
-## The rewriter transforms each `agent = <name>` into
-##   agent = _rtv_resolve_ai_type(zone, <name>)
-## where the resolver (injected into AISpawner.gd) reads
-##   Engine.get_meta("_rtv_ai_overrides", {})
-## and returns the mod-registered PackedScene for the current zone (or the
-## vanilla scene if no override is registered).
-##
-## Design choices:
-##   - AISpawner is a per-scene Node3D, not an autoload. There can be many
-##     instances, each running _ready() independently. We use Engine.meta
-##     to broadcast overrides to all of them.
-##   - Zone keys are String names matching the Zone enum ("Area05",
-##     "BorderZone", "Vostok"). The resolver uses Zone.keys()[zone_int] to
-##     convert back at lookup time.
-##   - Only override is meaningful here: a single agent scene per zone.
-##     Register "adds a new entry" is semantically the same as override
-##     for this registry, so both verbs exist but share one slot.
-##
-## Data shape:
-##   {scene: PackedScene, zone: String}
+## One agent scene per zone, so register and override share a slot.
+## Data shape: {scene: PackedScene, zone: String}
 
 const _VALID_ZONES := ["Area05", "BorderZone", "Vostok"]
 
-# Installed overrides live in Engine meta, keyed by zone name, so the
-# injected resolver on every AISpawner instance finds them. Each id in
-# _registry_registered tracks a {scene, zone} payload; the engine-meta dict
-# is derived from those registrations at each write.
+# The engine-meta dict is derived from _registry_registered on each write.
 const _AI_ENGINE_META_KEY := "_rtv_ai_overrides"
 
 func _rebuild_ai_engine_meta() -> void:
-	# Collapse all active id registrations into a single zone -> scene dict
-	# for the resolver. If multiple mods register/override the same zone,
-	# the last write wins; same semantics as other registries that share
-	# a slot.
+	# Collapse to zone -> scene; last write wins on a shared zone.
 	var flat: Dictionary = {}
 	var reg: Dictionary = _registry_registered.get("ai_types", {})
 	for id in reg.keys():
@@ -78,8 +56,7 @@ func _register_ai_type(id: String, data: Variant) -> bool:
 	var zone: String = parts[1]
 	if scene == null:
 		return false
-	# Collision: another mod already claimed this zone. Register is one-per-
-	# zone; use override to forcibly replace someone else's claim.
+	# Register is one-per-zone; override forcibly replaces another claim.
 	for existing_id in reg.keys():
 		if reg[existing_id]["zone"] == zone:
 			push_warning("[Registry] register('ai_types', '%s'): zone '%s' already claimed by '%s'; use override to replace" % [id, zone, existing_id])
@@ -91,9 +68,8 @@ func _register_ai_type(id: String, data: Variant) -> bool:
 	return true
 
 func _override_ai_type(id: String, data: Variant) -> bool:
-	# Override is semantically "claim this zone even if another mod did."
-	# It drops any conflicting registrations from other mods and installs
-	# this one. On revert, the displaced registrations come back.
+	# "Claim this zone even if another mod did": conflicting registrations
+	# are displaced and restored on revert.
 	var ov: Dictionary = _registry_overridden.get("ai_types", {})
 	if ov.has(id):
 		push_warning("[Registry] override('ai_types', '%s'): already overridden (revert first)" % id)
@@ -104,7 +80,6 @@ func _override_ai_type(id: String, data: Variant) -> bool:
 	if scene == null:
 		return false
 	var reg: Dictionary = _registry_registered.get("ai_types", {})
-	# Stash displaced registrations so revert can restore them.
 	var displaced: Array = []
 	for existing_id in reg.keys():
 		if reg[existing_id]["zone"] == zone:

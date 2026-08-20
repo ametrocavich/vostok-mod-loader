@@ -1,85 +1,30 @@
 ## ----- rewriter_parse.gd -----
-## Source-rewrite codegen. Given detokenized vanilla source + a parse
-## structure + an optional per-method mask, produces a rewritten script
-## where each non-static method in the mask (or every non-static method,
-## when the mask is empty) is renamed to _rtv_vanilla_<name> and a
-## dispatch wrapper is appended at the original name. The wrappers fire
-## pre/replace/post/callback hooks and call the renamed body.
+## Source-rewrite codegen. Parses detokenized vanilla source and (with
+## rewriter_rewrite.gd) renames each masked non-static method to
+## _rtv_vanilla_<name>, appending a dispatch wrapper at the original name.
+## Empty mask = wrap every non-static method. Only vanilla source is
+## rewritten; mods compose through Godot's own extends resolution.
 ##
-## Only vanilla source is rewritten. A mod that extends a wrapped vanilla
-## composes through Godot's own extends resolution, so mod source is left
-## alone and carries no injected prefix.
+## Pipeline: PCK enumeration (pck_enumeration.gd) -> detokenize
+## (gdsc_detokenizer.gd) -> hook/registry declarations build the wrap mask
+## (mod_loading.gd, hooks_api.gd) -> rewrite (this file) -> pack + mount +
+## activate (hook_pack.gd). Runtime dispatch flows from the emitted
+## wrappers into hooks_api.gd via Engine.get_meta("RTVModLib").
 ##
-## Also owns: regex compilation, parse-script, autofix legacy syntax,
-## indent detection, bare-super rewriting.
-##
-## ============================ PIPELINE MAP ============================
-## HOW THE PATCH PIPELINE FITS TOGETHER (read before adding a target):
-##
-## 1. PCK read (pck_enumeration.gd): _enumerate_game_scripts() ->
-##    _parse_pck_file_list() walks RTV.pck's GDPC file table, yields every
-##    res://Scripts/*.gd and fills _pck_zero_byte_paths;
-##    _build_class_name_lookup() maps class_name -> path.
-## 2. Detokenize (gdsc_detokenizer.gd): _read_vanilla_source() ->
-##    _detokenize_script() reconstructs pristine vanilla source from the
-##    PCK's binary-token .gdc (GDSC v100/v101), cached under
-##    VANILLA_CACHE_DIR. _probe_gdsc_version() is stability canary B's
-##    input, consulted at the top of _generate_hook_pack.
-## 3. Declarations -> wrap surface (mod_loading.gd, hooks_api.gd,
-##    main_menu_hook.gd): [hooks] sections in mod.txt and source-scanned
-##    literal .hook("<stem>-<method>[-pre|-post|-callback]") calls (via
-##    _re_hook_call + _merge_hook_calls_into_wrap_mask) populate
-##    _hooked_methods (path -> {lowercased method: true}); [registry]
-##    sections (or B_Loader call detection) set _any_mod_declared_registry;
-##    add_hook() (godot-mod-loader compat) also writes _hooked_methods;
-##    _seed_core_hooks() adds the core Menu.gd _ready wrap.
-## 4. Rewrite (this file): _rtv_parse_script() parses the detokenized
-##    source; _rtv_rewrite_vanilla_source() renames hookable methods to
-##    _rtv_vanilla_<name>, applies per-script declaration transforms (the
-##    Database/Loader/AISpawner if/elif chain), injects function preludes
-##    (_rtv_apply_prelude_injections), appends dispatch wrappers
-##    (_rtv_dispatch_inline_src) and registry appendices
-##    (_rtv_registry_injection).
-## 5. Pack + mount + activate (hook_pack.gd): _generate_hook_pack() gates
-##    on the opt-in declarations, writes each rewrite as .gd +
-##    self-referencing .gd.remap + empty .gdc into a modloader_hooks zip,
-##    mounts it via ProjectSettings.load_resource_pack, then
-##    _activate_rewritten_scripts() forces GDScriptCache to serve it
-##    (source_code+reload, CACHE_MODE_IGNORE+take_over_path fallback).
-##    boot.gd's _mount_previous_session re-mounts last session's pack at
-##    static init. Runtime dispatch flows from the emitted wrappers into
-##    hooks_api.gd (_dispatch/_dispatch_post/_dispatch_deferred) through
-##    Engine.get_meta("RTVModLib").
-##
-## ADDING A NEW REWRITE TARGET touches, in sync (all dispatch on the bare
-## filename string):
-##   a. hook_pack.gd REGISTRY_TARGETS (only if whole-script wrap +
-##      force-activation is needed). The new file must not appear in
-##      constants.gd's RTV_SKIP_LIST / RTV_RESOURCE_*_SKIP. Those are
-##      checked BEFORE needed_paths in _generate_hook_pack's loop and win
-##      silently.
-##   b. this file: the declaration-transform if/elif in
-##      _rtv_rewrite_vanilla_source, and/or a case in
-##      _rtv_apply_prelude_injections, and/or a case in
-##      _rtv_registry_injection.
-##   c. a new registry section if mods register data against it: a
-##      Registry.FOO const + per-verb match-arms in registry.gd, a handler
-##      under src/registry/, and a build.sh FILES entry (the full recipe
-##      is in registry.gd's file header).
-## ADDING A NEW HOOK VARIANT (a 4th suffix besides -pre/-post/-callback)
-## touches: hooks_api.gd hook() + _hook_base_of + a new dispatcher, the
-## _re_hook_call regex in _compile_regex below, and both emitter branches
-## of _rtv_dispatch_inline_src.
-## ======================================================================
+## Adding a rewrite target touches, in sync (all dispatch on the bare
+## filename string): hook_pack.gd REGISTRY_TARGETS (the file must not be
+## in constants.gd's RTV_SKIP_LIST / RTV_RESOURCE_*_SKIP, which win
+## silently); the transform chain here (_rtv_rewrite_vanilla_source,
+## _rtv_apply_prelude_injections, _rtv_registry_injection); and a registry
+## section if mods register data against it (recipe in registry.gd's
+## header). A new hook-suffix variant touches hooks_api.gd hook() +
+## _hook_base_of + a dispatcher, _re_hook_call below, and both emitter
+## branches of _rtv_dispatch_inline_src.
 
-# a second, deliberately separate regex set lives in
-# _rtv_compile_codegen_regex below. The two parse the same grammar but are not
-# equivalent (this set: whole-blob search/search_all, name-only func captures,
-# res://-quoted-only extends -- grammar consumers in mod_loading.gd, plus
-# _re_filename_priority in mod_discovery.gd; that set: per-line, full-signature
-# captures with a trailing-colon requirement -- sole consumer
-# _rtv_parse_script). Do not "dedup" them without diffing both parsers on a
-# script corpus.
+# A second regex set lives in _rtv_compile_codegen_regex below. They parse
+# the same grammar but are not equivalent (this set: whole-blob, name-only
+# captures; that set: per-line, full-signature, trailing-colon). Do not
+# dedup them without diffing both parsers on a script corpus.
 func _compile_regex() -> void:
 	_re_take_over = RegEx.new()
 	_re_take_over.compile('take_over_path\\s*\\(\\s*"(res://[^"]+)"')
@@ -96,22 +41,16 @@ func _compile_regex() -> void:
 	# VostokMods compat: "100-ModName.vmz" encodes priority in the filename.
 	_re_filename_priority = RegEx.new()
 	_re_filename_priority.compile('^(-?\\d+)-(.*)')
-	# .hook("<prefix>-<method>[-pre|-post|-callback]"). The first capture
-	# is the lowercase script stem (e.g. "controller"), the second is the
-	# declared method name. _generate_hook_pack uses the (prefix, method)
-	# pair to build a per-path, per-method wrap mask so only the methods a
-	# mod actually hooks get dispatch wrappers (matches godot-mod-loader's
-	# per-path method_mask). Unknown-suffix fallbacks are treated as plain
-	# methods (the -pre/-post/-callback suffix is a hook-dispatch variant,
-	# not a method-name distinction).
+	# .hook("<prefix>-<method>[-pre|-post|-callback]"): captures the script
+	# stem and method name that feed the per-path wrap mask. The suffix is
+	# a dispatch variant, not part of the method name.
 	_re_hook_call = RegEx.new()
 	_re_hook_call.compile('\\.hook\\s*\\(\\s*"([A-Za-z_][\\w]*)-([A-Za-z_][\\w]*?)(?:-(?:pre|post|callback))?"')
 
 # --- Codegen source parsing (regex compile + script-structure extraction) ---
 
 
-# twin of _compile_regex above -- deliberately not shared; see the note
-# there before attempting to merge the two sets.
+# Twin of _compile_regex above; see the note there before merging the sets.
 func _rtv_compile_codegen_regex() -> void:
 	if _rtv_re_extends != null:
 		return
@@ -119,11 +58,9 @@ func _rtv_compile_codegen_regex() -> void:
 	_rtv_re_extends.compile('^extends\\s+"?([\\w/.:"]+)"?')
 	_rtv_re_class_name = RegEx.new()
 	_rtv_re_class_name.compile('^class_name\\s+(\\w+)')
-	# Head-only match: the parameter list is extracted by _rtv_scan_signature,
-	# a depth-aware scan. A single [^)]* regex stops at the FIRST ')', so any
-	# signature whose parameter default contains parens -- e.g.
-	# func f(v = Vector2(1, 2)): -- failed to match and the whole function was
-	# silently skipped (never hookable).
+	# Head-only match; _rtv_scan_signature extracts the parameter list. A
+	# [^)]* regex stops at the first ')', silently skipping signatures with
+	# parenthesized defaults like func f(v = Vector2(1, 2)):.
 	_rtv_re_func = RegEx.new()
 	_rtv_re_func.compile('^func\\s+(\\w+)\\s*\\(')
 	_rtv_re_static_func = RegEx.new()
@@ -137,11 +74,10 @@ func _rtv_compile_codegen_regex() -> void:
 	_rtv_re_ret_value = RegEx.new()
 	_rtv_re_ret_value.compile('(?:^|[:;])\\s*return\\b\\s*[^\\s#]')
 
-# Scan a func declaration line from just after the opening paren, tracking
-# paren/bracket/brace depth and string literals, so parameter defaults like
-# Vector2(1, 2), {a = 1, b = 2} or "a,b" don't end the parameter list early.
-# Returns {params, return_type (String or null)} for a complete single-line
-# declaration, {} otherwise (multi-line signatures stay skipped, as before).
+# Scan a func declaration from just after the opening paren, tracking
+# bracket depth and string literals so nested defaults don't end the list
+# early. Returns {params, return_type} for a complete single-line
+# declaration, {} otherwise (multi-line signatures are skipped).
 func _rtv_scan_signature(line: String, params_start: int) -> Dictionary:
 	var depth := 1
 	var in_str := ""
@@ -174,8 +110,8 @@ func _rtv_scan_signature(line: String, params_start: int) -> Dictionary:
 	var ret_type = m_tail.get_string(1) if m_tail.get_start(1) != -1 else null
 	return {"params": line.substr(params_start, i - params_start), "return_type": ret_type}
 
-# Split a parameter list on TOP-LEVEL commas only -- commas nested inside
-# (), [], {} or string literals belong to a default value, not the list.
+# Split a parameter list on top-level commas only; commas nested inside
+# brackets or strings belong to a default value.
 func _rtv_split_params_top_level(params: String) -> Array:
 	var parts: Array = []
 	var depth := 0
@@ -240,19 +176,11 @@ func _rtv_parse_script(filename: String, source: String) -> Dictionary:
 
 	for line_num in lines.size():
 		var line: String = lines[line_num]
-		# Top-level lines only (column 0, no leading indent). EVERYTHING this
-		# pass records -- extends, class_name, vars, funcs -- is module-scope
-		# syntax. Two reasons to skip indented lines up front:
-		#   1. Correctness: an inner class's own indented `extends X` /
-		#      `class_name` / `func` would otherwise clobber or pollute the
-		#      script-level record. For funcs specifically, a wrap-mask
-		#      (especially the wildcard "*") would then emit a top-level
-		#      dispatch wrapper for a method that only exists inside the
-		#      inner class. A rewritten script that cannot compile.
-		#   2. Startup cost: indented body lines are ~80% of a script; the
-		#      per-line strip_edges + two regex searches they used to get
-		#      (extends + class_name ran on every line) were pure overhead,
-		#      repeated across every wrapped script on every generation.
+		# Top-level lines only: everything recorded here is module-scope
+		# syntax. An inner class's indented extends/class_name/func would
+		# otherwise pollute the script-level record -- a wildcard mask would
+		# then emit a top-level wrapper for an inner-class-only method and
+		# the rewritten script would not compile.
 		if line.begins_with("\t") or line.begins_with(" "):
 			continue
 		var trimmed := line.strip_edges()
@@ -281,9 +209,8 @@ func _rtv_parse_script(filename: String, source: String) -> Dictionary:
 					sig_s["return_type"],
 				])
 			else:
-				# Parse-internal detail; the user-facing consequence (a
-				# declared hook that can't fire) is warned about in
-				# _rtv_rewrite_vanilla_source's mask validation.
+				# User-facing warning happens in _rtv_rewrite_vanilla_source's
+				# mask validation.
 				_log_debug("[RTVCodegen] %s: static func %s at line %d: signature unparseable (multi-line or malformed) -- invisible to the wrap surface" \
 						% [filename, m_sfunc.get_string(1), line_num + 1])
 			continue
@@ -298,9 +225,6 @@ func _rtv_parse_script(filename: String, source: String) -> Dictionary:
 					sig_f["return_type"],
 				])
 			else:
-				# Parse-internal detail (dev-mode only). If a mod declared
-				# a hook on this method, the mask validation in
-				# _rtv_rewrite_vanilla_source emits the user-facing warning.
 				_log_debug("[RTVCodegen] %s: func %s at line %d: signature unparseable (multi-line or malformed) -- NOT hookable, will not be wrapped" \
 						% [filename, m_func.get_string(1), line_num + 1])
 
@@ -328,21 +252,16 @@ func _rtv_parse_script(filename: String, source: String) -> Dictionary:
 			var body_line := raw_body.strip_edges()
 			if body_line.is_empty():
 				continue
-			# A top-level (unindented) line between this func and the next one
-			# is NOT part of this body. It's module scope (e.g. Database.gd's
-			# const preload block sits after _ready) or an inner `class` header
-			# whose indented methods would otherwise be scanned as OUR body.
-			# Stop here: an `await` past this point would falsely mark the
-			# method a coroutine, the wrapper would gain `await`, and every
-			# caller of the wrapped method would then fail at parse time
-			# with "must be called with await".
+			# A top-level line between this func and the next is module scope
+			# (or an inner class header), not body. Stop here: an `await` past
+			# this point would falsely mark the method a coroutine and every
+			# caller would fail at parse time with "must be called with await".
 			# Column-0 comments inside a body are legal GDScript; skip those.
 			if raw_body[0] != "\t" and raw_body[0] != " ":
 				if body_line.begins_with("#"):
 					continue
 				break
-			# Comment lines can contain the words "await" / "return" without
-			# meaning either; never let them set the flags.
+			# Never let comment lines set the await/return flags.
 			if body_line.begins_with("#"):
 				continue
 			if "await " in body_line:

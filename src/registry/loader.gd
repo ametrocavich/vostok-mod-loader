@@ -1,35 +1,19 @@
 ## ----- registry/loader.gd -----
+## Three registries that mutate state on the Loader autoload. The rewriter
+## injects into Loader.gd: _rtv_mod_scene_paths / _rtv_override_scene_paths,
+## the _rtv_vanilla_shelters snapshot, `shelters` rewritten const->var, and
+## a LoadScene prelude that checks the dicts and sets scenePath + gameData
+## flags before the vanilla if-elif. Loader is an autoload, so the prelude
+## is active from boot; registering from mod _ready() is safe.
 ##
-## Three related registries that all mutate state on the Loader autoload.
-## The rewriter injects into Loader.gd:
-##   - _rtv_mod_scene_paths / _rtv_override_scene_paths dicts
-##   - _rtv_vanilla_shelters snapshot (for revert)
-##   - const `shelters` rewritten to a var, so entries can be appended
-##   - a prelude at the top of LoadScene that checks the dicts and sets
-##     scenePath + gameData flags before the vanilla if-elif runs
-##
-## Timing: Loader is an autoload, so the prelude is active from engine boot.
-## Mod registrations can happen any time after the Loader autoload is in
-## the tree (usually mod _ready() is safe).
-##
-## - scene_paths: named scene lookups with optional gameData flags
-##     register: {path: String, menu?: bool, shelter?: bool, permadeath?: bool, tutorial?: bool}
-##     override: same shape as register; swaps the vanilla entry for a mod one
-##     patch: mutate individual fields on a mod-registered entry
-##     remove / revert: standard
-##
-## - shelters: append-only list of shelter NAMES (each name must also be a
-##   resolvable scene; pass `{path, ...}` to auto-register in
-##   scene_paths too, or pass just {} if the name is already a vanilla
-##   scene or was pre-registered via scene_paths)
-##     register: {path?: String, menu?: bool, shelter?: bool, ...}
-##     remove: strips from shelters list (and auto-cleans any auto-linked
-##             scene_paths entry)
-##
-## - random_scenes: append-only list of res:// paths added to Loader's
-##   randomScenes var (picked by LoadSceneRandom()).
-##     register: {path: String}
-##     remove: strips from randomScenes
+## - scene_paths: named scene lookups with optional gameData flags.
+##     register/override: {path: String, menu?, shelter?, permadeath?,
+##     tutorial?}; patch/remove/revert: standard.
+## - shelters: append-only list of shelter names. Pass {path, ...} to
+##   auto-register a paired scene_paths entry, or {} if the name already
+##   resolves. remove also cleans the auto-linked scene_paths entry.
+## - random_scenes: append-only res:// paths on Loader.randomScenes
+##   (picked by LoadSceneRandom()). register: {path: String}.
 
 func _loader_node() -> Node:
 	var ldr = get_tree().root.get_node_or_null("Loader")
@@ -37,9 +21,8 @@ func _loader_node() -> Node:
 		push_warning("[Registry] Loader autoload not in tree yet; is the loader still booting?")
 	return ldr
 
-# GDScript's has_script_constant() isn't a real API; script constants are
-# read via get_script_constant_map() -> Dictionary. Check for `id` among
-# the vanilla scene-path consts declared at module scope on Loader.gd.
+# Checks `id` against the vanilla scene-path consts on Loader.gd, read via
+# get_script_constant_map() (there is no has_script_constant API).
 var _vanilla_scene_const_cache: Dictionary = {}
 var _vanilla_scene_const_built: bool = false
 func _vanilla_scene_const_exists(ldr: Node, id: String) -> bool:
@@ -50,14 +33,10 @@ func _vanilla_scene_const_exists(ldr: Node, id: String) -> bool:
 		_vanilla_scene_const_built = true
 	return _vanilla_scene_const_cache.has(id)
 
-# Reject a scene path that does not resolve to a real resource.
-#
-# Registration is the last point where this is recoverable. Once a bad path
-# reaches gameData.scenePath, vanilla has already frozen gameData,
-# change_scene_to_file() returns ERR_CANT_OPEN and vanilla discards the error,
-# and Interactor's isTransitioning flag is cleared only by the Compiler in the
-# scene that never loads. UIManager then swallows the settings action, so the
-# pause menu is unreachable and the only way out is force-quitting.
+# Reject a scene path that doesn't resolve. Registration is the last
+# recoverable point: once a bad path reaches gameData.scenePath, vanilla
+# discards change_scene_to_file's error, isTransitioning never clears, and
+# the loading screen freezes with no way back but force-quit.
 func _scene_path_exists(verb: String, kind: String, id: String, path: String) -> bool:
 	if ResourceLoader.exists(path):
 		return true
@@ -83,14 +62,11 @@ func _register_scene_path(id: String, data: Variant) -> bool:
 	if not ("_rtv_mod_scene_paths" in ldr):
 		push_warning("[Registry] register('scene_paths'): Loader.gd is missing injected scene-path fields; rewriter didn't fire, is the hook pack installed?")
 		return false
-	# Collision: an existing mod registration, or a mod override on this id.
 	if ldr._rtv_mod_scene_paths.has(id) or ldr._rtv_override_scene_paths.has(id):
 		push_warning("[Registry] register('scene_paths', '%s'): already registered/overridden by a mod" % id)
 		return false
-	# Collision with vanilla: vanilla scene names are the top-level const
-	# identifiers on Loader (Cabin, Attic, etc.). Reject so mods use
-	# override() instead. Detect via script constant map; Loader.gd's
-	# const declarations are still intact for scene paths.
+	# Vanilla scene names are const identifiers on Loader (Cabin, Attic,
+	# ...); reject collisions so mods use override() instead.
 	if _vanilla_scene_const_exists(ldr, id):
 		push_warning("[Registry] register('scene_paths', '%s'): name collides with a vanilla scene const; use override instead" % id)
 		return false
@@ -117,9 +93,8 @@ func _override_scene_path(id: String, data: Variant) -> bool:
 	if not ("_rtv_override_scene_paths" in ldr):
 		push_warning("[Registry] override('scene_paths'): Loader.gd is missing injected fields")
 		return false
-	# Verify target exists: either a vanilla scene const or a mod scene_paths
-	# registration. Overriding mod entries is allowed for same-id conflict
-	# resolution between mods.
+	# Target must exist. Overriding mod entries is allowed for same-id
+	# conflict resolution between mods.
 	var is_vanilla_const: bool = _vanilla_scene_const_exists(ldr, id)
 	var is_mod_registration: bool = ldr._rtv_mod_scene_paths.has(id)
 	if not is_vanilla_const and not is_mod_registration:
@@ -127,10 +102,8 @@ func _override_scene_path(id: String, data: Variant) -> bool:
 		return false
 	var ov: Dictionary = _registry_overridden.get("scene_paths", {})
 	if not ov.has(id):
-		# Stash the original. For vanilla, that's {path: <const value>} with
-		# the appropriate flags. Those are not knowable without
-		# replicating the if-elif, so stash minimally; revert just clears
-		# the override and vanilla's if-elif restores naturally.
+		# Vanilla flags aren't knowable without replicating the if-elif, so
+		# stash minimally; revert clears the override and vanilla restores.
 		if is_vanilla_const:
 			ov[id] = {"vanilla": true}
 		else:
@@ -150,8 +123,7 @@ func _patch_scene_path(id: String, fields: Dictionary) -> bool:
 	if not ("_rtv_mod_scene_paths" in ldr) or not ("_rtv_override_scene_paths" in ldr):
 		push_warning("[Registry] patch('scene_paths', '%s'): Loader.gd is missing injected scene-path fields; rewriter didn't fire, is the hook pack installed?" % id)
 		return false
-	# Patch operates on the dict entry the mod registered/overrode. Walk
-	# override first, then mod registration.
+	# Override first, then mod registration.
 	var target_dict: Dictionary
 	var target_store: String  # "override" or "mod"
 	if ldr._rtv_override_scene_paths.has(id):
@@ -168,15 +140,13 @@ func _patch_scene_path(id: String, fields: Dictionary) -> bool:
 	for field in fields.keys():
 		var fname := String(field)
 		if not stash.has(fname):
-			# Capture whether the key existed at all so revert can erase vs
-			# restore accurately.
+			# Record whether the key existed so revert can erase vs restore.
 			if target_dict.has(fname):
 				stash[fname] = target_dict[fname]
 			else:
 				stash[fname] = "__rtv_missing__"
 		target_dict[fname] = fields[field]
-	# Write back since dicts are references in GDScript, but re-store to be
-	# explicit, matching the surrounding pattern.
+	# Dicts are references; the re-store is redundant but explicit.
 	if target_store == "override":
 		ldr._rtv_override_scene_paths[id] = target_dict
 	else:
@@ -204,10 +174,8 @@ func _remove_scene_path(id: String) -> bool:
 	ldr._rtv_mod_scene_paths.erase(id)
 	reg.erase(id)
 	_registry_registered["scene_paths"] = reg
-	# Drop any patch stash with the entry: the stash's first-write-wins
-	# originals belong to this (now deleted) incarnation, and leaving it
-	# would make revert-after-remove report spurious success and corrupt
-	# a later re-registration of the same id.
+	# Drop the patch stash with the entry: its originals belong to this
+	# incarnation and would corrupt a later re-registration of the id.
 	var patched: Dictionary = _registry_patched.get("scene_paths", {})
 	if patched.has(id):
 		patched.erase(id)
@@ -222,9 +190,8 @@ func _revert_scene_path(id: String, fields: Array) -> bool:
 	var did_something := false
 	var ov: Dictionary = _registry_overridden.get("scene_paths", {})
 	var patched: Dictionary = _registry_patched.get("scene_paths", {})
-	# Single-scope var declarations: GDScript is function-scoped, so
-	# declaring `target_dict` / `stash` in both the full-revert and
-	# per-field branches below would shadow. Declare once up front.
+	# GDScript is function-scoped: declaring these in both branches below
+	# would shadow, so declare once up front.
 	var target_dict: Dictionary
 	var stash: Dictionary
 	if fields.is_empty():
@@ -236,9 +203,8 @@ func _revert_scene_path(id: String, fields: Array) -> bool:
 			elif ldr._rtv_mod_scene_paths.has(id):
 				target_dict = ldr._rtv_mod_scene_paths[id]
 			for fname in stash.keys():
-				# Type-check before equality: comparing a bool to a String
-				# with == raises a runtime error under strict GDScript, so
-				# gate the sentinel check by type.
+				# Gate the sentinel check by type: bool == String raises a
+				# runtime error under strict GDScript.
 				var stashed_val = stash[fname]
 				if stashed_val is String and stashed_val == "__rtv_missing__":
 					target_dict.erase(fname)
@@ -288,42 +254,26 @@ func _revert_scene_path(id: String, fields: Array) -> bool:
 
 # -------- shelters / maps --------
 #
-# The shelters list holds bare strings (vanilla shelter names). Registering
-# a shelter or map also requires a scene behind the name; if the mod
-# provides `path`, a paired scene_paths entry is auto-registered so
-# LoadScene(name) works. Otherwise the name is assumed already resolvable
-# (vanilla, or previously registered).
+# Shelters and maps share storage and differ only in the default `shelter`
+# flag. That flag controls both gameData.shelter (LoadScene prelude) and
+# the Loader.LoadShelter(name) call in Compiler.Spawn() that loads/saves
+# per-shelter persistent state -- maps don't get the latter.
 #
-# The shelters and maps registries share storage and behavior. They
-# differ only in the default `shelter` flag (true for shelters, false for
-# maps). The `shelter` flag controls TWO related things:
-#   1. gameData.shelter -- flipped during LoadScene's prelude (sets HUD/world state)
-#   2. Loader.LoadShelter(name) call in Compiler.Spawn() -- loads/saves
-#      per-shelter persistent state (furniture, stash). Maps don't get this.
-# The vanilla concept of "shelter" lumps both together, and so does this.
-#
-# Full registration schema (all optional except `path` for newly-added
-# scenes):
-#   path             -- res:// path to the .tscn (auto-registers scene_paths)
-#   transition_text  -- override for the "Loading X..." label (defaults to id)
-#   exit_spawn       -- transition node name to spawn at when arriving in
-#                       this shelter (e.g. "Door_Apartment_Exit")
-#   entrance_spawn   -- transition node name in `connected_to` to spawn at
-#                       when leaving this shelter back to its parent map
-#   connected_to     -- vanilla map name where this shelter's entrance lives
-#   connected_content -- Array of {path, position, rotation} entries spawned
-#                        into /root/Map/Content when player enters connected_to
+# Schema (all optional except `path` for newly-added scenes):
+#   path             -- res:// .tscn (auto-registers scene_paths)
+#   transition_text  -- "Loading X..." label override (defaults to id)
+#   exit_spawn       -- transition node to spawn at when arriving
+#   entrance_spawn   -- transition node in `connected_to` when leaving
+#   connected_to     -- vanilla map name holding this shelter's entrance
+#   connected_content -- Array of {path, position, rotation} spawned into
+#                        /root/Map/Content when player enters connected_to
 #   shelter          -- bool, default true for shelters / false for maps
-#
-# This schema mirrors the B_Loader mod's add_shelter/add_map dict so
-# existing B_Loader-pattern mods migrate by changing one call site.
+# Mirrors the B_Loader mod's add_shelter/add_map dict so B_Loader-pattern
+# mods migrate by changing one call site.
 
 func _register_shelter(id: String, data: Variant) -> bool:
 	return _register_shelter_or_map(id, data, true, "shelters")
 
-# Maps registry: same storage as shelters, just defaults shelter:false.
-# A "map" is a non-persistent area (no LoadShelter/SaveShelter); a
-# "shelter" gets the full save-file treatment.
 func _register_map(id: String, data: Variant) -> bool:
 	return _register_shelter_or_map(id, data, false, "maps")
 
@@ -335,8 +285,7 @@ func _register_shelter_or_map(id: String, data: Variant, default_shelter: bool, 
 		push_warning("[Registry] register('%s', '%s', ...) expects Dictionary (can be empty if scene already registered)" % [label, id])
 		return false
 	var d: Dictionary = data
-	# Both 'shelters' and 'maps' write to the same _registry_registered
-	# bucket so collisions across the two surfaces fail loud (a name can
+	# Shared bucket makes cross-surface collisions fail loud (a name can
 	# only resolve to one entry in Compiler.Spawn).
 	var reg: Dictionary = _registry_registered.get("shelters", {})
 	if reg.has(id):
@@ -345,11 +294,9 @@ func _register_shelter_or_map(id: String, data: Variant, default_shelter: bool, 
 	if id in ldr.shelters:
 		push_warning("[Registry] register('%s', '%s'): name already in shelters list (vanilla?)" % [label, id])
 		return false
-	# Build the full entry that the Compiler.Spawn prelude reads. Coerce
-	# defensively: Dictionary.get's default only covers ABSENT keys, so a
-	# present-but-null/wrong-typed value would otherwise reach the String()
-	# constructor (invalid-constructor runtime error in Godot 4 -- str() is
-	# the converting form) or store a null Array the Spawn prelude chokes on.
+	# Build the entry the Compiler.Spawn prelude reads. .get's default only
+	# covers absent keys; a present-but-null value would crash a constructor
+	# or store a null Array the prelude chokes on, hence the type checks.
 	var is_shelter: bool = d.get("shelter", default_shelter) == true
 	var tt = d.get("transition_text", id)
 	var cc = d.get("connected_content", [])
@@ -364,30 +311,24 @@ func _register_shelter_or_map(id: String, data: Variant, default_shelter: bool, 
 		"connected_to": str(d.get("connected_to", "")) if d.get("connected_to") != null else "",
 		"connected_content": cc,
 	}
-	# If a `path` is given, auto-register the scene_paths entry so the
-	# shelter/map name resolves to a real scene. Forward the shelter flag
-	# to gameData (LoadScene prelude reads `shelter` from the scene_paths
-	# entry) and the transition_text so the loading-screen label uses it.
+	# If `path` is given, auto-register the paired scene_paths entry so
+	# LoadScene(name) resolves; forward the shelter flag and gameData fields.
 	var auto_scene_path := false
 	if d.has("path"):
 		var sp_data: Dictionary = {}
 		sp_data["path"] = d["path"]
 		sp_data["shelter"] = is_shelter
-		# Forward optional gameData fields the caller might have set.
 		if d.has("menu"): sp_data["menu"] = d["menu"]
 		if d.has("permadeath"): sp_data["permadeath"] = d["permadeath"]
 		if d.has("tutorial"): sp_data["tutorial"] = d["tutorial"]
-		# transition_text lives on the scene_paths entry too. The LoadScene
-		# prelude reassigns the `scene` arg from this so vanilla's label
-		# code shows the modded label.
+		# The LoadScene prelude reassigns the `scene` arg from
+		# transition_text so vanilla's label code shows the modded label.
 		sp_data["transition_text"] = entry["transition_text"]
 		if not _register_scene_path(id, sp_data):
-			# scene_paths registration failed (probably collision); abort.
 			return false
 		auto_scene_path = true
 	ldr.shelters.append(id)
-	# Persist the full entry into the rewriter-injected dict on Loader so
-	# Compiler.Spawn's prelude can consult it.
+	# Compiler.Spawn's prelude consults this injected dict.
 	if "_rtv_mod_shelters" in ldr:
 		ldr._rtv_mod_shelters[id] = entry
 	else:
@@ -413,9 +354,7 @@ func _remove_shelter_or_map(id: String, label: String) -> bool:
 		push_warning("[Registry] remove('%s', '%s'): not a mod registration" % [label, id])
 		return false
 	var meta: Dictionary = reg[id]
-	# Cross-surface remove guard: don't let `remove('maps', X)` succeed if
-	# X was registered as a shelter (or vice versa). Less surprising than
-	# silently letting through.
+	# Cross-surface guard: remove('maps', X) must not remove a shelter.
 	if meta.get("kind", "shelters") != label:
 		push_warning("[Registry] remove('%s', '%s'): id was registered as '%s', use that registry to remove" \
 				% [label, id, meta.get("kind", "shelters")])
@@ -423,7 +362,6 @@ func _remove_shelter_or_map(id: String, label: String) -> bool:
 	var idx: int = ldr.shelters.find(id)
 	if idx >= 0:
 		ldr.shelters.remove_at(idx)
-	# Clean up the auto-created scene_paths entry too (if any).
 	if meta.get("auto_scene_path", false):
 		_remove_scene_path(id)
 	if "_rtv_mod_shelters" in ldr:

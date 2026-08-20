@@ -1,12 +1,8 @@
 ## ----- conflict_report.gd -----
-## Developer-mode diagnostics: verify script_overrides took effect, probe the
-## scene tree for mismatches, log override timing issues, and produce the
-## conflict report written to user://. Loaded alongside the normal loading
-## path but only runs when developer_mode=true.
-##
-## Mod scripts are never rewritten, so there is no marker inside a mod's source
-## to test against. Whether an override took effect is determined from the
-## script's resource_path and its extends chain.
+## Developer-mode diagnostics: verify script overrides took effect and write
+## the conflict report to user://. Only runs when developer_mode=true.
+## Mod scripts are never rewritten, so there is no marker to test against;
+## override effect is judged from resource_path and the extends chain.
 
 # Log which mods use overrideScript() -- overrides apply after scene reload.
 func _log_override_timing_warnings() -> void:
@@ -21,12 +17,9 @@ func _log_override_timing_warnings() -> void:
 		_log_debug(mod_name + " uses overrideScript() on: " + target_list
 				+ " -- applies after scene reload")
 
-# Sanity check on dynamic overrides, run after frameworks_ready. For each mod
-# that calls take_over_path() at runtime, load the declared target and log its
-# resource_path plus the head of its source so the reader can see which script
-# actually sits at that path. This reports; it does not diagnose. Deciding
-# whether an override is stale or broken needs a signal inside the mod's own
-# source, and mod sources are not rewritten.
+# Post-frameworks_ready check on dynamic overrides: load each declared
+# target and log its resource_path + source head. Reports only; diagnosing
+# staleness would need a marker mod sources don't have.
 
 func _verify_script_overrides() -> void:
 	var printed_header: bool = false
@@ -38,14 +31,10 @@ func _verify_script_overrides() -> void:
 		if targets.is_empty():
 			continue
 		if not printed_header:
-			# Debug, not info: a player can act on none of this. The FAIL
-			# branch below stays a warning, since that one means a mod's
-			# override did not apply.
-			#
-			# Only the logging is gated. The load() below always runs: it
-			# populates the ResourceCache just as mod autoloads finish, which
-			# may be load-bearing for the override mechanism itself. Confirm
-			# that with a runtime test before gating it too.
+			# Debug, not info: a player can act on none of this (the FAIL
+			# branch stays a warning). Only the logging is gated -- the load()
+			# below always runs; it populates the ResourceCache as autoloads
+			# finish, which may matter to the override mechanism itself.
 			_log_debug("[OverrideVerify] === Post-autoload cache check ===")
 			printed_header = true
 		for vanilla_path in targets:
@@ -59,8 +48,7 @@ func _verify_script_overrides() -> void:
 			_log_debug("[OverrideVerify] %s | %s | resource_path=%s src_head=[%s]" \
 					% [mod_name, vp, scr.resource_path, src_head])
 
-# Conflict summary + report output (developer mode; called from every
-# finish path in lifecycle.gd)
+# Conflict summary + report output (called from every finish path in lifecycle.gd)
 
 func _print_conflict_summary() -> void:
 	_log_info("")
@@ -107,9 +95,8 @@ func _write_conflict_report() -> void:
 	if f == null:
 		_log_warning("Could not write report to: " + CONFLICT_REPORT_PATH)
 		return
-	# store_line returns bool since Godot 4.3. Without checking it, a mid-file
-	# failure (disk full, quota) truncates the report while the log claims
-	# success.
+	# store_line returns bool since Godot 4.3; unchecked, a mid-file failure
+	# (disk full) truncates the report while the log claims success.
 	var ok := true
 	for line in _report_lines:
 		ok = f.store_line(line) and ok

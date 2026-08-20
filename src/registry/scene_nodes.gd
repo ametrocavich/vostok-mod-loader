@@ -1,67 +1,37 @@
 ## ----- registry/scene_nodes.gd -----
-##
 ## Patch-only registry for mutating node properties inside vanilla scenes
-## without shipping a full-scene override. Mod calls:
+## without a full-scene override:
+##   lib.patch(lib.Registry.SCENE_NODES, "<scene_path>#<node_path>", {...})
+## The id splits on the first '#'; node_path is relative to the scene root.
+## "<scene_path>#" or "<scene_path>#." targets the root itself (get_node
+## can only walk down, so root properties need the special form).
 ##
-##   lib.patch(lib.Registry.SCENE_NODES,
-##             "res://UI/Interface.tscn#Tools/Crafting/Types/Margin/Buttons/Equipment",
-##             {disabled = false, modulate = Color(1,1,1,1)})
+## Applies via get_tree().node_added: Godot sets scene_file_path only on
+## the root of an instantiated scene, which makes a cheap filter, and the
+## signal fires before the node's _ready, so @onready values observe the
+## patched state. The PackedScene resource is never mutated -- patches are
+## per-instance, and packed_scene.get_bundled_scene() still sees vanilla.
 ##
-## Id format: "<scene_path>#<node_path>" where scene_path is the res:// path
-## of a PackedScene and node_path is relative to that scene's root. The two
-## are split on the FIRST '#' (scene paths don't legally contain #, node
-## names in Godot can't either).
-##
-## To target the scene's ROOT node directly (e.g. for properties on a script
-## attached to the root), use "<scene_path>#" or "<scene_path>#.". Without
-## a special root path get_node_or_null can only walk DOWN from the root,
-## so root-attached properties would otherwise be unreachable.
-##
-## Subscribes to get_tree().node_added at frameworks_ready
-## time. Godot sets `node.scene_file_path` on the ROOT of an instantiated
-## scene, and only there, which makes a cheap filter. When a match
-## fires, the registered node_paths for that scene are walked and resolved via
-## get_node_or_null on the scene root, and apply the property patches. The
-## signal fires BEFORE the node's _ready, so @onready values that depend on
-## the patched props observe the patched state.
-##
-## The PackedScene resource is never mutated. Trade-off: patches apply per-instance at
-## instantiation, not at resource load. Code that calls
-## packed_scene.get_bundled_scene() directly still sees vanilla values
-## (doesn't come up in RTV vanilla).
-##
-## What this registry CAN'T do (by design):
-##   - Add or remove nodes (structural changes): use override('scenes', ...)
-##   - Patch sub-resources embedded inside the scene
-##   - Patch values on scenes loaded outside the tree (direct-load mutations)
+## Can't (by design): add/remove nodes (use override('scenes', ...)),
+## patch embedded sub-resources, or patch scenes loaded outside the tree.
 
-# Per-scene patch state, keyed by scene_path -> node_path -> {prop: value}.
-# Populated by _patch_scene_node, consumed by _apply_patches_for_scene_root.
+# Patch state: scene_path -> node_path -> {prop: value}.
 var _scene_node_patches: Dictionary = {}
 
-# Parallel stash for revert: same shape, holds the value the prop had before
-# the first patch on that (scene, node, prop) triple. Subsequent patches to
-# the same prop don't overwrite -- revert restores true original state.
-# Populated inside _apply_patches_for_scene_root the first time a live
-# instance gets a prop set, not at patch() call time (nothing holds the
-# instance yet at that point).
+# Revert stash, same shape: the value before the first patch on that
+# (scene, node, prop) triple. Populated at apply time, not patch() time --
+# no live instance exists yet then.
 var _scene_node_stash: Dictionary = {}
 
-# Guard against connecting the node_added signal twice across
-# frameworks_ready emissions (shouldn't happen, but belt-and-suspenders).
 var _scene_nodes_listener_connected: bool = false
 
-# Memoizes successful probe validations keyed by
-# "<scene_path>#<node_path>|<sorted,field,names>". Keeps repeat patch()
-# calls with the same id + field set (e.g. recipes.gd auto-unlocking the
-# Equipment tab once per registered recipe) from instantiating +
-# free-ing Interface.tscn N times. Runtime safety is unchanged --
-# _apply_patches_for_scene_root still re-checks _object_has_property on
-# every live instance, so the cache is strictly additive.
+# Memoized probe validations, keyed "<scene>#<node>|<sorted,fields>".
+# Keeps repeat patch() calls with the same id + field set from
+# instantiating + freeing the scene N times. Strictly additive:
+# _apply_patches_for_scene_root still re-checks every live instance.
 var _validated_patches: Dictionary = {}
 
-# Entry point invoked from hooks_api._register_core_hooks after frameworks_ready.
-# Idempotent.
+# Invoked from hooks_api._register_core_hooks after frameworks_ready.
 func _scene_nodes_connect_listener() -> void:
 	if _scene_nodes_listener_connected:
 		return
@@ -73,8 +43,7 @@ func _scene_nodes_connect_listener() -> void:
 	_scene_nodes_listener_connected = true
 
 func _on_any_node_added(node: Node) -> void:
-	# Cheap filter: Godot only sets scene_file_path on the ROOT of an
-	# instantiated scene, so 99.9% of node_added events short-circuit here.
+	# Only instantiated-scene roots carry scene_file_path.
 	var scene_path: String = node.scene_file_path
 	if scene_path.is_empty():
 		return
@@ -105,17 +74,8 @@ func _apply_patches_for_scene_root(scene_path: String, scene_root: Node) -> void
 		stash_per_scene[node_path] = stash_per_node
 	_scene_node_stash[scene_path] = stash_per_scene
 
-# Split 'scene#node' id on the first '#'. Returns [scene_path, node_path] or
-# [null, null] on malformed input.
-#
-# Accepts three forms for the node_path side:
-#   "...tscn#Foo/Bar"  -> node_path = "Foo/Bar"   (descendant)
-#   "...tscn#."        -> node_path = "."         (root, explicit)
-#   "...tscn#"         -> node_path = ""          (root, empty form)
-# The empty and "." forms both target the scene's root node. Without this,
-# patching a property that lives on the scene's root requires constructing
-# an artificial child path (which may not exist), since get_node_or_null
-# walks DOWN from the root and can't return the root itself by name.
+# Split 'scene#node' on the first '#'. Returns [scene_path, node_path], or
+# [null, null] on malformed input. "" and "." both mean the scene root.
 func _split_scene_node_id(id: String) -> Array:
 	var hash_idx: int = id.find("#")
 	if hash_idx <= 0:
@@ -126,21 +86,16 @@ func _split_scene_node_id(id: String) -> Array:
 		return [null, null]
 	return [scene_path, node_path]
 
-# Resolve a node_path against a scene root. Empty or "." means the root
-# itself; anything else falls through to get_node_or_null. Returns null
-# only when a non-root path doesn't resolve.
+# Empty or "." resolves to the root itself; anything else through
+# get_node_or_null.
 func _resolve_scene_target(scene_root: Node, node_path: String) -> Node:
 	if node_path == "" or node_path == ".":
 		return scene_root
 	return scene_root.get_node_or_null(NodePath(node_path))
 
-# Check property existence at patch-time against a freshly-instantiated
-# probe. We don't require the scene to be in the tree at patch() time
-# mods call this from _ready() before the UI scene loads. Instead, load
-# the PackedScene and peek at the target node by instantiating and freeing.
-# This is a per patch() call but only on cold paths (mod boot).
-# Returns true if the (scene, node, props) triple is well-formed, false if
-# any piece doesn't resolve (with a warn on each failure).
+# Validate at patch() time against a freshly-instantiated probe; the scene
+# need not be in the tree yet (mods patch from _ready() before UI loads).
+# Warns and returns false if any piece doesn't resolve.
 func _validate_scene_node_patch(scene_path: String, node_path: String, fields: Dictionary) -> bool:
 	var field_keys: Array = []
 	for k in fields.keys():
@@ -185,8 +140,7 @@ func _patch_scene_node(id: String, fields: Dictionary) -> bool:
 		return false
 	if not _validate_scene_node_patch(scene_path, node_path, fields):
 		return false
-	# Connect the listener lazily, in case a mod patches before
-	# frameworks_ready fires. Idempotent.
+	# Lazy connect in case a mod patches before frameworks_ready. Idempotent.
 	_scene_nodes_connect_listener()
 	var per_node: Dictionary = _scene_node_patches.get(scene_path, {})
 	var props: Dictionary = per_node.get(node_path, {})
@@ -194,25 +148,21 @@ func _patch_scene_node(id: String, fields: Dictionary) -> bool:
 		props[String(prop)] = fields[prop]
 	per_node[node_path] = props
 	_scene_node_patches[scene_path] = per_node
-	# Track into _registry_patched so the rest of the registry subsystem
-	# sees a consistent shape: scene_nodes -> {id -> {prop -> value}}.
-	# Note: the STASH (for revert) is populated at apply time, not here.
+	# Track into _registry_patched for shape consistency with the rest of
+	# the subsystem; the revert stash is populated at apply time, not here.
 	var patched: Dictionary = _registry_patched.get("scene_nodes", {})
 	var pat_entry: Dictionary = patched.get(id, {})
 	for prop in fields.keys():
 		pat_entry[String(prop)] = fields[prop]
 	patched[id] = pat_entry
 	_registry_patched["scene_nodes"] = patched
-	# Apply immediately to any scene instance already in the tree. Covers
-	# the case where a mod patches after the scene was instantiated (rare
-	# but legal, e.g. a config-menu toggle flipping a UI property live).
+	# Apply immediately to instances already in the tree (patching after
+	# instantiation is rare but legal, e.g. a config-menu toggle).
 	_apply_patch_to_live_instances(scene_path)
 	_log_debug("[Registry] patched scene node '%s' (%d field(s))" % [id, fields.size()])
 	return true
 
-# Scan the current tree for any live instance of `scene_path`, re-applying
-# all registered patches for that scene. Called from _patch_scene_node so
-# late patches land on already-instantiated scenes.
+# Re-apply all registered patches to any live instance of `scene_path`.
 func _apply_patch_to_live_instances(scene_path: String) -> void:
 	var tree := get_tree()
 	if tree == null:
@@ -222,17 +172,14 @@ func _apply_patch_to_live_instances(scene_path: String) -> void:
 func _walk_for_scene_roots(node: Node, scene_path: String) -> void:
 	if node.scene_file_path == scene_path:
 		_apply_patches_for_scene_root(scene_path, node)
-		# Don't recurse into an already-matched root; its children can't
-		# have the SAME scene_file_path unless they're nested instances
-		# of the same scene, which is legal but exceedingly rare. A deeper
-		# nested instance will also surface via node_added on its own.
+		# Don't recurse into a matched root: same-scene nested instances are
+		# exceedingly rare and surface via node_added on their own.
 		return
 	for child in node.get_children():
 		_walk_for_scene_roots(child, scene_path)
 
-# Revert. Fields-empty: revert every prop on the id. Fields-nonempty:
-# per-field revert. Restoration writes the stashed original value back to
-# every live instance (found via tree walk) and erases the patch so future
+# Revert (all props when fields is empty, else per-field): write stashed
+# originals back to every live instance and erase the patch so future
 # instantiations see vanilla.
 func _revert_scene_node(id: String, fields: Array) -> bool:
 	var parts := _split_scene_node_id(id)
@@ -257,7 +204,6 @@ func _revert_scene_node(id: String, fields: Array) -> bool:
 	else:
 		for k in fields:
 			targets.append(String(k))
-	# Restore stashed values on live instances.
 	var live_roots: Array[Node] = []
 	var tree := get_tree()
 	if tree != null:
@@ -270,14 +216,12 @@ func _revert_scene_node(id: String, fields: Array) -> bool:
 					target.set(fname, stash_per_node[fname])
 			stash_per_node.erase(fname)
 		elif not fields.is_empty() and not pat_entry.has(fname):
-			# Field was never patched at all (typo): warn, nothing to drop.
 			push_warning("[Registry] revert('scene_nodes', '%s'): field '%s' wasn't patched" % [id, fname])
-		# Always drop the patch, even if no live instance ever observed it
-		# (a pending, never-applied patch has no stash entry but must still
-		# be erased so future instantiations see vanilla).
+		# Always drop the patch: a pending never-applied patch has no stash
+		# entry but must still be erased so future instantiations see vanilla.
 		props.erase(fname)
 		pat_entry.erase(fname)
-	# Prune empty nested dicts to keep state clean.
+	# Prune empty nested dicts.
 	if props.is_empty():
 		per_node.erase(node_path)
 	else:

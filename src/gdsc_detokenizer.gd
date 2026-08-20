@@ -1,14 +1,8 @@
 ## ----- gdsc_detokenizer.gd -----
-## Reads Godot's binary-tokenized .gdc scripts and reconstructs the source.
-## Required because load().source_code is empty for scripts compiled via the
-## tokenized export path. Covers TOKENIZER_VERSION 100 (Godot 4.3-4.4) and
-## 101 (Godot 4.5-4.6). Also owns the vanilla-source cache helpers.
-
-# --- GDSC Binary Token Detokenizer -------------------------------------------
-# Reconstructs GDScript source from Godot's binary-tokenized .gdc format (GDSC).
-# Used when the game exports with binary tokenization and load().source_code is
-# empty.  Called for all class_name scripts during hook pack generation.
-# Supports TOKENIZER_VERSION 100 (Godot 4.3-4.4) and 101 (Godot 4.5-4.6).
+## Reconstructs source from Godot's binary-tokenized .gdc (GDSC) scripts;
+## load().source_code is empty for the tokenized export path. Covers
+## TOKENIZER_VERSION 100 (Godot 4.3-4.4) and 101 (Godot 4.5-4.6). Also owns
+## the vanilla-source cache helpers.
 
 const _GDSC_MAGIC := "GDSC"
 const _GDSC_TOKEN_BITS := 8
@@ -29,8 +23,7 @@ const _GDSC_V100_SHIFT_FROM := 83
 # 73-78: [ ] { } ( )   79-87: , ; . .. ... : $ -> _
 # 88-90: NEWLINE INDENT DEDENT   91-94: PI TAU INF NAN   99: EOF
 #
-# Raw int keys are used in dictionaries below because Godot does not allow
-# enum references in const dictionary initializers.
+# Raw int keys: Godot forbids enum refs in const dictionary initializers.
 const _TOKEN_TEXT := {
 	4: "<", 5: "<=", 6: ">", 7: ">=", 8: "==", 9: "!=",
 	10: "and", 11: "or", 12: "not", 13: "&&", 14: "||", 15: "!",
@@ -85,9 +78,7 @@ const _SPACE_AFTER := {
 	71: 1, 72: 1,                                   # void yield
 }
 
-# Named token-type indices used by _gdsc_reconstruct. Each equals the raw
-# integer it replaces (see the _TOKEN_TEXT table + the index map above), so
-# substituting them is a pure value-rename with no runtime change.
+# Named indices for _gdsc_reconstruct; values match the table above.
 const TK_EMPTY := 0
 const TK_ANNOTATION := 1
 const TK_IDENTIFIER := 2
@@ -116,22 +107,19 @@ const TK_NAN := 94
 const TK_EOF := 99
 
 func _detokenize_script(script_path: String) -> String:
-	# Zero-byte PCK entries (base game ships CasettePlayer.gd empty in RTV
-	# 4.6.1) have nothing to decode. Return empty silently so callers don't
-	# misread this as an IO failure.
+	# Zero-byte PCK entries (RTV ships CasettePlayer.gd empty) have nothing
+	# to decode; return empty silently, it is not an IO failure.
 	if _pck_zero_byte_paths.has(script_path):
 		return ""
-	# Try multiple methods to read raw bytes -- FileAccess on res:// can fail for
-	# PCK-embedded files depending on the container format (RSCC, encryption, etc.).
+	# FileAccess on res:// can fail for PCK-embedded files depending on the
+	# container format; try res://, then globalized, then .gdc.
 	var raw := PackedByteArray()
 
-	# Method 1: FileAccess.open() on res:// path directly.
 	var f := FileAccess.open(script_path, FileAccess.READ)
 	if f:
 		raw = f.get_buffer(f.get_length())
 		f.close()
 
-	# Method 2: Try the globalized path.
 	if raw.is_empty():
 		var glob_path := ProjectSettings.globalize_path(script_path)
 		f = FileAccess.open(glob_path, FileAccess.READ)
@@ -139,9 +127,6 @@ func _detokenize_script(script_path: String) -> String:
 			raw = f.get_buffer(f.get_length())
 			f.close()
 
-	# Method 3: Try loading as a generic Resource and check if it has raw data.
-	# (GDScript objects loaded from tokenized files don't expose raw bytes, but
-	# get_file_as_bytes with a .gdc extension is worth trying in case Godot mapped it.)
 	if raw.is_empty():
 		var gdc_path := script_path.replace(".gd", ".gdc")
 		raw = FileAccess.get_file_as_bytes(gdc_path)
@@ -155,7 +140,7 @@ func _detokenize_script(script_path: String) -> String:
 		return ""
 	var magic := raw.slice(0, 4).get_string_from_ascii()
 	if magic != _GDSC_MAGIC:
-		# Not a GDSC file -- might be plain text that load() failed on for another reason.
+		# Might be plain text that load() failed on for another reason.
 		var text := raw.get_string_from_utf8()
 		if not text.is_empty() and (text.begins_with("extends") or text.begins_with("class_name") or text.begins_with("@")):
 			return text
@@ -219,13 +204,11 @@ func _detokenize_script(script_path: String) -> String:
 	for _i in const_count:
 		if offset + 4 > buf.size():
 			break
-		# Decode next Variant from the stream.  We round-trip through
-		# var_to_bytes() to determine consumed size since bytes_to_var()
-		# doesn't report how many bytes it read.
+		# bytes_to_var() doesn't report consumed size; round-trip through
+		# var_to_bytes() to advance the offset.
 		var remaining := buf.slice(offset)
 		var val = bytes_to_var(remaining)
 		constants.append(val)
-		# Advance offset by the encoded size.
 		var encoded := var_to_bytes(val)
 		offset += encoded.size()
 
@@ -257,21 +240,18 @@ func _detokenize_script(script_path: String) -> String:
 			break
 		var raw_type: int = buf.decode_u32(offset)
 		var tk_type: int = raw_type & _GDSC_TOKEN_MASK
-		# v100 (Godot 4.3-4.4) has no "..." token, so every index from 83 up
-		# sits one lower than in the v101 table above. Normalizing at the point
-		# of decode keeps version handling out of everything downstream.
-		# Unnormalized, a v100 ":" reads as "...", NEWLINE reads as "_", and
-		# EOF is missed entirely so the stream never terminates.
+		# v100 has no "..." token, so indices 83+ sit one lower than the
+		# v101 table. Normalize at decode; unnormalized, ":" reads as "...",
+		# NEWLINE as "_", and EOF is missed so the stream never terminates.
 		if version == GDSC_VERSION_V100 and tk_type >= _GDSC_V100_SHIFT_FROM:
 			tk_type += 1
 		var data_idx: int = raw_type >> _GDSC_TOKEN_BITS
 		tokens.append([tk_type, data_idx])
 		offset += token_len
 
-	# All section loops above bail with a silent break on buffer overrun, and
-	# a failed bytes_to_var() in the constants loop desyncs the offset. Cross-
-	# check collected sizes against the header counts so truncated/desynced
-	# input fails loudly instead of reconstructing (and caching) garbage.
+	# The section loops break silently on overrun and a failed bytes_to_var
+	# desyncs the offset; cross-check against header counts so bad input
+	# fails loudly instead of reconstructing (and caching) garbage.
 	if identifiers.size() != ident_count or constants.size() != const_count or tokens.size() != token_count:
 		_log_critical("[Detokenize] Section truncation/desync in %s: idents %d/%d consts %d/%d tokens %d/%d -- refusing partial reconstruction" \
 				% [script_path, identifiers.size(), ident_count, constants.size(), const_count, tokens.size(), token_count])
@@ -297,12 +277,10 @@ func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Arr
 		var tk: int = tokens[i][0]
 		var idx: int = tokens[i][1]
 
-		# Handle line changes via line_map.
 		if line_map.has(i):
 			var new_line: int = line_map[i]
-			# Line values are raw u32s from the file; a corrupt/desynced buffer
-			# can yield huge values that would spin this loop for billions of
-			# iterations. No real script has 10000 consecutive blank lines.
+			# Line values are raw u32s; a corrupt buffer can yield values
+			# that spin this loop for billions of iterations.
 			if new_line - current_line_num > 10000:
 				_log_critical("[Detokenize] Absurd line jump %d -> %d -- corrupt line map, aborting reconstruction" % [current_line_num, new_line])
 				return ""
@@ -329,13 +307,11 @@ func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Arr
 			prev_tk = tk
 			continue
 
-		# TK_EMPTY is the tokenizer's placeholder, never emitted into a real
-		# stream. Upstream skips it explicitly; without this it would fall
-		# through to the "<tk0>" placeholder below and corrupt the output.
+		# TK_EMPTY would otherwise fall through to the "<tk0>" placeholder
+		# and corrupt the output.
 		if tk == TK_EMPTY:
 			continue
 
-		# Build the text for this token.
 		var text := ""
 		if tk == TK_IDENTIFIER:
 			text = identifiers[idx] if idx < identifiers.size() else "<ident?>"
@@ -349,7 +325,7 @@ func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Arr
 		else:
 			text = "<tk%d>" % tk
 
-		# Apply indentation from column data for the first visible token on a line.
+		# Indentation comes from column data on the first visible token.
 		if not line_started:
 			line_started = true
 			if col_map.has(i):
@@ -358,7 +334,6 @@ func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Arr
 				for _t in tabs:
 					current_line += "\t"
 
-		# Spacing logic.
 		var add_space_before := false
 		if need_space and not current_line.is_empty() and not current_line.ends_with("\t"):
 			if _SPACE_BEFORE.has(tk):
@@ -389,10 +364,8 @@ func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Arr
 
 		current_line += text
 
-		# Set need_space for next token.  _SPACE_AFTER covers operators,
-		# keywords, and punctuation.  Also need space after identifiers (2),
-		# literals (3), close-parens (78), close-bracket (74), close-brace (76),
-		# constants (91-94 PI/TAU/INF/NAN), and underscore (87).
+		# _SPACE_AFTER covers operators/keywords/punctuation; identifiers,
+		# literals, closers, PI/TAU/INF/NAN and _ also want a space after.
 		need_space = _SPACE_AFTER.has(tk) or tk == TK_IDENTIFIER or tk == TK_LITERAL \
 				or tk == TK_PAREN_CLOSE or tk == TK_BRACKET_CLOSE or tk == TK_BRACE_CLOSE \
 				or tk == TK_PI or tk == TK_TAU or tk == TK_INF \
@@ -400,32 +373,20 @@ func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Arr
 
 		prev_tk = tk
 
-	# Flush last line.
 	if not current_line.is_empty():
 		lines.append(current_line)
 
-	# GDScript files should end with newline.
 	var result := "\n".join(lines)
 	if not result.ends_with("\n"):
 		result += "\n"
 	return result
 
-# Column -> leading tab count. The only place column-to-indent math lives.
-#
-# This depends on the game's source style, not on the bytecode format. Godot's
-# tokenizer sets column by counting characters, one per character, resetting to
-# 1 each line; tab_size feeds only the INDENT/DEDENT decision and never reaches
-# the column value. A tab is therefore one column. RTV's vanilla scripts are
-# indented with 4 spaces per level, which is why their columns run 1, 5, 9, 13
-# and why dividing by 4 recovers the depth.
-#
-# Tab-indented or 2-space source would produce columns 1, 2, 3, 4 and collapse
-# to depth 0. STABILITY canary C in hook_pack.gd catches that.
-#
-# A relative indent stack, the other way to do this, would be less robust here:
-# a statement wrapped across lines inside ( or [ still gets column entries at
-# its alignment column, and a stack would push and pop on those and corrupt the
-# depth of every statement after it. Per-line math ignores them.
+# Column -> leading tab count. Godot's tokenizer counts one column per
+# character (a tab is one column; tab_size never reaches the column value).
+# RTV's vanilla source is 4-space indented, so columns run 1, 5, 9, 13 and
+# col / 4 recovers the depth. Tab or 2-space source would collapse to
+# depth 0 -- stability canary C in hook_pack.gd catches that. A relative
+# indent stack would corrupt depth on statements wrapped inside ( or [.
 func _indent_from_column(col: int) -> int:
 	@warning_ignore("integer_division")
 	return col / 4
@@ -439,10 +400,8 @@ func _gdsc_variant_to_source(value: Variant) -> String:
 		TYPE_INT:
 			return str(value)
 		TYPE_FLOAT:
-			# str() renders these as bare "inf"/"-inf"/"nan", which are not
-			# valid GDScript identifiers -- emit the builtin constants instead.
-			# (A literal inf/nan constant is rare, e.g. an overflowing float
-			# literal folded by the tokenizer, but must still compile.)
+			# str() renders bare "inf"/"nan", which are not valid GDScript;
+			# emit the builtin constants instead.
 			if is_inf(value):
 				return "INF" if value > 0.0 else "-INF"
 			if is_nan(value):
@@ -458,41 +417,31 @@ func _gdsc_variant_to_source(value: Variant) -> String:
 		TYPE_NODE_PATH:
 			return '^"%s"' % str(value).c_escape()
 		_:
-			# The GDScript 2.0 constant pool only holds literals, which is the
-			# set handled above. Vectors, colors, arrays and dictionaries reach
-			# a script as constructor tokens, not as pooled Variants, so they
-			# never arrive here.
-			#
-			# Loud rather than best-effort: str() on an unexpected type yields
-			# something like "(1, 2)", which is not valid GDScript, and the
-			# rewritten script would fail to compile with no indication of why.
+			# The constant pool only holds literals; vectors/colors/arrays
+			# arrive as constructor tokens, never here. str() on an
+			# unexpected type is not valid GDScript, so fail loudly.
 			_log_critical("[Detokenize] Constant pool holds an unexpected Variant type %d -- cannot render it as source. The rewritten script would not compile." % typeof(value))
 			return "null"
 
 func _read_vanilla_source(script_path: String) -> String:
-	# On-disk cache first (pristine vanilla from a prior session's detokenize).
-	# Do not call load(script_path) here, not even to "verify" the
-	# live script. Any load() triggers ResourceFormatLoaderGDScript to read
-	# the PCK's .gdc (via the PCK's stale .gd.remap) and cache the tokenized
-	# result at script_path. Subsequent hook-pack mounts + loads hit that
-	# cached entry instead of the rewrite. The cache must stay cold until the
-	# hook pack is mounted.
+	# On-disk cache first. Never call load(script_path) here: any load()
+	# makes ResourceFormatLoaderGDScript cache the PCK's tokenized result
+	# at script_path (via the PCK's stale .gd.remap), and later hook-pack
+	# mounts + loads then hit that entry instead of the rewrite. The cache
+	# must stay cold until the hook pack is mounted.
 	var cache_file := VANILLA_CACHE_DIR.path_join(script_path.trim_prefix("res://"))
 	if FileAccess.file_exists(cache_file):
 		var cached := FileAccess.get_file_as_string(cache_file)
 		if not cached.is_empty():
 			return cached
 
-	# No cache: detokenize from raw .gdc bytes. This uses FileAccess only
-	# (never ResourceLoader), so no cache entry is created.
+	# Detokenize uses FileAccess only, so no cache entry is created.
 	var source := _detokenize_script(script_path)
 	if source.is_empty():
 		return ""
 
-	# Detect a rewrite accidentally served at the vanilla path (would mean
-	# a prior session left a mount active that contaminated detokenize
-	# input -- shouldn't happen in the current design, but catch it loudly
-	# so it is not rewritten twice).
+	# A rewrite served at the vanilla path means a stale mount contaminated
+	# the detokenize input; catch it loudly so it is not rewritten twice.
 	if "_rtv_ready_done" in source or 'Engine.get_meta("RTVModLib"' in source:
 		_log_critical("[Hooks] Detokenized source for %s already contains rewrite markers -- possible stale overlay. Delete %s and restart." \
 				% [script_path, ProjectSettings.globalize_path(HOOK_PACK_DIR)])
@@ -506,16 +455,15 @@ func _save_vanilla_source(script_path: String, source: String) -> void:
 	var cache_file := VANILLA_CACHE_DIR.path_join(script_path.trim_prefix("res://"))
 	DirAccess.make_dir_recursive_absolute(
 		ProjectSettings.globalize_path(cache_file.get_base_dir()))
-	# Write to a .tmp sibling and rename into place. FileAccess.WRITE creates
-	# the target file immediately, so writing the final path directly means a
-	# crash mid-write leaves a truncated file there, and _read_vanilla_source
-	# trusts any non-empty cache hit as pristine vanilla forever.
+	# Write to a .tmp sibling and rename into place: a crash mid-write must
+	# not leave a truncated file that _read_vanilla_source would trust as
+	# pristine vanilla forever.
 	var tmp_file := cache_file + ".tmp"
 	var f := FileAccess.open(tmp_file, FileAccess.WRITE)
 	if f == null:
 		return
-	# store_string returns bool since Godot 4.3; a truncated cache file would
-	# be trusted as pristine vanilla forever, so remove it on any write error.
+	# store_string returns bool since Godot 4.3; remove the partial file on
+	# any write error.
 	var ok := f.store_string(source)
 	var err := f.get_error()
 	f.close()
@@ -523,8 +471,8 @@ func _save_vanilla_source(script_path: String, source: String) -> void:
 		_log_warning("[Detokenize] Vanilla cache write failed for %s (err %d) -- removing partial file" % [cache_file, err])
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(tmp_file))
 		return
-	# rename_absolute replaces an existing target (DirAccess removes it first
-	# on Windows), so a stale empty file at the final path can't block the swap.
+	# rename_absolute replaces an existing target, so a stale empty file at
+	# the final path can't block the swap.
 	var rename_err := DirAccess.rename_absolute(
 		ProjectSettings.globalize_path(tmp_file),
 		ProjectSettings.globalize_path(cache_file))
@@ -532,10 +480,9 @@ func _save_vanilla_source(script_path: String, source: String) -> void:
 		_log_warning("[Detokenize] Vanilla cache rename failed for %s (err %d) -- cache skipped this session" % [cache_file, rename_err])
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(tmp_file))
 
-# ANCHOR: probe_paths below assume vanilla RTV ships Camera/Controller/Audio/AI
-# under res://Scripts/. If a game update renames all FOUR, this returns -1,
-# which _generate_hook_pack currently treats as "no probe" and proceeds
-# WITHOUT canary B protection (see hook_pack.gd's tok_version checks).
+# ANCHOR: probe_paths assume vanilla RTV ships Camera/Controller/Audio/AI
+# under res://Scripts/. If a game update renames all four this returns -1,
+# and _generate_hook_pack then proceeds without canary B protection.
 func _probe_gdsc_version() -> int:
 	var probe_paths := ["res://Scripts/Camera.gd", "res://Scripts/Controller.gd",
 			"res://Scripts/Audio.gd", "res://Scripts/AI.gd"]

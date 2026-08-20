@@ -4,8 +4,7 @@
 ## version accessors, plus the internal dispatch helpers. Also owns
 ## frameworks_ready emission.
 
-# Version accessors. Mods call these to gate features on modloader version:
-#   if lib.major_version() >= 3: use_new_api()
+# Version accessors, for mods gating features on modloader version.
 static func version() -> String:
 	return MODLOADER_VERSION
 
@@ -33,17 +32,14 @@ func _emit_frameworks_ready() -> void:
 	_scene_nodes_connect_listener()
 	frameworks_ready.emit()
 	_log_info("[RTVModLib] frameworks_ready emitted")
-	# All mod autoloads have now finished their _ready() calls, which is
-	# where overrideScript() calls typically fire take_over_path. Verify
-	# each declared override actually landed in the ResourceCache and
-	# subscribe to node_added so the report can say whether new instances
-	# spawn with the mod's script vs. vanilla (catches PackedScene
-	# ext_resource staleness that take_over_path can't fix).
+	# Mod autoload _ready() calls (where overrideScript() fires
+	# take_over_path) have finished: verify each declared override landed
+	# and watch node_added for PackedScene ext_resource staleness that
+	# take_over_path can't fix.
 	_verify_script_overrides()
 
-## Extract the hook_base ("<script>-<method>") from a full hook name by
-## stripping any -pre/-post/-callback suffix. A bare name (replace hook) is
-## already its own base. Used to maintain _hooked_bases.
+## Extract the hook_base ("<script>-<method>") by stripping any
+## -pre/-post/-callback suffix; a bare (replace) name is its own base.
 static func _hook_base_of(hook_name: String) -> String:
 	if hook_name.ends_with("-pre"):
 		return hook_name.substr(0, hook_name.length() - 4)
@@ -55,44 +51,34 @@ static func _hook_base_of(hook_name: String) -> String:
 
 
 ## Register a hook callback. Name grammar: "<script stem lowercase>-<method
-## lowercase>" plus an optional "-pre" / "-post" / "-callback" suffix; the
-## bare (suffixless) name is the single-owner REPLACE slot. Returns a hook
-## id usable with unhook(), or -1 when the replace slot is already owned.
-## Callbacks run in ascending `priority` order. Ties are not guaranteed to
-## run in registration order (Array.sort_custom is not a stable sort) --
-## use distinct priorities when order between two callbacks matters.
+## lowercase>" plus optional "-pre" / "-post" / "-callback"; the bare name is
+## the single-owner REPLACE slot. Returns a hook id for unhook(), or -1 when
+## the replace slot is already owned. Callbacks run in ascending `priority`
+## order; ties are not stable (sort_custom), so use distinct priorities when
+## order matters.
 ##
-## IMPORTANT wrap-surface contract: registering here does not wrap the
-## vanilla method. The wrap surface is fixed at _generate_hook_pack time
-## from (a) [hooks] sections in mod.txt, (b) LITERAL .hook("...") string
-## calls found by the _re_hook_call source scan, (c) add_hook(), or (d) the
-## loader's own _seed_core_hooks seed (Menu.gd _ready). A hook() call whose
-## name is built at runtime (concatenation, variable) registers fine but
-## never fires unless the target method was wrapped by one of those
-## declarations.
+## Wrap-surface contract: registering here does not wrap the vanilla method.
+## The wrap surface is fixed at _generate_hook_pack time from [hooks]
+## sections, literal .hook("...") calls found by source scan, add_hook(), or
+## the core seed. A hook name built at runtime registers fine but never
+## fires unless the target was wrapped by one of those declarations.
 func hook(hook_name: String, callback: Callable, priority: int = 100) -> int:
 	var is_replace := not (hook_name.ends_with("-pre") \
 			or hook_name.ends_with("-post") \
 			or hook_name.ends_with("-callback"))
-	# Unknown-suffix trap. The name grammar allows exactly one hyphen for a
-	# replace hook ("<stem>-<method>"; neither script stems nor GDScript
-	# method names can contain one). Two or more hyphens with no recognized
-	# suffix means either a mod typo ("-per", "-Post") or a NEW hook variant
-	# whose suffix wasn't added to this check, _hook_base_of, the
-	# _re_hook_call regex, and both _rtv_dispatch_inline_src branches (see
-	# the ADDING A NEW HOOK VARIANT note in rewriter_parse.gd). Either way the
-	# registration would be silently misfiled as a replace hook under a base
-	# no wrapper ever dispatches. It "succeeds" and never fires.
+	# Unknown-suffix trap: the grammar allows exactly one hyphen for a
+	# replace hook, so two-plus hyphens with no recognized suffix is a typo
+	# ("-per") or a new hook variant not added everywhere (see ADDING A NEW
+	# HOOK VARIANT in rewriter_parse.gd). Either way the registration would
+	# be silently misfiled as a replace hook that never fires.
 	if is_replace and hook_name.count("-") >= 2:
 		push_warning("[RTVModLib] hook('%s'): unrecognized suffix '-%s' -- registering as a REPLACE hook, which will never fire under that name. Did you mean -pre, -post, or -callback?" \
 				% [hook_name, hook_name.get_slice("-", hook_name.count("-"))])
 	if is_replace and _hooks.has(hook_name) and (_hooks[hook_name] as Array).size() > 0:
 		var owner_id: int = (_hooks[hook_name] as Array)[0]["id"]
-		# Info-level, not warning: rejection is normal API behavior (replace
-		# slots are single-owner by design). Caller checks the -1 return
-		# code. Promoting this to push_warning() made every test assertion
-		# and every mod-conflict check spam Godot's stderr even though it's
-		# expected. Debug-gated so verbose logs still show it when needed.
+		# Debug-level, not warning: rejection is normal API behavior (replace
+		# slots are single-owner) and the caller checks the -1 return; a
+		# warning here spams stderr on every expected conflict check.
 		_log_debug("[RTVModLib] replace hook '%s' already owned (id=%d), registration rejected" \
 				% [hook_name, owner_id])
 		return -1
@@ -111,37 +97,23 @@ func hook(hook_name: String, callback: Callable, priority: int = 100) -> int:
 	_next_id += 1
 	return id
 
-## godot-mod-loader compat shim. Mods written against the upstream
-## godot-mod-loader convention call `ModLoader.add_hook(path, method, cb,
-## before)` to register a hook. Translate that into the native
-## `hook("<stem>-<method>-pre/post", cb)`. Enroll the path into
-## _hooked_methods so the wrap surface picks it up on pack generation.
+## godot-mod-loader compat shim: translates upstream `add_hook(path, method,
+## cb, before)` into native hook("<stem>-<method>-pre/post") and enrolls the
+## path into _hooked_methods for the wrap surface.
 ##
-## Limitation 1 -- timing: pack generation reads _hooked_methods up front.
-## An add_hook() call that arrives after `_generate_hook_pack` has already
-## run won't get its vanilla script wrapped (the hook name registers fine,
-## but there's no wrapper to dispatch it). To be wrapped, add_hook() must
-## run before _generate_hook_pack -- in practice, from a `!`-prefixed early
-## autoload's _init, or the mod must declare the path in [hooks] in mod.txt
-## so the wrap mask is populated statically before any mod code runs.
+## Timing: pack generation reads _hooked_methods up front, so add_hook()
+## must run before _generate_hook_pack (in practice, from a `!`-prefixed
+## early autoload's _init), or the mod must also declare the path in [hooks].
 ##
-## Limitation 2 -- path shape: bare filenames are normalized to
-## `res://Scripts/<file>` to match RTV's game-script layout. If the actual
-## vanilla lives elsewhere (`res://Scripts/Framework/X.gd`,
-## `res://SomeOther/Y.gd`, etc.) the normalized path won't match any enumerated
-## vanilla and the wrap silently no-ops. Pass a fully-qualified `res://` path
-## when your target isn't directly under `res://Scripts/`.
+## Path shape: bare filenames normalize to `res://Scripts/<file>`; pass a
+## fully-qualified res:// path for targets elsewhere, or the wrap silently
+## no-ops.
 func add_hook(script_path: String, method_name: String, callback: Callable, is_before: bool = true) -> int:
 	var stem := script_path.get_file().get_basename().to_lower()
 	var suffix := "pre" if is_before else "post"
 	var hook_name := "%s-%s-%s" % [stem, method_name.to_lower(), suffix]
-	# Enroll the path into _hooked_methods so the wrap surface picks it up.
-	# Upstream godot-mod-loader accepts both fully-qualified res:// paths and
-	# bare filenames; normalize bare filenames to res://Scripts/<file> to
-	# match the game's script layout. Mask keys are lowercase (hook_pack.gd
-	# checks `fe["name"].to_lower()` against the mask), so lowercase the
-	# method name on write. Godot-mod-loader callers pass vanilla method
-	# names preserving source casing (e.g. "UpdateToolTip").
+	# Mask keys are lowercase (hook_pack.gd compares `fe["name"].to_lower()`
+	# against the mask), so lowercase the method name on write.
 	var res_path := script_path
 	if not res_path.begins_with("res://"):
 		res_path = "res://Scripts/" + script_path.get_file()
@@ -149,10 +121,8 @@ func add_hook(script_path: String, method_name: String, callback: Callable, is_b
 		_hooked_methods[res_path] = {method_name.to_lower(): true}
 	else:
 		var mask: Dictionary = _hooked_methods[res_path] as Dictionary
-		# An existing EMPTY dict is the wildcard sentinel from a
-		# "[hooks] <path> = *" declaration -- hook_pack.gd wraps every
-		# method when the mask is empty, which already covers this method.
-		# Inserting it would narrow wrap-all to wrap-only-listed and
+		# An existing empty dict is the "[hooks] <path> = *" wildcard
+		# sentinel (wrap every method); inserting a key would narrow it and
 		# silently kill the wildcard mod's runtime-registered hooks.
 		if not mask.is_empty():
 			mask[method_name.to_lower()] = true
@@ -193,7 +163,7 @@ func has_hooks(hook_name: String) -> bool:
 	return _hooks.has(hook_name) and (_hooks[hook_name] as Array).size() > 0
 
 ## Is a replace hook registered at this bare name (no -pre/-post/-callback)?
-## (Body is identical to has_hooks by design: suffixed names live under their own keys, so a bare-name key can only ever hold replace entries.)
+## Same body as has_hooks: a bare-name key only ever holds replace entries.
 func has_replace(hook_name: String) -> bool:
 	return _hooks.has(hook_name) and (_hooks[hook_name] as Array).size() > 0
 
@@ -214,16 +184,13 @@ func seq() -> int:
 
 
 ## ---- Mod-discovery API ----
-## Lets a mod ask "is this other mod loaded?" so it can integrate with peers
-## (e.g. defer to RTVCoop's trader-supply logic when present) or skip features
-## that depend on a missing dependency. All three calls operate on mod_id
-## strings (the `id="..."` field in mod.txt; folder/zip name as fallback).
+## Lets a mod ask "is this other mod loaded?" to integrate with peers or
+## skip features. All calls take mod_id strings (the `id="..."` field in
+## mod.txt; folder/zip name as fallback).
 
 ## True when a mod with the given id is loaded. Optional `min_version` does
-## a numeric semver compare (1.2.3 split on '.', component-wise int compare,
-## non-numeric components compare as 0). Mods declaring no version field
-## return version="" which compares as 0.0.0. They pass any min_version
-## of "0" but fail anything stricter.
+## a numeric component-wise compare; mods declaring no version compare as
+## 0.0.0 (pass min_version "0", fail anything stricter).
 func has_mod(mod_id: String, min_version: String = "") -> bool:
 	if not _loaded_mod_ids.has(mod_id):
 		return false
@@ -233,9 +200,7 @@ func has_mod(mod_id: String, min_version: String = "") -> bool:
 	var have: String = ""
 	if info is Dictionary:
 		have = String(info.get("version", ""))
-	# Bare-true legacy values (shouldn't happen post-upgrade but defend
-	# against pre-upgrade callers): treat as unknown version, fail strict
-	# checks.
+	# Bare-true legacy values: treat as unknown version, fail strict checks.
 	return _compare_versions(have, min_version) >= 0
 
 
@@ -246,8 +211,8 @@ func has_mod(mod_id: String, min_version: String = "") -> bool:
 func mod_info(mod_id: String) -> Dictionary:
 	var info = _loaded_mod_ids.get(mod_id, null)
 	if info is Dictionary:
-		# deep=true so nested dependency arrays are copies too. A shallow
-		# duplicate would hand mods live references into the loader registry.
+		# deep=true: a shallow duplicate would hand mods live references
+		# into the loader registry.
 		return (info as Dictionary).duplicate(true)
 	return {}
 
@@ -261,12 +226,9 @@ func loaded_mods() -> Array[String]:
 	return out
 
 
-# Compare two dotted version strings component-wise. Returns -1 / 0 / 1.
-# Non-numeric components compare as 0 ("1.2.beta" -> [1,2,0]). Missing
-# trailing components default to 0 ("1.2" vs "1.2.0" compares equal).
-# This is intentionally minimal -- no semver pre-release / build metadata
-# parsing -- because RTV mods don't use those conventions in practice. If
-# they ever do, this is the spot to upgrade.
+# Component-wise compare of dotted version strings; returns -1 / 0 / 1.
+# Non-numeric components compare as 0; missing trailing components are 0.
+# No semver pre-release/build parsing -- RTV mods don't use it.
 func _compare_versions(a: String, b: String) -> int:
 	var pa: PackedStringArray = a.split(".")
 	var pb: PackedStringArray = b.split(".")
@@ -291,43 +253,26 @@ func _to_version_int(s: String) -> int:
 func _dispatch(hook_name: String, args: Array) -> void:
 	if not _hooks.has(hook_name):
 		return
-	# Snapshot before iterating so callbacks that hook()/unhook() mid-dispatch
-	# see consistent semantics: hooks registered during dispatch don't fire
-	# in the CURRENT dispatch (they join the next one), and the new hook()'s
-	# sort_custom on the live array cannot re-enter this iteration. Matches
-	# C03/C16/C17/C18 test expectations.
+	# Snapshot before iterating: hooks registered during dispatch join the
+	# next dispatch, and a mid-dispatch hook()'s sort_custom on the live
+	# array cannot re-enter this iteration.
 	var entries: Array = (_hooks[hook_name] as Array).duplicate()
 	for entry in entries:
 		_seq += 1
 		var cb: Callable = entry["callback"]
 		cb.callv(args)
 
-# Post-hook chained dispatch for non-void wrapped methods. Each callback
-# may transform the running result by returning a non-null value.
-#
-# Callback signature (preferred): `func(<vanilla args>, _result)`. The
-# trailing `_result` is whatever the prior post hook (or vanilla body)
-# left behind. Returning non-null replaces _result for the next callback;
-# returning null is a pass-through ("I observed but don't want to change
-# anything"). Mods needing to actually return a literal null can't model
-# that here -- documented limitation.
-#
-# Backwards compat: callbacks declared with the old 2-arg shape (no
-# trailing _result) still work. The dispatcher detects arity via
-# Callable.get_argument_count() and routes to the appropriate call form.
-# A one-shot deprecation warning fires per (hook_name, callback) pair so
-# legacy mods keep running without log spam, but authors get a clear
-# nudge to update their signatures.
-#
-# Priority order matches _dispatch: ascending by `priority` field. Ties are
-# not stable -- sort_custom is not a stable sort, so equal priorities may run
-# in any order. (The previous claim here, "ties broken by registration order",
-# was wrong; hook()'s own docstring and Hooks.md both state it correctly.)
+# Post-hook chained dispatch for non-void wrapped methods. Preferred
+# callback signature: `func(<vanilla args>, _result)`; returning non-null
+# replaces _result for the next callback, null passes through (a literal
+# null return can't be modeled -- documented limitation). Legacy callbacks
+# without the trailing _result still work: arity is detected via
+# get_argument_count() and a one-shot deprecation warning fires per
+# (hook_name, callback). Priority order matches _dispatch; ties not stable.
 func _dispatch_post(hook_name: String, args: Array, current_result: Variant) -> Variant:
 	if not _hooks.has(hook_name):
 		return current_result
-	# Snapshot before iterating: same rationale as _dispatch -- mid-dispatch
-	# hook()/unhook() calls don't disturb the in-flight pass.
+	# Snapshot: same rationale as _dispatch.
 	var entries: Array = (_hooks[hook_name] as Array).duplicate()
 	var expected_with_result: int = args.size() + 1
 	for entry in entries:
@@ -336,20 +281,16 @@ func _dispatch_post(hook_name: String, args: Array, current_result: Variant) -> 
 		var argc: int = cb.get_argument_count()
 		var ret: Variant = null
 		if argc == expected_with_result:
-			# New 3-arg form: callback wants the result.
 			ret = cb.callv(args + [current_result])
 		else:
-			# Legacy 2-arg form (or anything else). Fire-and-forget on
-			# args only, ignore return. Warn once.
-			# Key includes the method so two legacy callbacks on the same
-			# object (or object_id 0 statics) each get their own warning.
+			# Legacy form: fire on args only, ignore return. Warn once per
+			# (hook_name, object, method) so object_id-0 statics each warn.
 			var warn_key: String = "%s::%d::%s" % [hook_name, cb.get_object_id(), str(cb.get_method())]
 			if not _post_legacy_warned.has(warn_key):
 				_post_legacy_warned[warn_key] = true
 				_log_warning("[RTVModLib] post hook '%s' callback uses legacy %d-arg signature (expected %d for non-void wrapper). Add a trailing _result param to your callback to receive + optionally mutate the return value; the legacy form will be removed in a future major version." \
 						% [hook_name, argc, expected_with_result])
 			cb.callv(args)
-		# null is the pass-through sentinel: prior _result survives untouched.
 		if ret != null:
 			current_result = ret
 	return current_result

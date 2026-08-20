@@ -1,8 +1,6 @@
 ## ----- mod_discovery.gd -----
 ## Scans the mods directory, parses mod.txt metadata, builds the ordered list
 ## of mod entries, and handles ModWorkshop update checking + downloads.
-## Everything here feeds the UI (which renders the list) and the loading
-## phase (which mounts + applies them).
 
 func collect_mod_metadata() -> Array[Dictionary]:
 	var entries: Array[Dictionary] = []
@@ -31,32 +29,23 @@ func collect_mod_metadata() -> Array[Dictionary]:
 					seen[entry_name] = true
 					entries.append(_build_folder_entry(_mods_dir, entry_name))
 			else:
-				# Record the folder's profile_key so orphan-detection knows the
-				# mod is still on disk, just filtered. Without this, disabling
-				# dev mode would flag every installed dev folder as "missing".
+				# Record the profile_key so orphan-detection sees the mod as
+				# dev-filtered rather than missing.
 				_record_hidden_folder(_mods_dir, entry_name)
 			continue
 		var ext := entry_name.get_extension().to_lower()
-		# Accept set. Must stay in sync with _is_safe_mod_filename (the
-		# download filename gate below); mount-side, any non-zip/pck extension
-		# also needs the vmz-style cache fallback (_try_mount_pack in
-		# fs_archive.gd, the boot.gd static remount, hook_pack.gd's cached-zip
-		# sibling resolution).
+		# Accept set. Keep in sync with _is_safe_mod_filename; a new non-zip/pck
+		# extension also needs the vmz-style cache fallback on the mount side
+		# (_try_mount_pack, boot.gd static remount, hook_pack.gd).
 		if ext not in ["vmz", "zip", "pck"]:
 			skipped_files.append(entry_name)
 			continue
 		if seen.has(entry_name):
 			continue
 		seen[entry_name] = true
-		# Modpack zips co-locate with regular mods in this folder. They have
-		# profile.json at root instead of mod.txt. Skip them here so they
-		# don't show up as malformed mods in the Mods tab; the Modpacks tab
-		# scan picks them up via collect_modpack_metadata.
+		# Modpack zips (profile.json at root, no mod.txt) share this folder;
+		# skip them here -- collect_modpack_metadata picks them up.
 		if ext == "zip" and _is_modpack_zip(_mods_dir.path_join(entry_name)):
-			# Say so. A mod zip that happens to carry a profile.json at its
-			# root disappears from the Mods tab here, and without a line in
-			# the log there is nothing to connect "my mod stopped showing up"
-			# to the file that caused it.
 			_log_info("Treating " + entry_name + " as a modpack (profile.json at zip root), not a mod. It appears on the Modpacks tab. If this is meant to be a mod, remove profile.json from the archive root.")
 			continue
 		entries.append(_build_archive_entry(_mods_dir, entry_name, ext))
@@ -67,38 +56,29 @@ func collect_mod_metadata() -> Array[Dictionary]:
 			_log_debug("  " + sf + "  (not .vmz/.zip/.pck)")
 	entries = _dedupe_by_mod_id(entries)
 	_log_provides_notes(entries)
-	# Persist any mws ids just scanned so missing-mod stubs can offer
-	# Download for mods that were once installed but have since been
-	# removed. The cache survives mod deletion, deliberately: remembering the
-	# source, the file is gone but the profile may still reference it).
+	# Persist scanned source ids so missing-mod stubs can offer Download for
+	# mods that were installed once and later removed.
 	_persist_mod_sources_for_entries(entries)
 	if entries.size() == 0:
 		_log_warning("No mods found in: " + _mods_dir)
 	else:
 		_log_info("Found " + str(entries.size()) + " mod(s)")
-		# Per-mod listing is useful for first-launch diagnostics but spams
-		# the log on re-scans (modpack apply, mod install, mod delete each
-		# trigger one). Debug-level keeps it available in dev mode without
-		# the noise.
+		# Debug-level: re-scans (apply/install/delete) would spam the log.
 		for e in entries:
 			var tag := " [folder]" if e["ext"] == "folder" else ""
 			_log_debug("  " + e["file_name"] + " (" + e["mod_name"] + ")" + tag)
 	return entries
 
 func _build_archive_entry(mods_dir: String, file_name: String, ext: String) -> Dictionary:
-	# Breadcrumb: identifies the mod Godot's UTF-8 C++ warning (printed
-	# unconditionally for non-UTF8 bytes in mod.txt / .gd / pck paths) is
-	# about to complain about. Without this the user sees "Unicode parsing
-	# error, some characters were replaced with ..." and can't tell which
-	# mod tripped it. Debug-level so re-scans (after install/delete/apply)
-	# don't spam the log -- promotes to info only in dev mode.
+	# Breadcrumb tying Godot's unconditional non-UTF8 warning ("Unicode
+	# parsing error...") to the mod that tripped it. Debug so re-scans
+	# don't spam the log.
 	_log_debug("[ModScan] inspecting " + file_name)
 	var full_path := mods_dir.path_join(file_name)
 	if ext == "pck":
 		_last_mod_txt_status = "pck"
 		_last_mod_txt_files.clear()  # no read_mod_config call to reset it
-		# Same reason: without a read_mod_config call the PREVIOUS mod's
-		# parse-error detail would leak onto this entry's mod_txt_error.
+		# Reset so the previous mod's parse-error detail can't leak here.
 		_last_mod_txt_error = ""
 	var cfg: ConfigFile = read_mod_config(full_path) if ext != "pck" else null
 	var entry := _entry_from_config(cfg, file_name, full_path, ext)
@@ -120,9 +100,8 @@ func _build_folder_entry(mods_dir: String, dir_name: String) -> Dictionary:
 	_log_security_findings(entry)
 	return entry
 
-# Track a folder mod that's on disk but excluded from _ui_mod_entries because
-# developer mode is off. Lets the orphan scan tell "dev-filtered" apart from
-# "truly deleted" when rendering the missing-from-profile list.
+# Track a folder mod on disk but excluded because developer mode is off, so
+# the orphan scan can tell "dev-filtered" apart from "truly deleted".
 func _record_hidden_folder(mods_dir: String, dir_name: String) -> void:
 	var folder_path := mods_dir.path_join(dir_name)
 	var cfg: ConfigFile = read_mod_config_folder(folder_path)
@@ -130,21 +109,18 @@ func _record_hidden_folder(mods_dir: String, dir_name: String) -> void:
 	_hidden_folder_profile_keys[entry["profile_key"]] = true
 	if not entry["profile_key"].begins_with("zip:"):
 		_hidden_folder_ids[entry["mod_id"]] = true
-		# Aliases too: a dep naming the folder mod's OLD id should get the
-		# same "hidden while Developer Mode is off" hint, not "not installed".
+		# Aliases too, so a dep naming the folder mod's old id gets the same
+		# "hidden" hint instead of "not installed".
 		for alias in entry.get("provides", []):
 			_hidden_folder_ids[alias] = true
 
-# Once-per-scan log lines for provides= rename aliases, so the resolution
-# maps themselves (_entries_by_mod_id, rebuilt constantly) never log:
-#   - an alias naming a REAL installed mod's id is shadowed per-map (the
-#     real mod wins in every map it appears in -- see the second-pass rule
-#     in _entries_by_mod_id; when the real mod is DISABLED the alias still
-#     resolves in the enabled-only maps); say so, or the author/user has no
+# Once-per-scan log lines for provides= rename aliases (the resolution maps
+# are rebuilt constantly and never log):
+#   - an alias naming a real installed mod's id is shadowed by it (see the
+#     second-pass rule in _entries_by_mod_id); say so, or the author has no
 #     way to learn why the alias did nothing.
-#   - two mods claiming the same alias: each resolution map picks its own
-#     first claimant (scan order for installed lookups, load order for the
-#     active/loadable maps), so the warning names both and no winner.
+#   - two mods claiming the same alias: each map picks its own first
+#     claimant, so the warning names both and no winner.
 func _log_provides_notes(entries: Array[Dictionary]) -> void:
 	var real_by_id: Dictionary = {}
 	for e in entries:
@@ -174,13 +150,8 @@ func _log_provides_notes(entries: Array[Dictionary]) -> void:
 			else:
 				alias_owner[ak] = str(e.get("file_name", "?"))
 
-# Surface scanner findings in the boot log alongside the discovery summary.
-# Logged at DEBUG -- findings are *disclosures* of "this mod uses these
-# notable APIs", not warnings of malice. The UI surfaces the same data
-# as a tappable "Uses N notable APIs" indicator on the mod row; the user
-# decides whether the mod's stated purpose matches what it actually does.
-# Dev mode enables this dump for deep investigation; regular users
-# already see the relevant information in the UI.
+# Findings are disclosures ("uses these notable APIs"), not warnings of
+# malice; debug-level because the UI shows the same data on the mod row.
 func _log_security_findings(entry: Dictionary) -> void:
 	var findings: Array = entry.get("security_findings", [])
 	if findings.is_empty():
@@ -195,106 +166,67 @@ func _log_security_findings(entry: Dictionary) -> void:
 				% [f["rule"], loc, f.get("preview", "")])
 
 # --- The entry dict -------------------------------------------------------
-# The Dictionary built below is the loader's central data structure: every
-# element of _ui_mod_entries (and every loading-phase "candidate") has this
-# shape. The UI holds these dicts live and mutates enabled / priority /
-# dependency_ignored in place (Dictionary reference semantics), so every
-# key here is public shape -- update this list when adding one.
+# Every element of _ui_mod_entries (and every loading-phase candidate) has
+# this shape. The UI holds these dicts live and mutates enabled / priority /
+# dependency_ignored in place, so every key is public shape; update this
+# list when adding one.
 #
 # Written by _entry_from_config:
-#   file_name    String          archive filename / folder name. Readers:
-#                                UI rows, mod_loading (mount + dup warning).
-#                                Rewritten by ui.gd check_updates_for_ui
-#                                after an update rename.
-#   full_path    String          absolute path under <game>/mods/. Readers:
-#                                mod_loading (mount), boot
-#                                (_collect_enabled_archive_paths -> pass-state
-#                                mount list), _compare_dedup_priority (mtime),
-#                                UI (updates/delete flows). Rewritten
-#                                on update rename (check_updates_for_ui).
-#   ext          String          "vmz" | "zip" | "pck" | "folder". Readers:
-#                                mod_loading, boot, UI (folder rows are not
-#                                removable), _dedupe_by_mod_id.
-#   mod_name     String          display name ([mod] name; defaults to the
-#                                raw filename, or to the stem with the
-#                                prefix stripped when the VostokMods
-#                                "NNN-Name" priority pattern matches below).
-#                                Read everywhere for display; mod_loading
-#                                warns on case-insensitive dups.
-#   mod_id       String          dependency + dedupe identity ([mod] id;
-#                                Same filename default as mod_name, and
-#                                without a declared id profile_key falls
-#                                back to "zip:").
-#   version      String          raw [mod] version, may be "". Readers:
-#                                update checks, dedupe, profile_key.
+#   file_name    String          archive filename / folder name; rewritten
+#                                by ui.gd after an update rename.
+#   full_path    String          absolute path under <game>/mods/; rewritten
+#                                on update rename.
+#   ext          String          "vmz" | "zip" | "pck" | "folder".
+#   mod_name     String          display name; defaults to the filename, or
+#                                to the stem with a VostokMods "NNN-Name"
+#                                priority prefix stripped.
+#   mod_id       String          dependency + dedupe identity; same filename
+#                                default as mod_name.
+#   version      String          raw [mod] version, may be "".
 #   author       String          display-only.
 #   profile_key  String          identity in profile sections -- contract
 #                                comment at its construction below.
 #   priority     int             clamped PRIORITY_MIN..PRIORITY_MAX;
-#                                overwritten per profile and by the spinner
-#                                (ui.gd _apply_profile_to_entries / row UI).
-#                                Reader: _compare_load_order.
-#   enabled      bool            defaults true here; real value is per-
-#                                profile (ui.gd _apply_profile_to_entries),
-#                                toggled in place by the UI and
-#                                _enable_required_deps. Readers:
-#                                _loadable_enabled_entries, boot, UI.
+#                                overwritten per profile and by the spinner.
+#   enabled      bool            defaults true; real value is per-profile,
+#                                toggled in place by the UI.
 #   required_dependencies, optional_dependencies
-#                Array[String]   from [dependencies]; read by the dependency
-#                                machinery in this file, the UI row, and the
-#                                per-mod metadata dict mod_loading builds
-#                                for the mods-facing hooks_api.
-#   provides     Array[String]   from [mod] provides= -- rename aliases (old
-#                                ids this mod satisfies). Resolved by the
-#                                alias pass in _entries_by_mod_id and
-#                                _apply_dependency_ordering; an alias never
-#                                shadows a real installed mod's id.
+#                Array[String]   from [dependencies].
+#   provides     Array[String]   rename aliases (old ids this mod
+#                                satisfies); an alias never shadows a real
+#                                installed mod's id.
 #   dependency_warnings Array[String], dependency_blockers Array[String],
 #   dependency_blockers_info Array of {id, status, display, fixable}
 #                                recomputed by _refresh_dependency_status
 #                                (status: not_installed | disabled |
-#                                not_loaded | hidden_folder). Readers: UI rows.
+#                                not_loaded | hidden_folder).
 #   dependencies_satisfied bool  recomputed by _refresh_dependency_status;
 #                                currently write-only (no readers at HEAD).
-#   dependency_ignored bool      per-profile "Load anyway" override, written
-#                                by ui.gd _apply_profile_to_entries; read by
-#                                the dependency filter + refresh.
+#   dependency_ignored bool      per-profile "Load anyway" override.
 #   cfg          ConfigFile|null parsed mod.txt (null for .pck and for
-#                                unparseable archives). Readers: mod_loading
-#                                ([registry]/[autoload] sections), boot, UI
-#                                (modworkshop id lookup),
-#                                _persist_mod_sources_for_entries.
+#                                unparseable archives).
 #   mod_txt_status String        "ok" | "none" | "parse_error" |
 #                                "nested:<path>" | "pck". Side channel set
 #                                by read_mod_config* (fs_archive.gd) through
 #                                _last_mod_txt_status; "pck" is preset in
-#                                _build_archive_entry. Readers:
-#                                _build_entry_warnings,
-#                                mod_loading._process_mod_candidate
-#                                (boot-log messages).
+#                                _build_archive_entry.
 #   mod_txt_error String         parse-error detail for "parse_error".
-#                                Readers: _build_entry_warnings,
-#                                mod_loading._process_mod_candidate
-#                                (boot-log messages).
 #   has_registry bool            mod.txt declares [registry]; drives the
 #                                disable-time save-safety confirm in the UI.
 #
 # Added by _build_archive_entry / _build_folder_entry right after:
 #   warnings          Array[String]  row warnings (_build_entry_warnings).
 #   security_findings Array of {rule, file, line, preview} (scan_mod).
-#   risk_level        int            RISK_CLEAN | RISK_RED
-#                                    (compute_risk_level).
+#   risk_level        int            RISK_CLEAN | RISK_RED.
 #
 # Added conditionally by _dedupe_by_mod_id:
 #   duplicates_hidden Array of {file_name, version} -- only present on a
 #                                winner that shadowed same-id duplicates.
-#                                Reader: UI row.
 #
 # Added conditionally by ui.gd _apply_profile_to_entries:
-#   profile_version_mismatch Dictionary {stored, current} -- present when
-#                                the profile stored this mod under a
-#                                different version's key; erased on every
-#                                profile apply. Reader: UI row.
+#   profile_version_mismatch Dictionary {stored, current} -- profile stored
+#                                this mod under a different version's key;
+#                                erased on every profile apply.
 func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, ext: String) -> Dictionary:
 	var mod_name := file_name
 	var mod_id   := file_name
@@ -340,27 +272,20 @@ func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, e
 		priority = filename_priority
 	priority = clampi(priority, PRIORITY_MIN, PRIORITY_MAX)
 
-	# Profile key identifies the mod across ZIP renames. Uses "<id>@<version>"
-	# when mod.txt declares an id (empty version allowed, yielding "<id>@"),
-	# otherwise falls back to "zip:<file_name>" -- without a declared id the
-	# filename is the only identity available, and renames still orphan those entries.
+	# Profile key identifies the mod across ZIP renames: "<id>@<version>" when
+	# mod.txt declares an id (empty version allowed), else "zip:<file_name>"
+	# (renames still orphan those entries).
 	# CONTRACT -- parsers live far from here; keep in sync when changing:
-	#   - The "<id>@<version>" form is split on the FIRST "@" (key.find("@"))
-	#     by ui.gd _version_from_profile_key,
-	#     _missing_mods_in_active_profile, and by modpacks.gd
-	#     _get_missing_mods_for_modpack (rebuilds lowercased id + "@" + version
-	#     for a case-insensitive fallback match). ui.gd _apply_profile_to_entries
-	#     and _find_stored_key_for_mod_id instead prefix-match on mod_id + "@".
-	#     A mod id containing "@" would mis-parse at the split sites; ids are
-	#     assumed "@"-free.
-	#   - The "zip:" prefix is tested with begins_with("zip:") here (_dedupe_
-	#     by_mod_id, _record_hidden_folder), in ui.gd (profile apply, payload
-	#     import, missing-mod rows) and stripped for display with
-	#     trim_prefix("zip:") in the Mods-tab missing section.
-	#   - profile_key is also the key of the persisted [mod_sources] cache and
-	#     of the per-profile profile.<name>.enabled / .priority / .dep_ignore
-	#     sections in mod_config.cfg, so a format change invalidates existing
-	#     user configs.
+	#   - "<id>@<version>" is split on the FIRST "@" by ui.gd
+	#     _version_from_profile_key and _missing_mods_in_active_profile, and
+	#     by modpacks.gd _get_missing_mods_for_modpack; ui.gd
+	#     _apply_profile_to_entries and _find_stored_key_for_mod_id
+	#     prefix-match on mod_id + "@". Ids are assumed "@"-free.
+	#   - The "zip:" prefix is tested with begins_with("zip:") here and in
+	#     ui.gd, and stripped for display with trim_prefix("zip:").
+	#   - profile_key also keys the persisted [mod_sources] cache and the
+	#     per-profile sections in mod_config.cfg, so a format change
+	#     invalidates existing user configs.
 	var profile_key := ("zip:" + file_name) if not has_mod_id else (mod_id + "@" + version)
 
 	var entry := {
@@ -377,9 +302,6 @@ func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, e
 		"dependencies_satisfied": true,
 		"cfg": cfg, "mod_txt_status": _last_mod_txt_status,
 		"mod_txt_error": _last_mod_txt_error,
-		# Presence-signal: the mod declares a [registry] section, i.e. it adds
-		# game content (items/recipes/etc.) that an existing save can come to
-		# depend on. Drives the disable-time save-safety confirm in the UI.
 		"has_registry": cfg != null and cfg.has_section("registry"),
 	}
 	return entry
@@ -393,9 +315,7 @@ func _build_entry_warnings(entry: Dictionary) -> Array[String]:
 	if status == "none":
 		warnings.append("Invalid mod -- may not work correctly. Try re-downloading.")
 	elif status == "parse_error":
-		# Surface the line/section the parser tripped on so authors can
-		# self-correct instead of staring at a generic "re-download" hint
-		# when the real problem is a typo in their own mod.txt.
+		# Name the line/section so authors can fix their own mod.txt typo.
 		var detail: String = entry.get("mod_txt_error", "")
 		if detail.is_empty():
 			warnings.append("Invalid mod -- mod.txt failed to parse. Try re-downloading.")
@@ -410,11 +330,9 @@ func _build_entry_warnings(entry: Dictionary) -> Array[String]:
 	warnings.append_array(_source_declaration_warnings(entry))
 	return warnings
 
-# A mod.txt that DECLARES a source but declares it wrong gets no source at
-# all, and silently: no update check, no Browse install-state, no page link.
-# host_types.gd promises "a typo fails loudly", but the parser returns {} with
-# no word to the author. Name the problem on the mod's row so the author fixes
-# their own file instead of assuming the loader is broken.
+# A mod.txt that declares a source wrongly gets no source at all, silently:
+# no update check, no Browse install-state, no page link (the parser returns
+# {} without a word). Name the problem on the mod's row.
 func _source_declaration_warnings(entry: Dictionary) -> Array[String]:
 	var warnings: Array[String] = []
 	if entry.get("mod_txt_status", "none") != "ok":
@@ -433,11 +351,9 @@ func _source_declaration_warnings(entry: Dictionary) -> Array[String]:
 		if not (legacy.is_valid_int() and legacy.to_int() > 0):
 			warnings.append("mod.txt [updates] modworkshop=\"%s\" is not a valid ModWorkshop id. This mod will not update." % legacy)
 
-	# An unquoted version reaches us already coerced to a float by ConfigFile's
-	# parser -- 1.10 arrives as 1.1, 1.0 as 1 -- and the original text is gone.
-	# It only causes harm when the mod is sourced (the corrupted string becomes
-	# an exact modpack pin / update-compare key), so warn only then, to keep it
-	# off the rows where the version is merely cosmetic.
+	# ConfigFile coerces an unquoted version to float (1.10 arrives as 1.1)
+	# and the original text is gone. Only harmful when the mod is sourced
+	# (the string becomes a modpack pin / update key), so warn only then.
 	var has_source := cfg.has_section_key("updates", "source") or cfg.has_section_key("updates", "modworkshop")
 	if has_source and cfg.has_section_key("mod", "version"):
 		if typeof(cfg.get_value("mod", "version")) == TYPE_FLOAT:
@@ -445,24 +361,12 @@ func _source_declaration_warnings(entry: Dictionary) -> Array[String]:
 			warnings.append("mod.txt [mod] version is unquoted and was read as the number %s, which loses trailing zeros (1.10 becomes 1.1). Quote it: version = \"%s\"." % [as_num, as_num])
 	return warnings
 
-# Catch a mod.txt with no id=, which makes the archive filename the mod's
-# whole identity.
-#
-# profile_key falls back to "zip:<file_name>" for these (see the CONTRACT note
-# above its construction), and two places then treat that key as unmatchable:
-# _apply_profile_to_entries skips the id-prefix fallback for it, and
-# _dedupe_by_mod_id skips the entry outright. The consequences land on the
-# author, not on the loader:
-#   - Renaming or re-packing under a different filename orphans the mod's
-#     enabled/priority state. On any profile other than Default a mod with no
-#     stored key stays OFF, so the new file is discovered, listed, and silently
-#     not loaded.
-#   - If the previous file is still in the mods folder it is still enabled
-#     under its old key, so the old copy loads and the edits appear to do
-#     nothing.
-#   - Two copies of the same mod cannot be deduplicated, so both mount and the
-#     later one wins for every path they share.
-# Declaring an id fixes all three at once.
+# A mod.txt with no id= makes the filename the whole identity: profile_key
+# falls back to "zip:<file_name>", which _apply_profile_to_entries and
+# _dedupe_by_mod_id treat as unmatchable. Renaming then orphans the mod's
+# enabled/priority state (on non-Default profiles the new file stays off),
+# a leftover old copy keeps loading under its old key, and two copies of the
+# same mod cannot be deduplicated.
 func _missing_id_warnings(entry: Dictionary) -> Array[String]:
 	var warnings: Array[String] = []
 	if not str(entry.get("profile_key", "")).begins_with("zip:"):
@@ -472,19 +376,12 @@ func _missing_id_warnings(entry: Dictionary) -> Array[String]:
 	warnings.append("No id= in mod.txt, so this mod is identified by its filename. Renaming or re-packaging it loses its enabled state and load order, and two copies cannot be told apart. Add an id= line under [mod].")
 	return warnings
 
-# Catch an archive that ships Godot's own export bake alongside its sources.
-#
-# A ".gd.remap" file redirects res://Mod/Foo.gd to a compiled .gdc under
-# res://.godot/exported/. Godot honors that redirect on its own, so the game
-# runs the COMPILED copy and the .gd next to it is dead weight. Anyone who
-# zips their project directory picks these up: editing Foo.gd and re-zipping
-# without re-exporting ships a new source and the old bytecode, and the mod
-# keeps running the old code with nothing anywhere saying why.
-#
-# _static_resolve_remaps deliberately leaves these for Godot to resolve
-# lazily, so the loader cannot quietly repoint them at the sources without
-# breaking mods that legitimately ship a baked .godot cache (MCM does). Naming
-# it is the useful thing this can do.
+# An archive shipping Godot's export bake alongside its sources: .gd.remap
+# redirects each script to a compiled .gdc under res://.godot/exported/, so
+# the game runs the bytecode and edits to the .gd do nothing until re-export.
+# _static_resolve_remaps leaves these for Godot to resolve (repointing would
+# break mods that legitimately ship a baked .godot cache, e.g. MCM), so
+# naming the problem is all this can do.
 func _stale_bake_warnings(entry: Dictionary) -> Array[String]:
 	var warnings: Array[String] = []
 	var baked := 0
@@ -496,28 +393,19 @@ func _stale_bake_warnings(entry: Dictionary) -> Array[String]:
 				% [baked, "" if baked == 1 else "s"])
 	return warnings
 
-# Catch autoload paths that point nowhere inside the mod. Such a mod mounts,
-# reports success, and then does absolutely nothing. The most confusing
-# failure an author can hit, and until now the only trace was an
-# "Autoload path not found in archive" line in the boot log they had no reason
-# to open.
+# _autoload_path_warnings below catches autoload paths that point nowhere
+# inside the mod -- such a mod mounts, reports success, and does nothing.
+# It reads the _last_mod_txt_files side channel, so it must stay immediately
+# downstream of the entry's own read_mod_config (see constants.gd).
+# Conservative: warns only when the same filename exists at a different path
+# in the archive; a path with no counterpart may legitimately point at a
+# vanilla script or another mod's file.
 #
-# Reads the _last_mod_txt_files side channel, which is why this must stay
-# immediately downstream of the entry's own read_mod_config (see constants.gd).
-#
-# Deliberately conservative: warns only when the same filename exists at a
-# different path inside the archive, meaning the prefix is wrong and the right
-# path can be named. A path with no counterpart is left alone, since pointing
-# an autoload at a vanilla res:// script (or at a file another mod provides) is
-# legitimate and must not be flagged.
-# An autoload value in mod.txt may carry two leading markers: "!" to load in
-# Pass 1, ahead of the game's own autoloads, and "*" for Godot's "instantiate
-# as a node". Either order, either one optional. Returns [path, is_early].
-#
-# Every site that reads an autoload value goes through here. Stripping the
-# markers in two places invites the two halves to disagree about what the path
-# is, and then discovery warns about mods that load fine, or loading skips
-# autoloads that were declared correctly.
+# An autoload value may carry two leading markers: "!" (load in Pass 1,
+# ahead of the game's own autoloads) and "*" (Godot's "instantiate as a
+# node"). Either order, either optional. Returns [path, is_early]. Every
+# reader of an autoload value strips markers here, so discovery and loading
+# cannot disagree about what the path is.
 static func _split_autoload_marker(raw: String) -> Array:
 	var path := raw.strip_edges()
 	var is_early := false
@@ -537,9 +425,8 @@ func _autoload_path_warnings(entry: Dictionary) -> Array[String]:
 	if cfg == null or not cfg.has_section("autoload") or _last_mod_txt_files.is_empty():
 		return warnings
 	for autoload_name: String in cfg.get_section_keys("autoload"):
-		# Strip the markers; they are not part of the path. Must match what
-		# mod_loading.gd resolves against the archive, or this warns about
-		# mods that load perfectly well.
+		# Strip the markers; must match what mod_loading.gd resolves, or this
+		# warns about mods that load fine.
 		var res_path: String = _split_autoload_marker(str(cfg.get_value("autoload", autoload_name, "")))[0]
 		if res_path.is_empty() or _last_mod_txt_files.has(res_path):
 			continue
@@ -590,14 +477,11 @@ func _append_dependency_id(deps: Array[String], raw_id: String) -> void:
 			return
 	deps.append(dep_id)
 
-# [mod] provides=["old_id", ...]: rename aliases (the SMAPI FormerIDs lesson).
-# Any dependency requirement naming an alias is satisfied by this mod; see
-# _entries_by_mod_id and _apply_dependency_ordering for the resolution rule
-# (a real installed mod with that id always wins over an alias).
-# Parsed with the same tolerance as [dependencies] lists -- string array,
-# PackedStringArray, or a whole-value "a, b" string for older author tools.
-# Junk shapes are dropped with a log line, never a crash: a bad provides=
-# value must degrade to "no aliases", not take the mod (or the scan) down.
+# [mod] provides=["old_id", ...]: rename aliases (SMAPI's FormerIDs). A
+# requirement naming an alias is satisfied by this mod; a real installed mod
+# with that id always wins (see _entries_by_mod_id). Parsed with the same
+# tolerance as [dependencies]; junk shapes degrade to "no aliases" with a
+# log line, never a crash.
 func _parse_provides_list(cfg: ConfigFile, mod_id: String, file_name: String) -> Array[String]:
 	var ids: Array[String] = []
 	if cfg == null or not cfg.has_section_key("mod", "provides"):
@@ -624,8 +508,7 @@ func _parse_provides_list(cfg: ConfigFile, mod_id: String, file_name: String) ->
 		_log_warning(file_name + ": ignoring provides= -- expected a string array, got "
 				+ type_string(typeof(raw)))
 		return ids
-	# A mod "providing" its own id is a no-op (it IS that id); drop it so the
-	# alias passes never see a self-alias.
+	# Drop self-aliases so the alias passes never see one.
 	var self_key := mod_id.strip_edges().to_lower()
 	var cleaned: Array[String] = []
 	for alias in ids:
@@ -654,12 +537,10 @@ func _entries_by_mod_id(entries: Array) -> Dictionary:
 			continue
 		if not by_id.has(key):
 			by_id[key] = entry
-	# Second pass: provides= rename aliases resolve to their providing mod.
-	# Running after the real-id pass guarantees an alias never SHADOWS a real
-	# installed mod with that id. The real mod already owns the slot. When
-	# two mods claim the same alias the first in `entries` wins (same
-	# first-wins rule as duplicate real ids above); collect_mod_metadata logs
-	# both cases once per scan (_log_provides_notes).
+	# Second pass: provides= aliases resolve to their providing mod. Running
+	# after the real-id pass means an alias never shadows a real installed
+	# id; alias ties go to the first in `entries` (logged once per scan by
+	# _log_provides_notes).
 	for entry in entries:
 		for raw_alias in (entry as Dictionary).get("provides", []):
 			var alias_key := str(raw_alias).strip_edges().to_lower()
@@ -689,9 +570,8 @@ func _filter_dependency_ready_candidates(candidates: Array,
 			var entry_key := _entry_mod_key(entry)
 			if entry_key == "" or blocked.has(entry_key):
 				continue
-			# Per-profile user override ("Load anyway"): loads regardless of
-			# dependency state, and stays "active" for mods that depend on IT,
-			# since it really will be in the running set.
+			# "Load anyway" override: loads regardless of dependency state, and
+			# stays "active" for mods that depend on it.
 			if bool(entry.get("dependency_ignored", false)):
 				continue
 			for raw_dep in entry.get("required_dependencies", []):
@@ -699,20 +579,16 @@ func _filter_dependency_ready_candidates(candidates: Array,
 				if dep_id == "":
 					continue
 				var dep_key := dep_id.to_lower()
-				# Self-dependency is an authoring typo, not an unmet need --
-				# the mod satisfies it by loading. Warned in
+				# Self-dependency is an authoring typo; warned in
 				# _refresh_dependency_status, never blocked.
 				if dep_key == entry_key:
 					continue
-				# "Requires Metro Mod Loader" copied from a ModWorkshop page.
-				# We ARE the loader; always satisfied.
+				# "Requires Metro Mod Loader": we are the loader; satisfied.
 				if LOADER_ID_ALIASES.has(dep_key):
 					continue
-				# provides= rename alias: canonicalize to the providing mod's
-				# real id before the blocked check -- `blocked` is keyed by
-				# real ids, so an un-canonicalized alias would read a blocked
-				# provider as satisfied. No-op for real ids (the maps hand
-				# back the entry whose own key is dep_key already).
+				# Canonicalize a provides= alias to the provider's real id:
+				# `blocked` is keyed by real ids, so a raw alias would read a
+				# blocked provider as satisfied. No-op for real ids.
 				if active_by_id.has(dep_key):
 					dep_key = _entry_mod_key(active_by_id[dep_key])
 				elif installed_by_id.has(dep_key):
@@ -756,23 +632,20 @@ func _dependency_status_label(status: String) -> String:
 			return "not installed"
 
 # A required dep that exists only as a dev folder while Developer Mode is
-# off: the mod IS on disk but won't be in the running set. Distinct status
-# so the row can say how to fix it (turn Developer Mode on).
+# off: on disk but not in the running set; distinct status so the row can
+# name the fix (turn Developer Mode on).
 func _dep_is_hidden_folder(dep_key: String) -> bool:
 	for hid in _hidden_folder_ids.keys():
 		if str(hid).strip_edges().to_lower() == dep_key:
 			return true
 	return false
 
-# Stable topological pass over priority-sorted candidates: a required
-# dependency is hoisted above its dependent only when the priority order
-# violates the edge; everything else keeps its exact priority position
-# (lowest-original-index-first Kahn walk). This is what SMAPI, NeoForge,
-# and godot-mod-loader all do -- warn-only ordering pushes the fix onto
-# users. Mods in an unresolvable chain (dependency cycle) are reported
-# instead of "solved" -- any forced order would be wrong for someone --
-# and are emitted after all resolvable mods, preserving only their
-# relative priority order.
+# Stable topological pass over priority-sorted candidates: a required dep
+# is hoisted above its dependent only when priority order violates the edge;
+# everything else keeps its position (lowest-original-index-first Kahn walk,
+# same policy as SMAPI/NeoForge/godot-mod-loader). Cycles are reported, not
+# force-ordered, and emitted after all resolvable mods in relative priority
+# order.
 func _apply_dependency_ordering(candidates: Array) -> Dictionary:
 	var n := candidates.size()
 	var key_to_index: Dictionary = {}
@@ -780,9 +653,8 @@ func _apply_dependency_ordering(candidates: Array) -> Dictionary:
 		var k := _entry_mod_key(candidates[i])
 		if k != "" and not key_to_index.has(k):
 			key_to_index[k] = i
-	# provides= rename aliases: an ordering edge naming old_id must point at
-	# the providing mod so hoisting and cycle detection see through renames.
-	# Second pass so an alias can never steal a real id's slot (real mod wins).
+	# Alias edges point at the providing mod so hoisting and cycle detection
+	# see through renames; second pass so an alias never steals a real id.
 	for i in n:
 		for raw_alias in (candidates[i] as Dictionary).get("provides", []):
 			var ak := str(raw_alias).strip_edges().to_lower()
@@ -795,13 +667,10 @@ func _apply_dependency_ordering(candidates: Array) -> Dictionary:
 	for i in n:
 		var entry: Dictionary = candidates[i]
 		var entry_key := _entry_mod_key(entry)
-		# Required deps are hard ordering edges; optional deps are soft edges
-		# that only apply when the optional dep is actually present in the set
-		# (key_to_index.has). Both want "dep loads before me". A compat mod
-		# that optionally integrates with a framework should load after it when
-		# it's installed (matches SMAPI / godot-mod-loader). Optional deps never
-		# block (that's _filter_dependency_ready_candidates' job, required-only);
-		# Here they only influence order, and a missing optional adds no edge.
+		# Required deps are hard edges; optional deps are soft edges applied
+		# only when the dep is present in the set (a compat mod should load
+		# after the framework it integrates with). Optional deps never block
+		# -- they only influence order.
 		var dep_lists := [entry.get("required_dependencies", []), entry.get("optional_dependencies", [])]
 		for dep_list in dep_lists:
 			for raw_dep in dep_list:
@@ -838,13 +707,10 @@ func _apply_dependency_ordering(candidates: Array) -> Dictionary:
 				indegree[j] -= 1
 			progress = true
 			break
-	# Leftovers couldn't emit: they're either IN a cycle or merely downstream
-	# of one. Emit them all at the end (original relative order preserved),
-	# but only report nodes that are genuinely in a cycle. A node downstream
-	# of a cycle (its dep is stuck, but it isn't itself looped) would
-	# otherwise be mislabeled "cycle in chain" when its real problem is just
-	# an unresolvable required dep, which the per-row blocker already
-	# explains.
+	# Leftovers are in a cycle or merely downstream of one. Emit them at the
+	# end in original order, but report only nodes genuinely in a cycle -- a
+	# node merely downstream would be mislabeled when its real problem is an
+	# unresolvable required dep the per-row blocker already explains.
 	var cycle_keys: Array[String] = []
 	if remaining > 0:
 		var leftover: Array[int] = []
@@ -864,15 +730,13 @@ func _apply_dependency_ordering(candidates: Array) -> Dictionary:
 			break
 	return {"ordered": ordered, "adjusted": adjusted, "cycle_keys": cycle_keys}
 
-# True iff node `start` can reach itself by following dependency edges within
-# the still-unemitted subgraph -- i.e. it is genuinely part of a cycle, not
-# merely stuck behind one. `dependents[x]` lists nodes that depend on x (the
-# forward "x loads before them" edges); only unemitted targets are traversed.
+# True iff `start` can reach itself through dependency edges within the
+# still-unemitted subgraph -- genuinely in a cycle, not merely stuck behind
+# one. `dependents[x]` lists nodes that depend on x.
 func _node_reaches_self(start: int, dependents: Dictionary, emitted: Dictionary) -> bool:
 	var seen: Dictionary = {}
-	# Plain Array on purpose: dependents holds untyped arrays, and assigning
-	# an untyped Array to an Array[int] var is a RUNTIME error in Godot 4
-	# (typed arrays never convert implicitly). Elements are ints regardless.
+	# Plain Array: assigning an untyped Array to an Array[int] var is a
+	# runtime error in Godot 4 (typed arrays never convert implicitly).
 	var stack: Array = (dependents.get(start, []) as Array).duplicate()
 	while not stack.is_empty():
 		var x: int = stack.pop_back()
@@ -888,12 +752,11 @@ func _node_reaches_self(start: int, dependents: Dictionary, emitted: Dictionary)
 				stack.append(y)
 	return false
 
-# Single source of truth for "what actually loads, in what order".
-# load_all_mods, boot's archive collection, the order panel, and the
-# launch button all read this so they can never disagree (the launch
-# button once promised mods while every enabled mod was blocked).
-# duplicate_entries=true hands back copies (loading mutates candidates);
-# the UI passes false so panels observe the live entry dicts.
+# Single source of truth for "what actually loads, in what order":
+# load_all_mods, boot's archive collection, the order panel, and the launch
+# button all read this so they can never disagree. duplicate_entries=true
+# hands back copies (loading mutates candidates); the UI passes false so
+# panels observe the live entry dicts.
 func _loadable_enabled_entries(log_skips := false, duplicate_entries := false) -> Dictionary:
 	var enabled: Array[Dictionary] = []
 	for entry in _ui_mod_entries:
@@ -909,9 +772,8 @@ func _loadable_enabled_entries(log_skips := false, duplicate_entries := false) -
 		"cycle_keys": ordering["cycle_keys"],
 	}
 
-# One click to satisfy "installed but disabled" blockers: enable every
-# required dependency (transitively) that is installed and merely turned
-# off. Returns what was enabled and which ids this couldn't fix.
+# Enable every required dependency (transitively) that is installed and
+# merely turned off. Returns what was enabled and which ids it couldn't fix.
 func _enable_required_deps(entry: Dictionary) -> Dictionary:
 	var installed_by_id := _entries_by_mod_id(_ui_mod_entries)
 	var enabled_names: Array[String] = []
@@ -936,10 +798,8 @@ func _enable_required_deps(entry: Dictionary) -> Dictionary:
 			queue.append(str(raw).strip_edges().to_lower())
 	return {"enabled_names": enabled_names, "unfixed": unfixed}
 
-# Display name for a dependency id: the installed mod's name when there is
-# it, the raw id otherwise. Callers in a loop should pass a prebuilt
-# _entries_by_mod_id map. The null fallback rebuilds the whole map
-# (O(installed mods) inserts) on every call.
+# Display name for a dependency id. Callers in a loop should pass a
+# prebuilt map; the null fallback rebuilds it on every call.
 func _dependency_display_for_id(dep_id: String, installed_by_id: Variant = null) -> String:
 	var dep_key := dep_id.strip_edges().to_lower()
 	var by_id: Dictionary = installed_by_id if installed_by_id is Dictionary \
@@ -948,11 +808,9 @@ func _dependency_display_for_id(dep_id: String, installed_by_id: Variant = null)
 		return str((by_id[dep_key] as Dictionary).get("mod_name", dep_id))
 	return dep_id
 
-# Returns the _loadable_enabled_entries pick it computed mid-pass, so hot
-# callers (the order panel's refresh_order, fired per held spin-arrow step)
-# can reuse it instead of running the sort + topological-order + blocked-set
-# pipeline a second time. Callers that only want the entry-side effects can
-# ignore the return value.
+# Returns the _loadable_enabled_entries pick it computed mid-pass so hot
+# callers (order panel refresh, fired per held spin-arrow step) can reuse it
+# instead of rerunning the pipeline.
 func _refresh_dependency_status() -> Dictionary:
 	var installed_by_id := _entries_by_mod_id(_ui_mod_entries)
 	var enabled_by_id := _entries_by_mod_id(_ui_mod_entries.filter(
@@ -986,18 +844,13 @@ func _refresh_dependency_status() -> Dictionary:
 				continue
 			if LOADER_ID_ALIASES.has(dep_key):
 				continue
-			# Resolve the dep the same way the load filter does, so this status
-			# panel never disagrees with what actually loads. Bind the id to
-			# whichever ENABLED mod owns it first (a real id beats a provides=
-			# alias -- _entries_by_mod_id's real-id pass runs first), falling
-			# back to installed mods -- matching the loader's active-then-
-			# installed order, then treat it as satisfied only if that mod is
-			# loadable. Testing loadable_by_id with
-			# the raw id instead would let a blocked real mod's id "escape" to a
-			# loadable alias provider and show a green row for a mod the loader
-			# skips. The identity check (key of the loadable entry == owner_key)
-			# rejects that escape; a pure alias with no real owner still resolves
-			# through installed_by_id to its provider and satisfies normally.
+			# Resolve the dep the same way the load filter does so this panel
+			# never disagrees with what loads: bind the id to whichever
+			# enabled mod owns it (real id beats alias), fall back to
+			# installed, then satisfied only if that owner is loadable.
+			# Testing loadable_by_id with the raw id would let a blocked real
+			# mod's id "escape" to a loadable alias provider; the identity
+			# check rejects that.
 			var owner_key := dep_key
 			if enabled_by_id.has(dep_key):
 				owner_key = _entry_mod_key(enabled_by_id[dep_key])
@@ -1048,13 +901,10 @@ func compare_versions(a: String, b: String) -> int:
 		if va > vb: return 1
 	return 0
 
-# Compare two semver prerelease tails (the part after "-", e.g. "beta.1" vs
-# "beta.10"), already stripped of the leading "-". compare_versions above can't
-# do this. It treats "0-beta" as 0. Splits on "." and compares identifier by
-# identifier: numeric identifiers compare numerically, others lexically; a
-# numeric identifier has LOWER precedence than a non-numeric one; and a shorter
-# run of identifiers has lower precedence when the shared prefix is equal
-# (semver 11). Returns -1 / 0 / 1.
+# Compare two semver prerelease tails ("beta.1" vs "beta.10", leading "-"
+# already stripped) -- compare_versions above treats "0-beta" as 0. Numeric
+# identifiers compare numerically and rank below non-numeric; a shorter run
+# ranks lower on an equal prefix (semver 11). Returns -1 / 0 / 1.
 func _compare_prerelease(a: String, b: String) -> int:
 	if a == b:
 		return 0
@@ -1081,21 +931,13 @@ func _compare_prerelease(a: String, b: String) -> int:
 			return -1 if ia < ib else 1
 	return 0
 
-# Collapse same-id duplicates produced when an author publishes the same mod
-# under two filenames (e.g. CoolMod_v1.zip + CoolMod_v1.1.zip). Without this
-# the UI shows both rows and the load-time skip at _process_mod_candidate
-# silently drops one. The user is left to figure out which to delete.
-#
-# Mods with no declared id are grouped by normalized filename stem instead,
-# so re-packaging one under a different extension or version suffix does not
-# produce two live copies of the same mod. .pck files stay out: they carry no
-# mod.txt at all, so a name resemblance is the only signal and it is too weak
-# to act on.
+# Collapse same-id duplicates (CoolMod_v1.zip + CoolMod_v1.1.zip): without
+# this the UI shows both rows and load-time silently drops one. Mods with no
+# declared id group by normalized filename stem instead; .pck files never
+# collapse (no mod.txt, so name resemblance is too weak a signal).
 func _dedupe_by_mod_id(entries: Array[Dictionary]) -> Array[Dictionary]:
-	# Group on the same lowercased key the dependency machinery uses
-	# (_entry_mod_key), so ids differing only in case collapse too --
-	# otherwise both archives mount and the later one clobbers overlapping
-	# res:// paths while dependency lookups bind to only one of them.
+	# Group on the lowercased _entry_mod_key so ids differing only in case
+	# collapse too.
 	var groups: Dictionary = {}
 	for e in entries:
 		var mid := _dedupe_group_key(e)
@@ -1138,13 +980,9 @@ func _dedupe_by_mod_id(entries: Array[Dictionary]) -> Array[Dictionary]:
 		out.append(winners_by_id[mid])
 	return out
 
-# Identity used to collapse duplicates. "" means "never collapse this entry".
-#
-# A declared id is authoritative. Without one the filename is all there is, so
-# fall back to the normalized stem: that is what lets CoolMod.vmz and
-# CoolMod.zip, or CoolMod_v1.0.zip and CoolMod_v1.1.zip, be recognized as one
-# mod rather than mounting both and letting load order decide which body of
-# code actually runs.
+# Identity used to collapse duplicates; "" means "never collapse". A
+# declared id is authoritative; otherwise the normalized filename stem, so
+# CoolMod.vmz and CoolMod_v1.1.zip read as one mod.
 func _dedupe_group_key(entry: Dictionary) -> String:
 	if str(entry.get("ext", "")) == "pck":
 		return ""
@@ -1153,32 +991,21 @@ func _dedupe_group_key(entry: Dictionary) -> String:
 	var stem := _normalized_mod_stem(str(entry.get("file_name", "")))
 	return "stem:" + stem if not stem.is_empty() else ""
 
-# Filename reduced to what stays the same across a re-package: extension gone,
-# lowercased, and a trailing version token removed so "CoolMod_v1.2" and
-# "CoolMod-1.3" both reduce to "coolmod".
-#
-# The trailing token must be introduced by a separator or a "v", so "CoolMod2"
-# keeps its digit (it reads as part of the name, and collapsing it would hide a
-# genuinely different mod) while "CoolMod_2", "CoolMod-2" and "CoolModv2" do
-# not. Only ONE token is stripped.
-#
-# What survives has to look like a name: it must contain a letter. Otherwise
-# "1.2" would reduce to "1" and every bare-numeric filename would collapse into
-# the same group. Anything with no name left keeps its full stem, which at
-# worst means no collapse happens.
+# Filename reduced to what survives a re-package: extension gone,
+# lowercased, one trailing version token stripped ("CoolMod_v1.2" and
+# "CoolMod-1.3" both reduce to "coolmod"). The token must be introduced by a
+# separator or a "v", so "CoolMod2" keeps its digit. What survives must
+# contain a letter, or bare-numeric filenames would all collapse into one
+# group; anything with no name left keeps its full stem.
 func _normalized_mod_stem(file_name: String) -> String:
 	var stem := file_name.get_basename().to_lower().strip_edges()
 	var re := RegEx.new()
-	# Four ways a trailing token reads as a version, and one way it does not.
-	#   _ - .  separator, optional v   CoolMod_v1.2, CoolMod-1.3, CoolMod_2
-	#   space + explicit v             Ammo Pack v2
-	#   space + a DOTTED number        Ammo Pack 1.2
-	#   v attached to the name         CoolModv2
-	# A space followed by a bare integer is deliberately NOT a version: "Ammo
-	# Pack 1" and "Ammo Pack 2" are two different mods, and collapsing them
-	# deletes one from the list with the survivor decided by mtime, so it can
-	# flip between sessions. Underscore and hyphen are packaging conventions;
-	# a space is prose.
+	# Version-token shapes: [_-.] separator with optional v (CoolMod_v1.2,
+	# CoolMod_2), space + explicit v (Ammo Pack v2), space + dotted number
+	# (Ammo Pack 1.2), or v attached to the name (CoolModv2). A space plus a
+	# bare integer is NOT a version: "Ammo Pack 1" and "Ammo Pack 2" are
+	# different mods, and collapsing them hides one with the survivor decided
+	# by mtime.
 	re.compile("^(.*?)(?:[_\\-.]+v?[0-9]+(?:[._][0-9]+)*| +v[0-9]+(?:[._][0-9]+)*| +[0-9]+(?:[._][0-9]+)+|v[0-9]+(?:[._][0-9]+)*)$")
 	var m := re.search(stem)
 	if m != null:
@@ -1207,10 +1034,9 @@ func fetch_latest_modworkshop_versions(ids: Array[int]) -> Dictionary:
 		req.timeout = API_CHECK_TIMEOUT
 		req.download_body_size_limit = MWS_JSON_BODY_LIMIT
 		add_child(req)
-		# The API reads mod_ids as repeated ?mod_ids[]= query params, not a GET
-		# request body. A JSON body is ignored and returns 422, silently
-		# breaking every update check (verified against the live API 2026-07).
-		# Response format is identical either way: {"<id>": "<version>", ...}.
+		# The API reads mod_ids as repeated ?mod_ids[]= query params; a JSON
+		# GET body is ignored and returns 422 (verified against the live API).
+		# Response: {"<id>": "<version>", ...}.
 		var qparts := PackedStringArray()
 		for mid in chunk_ids:
 			qparts.append("mod_ids[]=" + str(mid))
@@ -1224,11 +1050,9 @@ func fetch_latest_modworkshop_versions(ids: Array[int]) -> Dictionary:
 		var res: Array = await req.request_completed
 		req.queue_free()
 		# Legacy path (own HTTPRequest, not the _mws_get_json chokepoint):
-		# still NOTE rate headers so a 429 here arms the shared cooldown and
-		# every surface's mws_error_status() hint lights up. Deliberately no
-		# fail-fast gate. This batch check stays as-is until the migration
-		# phase, and blocking it on a conservative cooldown could fail checks
-		# the server would have allowed.
+		# still note rate headers so a 429 arms the shared cooldown. No
+		# fail-fast gate -- a conservative cooldown could fail checks the
+		# server would have allowed.
 		_mws_note_rate_headers(int(res[1]), res[2])
 		if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] < 200 or res[1] >= 300:
 			continue
@@ -1237,12 +1061,10 @@ func fetch_latest_modworkshop_versions(ids: Array[int]) -> Dictionary:
 			latest_versions.merge(parsed, true)
 	return latest_versions
 
-# Pull a usable filename out of the response's Content-Disposition header.
-# Supports the common attachment; filename=X and quoted filename="X" forms,
-# plus the RFC 5987 filename*=UTF-8''X variant some CDNs emit. Returns "" if
-# the header is missing or the value isn't a safe basename with one of the
-# extensions already accepted on disk. A server never gets to pick a path
-# that would not have been scanned in the first place.
+# Filename from Content-Disposition: plain filename=X, quoted, and the RFC
+# 5987 filename*=UTF-8''X variant some CDNs emit. Returns "" unless the
+# value is a safe basename with an accepted extension -- a server never gets
+# to pick a path that would not have been scanned.
 func _filename_from_content_disposition(headers: PackedStringArray) -> String:
 	for raw in headers:
 		var line: String = raw
@@ -1252,8 +1074,7 @@ func _filename_from_content_disposition(headers: PackedStringArray) -> String:
 		if line.substr(0, colon).strip_edges().to_lower() != "content-disposition":
 			continue
 		var value := line.substr(colon + 1).strip_edges()
-		# Try filename* first -- RFC 5987 form is unicode-safe, and servers
-		# that emit both prefer the encoded one for non-ASCII names.
+		# filename* first: unicode-safe, and dual-emitting servers prefer it.
 		var star_val := _extract_disposition_param(value, "filename*")
 		if star_val != "":
 			var sep := star_val.find("''")
@@ -1263,9 +1084,8 @@ func _filename_from_content_disposition(headers: PackedStringArray) -> String:
 				return star_val.get_file()
 		var plain_val := _extract_disposition_param(value, "filename")
 		if plain_val != "":
-			# The plain filename= form is commonly percent-encoded by CDNs
-			# (filename="My%20Mod.zip"); decode so the mod doesn't install with
-			# a literal %20 in its name. Validate after decoding.
+			# CDNs commonly percent-encode plain filename= ("My%20Mod.zip");
+			# decode, then validate.
 			if plain_val.contains("%"):
 				plain_val = plain_val.uri_decode()
 			if _is_safe_mod_filename(plain_val):
@@ -1288,20 +1108,14 @@ func _extract_disposition_param(header_value: String, param: String) -> String:
 		return rest.strip_edges()
 	return rest.substr(0, semi).strip_edges()
 
-# Reject anything that isn't a plain basename with one of the mod extensions
-# accepted here. Stops a malicious or misconfigured server from writing under a
-# parent dir or with an executable extension. The extension list must stay
-# in sync with the scan accept set in collect_mod_metadata.
-# True when a server-supplied name is a bare filename safe to path_join onto a
-# directory owned by the loader. Every place that takes a filename off the network goes
-# through here, so the checks cannot drift between call sites; callers add their
-# own extension allowlist on top.
-#
+# True when a server-supplied name is a bare filename safe to path_join into
+# a loader-owned dir. Every filename taken off the network goes through
+# here; callers add their extension allowlist on top, and
+# _is_safe_mod_filename's list must stay in sync with the scan accept set in
+# collect_mod_metadata.
 # get_file() only splits on "/", so a Windows-style "..\evil.zip" passes a
-# basename check yet still escapes the directory once the OS resolves the
-# backslash. Both separators, drive and ADS colons, and dot-prefixed names are
-# rejected outright: "..zip" and friends are traversal-shaped and are never
-# legitimate filenames.
+# basename check yet escapes once the OS resolves the backslash. Both
+# separators, drive and ADS colons, and dot-prefixed names are rejected.
 func _is_safe_basename(name: String) -> bool:
 	if name.is_empty():
 		return false
@@ -1314,22 +1128,18 @@ func _is_safe_mod_filename(name: String) -> bool:
 		return false
 	return name.get_extension().to_lower() in ["vmz", "zip", "pck"]
 
-# Pick the filename the validated download should land under. Prefers
-# Content-Disposition; falls back to splicing the new mod.txt version onto
-# the old stem (CoolMod_v1.0.zip -> CoolMod_v1.1.zip) so the filename never
-# claims an older version than its contents. Returns the original filename
-# unchanged when neither path produces something better. A rename is
-# best-effort and must never block an update.
+# Filename the validated download lands under: Content-Disposition, else
+# the old stem with the new mod.txt version spliced on (CoolMod_v1.0.zip ->
+# CoolMod_v1.1.zip). A rename is best-effort and must never block an update.
 func _derive_updated_filename(old_file_name: String, headers: PackedStringArray, new_version: String) -> String:
 	var server_name := _filename_from_content_disposition(headers)
 	if server_name != "":
 		return server_name
 	if new_version.is_empty():
 		return old_file_name
-	# new_version comes from the downloaded archive's own mod.txt -- untrusted.
-	# Spliced into a rename target, a version containing separators ("..\x")
-	# would land the archive outside the mods dir. Renaming is best-effort and
-	# must never block the update, so just keep the old filename.
+	# new_version comes from the downloaded archive's mod.txt -- untrusted; a
+	# version with separators ("..\x") would land outside the mods dir, so
+	# just keep the old filename.
 	if not new_version.lstrip("vV").is_valid_filename():
 		return old_file_name
 	var ext := old_file_name.get_extension()
@@ -1341,53 +1151,40 @@ func _derive_updated_filename(old_file_name: String, headers: PackedStringArray,
 	return new_stem if ext.is_empty() else new_stem + "." + ext
 
 # --- Download surfaces ------------------------------------------------------
-# Five UI surfaces reach the two download entry points below. Keep this map
-# current when adding one (a unified download queue would replace it):
-#   1. Mods tab per-row "Update" badge (ui.gd build_mods_tab, updates block)
-#      -> download_and_replace_mod(path, id); errors: "Update failed" dialog,
-#      verbatim.
-#   2. Updates tab "Download"/"Retry" button (ui.gd check_updates_for_ui,
-#      wired from build_updates_tab) -> download_and_replace_mod(path, id);
-#      errors: generic "download failed" label + log line (error text dropped).
-#   3. Browse tab "Download" + its serial queue (ui.gd build_browse_tab,
-#      perform_download_for_item) -> download_new_mod(id); errors: status
-#      label, verbatim.
-#   4. Missing-mod stub "Download" (ui.gd build_mods_tab, missing section)
-#      -> download_new_mod(id, version, true); errors: "Download failed"
-#      dialog, verbatim.
+# Five UI surfaces reach the two download entry points below; keep this map
+# current when adding one:
+#   1. Mods tab "Update" badge (ui.gd build_mods_tab) ->
+#      download_and_replace_mod; errors: "Update failed" dialog, verbatim.
+#   2. Updates tab "Download"/"Retry" (ui.gd check_updates_for_ui) ->
+#      download_and_replace_mod; errors: generic label, error text dropped.
+#   3. Browse tab "Download" + its serial queue (ui.gd build_browse_tab) ->
+#      download_new_mod(id); errors: status label, verbatim.
+#   4. Missing-mod stub "Download" (ui.gd build_mods_tab) ->
+#      download_new_mod(id, version, true); errors: dialog, verbatim.
 #   5. Modpack apply + retry (modpacks.gd _apply_modpack_inner,
 #      retry_failed_downloads) -> download_new_mod(id, version, true);
-#      errors: collected into a failures list for the apply summary; the
-#      apply loop (not retry) counts the "Already have" error prefix as
-#      installed rather than failed (see download_new_mod).
-# Each surface implements its own busy-state, queueing and error handling;
-# Only Browse serializes its own downloads, and nothing prevents two surfaces
-# from downloading concurrently (the _live_full_path re-resolution in ui.gd
-# exists because the badge and the Updates tab can race on the same file).
+#      errors collected for the apply summary; the apply loop counts the
+#      "Already have" prefix as installed rather than failed.
+# Each surface has its own busy-state and error handling; only Browse
+# serializes, so two surfaces can race on the same file (hence the
+# _live_full_path re-resolution in ui.gd).
 
 # Returns { ok: bool, new_path: String, new_file_name: String }; failure
-# returns additionally carry an "error": String (success returns do not,
-# unlike download_new_mod which always includes the key). On success
-# new_path / new_file_name reflect the on-disk filename the download landed
-# under, which may differ from target_path when the server provided a
-# Content-Disposition or the mod.txt version-bumped (CoolMod_v1.0.zip ->
-# CoolMod_v1.1.zip). On failure the temp + backup are cleaned up and the
-# original file is left intact; new_path / new_file_name echo target_path.
+# returns also carry an "error" String (success ones do not, unlike
+# download_new_mod). On success new_path / new_file_name reflect the on-disk
+# name, which may differ from target_path (Content-Disposition or version
+# bump). On failure temp + backup are cleaned up and the original is intact.
 func download_and_replace_mod(target_path: String, modworkshop_id: int) -> Dictionary:
-	# Every failure return carries an "error" string. The Mods-tab update
-	# badge surfaces it verbatim in an "Update Failed" dialog, so "unknown"
-	# must never be the answer. (The Updates tab currently drops it and shows
-	# a generic "download failed" label -- see check_updates_for_ui in ui.gd.)
+	# The Mods-tab update badge shows the "error" string verbatim, so
+	# "unknown" must never be the answer.
 	var failure := {"ok": false, "new_path": target_path, "new_file_name": target_path.get_file(), "error": ""}
 
 	var req := HTTPRequest.new()
 	req.timeout = API_DOWNLOAD_TIMEOUT
 	req.download_body_size_limit = 256 * 1024 * 1024
 	add_child(req)
-	# The API answers a default/empty User-Agent with a bodyless 403 (see the
-	# note at the top of mws_api.gd), so this legacy route needs the same UA
-	# the _mws_get_json chokepoint sends. No Accept header. This is a file
-	# download, not a JSON route.
+	# The API answers a default/empty User-Agent with a bodyless 403 (see
+	# mws_api.gd). No Accept header -- this is a file download, not JSON.
 	var err := req.request(MODWORKSHOP_DOWNLOAD_URL_TEMPLATE % str(modworkshop_id),
 		PackedStringArray(["User-Agent: " + (MWS_USER_AGENT_TEMPLATE % MODLOADER_VERSION)]))
 	if err != OK:
@@ -1397,10 +1194,9 @@ func download_and_replace_mod(target_path: String, modworkshop_id: int) -> Dicti
 	# request_completed -> [result, http_code, headers, body]
 	var res: Array = await req.request_completed
 	req.queue_free()
-	# Same api.modworkshop.net throttle bucket as the Browse/updates surfaces:
-	# note the rate headers so a 429 here arms the shared cooldown (and the
-	# other surfaces' mws_error_status hints light up), and wrap the HTTP-error
-	# copy so the user sees "try again in Ns" instead of a bare "HTTP 429".
+	# Same throttle bucket as the Browse/updates surfaces: note rate headers
+	# so a 429 here arms the shared cooldown, and wrap the HTTP-error copy
+	# with the "try again in Ns" hint.
 	_mws_note_rate_headers(int(res[1]), res[2])
 
 	if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] < 200 or res[1] >= 300:
@@ -1453,9 +1249,8 @@ func download_and_replace_mod(target_path: String, modworkshop_id: int) -> Dicti
 	var new_file_name := _derive_updated_filename(old_file_name, headers, new_version)
 	var new_path := target_path.get_base_dir().path_join(new_file_name)
 
-	# Refuse to overwrite an unrelated archive that already lives at the
-	# derived path. Better to fail loudly than silently clobber a different
-	# mod that happens to share the new versioned name.
+	# Fail loudly rather than clobber an unrelated archive that happens to
+	# live at the derived path.
 	if new_file_name != old_file_name and FileAccess.file_exists(new_path):
 		DirAccess.remove_absolute(temp_path)
 		failure["error"] = "A different file named \"%s\" is already in the mods folder -- move or delete it and retry" % new_file_name
@@ -1486,48 +1281,36 @@ func _chunk_int_array(arr: Array[int], chunk_size: int) -> Array:
 		result.append(arr.slice(i, i + chunk_size))
 	return result
 
-# Browse-tab "Get" action. Differs from download_and_replace_mod: there's no
-# existing file to back up and roll back, and the download hits storage.modworkshop.net
-# directly via the file record's download_url (skips the api.modworkshop.net
-# 302 hop, which is just `return redirect($file->downloadUrl)` server-side).
-# When `version` is empty, use /files/primary (the author's default download).
-# When `version` is set, fetch that exact version's File record. This
-# is how version-pinned modpacks honor their pin instead of silently getting
-# whatever's primary on apply day.
-# Filename derivation falls through Content-Disposition -> ?filename= query
-# param on the CDN URL -> a synthesized "mws_<id>.zip" last resort.
-# Returns { ok: bool, file_name: String, error: String }. On failure the temp
-# file is cleaned up and the mods/ folder is untouched.
+# Browse-tab "Get". No existing file to back up, and the download hits
+# storage.modworkshop.net directly via the file record's download_url
+# (skips the api 302 hop). Empty `version` uses /files/primary; a set
+# version fetches that exact File record, which is how version-pinned
+# modpacks honor their pin. Filename: Content-Disposition -> ?filename=
+# query param -> synthesized "mws_<id>.zip". Returns { ok, file_name,
+# error }; on failure the temp file is cleaned up and mods/ is untouched.
 func download_new_mod(modworkshop_id: int, version: String = "", allow_rename_on_collision: bool = false) -> Dictionary:
 	var failure := {"ok": false, "file_name": "", "error": "unknown"}
 
 	var file_meta: Variant
 	if version.is_empty():
-		# Try primary first (author's designated default download). If that
-		# 404s, the author either hasn't set a primary or this is a link-
-		# type mod with no MWS-hosted files. Fall back to /files/latest
-		# which surfaces the most-recent uploaded file regardless of the
-		# primary marker. Genuine "no downloadable file" mods will fail
-		# at the latest step too -- caller surfaces the clear error.
+		# Primary (author's default) first; on 404 fall back to /files/latest,
+		# since the author may not have set a primary. Truly file-less mods
+		# fail at the latest step too.
 		file_meta = await mws_get_primary_file(modworkshop_id)
 		if not (file_meta is Dictionary):
 			file_meta = await mws_get_latest_file(modworkshop_id)
 	else:
 		file_meta = await mws_get_file_by_version(modworkshop_id, version)
 		if not (file_meta is Dictionary):
-			# Don't fall back to primary: silent substitution defeats the point
-			# of version pinning. Surface the gap so the caller can decide.
-			# Rate-limit-aware copy: when the lookup failed during
-			# a 429 cooldown, saying "not available" would be a lie. The
-			# version may be fine and only the API budget is spent.
+			# No fallback to primary: silent substitution defeats version
+			# pinning. During a 429 cooldown "not available" would be a lie,
+			# hence the mws_error_status wrapping.
 			failure["error"] = mws_error_status("Version " + version + " not available on ModWorkshop")
 			return failure
 	if not (file_meta is Dictionary):
-		# Distinguish "offline" from "this mod genuinely has no hosted file".
-		# When the last lookup died at the transport layer (no HTTP response),
-		# the mod may be perfectly downloadable and the API simply unreachable at
-		# API -- claiming it has no file would be wrong, and it collides with
-		# the "ModWorkshop is unreachable" banner shown over the same rows.
+		# Distinguish "offline" from "genuinely has no hosted file": a
+		# transport failure means the API was unreachable, not that the mod
+		# has no file.
 		if _mws_last_transport_failed:
 			failure["error"] = "Could not reach ModWorkshop. Check your connection and try again."
 		else:
@@ -1570,16 +1353,14 @@ func download_new_mod(modworkshop_id: int, version: String = "", allow_rename_on
 		failure["error"] = "The download came back empty. Try again later."
 		return failure
 
-	# Filename derivation. Same _is_safe_mod_filename gate the update path uses
-	# never trust a server name that isn't a basename with one of the
-	# accepted extensions.
+	# Same _is_safe_mod_filename gate as the update path: never trust a
+	# server name that isn't a basename with an accepted extension.
 	var derived_name := _filename_from_content_disposition(resp_headers)
 	if derived_name.is_empty():
 		var q := download_url.find("?filename=")
 		if q >= 0:
 			var raw := download_url.substr(q + 10).uri_decode()
-			# Strip any subsequent query params (& delimits). Storage URLs rarely
-			# have more than the filename param, but defensive.
+			# Strip subsequent query params (& delimits).
 			var amp := raw.find("&")
 			if amp >= 0:
 				raw = raw.substr(0, amp)
@@ -1591,31 +1372,25 @@ func download_new_mod(modworkshop_id: int, version: String = "", allow_rename_on
 	var temp_path := _mods_dir.path_join(derived_name + ".download")
 	var final_path := _mods_dir.path_join(derived_name)
 
-	# Filename collision handling. By default, clobbering an existing file is refused
-	# files (Browse "Get" semantics: "you already have this"). For modpack
-	# apply (allow_rename_on_collision=true) renames with the file's
-	# version as a suffix instead, so a modpack pinning v3.0.3 of a mod
-	# the user already has at v2.5.0 ends up with both files in /mods/
-	# (dedup picks the higher version, modpack's enable list id-prefix
-	# matches whichever one wins).
+	# Collisions: Browse "Get" refuses ("you already have this"). Modpack
+	# apply (allow_rename_on_collision=true) renames with the file's version
+	# as a suffix instead, so a pinned version coexists with the installed
+	# one and dedup picks the higher.
 	if FileAccess.file_exists(final_path):
 		if not allow_rename_on_collision:
-			# LOAD-BEARING PREFIX: modpack apply (modpacks.gd _apply_modpack_inner)
-			# matches err.begins_with("Already have") to count this failure as
-			# already-installed instead of failed. Reword it there too, or real
-			# collisions start showing up as spurious apply successes/failures.
+			# modpacks.gd _apply_modpack_inner matches
+			# err.begins_with("Already have") to count this as
+			# already-installed; reword it there too.
 			failure["error"] = "Already have a file named " + derived_name
 			return failure
 		var meta_version := str((file_meta as Dictionary).get("version", "")).strip_edges().lstrip("vV")
-		# Server-controlled string headed into an on-disk filename: a version
-		# like "..\x" would traverse out of the mods dir on Windows, and a JSON
-		# null stringifies to "<null>". is_valid_filename() rejects the whole
-		# : / \ ? * " | % < > class; fall through to the mod-id suffix instead.
+		# Server-controlled string headed into a filename: "..\x" would
+		# traverse on Windows and a JSON null stringifies to "<null>";
+		# is_valid_filename rejects both classes.
 		if not meta_version.is_empty() and not meta_version.is_valid_filename():
 			meta_version = ""
 		if meta_version.is_empty():
-			# Last-ditch: append the mod ID so the install can at least proceed
-			# something distinguishable. Better than dropping the apply.
+			# Last-ditch: the mod id suffix so the install can proceed.
 			meta_version = str(modworkshop_id)
 		var ext := derived_name.get_extension()
 		var stem := derived_name.get_basename()
@@ -1644,12 +1419,9 @@ func download_new_mod(modworkshop_id: int, version: String = "", allow_rename_on
 		failure["error"] = "Could not write the download to disk (disk full?)"
 		return failure
 
-	# Validate before adopting. Mirror what collect_mod_metadata accepts:
-	# zip/vmz mods must parse a root mod.txt (read_mod_config returns null
-	# otherwise), but .pck mods carry no readable root mod.txt -- discovery
-	# accepts them with cfg==null (see _build_archive_entry's `ext != "pck"`
-	# guard), so validate a .pck by its container magic instead of demanding
-	# a mod.txt that can never be there.
+	# Validate before adopting, mirroring what collect_mod_metadata accepts:
+	# a .pck carries no readable root mod.txt (discovery takes it with
+	# cfg==null), so check its container magic instead.
 	var dl_ext := derived_name.get_extension().to_lower()
 	if dl_ext == "pck":
 		if not _looks_like_pck(temp_path):
@@ -1657,11 +1429,9 @@ func download_new_mod(modworkshop_id: int, version: String = "", allow_rename_on
 			failure["error"] = "Downloaded file is not a valid .pck"
 			return failure
 	else:
-		# Reject only when the CONTAINER is invalid (HTML error page,
-		# truncated body). That's what ZIPReader.open failing means.
-		# mod.txt itself is optional, same as discovery: a valid zip
-		# without one still mounts as a plain resource pack, so blocking
-		# the download would reject mods the loader happily runs.
+		# Reject only an invalid container (HTML error page, truncated body).
+		# mod.txt is optional, same as discovery: a valid zip without one
+		# still mounts as a plain resource pack.
 		var zr := ZIPReader.new()
 		var zip_ok := zr.open(temp_path) == OK
 		if zip_ok:
@@ -1686,9 +1456,8 @@ func download_new_mod(modworkshop_id: int, version: String = "", allow_rename_on
 
 	return {"ok": true, "file_name": derived_name, "error": ""}
 
-# Godot .pck archives begin with the 4-byte magic "GDPC". A cheap shape check
-# so a CDN error page or HTML saved under a .pck name isn't adopted as a mod
-# (a mod.txt cannot be read from a .pck to validate it the zip way).
+# .pck archives begin with the magic "GDPC"; cheap check so a CDN error
+# page saved under a .pck name isn't adopted as a mod.
 func _looks_like_pck(path: String) -> bool:
 	var f := FileAccess.open(path, FileAccess.READ)
 	if f == null:
@@ -1704,21 +1473,20 @@ func _looks_like_pck(path: String) -> bool:
 # "version": String}, every field always present (the host_types.gd rule);
 # provider "" is the single "no source" test. Three disk surfaces carry it:
 #   mod.txt [updates]        source="<provider>:<id>", plus the legacy
-#                            modworkshop=<int>, which is read FOREVER
+#                            modworkshop=<int>, read with no sunset
 #   mod_config.cfg           [mod_sources] <profile_key> = <json>
 #   modpack profile.json     "sources": {<profile_key>: <record>}
 # The JSON record is {provider, id, modworkshop_id?, version?}.
-# modworkshop_id is a compat MIRROR emitted IFF provider == "modworkshop":
-# profile.json is mailed between users, and a pre-source loader reading a
+# modworkshop_id is a compat mirror emitted IFF provider == "modworkshop":
+# profile.json travels between users, and a pre-source loader reading a
 # mirrored id on a non-ModWorkshop record would download whatever mod owns
 # that number on ModWorkshop.
 
 ## mod.txt `source=` value -> canonical record (version ""), {} on reject.
-## Delegates to host_ref_from_key (host_types.gd) -- ONE parser for the
-## wire key and the disk key, so the two grammars cannot drift. Inherits
-## its rules: split on the FIRST colon, provider from the known list, id a
-## non-empty opaque String, and a bare value with no colon rejected, never
-## defaulted to modworkshop.
+## Delegates to host_ref_from_key (host_types.gd), the one parser for the
+## wire and disk keys: split on the first colon, known provider, non-empty
+## opaque id, bare no-colon values rejected rather than defaulted to
+## modworkshop.
 func _parse_source_token(raw: String) -> Dictionary:
 	var ref := host_ref_from_key(raw.strip_edges())
 	if ref.is_empty():
@@ -1726,23 +1494,18 @@ func _parse_source_token(raw: String) -> Dictionary:
 	var provider := str(ref["provider"])
 	var id := str(ref["id"])
 	# Canonicalize a ModWorkshop id the same way the legacy path does, so
-	# source="modworkshop:0123" and the legacy modworkshop=123 produce the
-	# identical id string. Without this they build different host_ref_keys and
-	# an update check silently never matches. Other providers' ids are opaque.
+	# "modworkshop:0123" and modworkshop=123 build the same host_ref_key;
+	# otherwise an update check silently never matches. Other ids are opaque.
 	if provider == HOST_MODWORKSHOP and id.is_valid_int():
 		id = str(id.to_int())
 	return {"provider": provider, "id": id, "version": ""}
 
 
-## The one reader of a mod.txt source declaration. source= wins; the legacy
-## modworkshop= key has no sunset. A malformed source= falls through to the
-## legacy key so a dual-written mod with a typo keeps updating instead of
-## going dark.
-##
-## The legacy value must be a PURE integer (is_valid_int): String.to_int()
-## tolerates trailing junk, so it would mint id 12 out of "12abc" -- and a
-## qualified value pasted into the wrong key must read as no-source, not as
-## someone else's ModWorkshop id.
+## The one reader of a mod.txt source declaration. source= wins; a malformed
+## source= falls through to the legacy modworkshop= key so a dual-written
+## mod with a typo keeps updating. The legacy value must be a pure integer
+## (is_valid_int): to_int() tolerates trailing junk and would mint id 12 out
+## of "12abc".
 func _mod_source_from_cfg(cfg: ConfigFile) -> Dictionary:
 	if cfg == null:
 		return {"provider": "", "id": "", "version": ""}
@@ -1755,18 +1518,16 @@ func _mod_source_from_cfg(cfg: ConfigFile) -> Dictionary:
 	if cfg.has_section_key("updates", "modworkshop"):
 		var legacy := str(cfg.get_value("updates", "modworkshop", "")).strip_edges()
 		if legacy.is_valid_int() and legacy.to_int() > 0:
-			# Round-trip through int so "0123"/"+123" normalize to the same
-			# id string the wire produces; ids double as dictionary keys.
+			# Round-trip through int so "0123"/"+123" normalize to the wire's
+			# id string; ids double as dictionary keys.
 			return {"provider": HOST_MODWORKSHOP, "id": str(legacy.to_int()), "version": version}
 	return {"provider": "", "id": "", "version": ""}
 
 
-## Normalize a [mod_sources]/profile.json record of either era. Provider is
-## first and ABSOLUTE: when a "provider" key is present, modworkshop_id is
-## never consulted, even as a fallback -- a stale mirror left by a
-## hand-edit must not resolve a vostokmods mod to a ModWorkshop download.
-## Only a record with NO "provider" key takes the legacy modworkshop_id
-## path.
+## Normalize a [mod_sources]/profile.json record of either era. When a
+## "provider" key is present modworkshop_id is never consulted, even as a
+## fallback -- a stale mirror left by a hand-edit must not resolve a
+## vostokmods mod to a ModWorkshop download.
 func _normalize_source_record(v: Variant) -> Dictionary:
 	if not (v is Dictionary):
 		return {"provider": "", "id": "", "version": ""}
@@ -1777,16 +1538,15 @@ func _normalize_source_record(v: Variant) -> Dictionary:
 		var provider := str(rec.get("provider", ""))
 		var id := str(rec.get("id", "")).strip_edges()
 		if HOST_PROVIDERS_KNOWN.has(provider) and not id.is_empty():
-			# Match the legacy path's id canonicalization so a record read from
-			# either era builds the same host_ref_key. Other providers opaque.
+			# Match the legacy path's id canonicalization so both eras build
+			# the same host_ref_key.
 			if provider == HOST_MODWORKSHOP and id.is_valid_int():
 				id = str(id.to_int())
 			return {"provider": provider, "id": id, "version": version}
 		return {"provider": "", "id": "", "version": ""}
-	# Legacy {"modworkshop_id": N}. JSON numbers arrive as float;
-	# hand-edited packs have carried null and quoted "12345". int(null) is
-	# a runtime error and to_int() on arbitrary text invents ids, so only
-	# ints, floats and pure-integer strings are accepted.
+	# Legacy {"modworkshop_id": N}. JSON numbers arrive as float; hand-edited
+	# packs have carried null and quoted "12345". int(null) is a runtime
+	# error, so only ints, floats and pure-integer strings are accepted.
 	var mws_raw: Variant = rec.get("modworkshop_id", 0)
 	var mws_id := 0
 	if mws_raw is int:
@@ -1800,11 +1560,9 @@ func _normalize_source_record(v: Variant) -> Dictionary:
 	return {"provider": "", "id": "", "version": ""}
 
 
-## A record's ModWorkshop integer id, or 0. The ONLY place a source record
-## becomes an int: provider must be modworkshop and the id all digits.
-## Everything that still speaks int mws_id (download_new_mod, the Browse
-## install map, update checks) funnels through here, so the "is this really
-## a ModWorkshop number" test cannot fork.
+## A record's ModWorkshop integer id, or 0. The only place a source record
+## becomes an int; everything that still speaks int mws_id funnels through
+## here so the test cannot fork.
 func _source_mws_id(rec: Dictionary) -> int:
 	if str(rec.get("provider", "")) != HOST_MODWORKSHOP:
 		return 0
@@ -1815,12 +1573,10 @@ func _source_mws_id(rec: Dictionary) -> int:
 	return n if n > 0 else 0
 
 
-## Dictionary payload shared by the [mod_sources] cache and profile.json
-## `sources`, so the mirror rule cannot fork between the two writers.
-## Key order is FIXED -- provider, id, modworkshop_id, version -- because
-## _persist_mod_sources_for_entries and _persist_single_mod_source diff the
-## serialized string against the stored one to decide whether to rewrite
-## mod_config.cfg; a reordered payload would rewrite the file every scan.
+## Payload shared by the [mod_sources] cache and profile.json `sources`.
+## Key order is fixed (provider, id, modworkshop_id, version): the persist
+## functions diff the serialized string against the stored one, and a
+## reordered payload would rewrite mod_config.cfg every scan.
 func _mod_source_payload(rec: Dictionary) -> Dictionary:
 	var payload: Dictionary = {
 		"provider": str(rec.get("provider", "")),
@@ -1835,27 +1591,21 @@ func _mod_source_payload(rec: Dictionary) -> Dictionary:
 	return payload
 
 
-# Serialize a [mod_sources] cache value. Godot Dictionaries keep insertion
-# order and JSON.stringify preserves it, so identical records always
-# serialize to the identical string.
+# Godot Dictionaries keep insertion order and JSON.stringify preserves it,
+# so identical records always serialize to the identical string.
 func _serialize_mod_source_rec(rec: Dictionary) -> String:
 	return JSON.stringify(_mod_source_payload(rec))
 
 
-# Persist source info ([updates] source= or legacy modworkshop=, + version) for any scanned mod
-# into mod_config.cfg's [mod_sources] section. Lets missing-mod stubs offer
-# Download for mods that were once installed but have since been removed --
-# the file is gone, the cache remembers the source.
+# Persist each scanned mod's source into [mod_sources] so missing-mod stubs
+# can offer Download after the file itself is gone.
 func _persist_mod_sources_for_entries(entries: Array[Dictionary]) -> void:
 	var cfg := ConfigFile.new()
 	var load_err := cfg.load(UI_CONFIG_PATH)
-	# Refuse to persist over a config that exists but failed to parse. This
-	# scan runs BEFORE _load_ui_config's backup recovery, and _persist_ui_cfg
-	# copies the live file over the .bak first -- saving here would clobber
-	# the good backup with the corrupt file and then replace every profile
-	# with a config holding only [mod_sources]. Skipping keeps the backup
-	# intact so recovery can restore it moments later; the source cache is
-	# re-persisted on the next scan. A missing file is fine (first run).
+	# Never save over a config that exists but failed to parse: this scan
+	# runs before backup recovery, and _persist_ui_cfg copies live-over-.bak
+	# first, so saving would clobber the good backup and drop every profile.
+	# A missing file is fine (first run).
 	if load_err != OK and FileAccess.file_exists(UI_CONFIG_PATH):
 		_log_critical("mod_config.cfg exists but failed to load (error " + str(load_err)
 				+ ") -- skipped saving the mod-source cache so the config backup stays"
@@ -1878,11 +1628,9 @@ func _persist_mod_sources_for_entries(entries: Array[Dictionary]) -> void:
 		_persist_ui_cfg(cfg)
 
 
-# Read the persisted [mod_sources] cache as {profile_key -> canonical
-# {provider, id, version}}. Entries from either record era normalize on the
-# way out, so no consumer sees a raw modworkshop_id again. Empty when no
-# cache exists. Caller can layer active-modpack zip sources on top if they
-# want modpack data to take precedence.
+# Persisted [mod_sources] cache as {profile_key -> canonical record}.
+# Either era normalizes on the way out, so no consumer sees a raw
+# modworkshop_id.
 func _get_persisted_mod_sources() -> Dictionary:
 	var out: Dictionary = {}
 	var cfg := ConfigFile.new()
@@ -1900,17 +1648,16 @@ func _get_persisted_mod_sources() -> Dictionary:
 	return out
 
 
-# Add a single source entry to the cache. Used by modpack apply to record
-# sources for mods the modpack references but doesn't have installed yet
-# (so a download failure or skip still leaves the source recoverable later).
+# Add a single source entry to the cache; modpack apply records sources for
+# mods it references but hasn't installed, so a failed download or skip
+# still leaves the source recoverable.
 func _persist_single_mod_source(profile_key: String, rec: Dictionary) -> void:
 	if profile_key.is_empty() or str(rec.get("provider", "")) == "":
 		return
 	var cfg := ConfigFile.new()
 	var load_err := cfg.load(UI_CONFIG_PATH)
-	# Same guard as _persist_mod_sources_for_entries: never save over a
-	# config that exists but failed to load, or the .bak recovery source
-	# gets clobbered by _persist_ui_cfg's copy-then-save.
+	# Same guard as _persist_mod_sources_for_entries: keep the .bak
+	# recovery source intact.
 	if load_err != OK and FileAccess.file_exists(UI_CONFIG_PATH):
 		_log_critical("mod_config.cfg exists but failed to load (error " + str(load_err)
 				+ ") -- skipped recording the mod source for '" + profile_key

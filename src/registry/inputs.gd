@@ -1,35 +1,21 @@
 ## ----- registry/inputs.gd -----
+## Thin wrapper over InputMap so mods can declare input actions with a
+## default keybind; registered actions work immediately via
+## Input.is_action_pressed(id). The id IS the action name, so mods should
+## namespace it ("mymod_heal", not "heal").
 ##
-## Thin wrapper over InputMap.add_action / erase_action / action_add_event
-## so mods can declare their own input actions with a default keybind.
-## Registered actions are immediately usable via
-##     Input.is_action_pressed("mymod_heal")
-## everywhere in the mod's code.
+## register/override: {display_label: String, default_event: InputEvent,
+## deadzone?: float (default 0.5)}. patch: subset of the same fields.
 ##
-## Data shape:
-##   register: {display_label: String, default_event: InputEvent, deadzone: float (optional, default 0.5)}
-##   override: same shape; replaces the default event on an existing action (vanilla or mod)
-##   patch:    {display_label, default_event, deadzone} subset; mutates the
-##             registry metadata (display_label + deadzone) and/or swaps the
-##             event on InputMap.
+## Settings UI caveat: vanilla's Keybinds panel reads a hardcoded `inputs`
+## dict in Inputs.gd, so a registered action is functional but won't appear
+## in the rebind menu unless a hook on Inputs-createactions-pre merges it
+## into the UI's dict; this registry doesn't install that hook.
 ##
-## The `id` IS the action name. Mods use it directly with Input.is_action_*.
-## So mods should namespace: "mymod_heal", not just "heal".
-##
-## Settings UI caveat: vanilla's Settings -> Keybinds panel reads from a
-## hardcoded `inputs` Dictionary inside Inputs.gd (the Control script for
-## that UI). Registering an action here makes it functional in-game, but it
-## won't appear in the rebind menu until a hook on Inputs-createactions-pre
-## merges lib.get_entry(INPUTS, id) results into the UI's dict. That hook
-## isn't installed by this registry; mod authors can install it themselves,
-## or a loader-installed hook pack adds it later.
-##
-## User keybind persistence: vanilla stores rebinds in user://Preferences.tres
-## (Preferences.actionEvents). Those persist across mod unload/reload as long
-## as the mod re-registers its action on boot. If the mod is uninstalled
-## entirely, orphan entries linger harmlessly in Preferences.tres.
+## Rebinds persist in user://Preferences.tres (Preferences.actionEvents) as
+## long as the mod re-registers on boot; orphans linger harmlessly.
 
-# Default deadzone for InputMap actions. Matches vanilla's project.godot.
+# Matches vanilla's project.godot.
 const _DEFAULT_DEADZONE := 0.5
 
 func _validate_input_payload(id: String, verb: String, data: Variant) -> Dictionary:
@@ -92,8 +78,7 @@ func _override_input(id: String, data: Variant) -> bool:
 		var originals: Array = []
 		for e in InputMap.action_get_events(id):
 			originals.append(e)
-		# Stash the real deadzone (action_get_deadzone exists since Godot 4.0)
-		# so a full revert restores it exactly instead of forcing 0.5.
+		# Stash the real deadzone so revert restores it, not a forced 0.5.
 		ov[id] = {
 			"events": originals,
 			"deadzone": InputMap.action_get_deadzone(id),
@@ -115,19 +100,14 @@ func _patch_input(id: String, fields: Dictionary) -> bool:
 	if not InputMap.has_action(id):
 		push_warning("[Registry] patch('inputs', '%s'): no such action in InputMap" % id)
 		return false
-	# Patch works on the tracked metadata, plus InputMap mutation for the
-	# event field. Each patchable field maps to specific state:
-	#   display_label -> reg[id]["display_label"]  (UI hint only)
-	#   default_event -> replaces the first event in InputMap
-	#   deadzone      -> InputMap.action_set_deadzone
+	# display_label is a UI hint on reg[id]; default_event replaces the
+	# InputMap event; deadzone maps to action_set_deadzone.
 	const _patchable := ["display_label", "default_event", "deadzone"]
 	var reg: Dictionary = _registry_registered.get("inputs", {})
-	# If the id is not in the registry (an untouched vanilla action),
-	# seed a stub so patch/revert have somewhere to stash label changes.
+	# Patching an untouched vanilla action seeds a stub so patch/revert have
+	# somewhere to stash. vanilla_stub lets remove() refuse to erase the
+	# underlying vanilla InputMap action.
 	if not reg.has(id):
-		# vanilla_stub marks this as a patch-seeded entry for a vanilla action,
-		# so remove() can refuse to erase the underlying InputMap action.
-		# _register_input and _override_input store full payloads without it.
 		reg[id] = {
 			"display_label": id,
 			"default_event": null,
@@ -144,7 +124,6 @@ func _patch_input(id: String, fields: Dictionary) -> bool:
 			push_warning("[Registry] patch('inputs', '%s'): field '%s' not patchable (valid: %s)" % [id, fname, _patchable])
 			continue
 		var val = fields[field]
-		# Per-field validation.
 		match fname:
 			"display_label":
 				if not (val is String):
@@ -158,9 +137,8 @@ func _patch_input(id: String, fields: Dictionary) -> bool:
 					push_warning("[Registry] patch('inputs', '%s'): default_event must be InputEvent" % id)
 					continue
 				if not stash.has(fname):
-					# Stash the current first event from InputMap so revert
-					# restores exactly what was active, even if vanilla +
-					# override chains exist.
+					# Stash the live first event so revert restores exactly
+					# what was active.
 					var existing := InputMap.action_get_events(id)
 					stash[fname] = existing[0] if existing.size() > 0 else null
 				InputMap.action_erase_events(id)
@@ -193,9 +171,8 @@ func _remove_input(id: String) -> bool:
 	if ov.has(id):
 		push_warning("[Registry] remove('inputs', '%s'): entry is an override, use revert instead" % id)
 		return false
-	# A patch on a vanilla action seeds a reg stub (see _patch_input); without
-	# this guard, remove() would erase the VANILLA InputMap action for the
-	# whole session.
+	# A patch on a vanilla action seeds a reg stub (see _patch_input); this
+	# guard keeps remove() from erasing the vanilla InputMap action.
 	if reg[id] is Dictionary and (reg[id] as Dictionary).get("vanilla_stub", false):
 		push_warning("[Registry] remove('inputs', '%s'): vanilla action (only patched by a mod); use revert instead" % id)
 		return false
@@ -203,9 +180,7 @@ func _remove_input(id: String) -> bool:
 		InputMap.erase_action(id)
 	reg.erase(id)
 	_registry_registered["inputs"] = reg
-	# Drop the id's patch stash with the entry (mirrors _remove_event): the
-	# action is gone from InputMap, so its stashed originals are dead state
-	# and would poison a later re-registration under the same id.
+	# Drop the patch stash: stale originals would poison a re-registration.
 	var patched: Dictionary = _registry_patched.get("inputs", {})
 	if patched.has(id):
 		patched.erase(id)
@@ -249,10 +224,8 @@ func _revert_input(id: String, fields: Array) -> bool:
 			InputMap.action_set_deadzone(id, float(entry["deadzone"]))
 			ov.erase(id)
 			_registry_overridden["inputs"] = ov
-			# If the action was vanilla (no registered entry in reg beyond
-			# an override-added stub), leave reg intact; reg now reflects
-			# vanilla state. If the mod also registered the action itself,
-			# reg stays pointing at the mod's registration.
+			# reg is left intact: it now reflects vanilla state, or the
+			# mod's own registration if the mod also registered the action.
 			did_something = true
 		if not did_something:
 			push_warning("[Registry] revert('inputs', '%s'): nothing to revert" % id)
