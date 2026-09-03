@@ -8,27 +8,28 @@
 ## Closing the window (or Launch Game) hands control back to _run_pass_1.
 
 # -- Design tokens (.research/UI_DESIGN_SPEC.md sections 2-4) ------------------
-# Launcher colors, type sizes, spacing. One amber, one green, one red.
+# Launcher colors, type sizes, spacing. Matches the VostokMods site palette:
+# one accent green, one success green, one red.
 
 # Base surfaces
-const COL_BG         := Color(0.04, 0.04, 0.04)  # window/panel floor
-const COL_SURFACE    := Color(0.07, 0.07, 0.07)  # buttons, inputs, rows
-const COL_SURFACE_2  := Color(0.10, 0.10, 0.10)  # hover, elevated rows
-const COL_BORDER     := Color(0.18, 0.18, 0.18)  # 1px structural borders
-const COL_BORDER_DIM := Color(0.12, 0.12, 0.12)  # disabled/unselected
-# Text
-const COL_TEXT       := Color(0.84, 0.84, 0.84)  # body
-const COL_TEXT_HI    := Color(0.95, 0.95, 0.93)  # emphasis/hover (warm, not pure white)
-const COL_TEXT_DIM   := Color(0.52, 0.52, 0.50)  # secondary/meta
-const COL_TEXT_FAINT := Color(0.38, 0.38, 0.36)  # disabled only
-# Signal amber
-const COL_AMBER      := Color(0.95, 0.67, 0.26)  # focus, selected, primary, progress, badges
-const COL_AMBER_DIM  := Color(0.55, 0.38, 0.16)  # amber borders/washes, banner edges
-# Semantics
-const COL_OK         := Color(0.58, 0.74, 0.46)  # enabled, success
-const COL_OK_DIM     := Color(0.33, 0.42, 0.27)
-const COL_ERR        := Color(0.91, 0.44, 0.38)  # errors, blocked, danger
-const COL_ERR_DIM    := Color(0.45, 0.22, 0.19)
+const COL_BG         := Color("1b1d1d")  # window/panel floor -- VostokMods --ui-bg
+const COL_SURFACE    := Color("2b2e2e")  # buttons, inputs, rows -- --ui-bg-muted
+const COL_SURFACE_2  := Color("3b3e3e")  # hover, elevated rows
+const COL_BORDER     := Color("434747")  # 1px structural borders -- --ui-border-accented
+const COL_BORDER_DIM := Color("282929")  # disabled/unselected -- --ui-border
+
+const COL_TEXT       := Color("d9d9d9")  # body -- --ui-text
+const COL_TEXT_HI    := Color("f1f1f1")  # emphasis/hover -- --ui-text-highlighted
+const COL_TEXT_DIM   := Color("a0a0a0")  # secondary/meta -- --ui-text-muted (70% over the ground)
+const COL_TEXT_FAINT := Color("7a7b7b")  # disabled only -- --ui-text-dimmed (50%)
+
+const COL_ACCENT     := Color("00b806")  # focus, selected, primary, progress, badges -- brand green 600
+const COL_ACCENT_DIM := Color("008b07")  # accent borders/washes, banner edges -- brand green 700
+
+const COL_OK         := Color("00e604")  # enabled, success -- brand green 500
+const COL_OK_DIM     := Color("0b5c12")  # brand green 900
+const COL_ERR        := Color("ef4444")  # errors, blocked, danger
+const COL_ERR_DIM    := Color("7f1d1d")
 
 # Type scale
 const FS_META  := 11   # timestamps, counts, fine print
@@ -922,7 +923,7 @@ func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: Ta
 		var warn_hdr := Label.new()
 		warn_hdr.text = "%d enabled mod(s) have no ModWorkshop ID:" % orphans.size()
 		warn_hdr.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		warn_hdr.add_theme_color_override("font_color", COL_AMBER)
+		warn_hdr.add_theme_color_override("font_color", COL_ACCENT)
 		box.add_child(warn_hdr)
 
 		# Footer above the list so the consequence is visible without scrolling.
@@ -2299,7 +2300,7 @@ func _modpacks_render_row(entry: Dictionary, active_modpack: String, tabs: TabCo
 				dup_names.append(str((d_v as Dictionary).get("file_name", "?")))
 		var dup_lbl := Label.new()
 		dup_lbl.text = "Duplicate file(s) hidden: " + ", ".join(dup_names)
-		dup_lbl.add_theme_color_override("font_color", COL_AMBER)
+		dup_lbl.add_theme_color_override("font_color", COL_ACCENT)
 		dup_lbl.add_theme_font_size_override("font_size", FS_BODY)
 		dup_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		info_col.add_child(dup_lbl)
@@ -2720,7 +2721,7 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 				status_lbl.add_theme_color_override("font_color", COL_OK)
 			elif has_source:
 				status_lbl.text = "Will download"
-				status_lbl.add_theme_color_override("font_color", COL_AMBER)
+				status_lbl.add_theme_color_override("font_color", COL_ACCENT)
 			else:
 				status_lbl.text = "Manual install"
 				status_lbl.add_theme_color_override("font_color", COL_ERR)
@@ -2934,7 +2935,7 @@ func show_mod_ui() -> void:
 	var header := PanelContainer.new()
 	var header_s := StyleBoxFlat.new()
 	header_s.bg_color = COL_SURFACE
-	header_s.border_color = COL_AMBER_DIM
+	header_s.border_color = COL_ACCENT_DIM
 	header_s.border_width_bottom = 1
 	header_s.content_margin_left = SP_L
 	header_s.content_margin_right = SP_L
@@ -2952,7 +2953,7 @@ func show_mod_ui() -> void:
 	header_row.add_child(plate_title)
 
 	# Version / self-update alert beside the title; _check_modloader_update_async
-	# flips it amber when ModWorkshop reports a newer release. Click opens the
+	# flips it to the accent color when a newer release is available. Click opens the
 	# mod page regardless of state.
 	var alert := LinkButton.new()
 	alert.text = "v" + MODLOADER_VERSION
@@ -3026,7 +3027,7 @@ func show_mod_ui() -> void:
 	# empty avoids a one-frame placeholder flash.
 	launch_btn.text = ""
 	launch_btn.custom_minimum_size = Vector2(160, 36)
-	# Primary voice: the one amber-emphasis action on this surface.
+	# Primary voice: the one accent-emphasis action on this surface.
 	style_primary_button(launch_btn)
 
 	# Gap between the hint and the action cluster.
@@ -3275,16 +3276,16 @@ func make_dark_theme() -> Theme:
 	t.set_color("font_color",       "CheckBox", COL_TEXT)
 	t.set_color("font_hover_color", "CheckBox", COL_TEXT_HI)
 	t.set_stylebox("focus", "CheckBox", _make_focus_stylebox())
-	var cb_checked := _make_checkbox_icon(true, COL_BORDER, COL_AMBER)
-	var cb_unchecked := _make_checkbox_icon(false, COL_BORDER, COL_AMBER)
+	var cb_checked := _make_checkbox_icon(true, COL_BORDER, COL_ACCENT)
+	var cb_unchecked := _make_checkbox_icon(false, COL_BORDER, COL_ACCENT)
 	t.set_icon("checked",   "CheckBox", cb_checked)
 	t.set_icon("unchecked", "CheckBox", cb_unchecked)
 	t.set_icon("checked_disabled",   "CheckBox", _make_checkbox_icon(true, COL_BORDER_DIM, COL_TEXT_FAINT))
 	t.set_icon("unchecked_disabled", "CheckBox", _make_checkbox_icon(false, COL_BORDER_DIM, COL_TEXT_FAINT))
 	# Radio variants: the profile-state picker uses CheckBox + ButtonGroup,
 	# which switches CheckBox to its radio_* icons.
-	var rb_checked := _make_radio_icon(true, COL_BORDER, COL_AMBER)
-	var rb_unchecked := _make_radio_icon(false, COL_BORDER, COL_AMBER)
+	var rb_checked := _make_radio_icon(true, COL_BORDER, COL_ACCENT)
+	var rb_unchecked := _make_radio_icon(false, COL_BORDER, COL_ACCENT)
 	t.set_icon("radio_checked",   "CheckBox", rb_checked)
 	t.set_icon("radio_unchecked", "CheckBox", rb_unchecked)
 	t.set_icon("radio_checked_disabled",   "CheckBox", _make_radio_icon(true, COL_BORDER_DIM, COL_TEXT_FAINT))
@@ -3299,11 +3300,11 @@ func make_dark_theme() -> Theme:
 	t.set_stylebox("panel", "PanelContainer", ps.duplicate())
 
 	# -- TabContainer ----------------------------------------------------------
-	# Selected tab carries a 2px amber roofline. StyleBoxFlat has one border
+	# Selected tab carries a 2px accent roofline. StyleBoxFlat has one border
 	# color, so side borders go to 0 and the roofline carries the state.
 	var ts := StyleBoxFlat.new()   # selected tab
 	ts.bg_color = COL_BG
-	ts.border_color = COL_AMBER
+	ts.border_color = COL_ACCENT
 	ts.border_width_top = 2; ts.border_width_left = 0; ts.border_width_right = 0
 	ts.border_width_bottom = 0
 	ts.content_margin_left = SP_L; ts.content_margin_right = SP_L
@@ -3342,7 +3343,7 @@ func make_dark_theme() -> Theme:
 	le.content_margin_top = 3
 	le.content_margin_bottom = 3
 	var le_focus: StyleBoxFlat = le.duplicate()
-	le_focus.border_color = COL_AMBER
+	le_focus.border_color = COL_ACCENT
 	t.set_stylebox("normal", "LineEdit", le)
 	t.set_stylebox("focus",  "LineEdit", le_focus)
 	t.set_color("font_color", "LineEdit", COL_TEXT)
@@ -3404,8 +3405,8 @@ func make_dark_theme() -> Theme:
 	pb_bg.border_color = COL_BORDER
 	_sb_border(pb_bg)
 	var pb_fill := StyleBoxFlat.new()
-	pb_fill.bg_color = COL_AMBER_DIM
-	pb_fill.border_color = COL_AMBER
+	pb_fill.bg_color = COL_ACCENT_DIM
+	pb_fill.border_color = COL_ACCENT
 	_sb_border(pb_fill)
 	t.set_stylebox("background", "ProgressBar", pb_bg)
 	t.set_stylebox("fill",       "ProgressBar", pb_fill)
@@ -3499,19 +3500,19 @@ func _make_button_stylebox(bg: Color, border: Color) -> StyleBoxFlat:
 	s.content_margin_bottom = 4
 	return s
 
-# Keyboard-focus ring: 1px amber border, no fill, drawn over the control's
-# own stylebox. One amber, everywhere.
+# Keyboard-focus ring: 1px accent border, no fill, drawn over the control's
+# own stylebox. One accent, everywhere.
 func _make_focus_stylebox() -> StyleBoxFlat:
 	var s := StyleBoxFlat.new()
 	s.draw_center = false
-	s.border_color = COL_AMBER
+	s.border_color = COL_ACCENT
 	_sb_border(s)
 	return s
 
-# Primary button voice: amber text + amber hover border, outline emphasis
+# Primary button voice: accent text + accent hover border, outline emphasis
 # only. At most one per surface.
 func style_primary_button(b: Button) -> void:
-	_style_accent_button(b, COL_AMBER)
+	_style_accent_button(b, COL_ACCENT)
 
 # Danger button voice (Delete, Unload): red text + red hover border.
 func style_danger_button(b: Button) -> void:
@@ -3522,7 +3523,7 @@ func style_danger_button(b: Button) -> void:
 # effect. If a live run shows style_danger_button working there, collapse
 # these into the style_* helpers.
 func style_dialog_primary_button(b: Button) -> void:
-	b.modulate = COL_AMBER
+	b.modulate = COL_ACCENT
 
 func style_dialog_danger_button(b: Button) -> void:
 	b.modulate = COL_ERR
@@ -3534,15 +3535,15 @@ func _style_accent_button(b: Button, accent: Color) -> void:
 	b.add_theme_color_override("font_hover_color", accent)
 	b.add_theme_color_override("font_pressed_color", accent)
 	# Keep the accent while keyboard-focused; otherwise font_focus_color
-	# drops the amber/red on focus.
+	# drops the accent/red on focus.
 	b.add_theme_color_override("font_focus_color", accent)
 	b.add_theme_font_size_override("font_size", FS_BODY)
 	b.add_theme_stylebox_override("hover", _make_button_stylebox(COL_SURFACE_2, accent))
 
 # Badge chip stylebox (update counts, dependency state). Defaults to the
-# amber notice look; pass COL_ERR/COL_ERR_DIM for error badges. Pair with
+# accent notice look; pass COL_ERR/COL_ERR_DIM for error badges. Pair with
 # FS_META + COL_TEXT_HI text at the call site.
-func _make_badge_stylebox(border: Color = COL_AMBER, bg: Color = COL_AMBER_DIM) -> StyleBoxFlat:
+func _make_badge_stylebox(border: Color = COL_ACCENT, bg: Color = COL_ACCENT_DIM) -> StyleBoxFlat:
 	var s := StyleBoxFlat.new()
 	s.bg_color = bg
 	s.border_color = border
@@ -3554,7 +3555,7 @@ func _make_badge_stylebox(border: Color = COL_AMBER, bg: Color = COL_AMBER_DIM) 
 	return s
 
 # Banner builder (offline/cached notice, active modpack, update available):
-# a COL_SURFACE strip with a 3px colored left edge -- COL_AMBER for notice,
+# a COL_SURFACE strip with a 3px colored left edge -- COL_ACCENT for notice,
 # COL_ERR for error. Returns {"panel": PanelContainer, "row": HBoxContainer,
 # "label": Label} so callers can append action buttons to the row.
 func _make_banner(text: String, edge_color: Color) -> Dictionary:
@@ -3897,7 +3898,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	if active_modpack != "":
 		var banner := _make_banner(
 				"Modpack \"" + active_modpack + "\" is active. Changes here save to the modpack, not your profiles.",
-				COL_AMBER)
+				COL_ACCENT)
 		var unload_btn := Button.new()
 		unload_btn.text = "Unload"
 		style_danger_button(unload_btn)
@@ -4281,7 +4282,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			# Manual line break -- never autowrap here (oscillation bug).
 			order_list.add_child(_make_sub_label(
 					"%d enabled, none will load\n(missing dependencies)" % enabled_count,
-					COL_AMBER,
+					COL_ACCENT,
 					"Every enabled mod is missing a required dependency.\nFix it from the orange row warnings, or use Load anyway."))
 			return
 		for i in loadable.size():
@@ -4307,7 +4308,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			_wire_hint(reorder_lbl, "A required mod was moved up so it loads before the mod that needs it. Your load-order numbers are unchanged.")
 		var blocked_count := enabled_count - loadable.size()
 		if blocked_count > 0:
-			var blocked_lbl := _make_sub_label("%d blocked by dependencies" % blocked_count, COL_AMBER)
+			var blocked_lbl := _make_sub_label("%d blocked by dependencies" % blocked_count, COL_ACCENT)
 			order_list.add_child(blocked_lbl)
 			_wire_hint(blocked_lbl, "Blocked mods stay checked but don't load. See the orange row warnings for fixes.")
 
@@ -4325,11 +4326,11 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		list.add_child(u_hdr_row)
 		var u_hdr := Label.new()
 		u_hdr.text = "Updates available"
-		u_hdr.add_theme_color_override("font_color", COL_AMBER)
+		u_hdr.add_theme_color_override("font_color", COL_ACCENT)
 		# FS_HEAD to match the "Missing from this profile" header.
 		u_hdr.add_theme_font_size_override("font_size", FS_HEAD)
 		u_hdr_row.add_child(u_hdr)
-		# Count as an amber badge chip.
+		# Count as an accent badge chip.
 		var u_badge := Label.new()
 		u_badge.text = str(update_keys.size())
 		u_badge.add_theme_stylebox_override("normal", _make_badge_stylebox())
@@ -4696,7 +4697,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 				and not (entry.get("dependency_blockers", []) as Array).is_empty()
 		if dep_blocked:
 			# The green "enabled" tint would lie. This mod won't load.
-			name_ctrl.add_theme_color_override("font_color", COL_AMBER)
+			name_ctrl.add_theme_color_override("font_color", COL_ACCENT)
 		if required_deps.size() > 0 or optional_deps.size() > 0:
 			var named := PackedStringArray()
 			for d in required_deps:
@@ -4716,9 +4717,9 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 				tip.append("optional: %s (%s)" % [_dependency_display_for_id(str(d), dep_names_by_id), str(d)])
 			name_col.add_child(_make_sub_label(dep_line, COL_TEXT_DIM, "\n".join(tip)))
 		for warn_text: String in entry.get("warnings", []):
-			name_col.add_child(_make_sub_label(warn_text, COL_AMBER, warn_text))
+			name_col.add_child(_make_sub_label(warn_text, COL_ACCENT, warn_text))
 		for warn_text: String in entry.get("dependency_warnings", []):
-			name_col.add_child(_make_sub_label(warn_text, COL_AMBER, warn_text))
+			name_col.add_child(_make_sub_label(warn_text, COL_ACCENT, warn_text))
 
 		# Blocked: one orange line that says WHY + buttons that FIX it.
 		# A warning the user can't act on is just decoration.
@@ -4739,7 +4740,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 						_dependency_status_label(str(b.get("status", "")))])
 				if str(b.get("status", "")) == "hidden_folder":
 					btip.append("  (turn on Developer mode to load folder mods)")
-			var bl := _make_sub_label("won't load -- needs " + why, COL_AMBER, "\n".join(btip))
+			var bl := _make_sub_label("won't load -- needs " + why, COL_ACCENT, "\n".join(btip))
 			bl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			block_row.add_child(bl)
 			var fixable_count := 0
@@ -4795,7 +4796,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			var dup_v_raw: String = str(dup.get("version", ""))
 			var dup_v: String = ("v" + dup_v_raw) if dup_v_raw != "" else "(unversioned)"
 			var hide_text := "older version hidden: " + str(dup["file_name"]) + " (" + dup_v + ")"
-			name_col.add_child(_make_sub_label(hide_text, COL_AMBER, hide_text))
+			name_col.add_child(_make_sub_label(hide_text, COL_ACCENT, hide_text))
 
 		# Profile was saved with a different version of this mod. Surface the
 		# change so the user knows their enabled/priority state was carried
@@ -4807,7 +4808,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			var stored_disp := stored_v if stored_v != "" else "(unset)"
 			var current_disp := current_v if current_v != "" else "(unset)"
 			var vm_text := "version changed: " + stored_disp + " -> " + current_disp
-			name_col.add_child(_make_sub_label(vm_text, COL_AMBER, vm_text))
+			name_col.add_child(_make_sub_label(vm_text, COL_ACCENT, vm_text))
 
 		# Scanner indicator. Only renders for RED risk. Mods whose source
 		# combines patterns that are nearly diagnostic of malware (dropper
@@ -5086,7 +5087,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	container.add_child(status_lbl)
 
 	# Every Browse state change routes through here so the color always matches
-	# the message: COL_AMBER in-progress, COL_OK success, COL_ERR failure,
+	# the message: COL_ACCENT in-progress, COL_OK success, COL_ERR failure,
 	# COL_TEXT_DIM neutral or meta.
 	#
 	# Override font_color rather than modulate, which would also
@@ -5138,7 +5139,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		banner_slot.visible = false
 
 	# Banner with a Retry action, built through the single banner builder.
-	# edge_color COL_AMBER is a notice such as showing-cached-results, COL_ERR
+	# edge_color COL_ACCENT is a notice such as showing-cached-results, COL_ERR
 	# an error such as no-cached-data, matching the adjacent status label.
 	# saved_at_unix > 0 adds a "Last refreshed Xm ago" note in FS_META
 	# COL_TEXT_DIM.
@@ -5269,8 +5270,8 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			get_btn.text = "Downloading..."
 		var queue: Array = state["download_queue"]
 		var qsuffix := (" (" + str(queue.size()) + " queued)") if not queue.is_empty() else ""
-		set_status.call("Downloading " + str(mod_data.get("name", "?")) + qsuffix + "...", COL_AMBER)
-		set_dl_status.call(get_btn, "Downloading " + str(mod_data.get("name", "?")) + "...", COL_AMBER)
+		set_status.call("Downloading " + str(mod_data.get("name", "?")) + qsuffix + "...", COL_ACCENT)
+		set_dl_status.call(get_btn, "Downloading " + str(mod_data.get("name", "?")) + "...", COL_ACCENT)
 
 		# Rate-limit pause, same as the modpack apply loop: once a 429 arms
 		# the cooldown, every remaining queued item's metadata lookup would
@@ -5284,12 +5285,12 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 				state["downloading_id"] = -1
 				return
 			var wait_s := mws_rate_cooldown_seconds()
-			set_status.call("Rate limited by ModWorkshop -- resuming in %ds" % wait_s, COL_AMBER)
-			set_dl_status.call(get_btn, "Rate limited by ModWorkshop -- resuming in %ds" % wait_s, COL_AMBER)
+			set_status.call("Rate limited by ModWorkshop -- resuming in %ds" % wait_s, COL_ACCENT)
+			set_dl_status.call(get_btn, "Rate limited by ModWorkshop -- resuming in %ds" % wait_s, COL_ACCENT)
 			await get_tree().create_timer(1.0).timeout
 		if rate_waited and is_instance_valid(status_lbl):
-			set_status.call("Downloading " + str(mod_data.get("name", "?")) + "...", COL_AMBER)
-			set_dl_status.call(get_btn, "Downloading " + str(mod_data.get("name", "?")) + "...", COL_AMBER)
+			set_status.call("Downloading " + str(mod_data.get("name", "?")) + "...", COL_ACCENT)
+			set_dl_status.call(get_btn, "Downloading " + str(mod_data.get("name", "?")) + "...", COL_ACCENT)
 
 		var result: Dictionary = await download_new_mod(mws_id)
 		state["downloading_id"] = -1
@@ -5548,7 +5549,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 				list.add_child(_browse_render_mod_row(mod_data, install_map.get(mws_id), on_get, on_toggle))
 				list.add_child(HSeparator.new())
 		if cached_at > 0:
-			show_browse_banner.call("Showing cached results. " + str(browse_fail_reason.call()), cached_at, COL_AMBER)
+			show_browse_banner.call("Showing cached results. " + str(browse_fail_reason.call()), cached_at, COL_ACCENT)
 		else:
 			clear_browse_banner.call()
 			# A live fetch landing proves connectivity is back: recover a
@@ -6659,7 +6660,7 @@ var _updates_tab_dl_in_flight: int = 0
 var _ui_updates_scroll: ScrollContainer = null
 var _ui_updates_check_btn: Button = null
 
-# Arm an Updates-tab row for an available update: amber status, visible
+# Arm an Updates-tab row for an available update: accent status, visible
 # Download button, wired download handler. Shared by check_updates_for_ui (a
 # fresh check result) and build_updates_tab (re-arming from _mod_updates_state
 # after the on-show rebuild). State writes happen unconditionally; UI touches
@@ -6684,12 +6685,12 @@ func _updates_arm_row_update(info: Dictionary, latest_v: String, add_log: Callab
 	var lbl: Label = info["label"]
 	var dl_btn: Button = info["dl_btn"]
 	if is_instance_valid(lbl):
-		# Amber = the update signal. Tooltip mirrors the text: long prerelease
+		# Accent color = the update signal. Tooltip mirrors the text: long prerelease
 		# strings ellipsize in the 160px column (label is MOUSE_FILTER_PASS at
 		# creation).
 		lbl.text = "Update: v" + latest_v
 		lbl.tooltip_text = lbl.text
-		lbl.add_theme_color_override("font_color", COL_AMBER)
+		lbl.add_theme_color_override("font_color", COL_ACCENT)
 	if not is_instance_valid(dl_btn):
 		return
 	dl_btn.modulate.a = 1.0
@@ -6721,7 +6722,7 @@ func _updates_arm_row_update(info: Dictionary, latest_v: String, add_log: Callab
 		if is_instance_valid(lbl):
 			lbl.text = "Downloading..."
 			lbl.tooltip_text = lbl.text
-			lbl.add_theme_color_override("font_color", COL_AMBER)
+			lbl.add_theme_color_override("font_color", COL_ACCENT)
 		if is_instance_valid(_ui_updates_check_btn):
 			_ui_updates_check_btn.disabled = true
 		# Re-resolve live: the Mods-tab badge may have updated/renamed this
@@ -7069,7 +7070,7 @@ func build_updates_tab() -> Control:
 		if _mod_update_in_flight.has(pk):
 			row_lbl.text = "Downloading..."
 			row_lbl.tooltip_text = row_lbl.text
-			row_lbl.add_theme_color_override("font_color", COL_AMBER)
+			row_lbl.add_theme_color_override("font_color", COL_ACCENT)
 			var b: Button = info["dl_btn"]
 			b.modulate.a = 1.0
 			b.disabled = true
@@ -7298,9 +7299,9 @@ func _check_modloader_update_async() -> void:
 
 	if is_instance_valid(_ui_update_alert_btn):
 		_ui_update_alert_btn.text = "v%s available -- click to open ModWorkshop" % latest
-		# Amber is the update signal (spec: the one accent); an available
+		# The accent color is the update signal; an available
 		# update is a notice, not an error, so no red here.
-		_ui_update_alert_btn.add_theme_color_override("font_color", COL_AMBER)
+		_ui_update_alert_btn.add_theme_color_override("font_color", COL_ACCENT)
 		_ui_update_alert_btn.add_theme_color_override("font_hover_color", COL_TEXT_HI)
 
 	# Pop the dialog only the first session this specific new version is
