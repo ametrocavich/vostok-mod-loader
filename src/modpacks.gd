@@ -916,6 +916,7 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 		var cfg_apply := ConfigFile.new()
 		cfg_apply.load(UI_CONFIG_PATH)
 		_apply_profile_to_entries(cfg_apply, _active_profile)
+		_mark_mod_set_changed()
 		if progress.is_valid():
 			progress.call({"current": missing.size(), "total": missing.size(), "mod_name": "", "action": "applying"})
 
@@ -1237,6 +1238,7 @@ func retry_failed_downloads(failures: Array, progress: Callable = Callable()) ->
 		var cfg := ConfigFile.new()
 		cfg.load(UI_CONFIG_PATH)
 		_apply_profile_to_entries(cfg, _active_profile)
+		_mark_mod_set_changed()
 	_modpack_apply_in_progress = false
 	return {"downloaded": newly_downloaded, "failures": still_failed, "cancelled": _modpack_apply_cancelled}
 

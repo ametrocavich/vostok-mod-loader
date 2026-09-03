@@ -558,6 +558,15 @@ func _reload_entries_for_active_profile() -> void:
 	var cfg := ConfigFile.new()
 	cfg.load(UI_CONFIG_PATH)
 	_apply_profile_to_entries(cfg, _active_profile)
+	_mark_mod_set_changed()
+
+# The on-disk mod set changed after boot (a download, update or modpack
+# fetch landed). A post-boot session must restart into it on close, the
+# same convention as a profile switch; before boot completes, Pass 1 has
+# not mounted anything yet, so there is nothing to redo.
+func _mark_mod_set_changed() -> void:
+	if _boot_complete:
+		_dirty_since_boot = true
 
 # Snapshot the current in-memory state to a new profile and switch to it.
 # Caller validates `name` (unique, non-empty, not "Vanilla"). Seeds the new
