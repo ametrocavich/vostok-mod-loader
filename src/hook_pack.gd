@@ -381,19 +381,15 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			_log_debug("[RTVCodegen] Surface-skip %s (no mod extends/hooks/overrides)" % filename)
 			continue
 
-		# A [script_overrides] replacement displaces the rewrite at its own
-		# path, so dispatch won't fire for nodes using the override.
-		if _override_registry.has(script_path) or _applied_script_overrides.has(script_path):
-			var sources: PackedStringArray = []
-			if _override_registry.has(script_path):
-				for claim in _override_registry[script_path]:
-					sources.append(claim["mod_name"])
-			for entry in _pending_script_overrides:
-				if entry["vanilla_path"] == script_path:
-					sources.append(entry["mod_name"] + " [script_overrides]")
-			if sources.size() > 0:
-				_log_warning("[RTVCodegen] %s is rewritten and also overridden by %s -- override displaces the rewrite, hooks won't fire for that path" \
-						% [script_path, ", ".join(sources)])
+		# A mod's [script_extend] / [script_overrides] replacement at this
+		# path loses to the rewrite: activation below reloads the vanilla
+		# path with the rewritten source, so the replacement's code never
+		# runs this session. Say so here, once per path, and again at the
+		# moment it happens.
+		var claimants := _override_claimants(script_path)
+		if not claimants.is_empty():
+			_log_warning("[RTVCodegen] %s is rewritten for hooks and also replaced by %s -- the rewrite wins at that path, so the replacement will not run this session. Hook the methods instead ([hooks] or .hook()), or drop the replacement." \
+					% [script_path, ", ".join(claimants)])
 
 		var source := _read_vanilla_source(script_path)
 		if source.is_empty():
@@ -738,6 +734,27 @@ func _log_hook_reconciliation(reconcile: Dictionary) -> void:
 # cached script in place -- live references keep working and now dispatch
 # through the wrappers.
 
+## Names of the mods whose [script_extend] / [script_overrides] replacement
+## targets script_path, from every place a claim can live: the override
+## registry (this pass), the applied set (Pass 1) and the pending list
+## (Pass 2, where the applied set has already been cleared).
+func _override_claimants(script_path: String) -> PackedStringArray:
+	var names := PackedStringArray()
+	if _override_registry.has(script_path):
+		for claim in _override_registry[script_path]:
+			var n := str((claim as Dictionary).get("mod_name", ""))
+			if n != "" and not names.has(n):
+				names.append(n)
+	for entry in _pending_script_overrides:
+		if str((entry as Dictionary).get("vanilla_path", "")) == script_path:
+			var n := str((entry as Dictionary).get("mod_name", "")) + " [script_overrides]"
+			if not names.has(n):
+				names.append(n)
+	if _applied_script_overrides.has(script_path) and names.is_empty():
+		names.append("a mod's [script_overrides] entry")
+	return names
+
+
 func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) -> void:
 	# Scripts with module-scope PackedScene preloads are deferred from eager
 	# load+reload: loading them now would fire their preload() chain before
@@ -846,6 +863,14 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 		if cached == null:
 			_log_warning("[RTVCodegen] activate %s: load returned null -- skip" % vp)
 			continue
+		# Overrides are applied before the pack is generated, so what load()
+		# just returned may be a mod's replacement script; the reload or
+		# take_over_path below overwrites it with the rewritten vanilla
+		# source.
+		var displaced := _override_claimants(vp)
+		if not displaced.is_empty():
+			_log_warning("[RTVCodegen] activate %s: replacing the script installed by %s with the rewritten vanilla script -- that replacement will not run this session" \
+					% [vp, ", ".join(displaced)])
 
 		# Static-init preload already put the rewrite in this cached script:
 		# skip the reload (it would fail with "Cannot reload script while

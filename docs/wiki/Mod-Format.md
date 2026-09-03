@@ -207,7 +207,7 @@ Quote the value (right-hand side). ConfigFile parses RHS as a Variant literal, s
 
 Method names are case-insensitive (normalized to lowercase on write to match the rewriter's comparison). The wildcard leaves the inner mask empty; the generator reads that as "wrap every non-static method."
 
-Declaring `[hooks]` in one mod is enough to enroll that path for every mod. Other mods that extend or override the same vanilla script compose naturally via Godot's `extends` resolution. They see the wrapped parent, `super.method(...)` lands on the dispatch wrapper, hooks fire.
+Declaring `[hooks]` in one mod is enough to enroll that path for every mod. A full-script replacement of that same vanilla script (`[script_extend]` / `[script_overrides]`) does NOT currently compose with it: the rewritten vanilla script wins at that path when the hook pack activates, the replacement's code does not run that session, and the loader logs a `[RTVCodegen]` warning naming the mod. If a script you replace is hooked by any loaded mod, hook its methods instead. Chaining a replacement on top of the rewrite is planned.
 
 ### `[script_extend]` section
 
@@ -229,7 +229,7 @@ Processing, per [mod_loading.gd `_apply_script_overrides`](https://github.com/am
 
 The legacy-syntax autofix runs on each chain script before `reload()` (fixes `base()` -> `super.<method>()`, bodyless `if`, `onready var` -> `@onready var`, etc.), so chain scripts written against Godot 3 conventions compile cleanly.
 
-**Interaction with the hook system**: if the vanilla path is also in the hook wrap surface (via `[hooks]` or a mod calling `.hook()` on one of its methods), the rewritten vanilla ships at the original path and the override's `extends` resolves to the wrapped version. `super.method(...)` lands on the dispatch wrapper; hooks fire. See [Hooks#composing-with-script_extend](Hooks#composing-with-script_extend).
+**Interaction with the hook system**: if the vanilla path is also in the hook wrap surface (via `[hooks]` or a mod calling `.hook()` on one of its methods), the replacement currently loses. Overrides are applied before the hook pack is generated, and activating the pack reloads the vanilla path with the rewritten source, discarding the replacement for that session; the loader logs a `[RTVCodegen]` warning naming your mod at both points. Until activation is reordered so a replacement chains onto the rewrite, hook the methods you need instead of replacing a hooked script. See [Hooks#composing-with-script_extend](Hooks#composing-with-script_extend).
 
 `[script_overrides]` is kept as a legacy alias for backward compatibility with mods written pre-v3.0.1. New mods should use `[script_extend]`.
 

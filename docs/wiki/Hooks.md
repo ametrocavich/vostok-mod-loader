@@ -467,16 +467,13 @@ The pack lives at `user://modloader_hooks/framework_pack_<timestamp>.zip` (a fre
 
 ## Composing with `[script_extend]`
 
-Mods that extend a vanilla script declare it under `[script_extend]` as `res://Scripts/<Vanilla>.gd = "res://MyMod/MyOverride.gd"` -- quote the value; unlike `[hooks]`, these values are not auto-quoted (see [Mod-Format](Mod-Format)). `[script_overrides]` is a parse-identical legacy alias for the same section. When the same path is in the hook wrap surface:
+Mods that extend a vanilla script declare it under `[script_extend]` as `res://Scripts/<Vanilla>.gd = "res://MyMod/MyOverride.gd"` -- quote the value; unlike `[hooks]`, these values are not auto-quoted (see [Mod-Format](Mod-Format)). `[script_overrides]` is a parse-identical legacy alias for the same section.
 
-- The rewritten vanilla ships at `res://Scripts/<Vanilla>.gd` and is what Godot compiles.
-- The mod's override `extends` that rewritten vanilla, so it sees the dispatch wrappers as its parent methods.
-- `super.method(...)` from the override lands in the dispatch wrapper, which fires hooks -- once per logical call, thanks to the re-entry guard, regardless of chain depth.
-- The mod's own source is never rewritten. Chain ordering with multiple mods follows load priority (lowest first): `ModC -> ModB -> ModA -> rewritten_vanilla`.
+**When the same path is in the hook wrap surface, the replacement currently loses.** The loader applies `[script_extend]` before it generates the hook pack, and activating the pack reloads the vanilla path with the rewritten source (or takes the path over with a fresh copy), which discards the replacement script for that session. No extends chain reaches the wrappers from the mod's side; the vanilla methods still dispatch hooks, but the replacement's own code never runs.
 
-By contrast, a whole-script replacement at a wrapped path -- a mod shipping its own file at the vanilla `res://Scripts/` path inside its archive, or taking over the path with a script that does not extend the wrapped vanilla -- displaces the rewrite entirely: no extends chain reaches the wrappers, so hooks do not fire for nodes using that script.
+The loader says so twice at boot, naming the mod: once while generating the pack (`"<path> is rewritten for hooks and also replaced by <mods> -- the rewrite wins at that path, so the replacement will not run this session..."`) and once at activation (`"activate <path>: replacing the script installed by <mods> with the rewritten vanilla script..."`). If a script you replace is hooked by any loaded mod, hook the methods you need instead of replacing the script.
 
-The loader warns at boot whenever a wrapped path also carries an override claim of either kind (archive file claim or `[script_extend]`/`[script_overrides]` entry): `"<path> is rewritten and also overridden by <mods> -- override displaces the rewrite, hooks won't fire for that path"`. For a chained (extends-based) override the warning is conservative -- inherited methods and overridden methods that call `super()` still dispatch -- but any method your override redefines *without* calling `super()` really does stop dispatching, so treat the warning as a prompt to check your override's `super()` coverage.
+The intended design -- a replacement that `extends` the rewritten vanilla, so `super.method(...)` lands in the dispatch wrapper and hooks fire once per logical call regardless of chain depth -- requires activating the pack before overrides are applied. That reorder touches boot ordering and is scheduled for a later release.
 
 ## Related
 
