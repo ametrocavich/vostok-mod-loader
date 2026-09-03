@@ -5,7 +5,7 @@ Documentation for the community mod loader for Road to Vostok (Godot 4.6+).
 What the loader gives you in-game:
 
 - A **Mods** tab to turn installed mods on and off
-- A **Browse** tab to find and download mods from ModWorkshop
+- A **Browse** tab to find and download mods from VostokMods or ModWorkshop
 - A **Modpacks** tab to share your whole mod list as one small file -- applying it downloads the mods for you
 - An **Updates** tab that tells you when installed mods have newer versions
 

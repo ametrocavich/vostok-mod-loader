@@ -795,15 +795,6 @@ func _rename_mcm_snapshot(old_name: String, new_name: String) -> void:
 # only for ModWorkshop records: profile.json is shared between users, and a
 # mirror on a non-ModWorkshop mod would make an older loader download
 # whatever ModWorkshop mod carries that number.
-## The ModWorkshop id a mod's mod.txt declares, or 0 otherwise.
-## All MWS-id lookups go through here rather than reading [updates]
-## modworkshop= directly: _mod_source_from_cfg also sees the newer
-## source="provider:id" form and validates the id (int(str(...)) would mint
-## 12 out of "12abc").
-func _entry_mws_id(cfg: ConfigFile) -> int:
-	return _source_mws_id(_mod_source_from_cfg(cfg))
-
-
 ## The host reference an installed mod resolves to: mod.txt's source= (or
 ## legacy modworkshop=), else the [mod_sources] record cached at install time
 ## for mods whose author never declared one. {} when neither names a host.
@@ -875,9 +866,9 @@ func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: Ta
 	outer_scroll.add_child(box)
 
 	# Explain that a modpack is a shareable list of mods, not a bundle of the
-	# files; applying it elsewhere re-downloads from ModWorkshop.
+	# files; applying it elsewhere re-downloads each mod from its host.
 	var intro := Label.new()
-	intro.text = "A modpack is a shareable list of your enabled mods -- not the mod files themselves. Send the saved file to anyone: when they apply it they get this exact setup, and the mods download from ModWorkshop automatically."
+	intro.text = "A modpack is a shareable list of your enabled mods -- not the mod files themselves. Send the saved file to anyone: when they apply it they get this exact setup, and the mods download automatically from the site each one came from."
 	intro.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	intro.add_theme_color_override("font_color", COL_TEXT)
 	intro.add_theme_font_size_override("font_size", FS_BODY)
@@ -934,14 +925,14 @@ func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: Ta
 	if has_orphans:
 		box.add_child(HSeparator.new())
 		var warn_hdr := Label.new()
-		warn_hdr.text = "%d enabled mod(s) have no ModWorkshop ID:" % orphans.size()
+		warn_hdr.text = "%d enabled mod(s) have no download source:" % orphans.size()
 		warn_hdr.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		warn_hdr.add_theme_color_override("font_color", COL_ACCENT)
 		box.add_child(warn_hdr)
 
 		# Footer above the list so the consequence is visible without scrolling.
 		var footer := Label.new()
-		footer.text = "Without a ModWorkshop ID, these mods can't auto-download when someone applies the modpack -- recipients install them manually."
+		footer.text = "Without a download source, these mods can't auto-download when someone applies the modpack -- recipients install them manually."
 		footer.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		footer.add_theme_color_override("font_color", COL_TEXT_DIM)
 		footer.add_theme_font_size_override("font_size", FS_BODY)
@@ -1017,7 +1008,7 @@ func _show_modpack_saved_dialog(display_name: String, mod_count: int, path: Stri
 	elif mod_count > 1:
 		count_phrase = " with %d mods" % mod_count
 	var where := "\n\n" + path if path != "" else ""
-	d.dialog_text = "Saved \"%s\"%s to your mods folder.%s\n\nTo share it, send that file to anyone. When they drop it in their mods folder and open the Modpacks tab, they apply it in one click -- the mods download from ModWorkshop automatically." \
+	d.dialog_text = "Saved \"%s\"%s to your mods folder.%s\n\nTo share it, send that file to anyone. When they drop it in their mods folder and open the Modpacks tab, they apply it in one click -- the mods download automatically." \
 			% [display_name, count_phrase, where]
 	d.ok_button_text = "Open mods folder"
 	d.get_cancel_button().text = "Close"
@@ -1437,8 +1428,8 @@ func _restore_updates_scroll(saved_scroll: int) -> void:
 		_ui_updates_scroll.scroll_vertical = saved_scroll
 
 # Modpack-apply failure summary: per-failure rows (profile_key + reason +
-# "Open MWS page" when an mws_id is known) and a "Retry failed" button that
-# re-runs only the failed downloads.
+# an open-page button when the host has one) and a "Retry failed" button
+# that re-runs only the failed downloads.
 func _show_modpack_failure_dialog(downloaded: int, failures: Array, tabs: TabContainer) -> void:
 	var d := AcceptDialog.new()
 	d.title = "Modpack applied with issues"
@@ -1497,22 +1488,24 @@ func _show_modpack_failure_dialog(downloaded: int, failures: Array, tabs: TabCon
 		err_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		info_col.add_child(err_lbl)
 
-		var mws_id: int = int(f.get("mws_id", 0))
-		if mws_id > 0:
+		var f_ref: Dictionary = f.get("ref", {}) if f.get("ref") is Dictionary else {}
+		var page_url := host_mod_page_url(f_ref)
+		if page_url != "":
 			var open_btn := Button.new()
-			open_btn.text = "Open ModWorkshop page"
+			open_btn.text = "Open " + host_display_name(str(f_ref["provider"])) + " page"
 			open_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 			row.add_child(open_btn)
 			open_btn.pressed.connect(func():
-				OS.shell_open(MODWORKSHOP_PAGE_URL_TEMPLATE % str(mws_id))
+				OS.shell_open(page_url)
 			)
 
 	# Retry button via add_button so it sits in the native button bar.
-	# Omitted when no failure has a known mws_id.
+	# Omitted when no failure names a host the loader can download from.
 	var retry_btn: Button = null
 	var any_retryable := false
 	for f_v in failures:
-		if f_v is Dictionary and int((f_v as Dictionary).get("mws_id", 0)) > 0:
+		if f_v is Dictionary and (f_v as Dictionary).get("ref") is Dictionary \
+				and _modpack_ref_downloadable((f_v as Dictionary)["ref"]):
 			any_retryable = true
 			break
 	if any_retryable:
@@ -1561,7 +1554,7 @@ func _run_modpack_retry(failures: Array, tabs: TabContainer) -> void:
 		if is_instance_valid(pd_bar) and tot > 0:
 			pd_bar.value = float(cur) / float(tot) * 100.0
 		if act == "rate_wait":
-			status_lbl.text = "Rate limited by ModWorkshop -- resuming in %ds" % int(p.get("wait_s", 0))
+			status_lbl.text = "Rate limited by %s -- resuming in %ds" % [str(p.get("host", "the mod site")), int(p.get("wait_s", 0))]
 			return
 		if nm != "":
 			status_lbl.text = "Retrying %d of %d:\n%s" % [cur, tot, nm]
@@ -2233,7 +2226,7 @@ func build_modpacks_tab(tabs: TabContainer) -> Control:
 	if _modpack_entries.is_empty():
 		# Empty state teaches the concept, not just the mechanics.
 		var empty := Label.new()
-		empty.text = "No modpacks yet.\n\nA modpack is a shareable list of mods -- one small file that gives someone your exact setup in one click (the mods download from ModWorkshop when they apply it).\n\nSave your current profile as a modpack above, or drop someone else's modpack zip into your mods folder."
+		empty.text = "No modpacks yet.\n\nA modpack is a shareable list of mods -- one small file that gives someone your exact setup in one click (the mods download automatically when they apply it).\n\nSave your current profile as a modpack above, or drop someone else's modpack zip into your mods folder."
 		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		empty.add_theme_color_override("font_color", COL_TEXT_DIM)
 		list.add_child(empty)
@@ -2400,7 +2393,7 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 	var dl_count := missing_preview.size()
 	var msg := "Apply \"%s\"?\n\nActivates %d of %d mods and replaces your mod settings (MCM)." % [name_str, apply_enabled, apply_total]
 	if dl_count > 0:
-		msg += "\nWill download %d mod(s) from ModWorkshop." % dl_count
+		msg += "\nWill download %d mod(s)." % dl_count
 	msg += "\n\nYour current state is backed up -- click Unload to restore."
 	msg += "\nA restore point is also saved automatically (Restore backup) in case anything goes wrong."
 	var cd := ConfirmationDialog.new()
@@ -2447,7 +2440,7 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 				# Rate-limit pause: show the countdown so the dialog
 				# doesn't look hung. Cancel stays available.
 				if act == "rate_wait":
-					pd_status.text = "Rate limited by ModWorkshop -- resuming in %ds" % int(p.get("wait_s", 0))
+					pd_status.text = "Rate limited by %s -- resuming in %ds" % [str(p.get("host", "the mod site")), int(p.get("wait_s", 0))]
 					return
 				var prefix := "Downloading"
 				if act == "skipped": prefix = "Skipping (manual install)"
@@ -2966,8 +2959,8 @@ func show_mod_ui() -> void:
 	header_row.add_child(plate_title)
 
 	# Version / self-update alert beside the title; _check_modloader_update_async
-	# flips it to the accent color when a newer release is available. Click opens the
-	# mod page regardless of state.
+	# flips it to the accent color when a newer release is available. Click
+	# opens the release page regardless of state.
 	var alert := LinkButton.new()
 	alert.text = "v" + MODLOADER_VERSION
 	alert.underline = LinkButton.UNDERLINE_MODE_ON_HOVER
@@ -2976,7 +2969,7 @@ func show_mod_ui() -> void:
 	alert.add_theme_color_override("font_color", COL_TEXT_DIM)
 	alert.add_theme_color_override("font_hover_color", COL_TEXT)
 	alert.pressed.connect(func():
-		OS.shell_open(MODWORKSHOP_PAGE_URL_TEMPLATE % str(MODLOADER_MODWORKSHOP_ID))
+		OS.shell_open(_modloader_release_page_url())
 	)
 	header_row.add_child(alert)
 	_ui_update_alert_btn = alert
@@ -4151,7 +4144,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		check_btn.disabled = true
 		check_btn.text = "Checking..."
 	filter_bar.add_child(check_btn)
-	_wire_hint(check_btn, "Check ModWorkshop for newer versions of your installed mods. Mods that don't list a ModWorkshop page are skipped.")
+	_wire_hint(check_btn, "Check each mod's site for a newer version. Mods that don't say where they came from are skipped.")
 	check_btn.pressed.connect(func():
 		if _mod_updates_check_in_progress:
 			return
@@ -4173,9 +4166,9 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		var er := int(summary.get("errors", 0))
 		var msg := ""
 		if ck == 0:
-			msg = "No installed mods have ModWorkshop update info, so there is nothing to check."
+			msg = "No installed mods say where they came from, so there is nothing to check."
 		elif er >= ck:
-			msg = "Could not reach ModWorkshop. Check your connection and try again."
+			msg = "Could not check any mods. Check your connection and try again."
 		elif n == 0:
 			msg = "Everything is up to date. Checked %d mod(s)." % (ck - er)
 			if er > 0:
@@ -4421,11 +4414,11 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 				_mod_update_in_flight[captured_pk] = true
 				u_btn.disabled = true
 				u_btn.text = "Updating..."
-				var mw_id: int = int(captured_upd.get("mw_id", 0))
+				var upd_ref: Dictionary = captured_upd.get("ref", {}) if captured_upd.get("ref") is Dictionary else {}
 				# Re-resolve the path live: another surface may have renamed
 				# this file since the row was built.
 				var full_path: String = _live_full_path(captured_pk, str(captured_upd.get("full_path", "")))
-				var result: Dictionary = await download_and_replace_mod(full_path, mw_id)
+				var result: Dictionary = await replace_mod_from_ref(full_path, upd_ref)
 				_mod_update_in_flight.erase(captured_pk)
 				if bool(result.get("ok", false)):
 					_mod_updates_state.erase(captured_pk)
@@ -4508,7 +4501,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 
 			# Download button when source info is known; otherwise Remove only.
 			var src_v: Variant = missing_sources.get(fn)
-			var src_mws_id: int = 0
+			var src_ref: Dictionary = {}
 			var src_version: String = ""
 			if src_v is Dictionary:
 				# Already canonical {provider, id, version}: the untrusted-JSON
@@ -4516,15 +4509,16 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 				# here -- this runs on the pass-1 path, where int(null) from a
 				# hand-edited profile.json would block the main menu.
 				var src: Dictionary = src_v
-				src_mws_id = _source_mws_id(src)
+				src_ref = _source_host_ref(src)
 				src_version = str(src.get("version", ""))
-			if src_mws_id > 0:
+			if _modpack_ref_downloadable(src_ref):
+				var src_host := host_display_name(str(src_ref["provider"]))
 				var dl_btn := Button.new()
 				dl_btn.text = "Download"
-				dl_btn.tooltip_text = "Download this mod from ModWorkshop"
+				dl_btn.tooltip_text = "Download this mod from " + src_host
 				miss_row.add_child(dl_btn)
-				_wire_hint(dl_btn, "Download this mod from ModWorkshop.")
-				var captured_mws_id := src_mws_id
+				_wire_hint(dl_btn, "Download this mod from " + src_host + ".")
+				var captured_ref := src_ref
 				var captured_version := src_version
 				# Reuse _mod_update_in_flight keyed by the stored profile key
 				# (no collision: a missing entry has no installed row);
@@ -4544,7 +4538,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 					dl_btn.text = "Downloading..."
 					# allow_rename_on_collision: a different version may exist
 					# under the same filename; dedup happens at scan time.
-					var r: Dictionary = await download_new_mod(captured_mws_id, captured_version, true)
+					var r: Dictionary = await download_mod_from_ref(captured_ref, captured_version, true)
 					_mod_update_in_flight.erase(captured_fn)
 					if bool(r.get("ok", false)):
 						_reload_entries_for_active_profile()
@@ -4572,7 +4566,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 				no_src_lbl.mouse_filter = Control.MOUSE_FILTER_STOP
 				miss_row.add_child(no_src_lbl)
 				_wire_hint(no_src_lbl,
-					"This mod is not linked to ModWorkshop, so it can't be downloaded automatically. Reinstall it manually.")
+					"This mod does not say which site it came from, so it can't be downloaded automatically. Reinstall it manually.")
 
 			var remove_btn := Button.new()
 			remove_btn.text = "Remove"
@@ -6677,7 +6671,7 @@ func _updates_arm_row_update(info: Dictionary, latest_v: String, add_log: Callab
 		_mod_updates_state[pk] = {
 			"latest_version": latest_v,
 			"current_version": str(info["version"]),
-			"mw_id": int(info["mw_id"]),
+			"ref": info["ref"],
 			"full_path": str(info["full_path"]),
 			"mod_name": str(info["mod_name"]),
 		}
@@ -6698,7 +6692,7 @@ func _updates_arm_row_update(info: Dictionary, latest_v: String, add_log: Callab
 	dl_btn.disabled = false
 	dl_btn.mouse_filter = Control.MOUSE_FILTER_STOP
 	var full_path: String = str(info["full_path"])
-	var mw_id: int = int(info["mw_id"])
+	var ref: Dictionary = info["ref"]
 	var mod_name: String = str(info["mod_name"])
 	var new_ver: String = latest_v
 	# Guard key for _mod_update_in_flight. The same dictionary the Mods-tab
@@ -6729,7 +6723,7 @@ func _updates_arm_row_update(info: Dictionary, latest_v: String, add_log: Callab
 		# Re-resolve live: the Mods-tab badge may have updated/renamed this
 		# file since the Updates tab was built, orphaning the captured path.
 		var live_path: String = _live_full_path(pk, full_path)
-		var result: Dictionary = await download_and_replace_mod(live_path, mw_id)
+		var result: Dictionary = await replace_mod_from_ref(live_path, ref)
 		# -- State bookkeeping first, unconditionally. The on-show rebuild can
 		# free every node this closure captured while the download is in
 		# flight; an early return on node validity here used to silently drop
@@ -6885,15 +6879,19 @@ func build_updates_tab() -> Control:
 	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.add_child(list)
 
-	# { label, version, mw_id, dl_btn, full_path, mod_name }
+	# { label, version, ref, dl_btn, full_path, mod_name }
 	var status_info: Dictionary = {}
 
+	var persisted_sources := _get_persisted_mod_sources()
 	for entry in _ui_mod_entries:
 		var cfg: ConfigFile = entry["cfg"]
 		if cfg == null:
 			continue
 		var version := str(cfg.get_value("mod", "version", ""))
-		var mw_id := _entry_mws_id(cfg)
+		var ref := _entry_host_ref(entry, persisted_sources)
+		# Checkable means a host that can hand back a file; a link-out host
+		# has no version to report.
+		var checkable := not ref.is_empty() and bool(host_caps(str(ref["provider"]))["resolve_file"])
 
 		var row := HBoxContainer.new()
 		list.add_child(row)
@@ -6951,11 +6949,14 @@ func build_updates_tab() -> Control:
 			# there is no Download button instead of offering one that misfires.
 			status_lbl.text = "Dev folder"
 			status_lbl.tooltip_text = "Dev folders load straight from your mods folder, so there is nothing to download. Update downloads only apply to mods installed as archives."
-		elif mw_id == 0 or version == "":
+		elif not ref.is_empty() and not checkable:
+			status_lbl.text = "No update info"
+			status_lbl.tooltip_text = host_display_name(str(ref["provider"])) + " does not provide downloads through the loader, so this mod cannot be checked."
+		elif not checkable or version == "":
 			# Explain WHY this row cannot be checked (the adjacent Dev-folder
 			# state already explains itself; this one used to sit unexplained).
 			status_lbl.text = "No update info"
-			status_lbl.tooltip_text = "This mod's mod.txt has no ModWorkshop update info ([updates] modworkshop= plus [mod] version=), so it cannot be checked. Add both fields to enable update checks."
+			status_lbl.tooltip_text = "This mod's mod.txt does not say where it came from ([updates] source= plus [mod] version=), so it cannot be checked. Add both fields to enable update checks."
 		else:
 			status_lbl.text = "--"
 		row.add_child(status_lbl)
@@ -6972,14 +6973,14 @@ func build_updates_tab() -> Control:
 
 		list.add_child(HSeparator.new())
 
-		if mw_id > 0 and version != "" and entry["ext"] != "folder":
+		if checkable and version != "" and entry["ext"] != "folder":
 			# Hold a reference to the underlying _ui_mod_entries dict so the
 			# download callback can update full_path / file_name in place
 			# when a successful update lands the archive under a new name.
 			# GDScript dicts are reference-typed, so writing through here
 			# mutates the canonical entry the next discovery pass sees.
 			status_info[entry["file_name"]] = {
-				"label": status_lbl, "ver_lbl": ver_lbl, "version": version, "mw_id": mw_id,
+				"label": status_lbl, "ver_lbl": ver_lbl, "version": version, "ref": ref,
 				"dl_btn": dl_btn, "full_path": entry["full_path"],
 				"mod_name": entry["mod_name"], "entry": entry,
 			}
@@ -7116,17 +7117,19 @@ func build_updates_tab() -> Control:
 
 	return margin
 
-# Run an update check against every installed mod with valid [updates]
-# modworkshop=N + version=. Populates the module-scope _mod_updates_state
-# with entries for mods that have a newer version available. Returns a
-# summary dict {checked, with_updates, errors}. Safe to call from any tab.
+# Run an update check against every installed mod that names a host it can
+# be downloaded from and a version. Populates the module-scope
+# _mod_updates_state with entries for mods that have a newer version
+# available. Returns a summary dict {checked, with_updates, errors}. Safe to
+# call from any tab.
 func _run_updates_check_for_mods() -> Dictionary:
 	if _mod_updates_check_in_progress:
 		return {"checked": 0, "with_updates": 0, "errors": 0}
 	_mod_updates_check_in_progress = true
 	var summary := {"checked": 0, "with_updates": 0, "errors": 0}
-	# Build a list of mods worth checking: must have both modworkshop= and version=.
+	# Build a list of mods worth checking: must have both a source and a version.
 	var pending: Array = []
+	var persisted_sources := _get_persisted_mod_sources()
 	for entry in _ui_mod_entries:
 		var cfg: ConfigFile = entry.get("cfg")
 		if cfg == null:
@@ -7135,15 +7138,15 @@ func _run_updates_check_for_mods() -> Dictionary:
 		# duplicate beside the folder), so never flag them for updates.
 		if str(entry.get("ext", "")) == "folder":
 			continue
-		var mw_id := _entry_mws_id(cfg)
-		if mw_id <= 0:
+		var ref := _entry_host_ref(entry, persisted_sources)
+		if ref.is_empty() or not bool(host_caps(str(ref["provider"]))["resolve_file"]):
 			continue
 		var version := str(cfg.get_value("mod", "version", "")).strip_edges()
 		if version == "":
 			continue
 		pending.append({
 			"profile_key": str(entry.get("profile_key", "")),
-			"mw_id": mw_id,
+			"ref": ref,
 			"version": version,
 			"full_path": str(entry.get("full_path", "")),
 			"mod_name": str(entry.get("mod_name", "?")),
@@ -7151,16 +7154,14 @@ func _run_updates_check_for_mods() -> Dictionary:
 	if pending.is_empty():
 		_mod_updates_check_in_progress = false
 		return summary
-	# Batched fetch through the existing helper (handles batching, retry,
-	# user-agent, etc.).
-	var ids: Array[int] = []
+	var refs: Array = []
 	for p in pending:
-		ids.append(int((p as Dictionary)["mw_id"]))
-	var latest := await fetch_latest_modworkshop_versions(ids)
+		refs.append((p as Dictionary)["ref"])
+	var latest := await fetch_latest_versions(refs)
 	for p in pending:
 		summary["checked"] += 1
 		var info: Dictionary = p
-		var raw = latest.get(str(info["mw_id"]), null)
+		var raw = latest.get(host_ref_key(info["ref"]), null)
 		if raw == null:
 			summary["errors"] += 1
 			continue
@@ -7176,7 +7177,7 @@ func _run_updates_check_for_mods() -> Dictionary:
 		_mod_updates_state[info["profile_key"]] = {
 			"latest_version": latest_v,
 			"current_version": info["version"],
-			"mw_id": info["mw_id"],
+			"ref": info["ref"],
 			"full_path": info["full_path"],
 			"mod_name": info["mod_name"],
 		}
@@ -7185,17 +7186,17 @@ func _run_updates_check_for_mods() -> Dictionary:
 
 
 func check_updates_for_ui(status_info: Dictionary, add_log: Callable, _check_btn: Button) -> void:
-	var ids: Array[int] = []
+	var refs: Array = []
 	for fn in status_info:
-		ids.append(status_info[fn]["mw_id"])
-	if ids.is_empty():
-		# With only dev-folder or id-less mods installed the button used to
+		refs.append(status_info[fn]["ref"])
+	if refs.is_empty():
+		# With only dev-folder or sourceless mods installed the button used to
 		# flash "Checking for updates..." and revert with zero feedback; say
 		# why nothing happened (same copy as the Mods-tab toast).
-		add_log.call("No installed mods have ModWorkshop update info, so there is nothing to check.")
+		add_log.call("No installed mods say where they came from, so there is nothing to check.")
 		return
 
-	var latest := await fetch_latest_modworkshop_versions(ids)
+	var latest := await fetch_latest_versions(refs)
 
 	# A check just ran, so _mod_updates_state may have gained or lost entries.
 	# This function runs from the Updates tab, where the Mods tab isn't visible
@@ -7214,12 +7215,12 @@ func check_updates_for_ui(status_info: Dictionary, add_log: Callable, _check_btn
 		var lbl: Label = info["label"]
 		var pre_entry: Dictionary = info.get("entry", {})
 		var pk: String = str(pre_entry.get("profile_key", "")) if not pre_entry.is_empty() else ""
-		var latest_v = latest.get(str(info["mw_id"]), null)
+		var latest_v = latest.get(host_ref_key(info["ref"]), null)
 		if latest_v == null:
 			# The rate-limit hint lives in the tooltip: the full sentence
 			# would ellipsize in this narrow column. Falls back to plain
-			# text when no MWS cooldown is armed.
-			var fail_tip := mws_error_status("Check failed")
+			# text when no cooldown is armed on that host.
+			var fail_tip := host_error_status(str((info["ref"] as Dictionary)["provider"]), "Check failed")
 			if pk != "":
 				_updates_tab_status[pk] = {"text": "Check failed", "tooltip": fail_tip, "color": COL_ERR}
 			if is_instance_valid(lbl):
@@ -7246,27 +7247,37 @@ func check_updates_for_ui(status_info: Dictionary, add_log: Callable, _check_btn
 
 # ----- modloader self-update check ----------------------------------------
 
-# Fire-and-forget from show_mod_ui. Hits the ModWorkshop versions API for
-# the loader's own mod id, compares the result against MODLOADER_VERSION, and on a
-# newer release: recolors the always-visible launch-row version LinkButton
-# (and rewrites its text), and pops a one-shot
-# dialog the first session each new version is detected. All UI mutations
-# guard on is_instance_valid because the launcher may close before the
-# HTTP request returns.
+# Where the version button and the update dialog send the user: the release
+# the check found, else the repository's latest-release page.
+func _modloader_release_page_url() -> String:
+	if _modloader_release_url != "":
+		return _modloader_release_url
+	return MODLOADER_RELEASES_PAGE_URL % MODLOADER_GITHUB_REPO
+
+# Fire-and-forget from show_mod_ui. Reads the latest GitHub release of the
+# loader, compares its tag against MODLOADER_VERSION, and on a newer release:
+# recolors the always-visible launch-row version LinkButton (and rewrites
+# its text), and pops a one-shot dialog the first session each new version
+# is detected. All UI mutations guard on is_instance_valid because the
+# launcher may close before the HTTP request returns.
 func _check_modloader_update_async() -> void:
-	if MODLOADER_MODWORKSHOP_ID <= 0:
+	if MODLOADER_GITHUB_REPO == "":
 		return
-	var ids: Array[int] = [MODLOADER_MODWORKSHOP_ID]
-	var latest_map: Dictionary = await fetch_latest_modworkshop_versions(ids)
-	var raw = latest_map.get(str(MODLOADER_MODWORKSHOP_ID), null)
-	if raw == null:
+	# The shared transport keys its cooldown by provider; "github" is not a
+	# mod host, but its 60-per-hour unauthenticated budget is worth honoring.
+	var res := await _hnet_get_json("github", MODLOADER_RELEASES_API_URL % MODLOADER_GITHUB_REPO)
+	if not res["ok"] or not (res["data"] is Dictionary):
 		return
-	var latest := str(raw)
+	var release: Dictionary = res["data"]
+	var latest := _host_str(release.get("tag_name")).strip_edges().trim_prefix("v")
 	if latest.is_empty():
 		return
+	var page := _host_str(release.get("html_url"))
+	if page.begins_with("https://github.com/"):
+		_modloader_release_url = page
 	_modloader_latest_version = latest
-	# Exact match first: when ModWorkshop publishes the very version that is
-	# running (including a prerelease like "3.3.0-beta.1"), there is nothing
+	# Exact match first: when the very version that is running is the latest
+	# release (including a prerelease like "3.3.0-beta.1"), there is nothing
 	# to update to -- without this the base-version compare below would flag
 	# the running version as an update every session.
 	if latest == MODLOADER_VERSION:
@@ -7285,10 +7296,6 @@ func _check_modloader_update_async() -> void:
 	if base_cmp < 0:
 		return  # installed base is newer
 	if base_cmp == 0:
-		# Same base version -- decide on the prerelease suffixes. compare_versions
-		# can't do this: it parses "3.3.0-beta.1" as 3.3.0.1 (the "-beta" segment
-		# reads as 0), which would rank any same-base prerelease above the base
-		# and even flag an OLDER prerelease as an update (a downgrade prompt).
 		var installed_pre := MODLOADER_VERSION.substr(installed_base.length()).lstrip("-")
 		var latest_pre := latest.substr(latest_base.length()).lstrip("-")
 		if installed_pre == "":
@@ -7299,15 +7306,15 @@ func _check_modloader_update_async() -> void:
 			return  # latest prerelease is the same as or older than installed
 
 	if is_instance_valid(_ui_update_alert_btn):
-		_ui_update_alert_btn.text = "v%s available -- click to open ModWorkshop" % latest
+		_ui_update_alert_btn.text = "v%s available -- click to open the release page" % latest
 		# The accent color is the update signal; an available
 		# update is a notice, not an error, so no red here.
 		_ui_update_alert_btn.add_theme_color_override("font_color", COL_ACCENT)
 		_ui_update_alert_btn.add_theme_color_override("font_hover_color", COL_TEXT_HI)
 
 	# Pop the dialog only the first session this specific new version is
-	# seen. Stays quiet on subsequent launches until ModWorkshop ships a
-	# newer one. The launch-row alert remains visible regardless.
+	# seen. Stays quiet on subsequent launches until a newer release ships.
+	# The launch-row alert remains visible regardless.
 	var last_seen := _modloader_update_last_seen_version()
 	if last_seen != latest:
 		_show_modloader_update_dialog(latest)
@@ -7319,9 +7326,9 @@ func _modloader_update_mark_seen(latest: String) -> void:
 	_set_ui_cfg_value("modloader_update", "last_seen_version", latest)
 
 # One-shot popup the first session each new modloader version is detected.
-# "Open Page" launches the ModWorkshop browser tab; either action writes the
-# latest version into mod_config.cfg so the dialog stays quiet on subsequent
-# launches until ModWorkshop ships another version.
+# "Open page" launches the release page in the browser; either action writes
+# the latest version into mod_config.cfg so the dialog stays quiet on
+# subsequent launches until another release ships.
 func _show_modloader_update_dialog(latest: String) -> void:
 	if not is_instance_valid(_ui_window):
 		return
@@ -7331,15 +7338,15 @@ func _show_modloader_update_dialog(latest: String) -> void:
 	d.cancel_button_text = "Dismiss"
 	d.dialog_autowrap = true
 	d.min_size = Vector2(440, 120)
-	d.dialog_text = "A newer version of the Mod Loader is available on ModWorkshop.\n\n" \
+	d.dialog_text = "A newer version of the Mod Loader is available.\n\n" \
 			+ "    Installed: v%s\n    Available: v%s\n\n" % [MODLOADER_VERSION, latest] \
-			+ "Open the ModWorkshop page to download?"
+			+ "Open the release page to download?"
 	_attach_ui_dialog(d)
 	d.exclusive = true
 	d.always_on_top = true
 	_connect_dialog_exits(d,
 		func():
-			OS.shell_open(MODWORKSHOP_PAGE_URL_TEMPLATE % str(MODLOADER_MODWORKSHOP_ID))
+			OS.shell_open(_modloader_release_page_url())
 			_modloader_update_mark_seen(latest)
 			d.queue_free(),
 		func():

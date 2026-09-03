@@ -13,10 +13,8 @@
 ## or default UA with a bodyless 403.
 ##
 ## GETs opt into a per-URL in-memory TTL cache (_MWS_TTL_* below); rate-limit
-## backoff is the _MWS_COOLDOWN_* block below. The discover landing also
-## write-throughs its last full payload to
-## user://mws_cache/discover_snapshot.json for offline grace; filter/search
-## responses are never snapshotted.
+## backoff is the _MWS_COOLDOWN_* block below. Only host_mws.gd calls in
+## here now; the Browse landing's offline snapshot lives in ui.gd, per host.
 
 # Identical for every endpoint; one place to inject future auth.
 func _mws_default_headers() -> PackedStringArray:
@@ -133,18 +131,6 @@ func _mws_rate_cooldown_ms() -> int:
 func mws_rate_cooldown_seconds() -> int:
 	return ceili(_mws_rate_cooldown_ms() / 1000.0)
 
-# "" when no cooldown is active, so callers fall back to their own copy.
-func mws_rate_limit_message() -> String:
-	var ms := _mws_rate_cooldown_ms()
-	if ms <= 0:
-		return ""
-	return "ModWorkshop rate limit reached. Try again in %ds." % ceili(ms / 1000.0)
-
-# Rate-limit status when one is active, else the caller's own copy.
-func mws_error_status(fallback: String) -> String:
-	var msg := mws_rate_limit_message()
-	return msg if msg != "" else fallback
-
 # Case-insensitive response-header lookup. Returns "" when absent.
 func _mws_header_value(headers: PackedStringArray, header_name: String) -> String:
 	var prefix := header_name.to_lower() + ":"
@@ -168,98 +154,6 @@ func _mws_note_rate_headers(status: int, headers: PackedStringArray) -> void:
 			wait_ms = _MWS_COOLDOWN_DEFAULT_MS
 	if wait_ms > 0:
 		_mws_cooldown_until_ms = maxi(_mws_cooldown_until_ms, Time.get_ticks_msec() + wait_ms)
-
-# Offline-grace snapshot of the discover landing: one slot holding the last
-# fully-populated popular-and-latest payload plus its unix time. Lives under
-# user://mws_cache/, which is on modpacks.gd's MODPACK_OVERRIDE_DENY_PREFIXES
-# list so packs cannot poison it.
-const _MWS_DISCOVER_SNAPSHOT_PATH := "user://mws_cache/discover_snapshot.json"
-
-func _mws_discover_snapshot_store(data: Dictionary) -> void:
-	_mws_discover_snapshot = {
-		"data": data,
-		"saved_at_unix": int(Time.get_unix_time_from_system()),
-	}
-	# Best-effort: a failed write means the grace window is memory-only.
-	DirAccess.make_dir_recursive_absolute(_MWS_DISCOVER_SNAPSHOT_PATH.get_base_dir())
-	# Write-then-rename so a crash mid-write cannot truncate the live snapshot.
-	var tmp_path := _MWS_DISCOVER_SNAPSHOT_PATH + ".tmp"
-	var f := FileAccess.open(tmp_path, FileAccess.WRITE)
-	if f == null:
-		return
-	var wrote := f.store_string(JSON.stringify(_mws_discover_snapshot))
-	var werr := f.get_error()
-	f.close()
-	if not wrote or werr != OK:
-		DirAccess.remove_absolute(tmp_path)
-		return
-	DirAccess.rename_absolute(tmp_path, _MWS_DISCOVER_SNAPSHOT_PATH)
-
-# Last-good discover payload {"data": {popular, latest}, "saved_at_unix"},
-# or {} when none exists. Memory first, then one lazy disk load. Every field
-# the render path touches is shape-checked so a truncated or hand-edited
-# file degrades to {}, never a crash. saved_at_unix arrives as a float after
-# a JSON round-trip -- callers int() it.
-func mws_discover_snapshot() -> Dictionary:
-	if not _mws_discover_snapshot.is_empty():
-		return _mws_discover_snapshot
-	if not FileAccess.file_exists(_MWS_DISCOVER_SNAPSHOT_PATH):
-		return {}
-	var f := FileAccess.open(_MWS_DISCOVER_SNAPSHOT_PATH, FileAccess.READ)
-	if f == null:
-		return {}
-	var parsed: Variant = JSON.parse_string(f.get_as_text())
-	f.close()
-	if not (parsed is Dictionary):
-		return {}
-	var snap: Dictionary = parsed
-	var data_v: Variant = snap.get("data")
-	if not (data_v is Dictionary):
-		return {}
-	var data: Dictionary = data_v
-	if not (data.get("popular") is Array) or not (data.get("latest") is Array):
-		return {}
-	# .get()'s default only covers an absent key; a present-but-null value
-	# would crash int() (no int(Nil) constructor in Godot 4), so type-guard.
-	# `is float` keeps the JSON round-trip valid.
-	var saved_v: Variant = snap.get("saved_at_unix", 0)
-	if not (saved_v is int or saved_v is float) or int(saved_v) <= 0:
-		return {}
-	_mws_discover_snapshot = snap
-	return snap
-
-# RTV landing for the Browse tab: {popular: [...], latest: [...]}, not
-# wrapped in {data}. The /games/{id}/popular-and-latest route is dead
-# upstream (commented out in routes/api.php; the handler returns `[]`), so
-# compose it from two list queries -- weekly_score and bumped_at -- trimmed
-# to 10 rows each.
-func mws_get_popular_and_latest() -> Variant:
-	var popular: Variant = await mws_list_mods("", "weekly_score", 0, 1)
-	var latest: Variant = await mws_list_mods("", "bumped_at", 0, 1)
-	# Re-issue only a failed leg, once; the healthy leg is kept as-is.
-	if not (popular is Dictionary):
-		popular = await mws_list_mods("", "weekly_score", 0, 1)
-	if not (latest is Dictionary):
-		latest = await mws_list_mods("", "bumped_at", 0, 1)
-	# Either leg failing fails the fetch: the budget can expire between the
-	# two sequential queries, and a half payload would render one section
-	# silently empty and clear the offline banner. Null lets the Browse tab
-	# fall back to the last complete snapshot.
-	if not (popular is Dictionary) or not (latest is Dictionary):
-		return null
-	var pop_rows: Array = _mws_data_rows(popular).slice(0, 10)
-	var lat_rows: Array = _mws_data_rows(latest).slice(0, 10)
-	var out := {"popular": pop_rows, "latest": lat_rows}
-	# Snapshot only a fully-populated landing: a half payload must not
-	# clobber an older complete snapshot.
-	if not pop_rows.is_empty() and not lat_rows.is_empty():
-		# Restamp only on change: both legs can serve from cache with zero
-		# network, and rewriting then would advance saved_at_unix and make
-		# "Last refreshed X ago" under-report age.
-		var prev: Variant = _mws_discover_snapshot.get("data") if not _mws_discover_snapshot.is_empty() else null
-		if not (prev is Dictionary and prev == out):
-			_mws_discover_snapshot_store(out)
-	return out
 
 # Pull the "data" array out of a list response; an `as Array` cast would
 # crash on data:null or a non-array (error page served 2xx).

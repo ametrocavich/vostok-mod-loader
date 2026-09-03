@@ -672,8 +672,8 @@ func _restore_apply_snapshot(snap_path: String) -> Dictionary:
 
 # Find mods the modpack declares that aren't installed at the exact pinned
 # version; an id-prefix fallback would defeat the author's version pin.
-# Returns Array of {profile_key, mws_id, version, source}; mws_id is an int,
-# 0 for any non-ModWorkshop source.
+# Returns Array of {profile_key, ref, version, source}; ref is a host ref,
+# {} when the pack names no host.
 func _get_missing_mods_for_modpack(entry: Dictionary) -> Array:
 	var missing: Array = []
 	var file_path: String = str(entry.get("file_path", ""))
@@ -740,33 +740,58 @@ func _get_missing_mods_for_modpack(entry: Dictionary) -> Array:
 		# Cache the source so a missing-mod stub can offer Download without
 		# re-reading the modpack zip.
 		_persist_single_mod_source(src_key, src_rec)
-		var mws_id := _source_mws_id(src_rec)
-		var item := {"profile_key": src_key, "mws_id": mws_id, "version": version, "source": src_rec}
-		if mws_id <= 0:
+		var ref := _source_host_ref(src_rec)
+		var item := {"profile_key": src_key, "ref": ref, "version": version, "source": src_rec}
+		if not _modpack_ref_downloadable(ref):
 			# Not downloadable; surface an explanatory failure row.
 			item["unreachable"] = true
-			if str(src_rec["provider"]) != "" and str(src_rec["provider"]) != HOST_MODWORKSHOP:
-				item["unreachable_reason"] = "this mod is hosted on " + str(src_rec["provider"]) \
-						+ ", which this loader cannot download from yet -- install it manually"
+			if not ref.is_empty():
+				item["unreachable_reason"] = "this mod is hosted on " + host_display_name(str(ref["provider"])) \
+						+ ", which the loader cannot download from -- install it manually"
 			elif not (src_data is Dictionary) or (src_data as Dictionary).is_empty():
 				item["unreachable_reason"] = "the modpack has no download info for this mod -- install it manually"
 			else:
-				item["unreachable_reason"] = "the modpack has no ModWorkshop ID for this mod -- install it manually"
+				item["unreachable_reason"] = "the modpack does not say where this mod is hosted -- install it manually"
 		missing.append(item)
 	return missing
 
 
-# Wait out an armed ModWorkshop rate-limit cooldown: once a 429 arms it,
+## The host ref a normalized source record names, or {} when it names none.
+func _source_host_ref(rec: Dictionary) -> Dictionary:
+	if str(rec.get("provider", "")) == "" or str(rec.get("id", "")) == "":
+		return {}
+	return host_ref(str(rec["provider"]), str(rec["id"]))
+
+
+## A modpack entry can be fetched only from a host this build can download
+## from; a link-out host, or one this build does not know, cannot.
+func _modpack_ref_downloadable(ref: Dictionary) -> bool:
+	if ref.is_empty() or not host_ref_valid(ref):
+		return false
+	return bool(host_caps(str(ref["provider"]))["resolve_file"])
+
+
+## Seconds left on a host's rate-limit cooldown. ModWorkshop traffic still
+## arms the old client's cooldown as well, so read both.
+func _modpack_cooldown_seconds(provider: String) -> int:
+	var secs := host_rate_cooldown_seconds(provider)
+	if provider == HOST_MODWORKSHOP:
+		secs = maxi(secs, mws_rate_cooldown_seconds())
+	return secs
+
+
+# Wait out an armed rate-limit cooldown on one host: once a 429 arms it,
 # lookups fail fast and one mid-apply rate limit would fail every remaining
 # mod. Ticks per second for the progress countdown ("rate_wait" with wait_s)
 # and prompt Cancel. Never retries a request itself, so it cannot loop.
-func _await_mws_rate_cooldown(progress: Callable, current: int, total: int) -> void:
+func _await_host_rate_cooldown(provider: String, progress: Callable, current: int, total: int) -> void:
 	while not _modpack_apply_cancelled:
-		var wait_s := mws_rate_cooldown_seconds()
+		var wait_s := _modpack_cooldown_seconds(provider)
 		if wait_s <= 0:
 			return
 		if progress.is_valid():
-			progress.call({"current": current, "total": total, "mod_name": "", "action": "rate_wait", "wait_s": wait_s})
+			progress.call({"current": current, "total": total, "mod_name": "", "action": "rate_wait",
+					"wait_s": wait_s, "host": host_display_name(provider)})
 		if get_tree() == null:
 			return
 		await get_tree().create_timer(1.0).timeout
@@ -823,8 +848,9 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 		_log_info("[Modpack] applying " + sanitized + ": " + str(missing.size()) + " mod(s) to install")
 		var total := missing.size()
 		for i in range(total):
-			if mws_rate_cooldown_seconds() > 0:
-				await _await_mws_rate_cooldown(progress, i + 1, total)
+			var item_ref: Dictionary = (missing[i] as Dictionary).get("ref", {})
+			if not item_ref.is_empty() and _modpack_cooldown_seconds(str(item_ref["provider"])) > 0:
+				await _await_host_rate_cooldown(str(item_ref["provider"]), progress, i + 1, total)
 			# Cancel check before each download: an in-flight HTTPRequest
 			# can't be interrupted mid-await, but no further ones start.
 			if _modpack_apply_cancelled:
@@ -839,7 +865,7 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 				}
 			var item: Dictionary = missing[i]
 			var pk: String = str(item.get("profile_key", "?"))
-			var mws_id: int = int(item.get("mws_id", 0))
+			var ref: Dictionary = item.get("ref", {})
 			var version: String = str(item.get("version", ""))
 			# Sourceless entries can't be downloaded; record as failures so
 			# the apply summary shows them.
@@ -849,7 +875,7 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 				failures.append({
 					"profile_key": pk,
 					"error": u_reason,
-					"mws_id": mws_id,
+					"ref": ref,
 					"version": version,
 				})
 				_log_warning("[Modpack]   skipped: " + pk + " -- " + u_reason)
@@ -859,11 +885,11 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 			if progress.is_valid():
 				progress.call({"current": i + 1, "total": total, "mod_name": pk, "action": "downloading"})
 			var version_tag := (" v" + version) if version != "" else " (primary)"
-			_log_info("[Modpack] downloading " + pk + " (mws_id=" + str(mws_id) + version_tag + ")")
+			_log_info("[Modpack] downloading " + pk + " (" + host_ref_key(ref) + version_tag + ")")
 			# allow_rename_on_collision: the user's existing file and a
 			# different version can land side by side; scan-time dedup picks
 			# one rather than failing the download over a filename match.
-			var r: Dictionary = await download_new_mod(mws_id, version, true)
+			var r: Dictionary = await download_mod_from_ref(ref, version, true)
 			if bool(r.get("ok", false)):
 				done_dl += 1
 				_log_info("[Modpack]   ok: " + str(r.get("file_name", "?")))
@@ -877,12 +903,12 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 					_log_info("[Modpack]   already on disk: " + pk + " (" + err + ")")
 					continue
 				failed_dl += 1
-				# mws_id + version let the failure UI offer Retry and an
-				# Open-MWS-page button.
+				# ref + version let the failure UI offer Retry and an
+				# open-page button.
 				failures.append({
 					"profile_key": pk,
 					"error": err,
-					"mws_id": mws_id,
+					"ref": ref,
 					"version": str(item.get("version", "")),
 				})
 				_log_warning("[Modpack]   failed: " + pk + " -- " + err)
@@ -1179,20 +1205,21 @@ func retry_failed_downloads(failures: Array, progress: Callable = Callable()) ->
 			still_failed.append(item)
 			continue
 		var pk: String = str(item.get("profile_key", "?"))
-		var mws_id: int = int(item.get("mws_id", 0))
+		var ref: Dictionary = item.get("ref", {})
 		var version: String = str(item.get("version", ""))
-		if mws_id <= 0:
+		if not _modpack_ref_downloadable(ref):
 			still_failed.append(item)
 			continue
-		if mws_rate_cooldown_seconds() > 0:
-			await _await_mws_rate_cooldown(progress, i + 1, failures.size())
+		var provider := str(ref["provider"])
+		if _modpack_cooldown_seconds(provider) > 0:
+			await _await_host_rate_cooldown(provider, progress, i + 1, failures.size())
 			if _modpack_apply_cancelled:
 				still_failed.append(item)
 				continue
 		if progress.is_valid():
 			progress.call({"current": i + 1, "total": failures.size(), "mod_name": pk, "action": "retrying"})
-		_log_info("[Modpack][Retry] " + pk + " (mws_id=" + str(mws_id) + ")")
-		var r: Dictionary = await download_new_mod(mws_id, version, true)
+		_log_info("[Modpack][Retry] " + pk + " (" + host_ref_key(ref) + ")")
+		var r: Dictionary = await download_mod_from_ref(ref, version, true)
 		if bool(r.get("ok", false)):
 			newly_downloaded += 1
 			_log_info("[Modpack][Retry]   ok: " + str(r.get("file_name", "?")))
@@ -1201,7 +1228,7 @@ func retry_failed_downloads(failures: Array, progress: Callable = Callable()) ->
 			still_failed.append({
 				"profile_key": pk,
 				"error": err,
-				"mws_id": mws_id,
+				"ref": ref,
 				"version": version,
 			})
 			_log_warning("[Modpack][Retry]   failed: " + pk + " -- " + err)

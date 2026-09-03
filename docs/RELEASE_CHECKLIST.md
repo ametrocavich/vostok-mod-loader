@@ -45,10 +45,11 @@ new install until someone notices.
 
 ## After the release
 
-- [ ] Update the ModWorkshop listing: bump its version AND replace the hosted
-      zip. This is a MANUAL step outside the pipeline, and the in-launcher
-      self-update check reads the ModWorkshop listing -- if it goes stale,
-      users on a known-broken build get no signal that a fix exists.
+- [ ] Update the VostokMods and ModWorkshop listings: bump the version AND
+      replace the hosted zip on each. Manual steps outside the pipeline. The
+      in-launcher self-update check reads the GitHub release, so a stale
+      listing no longer hides a fix from users, but people who install from
+      a listing get whatever it hosts.
 - [ ] Smoke test in the real game: launch, toggle a mod, apply a modpack,
       check for updates. No harness covers the launcher end to end.
 
@@ -56,8 +57,6 @@ new install until someone notices.
 
 - The launcher UI has no automated coverage. `check.sh` proves the file parses
   and that the translation layers behave; it proves nothing about a button.
-- The self-update check points at ModWorkshop while distribution is GitHub.
-  Until that is repointed, the manual listing bump above is load-bearing.
 - No harness runs the two-pass boot. `tests/boot_state/` exists but is written
   test-first against a bug that is not fixed yet, so it is deliberately NOT
   wired into `check.sh`; wiring a red gate would mask the other five.

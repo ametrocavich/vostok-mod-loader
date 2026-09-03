@@ -98,7 +98,7 @@ Only `[mod]` is required. `[autoload]`, `[updates]`, `[dependencies]`, `[hooks]`
 |---|---|---|---|
 | `name` | string | filename | Display name in the UI |
 | `id` | string | filename | Unique id (case-insensitive). If two installed archives declare the same id, only one loads: highest `version` wins (newer file mtime, then filename, as tiebreaks); the others are hidden with a logged warning |
-| `version` | string | `""` | Used by the Updates tab to compare against ModWorkshop |
+| `version` | string | `""` | Used by the Updates tab to compare against the mod's site |
 | `priority` | int | 0 (or parsed from filename prefix) | Higher loads later, wins file conflicts. Clamped to `-999..999` |
 | `author` | string | `""` | Optional author/credit string. Parsed and stored on the entry dict; no UI surface yet (added 3.1.2) |
 | `provides` | string array | `[]` | Rename aliases: old ids this mod still satisfies for other mods' dependencies (added 3.3.0). See below. |
@@ -164,7 +164,7 @@ Duplicate autoload names are logged and skipped (first wins). Paths not present 
 | `source` | String | Where this mod is hosted, as `"<provider>:<id>"`. Enables the Updates tab and modpack auto-download. Preferred over `modworkshop`. |
 | `modworkshop` | int | Legacy ModWorkshop mod id. Still read forever; equivalent to `source="modworkshop:<id>"`. |
 
-`source` is the provider-qualified form. The provider is a known host token (currently `modworkshop`; `vostokmods` and `nexus` are recognized) and the id is that host's mod id. The provider is matched case-insensitively, and a value with no colon is rejected rather than guessed -- so `source="12345"` is an error, not a ModWorkshop id.
+`source` is the provider-qualified form. The provider is a known host token -- `vostokmods` (the id is the mod's slug, the last part of its page URL), `modworkshop` (the numeric mod id), or `nexus` (numeric; link-out only, no downloads) -- and the id is that host's mod id. The provider is matched case-insensitively, and a value with no colon is rejected rather than guessed -- so `source="12345"` is an error, not a ModWorkshop id.
 
 For a ModWorkshop mod, declare BOTH keys during the compatibility window:
 
@@ -176,7 +176,9 @@ modworkshop=12345
 
 The `modworkshop=` line keeps older loaders working; the `source=` line is what newer loaders read first. A mod hosted anywhere OTHER than ModWorkshop must declare ONLY `source=` and must NOT add a `modworkshop=` line -- an older loader would otherwise treat that number as a ModWorkshop id and download an unrelated mod.
 
-Declaring a source also makes the mod auto-downloadable when someone applies a modpack that includes it (from ModWorkshop today; other providers as their download support lands). The loader records the source plus `[mod] version` and fetches it on the recipient's machine. Mods with no source must be installed manually by modpack recipients.
+Declaring a source also makes the mod auto-downloadable when someone applies a modpack that includes it (VostokMods and ModWorkshop can be downloaded from; Nexus cannot). The loader records the source plus `[mod] version` and fetches it on the recipient's machine. Mods with no source must be installed manually by modpack recipients.
+
+A mod downloaded through the Browse tab is remembered by the launcher even when its `mod.txt` declares nothing, so the Updates tab and modpacks still know where it came from on that machine. Declaring `source=` is what makes that knowledge travel with the mod.
 
 Note: quote your `[mod] version`. An unquoted `version = 1.10` is read as the number 1.1 and the trailing zero is lost, which corrupts the exact version a modpack pins.
 

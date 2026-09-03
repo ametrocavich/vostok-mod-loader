@@ -14,6 +14,7 @@ func _mwsp_caps() -> Dictionary:
 	caps["resolve_file"] = true
 	caps["version_pin"] = true
 	caps["page_url"] = true
+	caps["batch_versions"] = true
 	caps["total_count"] = true
 	# The API ignores `sort` when `query` is non-empty; Browse re-sorts
 	# search results client-side.
@@ -43,8 +44,7 @@ func _mwsp_scalars() -> Dictionary:
 	]
 	s["query_max_len"] = MWS_QUERY_MAX_LEN
 	s["page_size"] = MWS_PAGE_LIMIT
-	# /mods/{id} one at a time; there is no batch version endpoint.
-	s["version_batch_size"] = 1
+	s["version_batch_size"] = MODWORKSHOP_BATCH_SIZE
 	return s
 
 
@@ -267,40 +267,45 @@ func _mwsp_list_categories() -> Dictionary:
 	return host_ok(out)
 
 
-## One request per mod: there is no batch endpoint. Results stream so a rate
-## limit part-way through still leaves the answers already collected.
+## The versions endpoint answers up to MODWORKSHOP_BATCH_SIZE ids per call
+## as {"<id>": "<version>"}. Ids go as repeated ?mod_ids[]= query params; a
+## JSON GET body is ignored and answered with 422 (verified against the live
+## API). Chunks stream through on_progress so a rate limit part-way through
+## still leaves the answers already collected.
 func _mwsp_latest_versions(ids: PackedStringArray, on_progress: Callable) -> Dictionary:
 	var versions := {}
 	var done := 0
-	var failures := 0
-	for id in ids:
-		var ref := host_ref(HOST_MODWORKSHOP, id)
-		var res := await _mwsp_resolve_file(ref, "")
-		done += 1
+	var last_err := {}
+	for start in range(0, ids.size(), MODWORKSHOP_BATCH_SIZE):
+		var chunk := ids.slice(start, mini(start + MODWORKSHOP_BATCH_SIZE, ids.size()))
+		var parts := PackedStringArray()
+		for id in chunk:
+			parts.append("mod_ids[]=" + str(id).uri_encode())
+		var res := await _hnet_get_json(HOST_MODWORKSHOP, MODWORKSHOP_VERSIONS_URL + "?" + "&".join(parts))
+		done += chunk.size()
 		if not res["ok"]:
-			failures += 1
+			last_err = res
 			# Neither a rate limit nor a dead connection clears inside this
 			# loop; stop rather than spend the rest of the list on certain
-			# failures.
+			# failures. Nothing resolved reports the failure, not an empty
+			# success the Updates tab would render as "everything is up to date".
 			var code := str(res["code"])
 			if code == HOST_ERR_RATE_LIMITED or code == HOST_ERR_OFFLINE:
-				# Nothing resolved: report the failure, not an empty success
-				# the Updates tab would render as "everything is up to date".
-				if versions.is_empty():
-					return res
-				return host_ok(versions)
+				return res if versions.is_empty() else host_ok(versions)
 			continue
-		var file: Dictionary = res["data"]
-		var version := str(file["version"])
-		if version == "":
+		if not (res["data"] is Dictionary):
+			last_err = host_err(HOST_ERR_BAD_RESPONSE, 0, "versions response was not an object")
 			continue
-		var key := host_ref_key(ref)
-		versions[key] = version
+		var partial := {}
+		for id_v in (res["data"] as Dictionary):
+			var version := _host_str((res["data"] as Dictionary)[id_v])
+			var key := host_ref_key(host_ref(HOST_MODWORKSHOP, _host_id_str(id_v)))
+			if version == "" or key == "":
+				continue
+			versions[key] = version
+			partial[key] = version
 		if on_progress.is_valid():
-			on_progress.call({"done": done, "total": ids.size(), "partial": {key: version}})
-	# Every mod failed for its own reason (all 404, all malformed); learning
-	# nothing must not read as "checked everything, nothing to update".
-	if versions.is_empty() and failures > 0:
-		return host_err(HOST_ERR_BAD_RESPONSE, 0,
-				"could not read a version for any of the %d mods checked" % failures)
+			on_progress.call({"done": done, "total": ids.size(), "partial": partial})
+	if versions.is_empty() and not last_err.is_empty():
+		return last_err
 	return host_ok(versions)

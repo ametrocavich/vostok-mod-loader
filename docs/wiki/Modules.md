@@ -65,19 +65,17 @@ ModWorkshop API client -- thin async wrappers over `HTTPRequest` that return a p
 
 - Every request carries a User-Agent -- `api.modworkshop.net` rejects empty/default UAs with a bodyless 403
 - GETs opt into a per-URL in-memory TTL cache via `_mws_get_json`; failures are never cached, so a flake retries on the next call
-- 429-aware backoff: a 429 (or spent rate budget) arms a module-wide cooldown; calls during it fail fast, and callers wrap their error copy in `mws_error_status()` so the status reads "rate limit reached, try again in Ns"
+- 429-aware backoff: a 429 (or spent rate budget) arms a module-wide cooldown; calls during it fail fast, and the ModWorkshop adapter mirrors that cooldown into the host seam's table so the UI reads one "rate limit reached, try again in Ns" status
 - `mws_list_mods` pages at `limit=50` (`MWS_PAGE_LIMIT`). The API 422s larger values
-- Offline grace: the discover landing payload is persisted to `user://mws_cache/discover_snapshot.json`; when a live fetch fails, the Browse tab renders the snapshot behind a cached-results banner
-
-The legacy `fetch_latest_modworkshop_versions` / `download_and_replace_mod` remain in `mod_discovery.gd` until a dedicated migration phase.
+- Only `host_mws.gd` calls this client now; the Browse tab, Updates tab and every download go through the host seam (`host_api.gd`). The client folds into the adapter once its remaining endpoints are re-pointed at the shared transport in `host_http.gd`.
 
 ### [mod_discovery.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd)
 
-Scans `<exe>/mods/`, parses mod.txt metadata, handles ModWorkshop version checks and downloads. No mounting. That's `mod_loading`.
+Scans `<exe>/mods/`, parses mod.txt metadata, and owns the host-neutral install path for downloads and update checks. No mounting. That's `mod_loading`.
 
 - `collect_mod_metadata` at [mod_discovery.gd:7](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd#L7). The main scanner
 - `compare_versions` -- semver-ish with `v` prefix tolerance
-- `fetch_latest_modworkshop_versions` / `download_and_replace_mod` -- chunked HTTP against `api.modworkshop.net`; the legacy Updates-tab client -- the Browse tab's endpoints live in `mws_api.gd` (these two stay here until a dedicated migration phase)
+- `download_mod_from_ref` / `replace_mod_from_ref` / `fetch_latest_versions` -- take a host ref (`{provider, id}`) and dispatch through the seam; `_host_install_downloaded_archive` is the one place a downloaded body becomes a file in `mods/`
 - `_log_security_findings` -- emits `[ModScan]` summary + per-rule lines to the boot log when `entry["security_findings"]` is non-empty
 
 ### [modpacks.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/modpacks.gd)

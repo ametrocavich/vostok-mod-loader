@@ -1027,39 +1027,32 @@ func _compare_dedup_priority(a: Dictionary, b: Dictionary) -> bool:
 		return am > bm
 	return (a["file_name"] as String).to_lower() < (b["file_name"] as String).to_lower()
 
-func fetch_latest_modworkshop_versions(ids: Array[int]) -> Dictionary:
-	var latest_versions := {}
-	for chunk_ids in _chunk_int_array(ids, MODWORKSHOP_BATCH_SIZE):
-		var req := HTTPRequest.new()
-		req.timeout = API_CHECK_TIMEOUT
-		req.download_body_size_limit = MWS_JSON_BODY_LIMIT
-		add_child(req)
-		# The API reads mod_ids as repeated ?mod_ids[]= query params; a JSON
-		# GET body is ignored and returns 422 (verified against the live API).
-		# Response: {"<id>": "<version>", ...}.
-		var qparts := PackedStringArray()
-		for mid in chunk_ids:
-			qparts.append("mod_ids[]=" + str(mid))
-		var err := req.request(MODWORKSHOP_VERSIONS_URL + "?" + "&".join(qparts),
-			_mws_default_headers(),
-			HTTPClient.METHOD_GET)
-		if err != OK:
-			req.queue_free()
+## Current version of many installed mods at once, grouped by host so each
+## adapter gets one call. Returns {ref_key: version}; a mod absent from the
+## result could not be checked (offline, rate limited, unknown to the host).
+## Hosts that cannot serve a file are skipped: they have no version to report.
+func fetch_latest_versions(refs: Array) -> Dictionary:
+	var ids_by_provider: Dictionary = {}
+	for ref_v in refs:
+		if not (ref_v is Dictionary) or not host_ref_valid(ref_v):
 			continue
-
-		var res: Array = await req.request_completed
-		req.queue_free()
-		# Legacy path (own HTTPRequest, not the _mws_get_json chokepoint):
-		# still note rate headers so a 429 arms the shared cooldown. No
-		# fail-fast gate -- a conservative cooldown could fail checks the
-		# server would have allowed.
-		_mws_note_rate_headers(int(res[1]), res[2])
-		if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] < 200 or res[1] >= 300:
+		var provider := str(ref_v["provider"])
+		var ids: PackedStringArray = ids_by_provider.get(provider, PackedStringArray())
+		var id := str(ref_v["id"])
+		if not ids.has(id):
+			ids.append(id)
+		ids_by_provider[provider] = ids
+	var out := {}
+	for provider in ids_by_provider:
+		if not bool(host_caps(provider)["resolve_file"]):
 			continue
-		var parsed = JSON.parse_string((res[3] as PackedByteArray).get_string_from_utf8())
-		if parsed is Dictionary:
-			latest_versions.merge(parsed, true)
-	return latest_versions
+		var res := await host_latest_versions(provider, ids_by_provider[provider], Callable())
+		if not res["ok"]:
+			_log_warning("[Updates] %s version check failed: %s" % [host_display_name(provider), host_error_message(provider, res)])
+			continue
+		if res["data"] is Dictionary:
+			out.merge(res["data"], true)
+	return out
 
 # Filename from Content-Disposition: plain filename=X, quoted, and the RFC
 # 5987 filename*=UTF-8''X variant some CDNs emit. Returns "" unless the
@@ -1154,15 +1147,15 @@ func _derive_updated_filename(old_file_name: String, headers: PackedStringArray,
 # Five UI surfaces reach the two download entry points below; keep this map
 # current when adding one:
 #   1. Mods tab "Update" badge (ui.gd build_mods_tab) ->
-#      download_and_replace_mod; errors: "Update failed" dialog, verbatim.
-#   2. Updates tab "Download"/"Retry" (ui.gd check_updates_for_ui) ->
-#      download_and_replace_mod; errors: generic label, error text dropped.
+#      replace_mod_from_ref; errors: "Update failed" dialog, verbatim.
+#   2. Updates tab "Update" (ui.gd _updates_arm_row_update) ->
+#      replace_mod_from_ref; errors: generic label, error text dropped.
 #   3. Browse tab "Download" + its serial queue (ui.gd build_browse_tab) ->
-#      download_new_mod(id); errors: status label, verbatim.
+#      download_mod_from_ref(ref); errors: status label, verbatim.
 #   4. Missing-mod stub "Download" (ui.gd build_mods_tab) ->
-#      download_new_mod(id, version, true); errors: dialog, verbatim.
+#      download_mod_from_ref(ref, version, true); errors: dialog, verbatim.
 #   5. Modpack apply + retry (modpacks.gd _apply_modpack_inner,
-#      retry_failed_downloads) -> download_new_mod(id, version, true);
+#      retry_failed_downloads) -> download_mod_from_ref(ref, version, true);
 #      errors collected for the apply summary; the apply loop counts the
 #      "Already have" prefix as installed rather than failed.
 # Each surface has its own busy-state and error handling; only Browse
@@ -1171,7 +1164,7 @@ func _derive_updated_filename(old_file_name: String, headers: PackedStringArray,
 
 # Returns { ok: bool, new_path: String, new_file_name: String }; failure
 # returns also carry an "error" String (success ones do not, unlike
-# download_new_mod). On success new_path / new_file_name reflect the on-disk
+# download_mod_from_ref). On success new_path / new_file_name reflect the on-disk
 # name, which may differ from target_path (Content-Disposition or version
 # bump). On failure temp + backup are cleaned up and the original is intact.
 func replace_mod_from_ref(target_path: String, ref: Dictionary) -> Dictionary:
@@ -1280,16 +1273,6 @@ func replace_mod_from_ref(target_path: String, ref: Dictionary) -> Dictionary:
 	_record_installed_mod_source(new_file_name, ref, str(file["version"]))
 	return {"ok": true, "new_path": new_path, "new_file_name": new_file_name}
 
-
-# ModWorkshop-only entry point kept for its existing callers.
-func download_and_replace_mod(target_path: String, modworkshop_id: int) -> Dictionary:
-	return await replace_mod_from_ref(target_path, host_ref(HOST_MODWORKSHOP, str(modworkshop_id)))
-
-func _chunk_int_array(arr: Array[int], chunk_size: int) -> Array:
-	var result: Array = []
-	for i in range(0, arr.size(), chunk_size):
-		result.append(arr.slice(i, i + chunk_size))
-	return result
 
 # Fetch an archive and adopt it into mods/. Provider-neutral: the caller has
 # already resolved a FileRecord through the seam, so nothing here knows which
@@ -1501,11 +1484,6 @@ func download_mod_from_ref(ref: Dictionary, version: String = "", allow_rename_o
 		_record_installed_mod_source(str(r["file_name"]), ref, str(file["version"]))
 	return r
 
-
-# ModWorkshop-only entry point kept for its existing callers; the work is
-# download_mod_from_ref.
-func download_new_mod(modworkshop_id: int, version: String = "", allow_rename_on_collision: bool = false) -> Dictionary:
-	return await download_mod_from_ref(host_ref(HOST_MODWORKSHOP, str(modworkshop_id)), version, allow_rename_on_collision)
 
 # .pck archives begin with the magic "GDPC"; cheap check so a CDN error
 # page saved under a .pck name isn't adopted as a mod.

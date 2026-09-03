@@ -16,7 +16,7 @@ That's it. The loader is installed. From its screen you can turn mods on and off
 
 ## Get some mods
 
-- The **Browse** tab searches [ModWorkshop](https://modworkshop.net) from inside the loader -- click **Download** on a mod to install it. See [Browse](Browse).
+- The **Browse** tab searches [VostokMods](https://vostokmods.net) (and, from its source menu, [ModWorkshop](https://modworkshop.net)) from inside the loader -- click **Download** on a mod to install it. See [Browse](Browse).
 - The **Modpacks** tab lets you apply a friend's whole mod list in one go, or share yours. See [Modpacks](Modpacks).
 - You can also install a mod by hand: drop its `.vmz` file into the `mods` folder.
 

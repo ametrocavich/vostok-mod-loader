@@ -119,7 +119,7 @@ Copy `mod_config.cfg` somewhere safe. That one file contains all profiles and se
 **Copy your setup to another install**
 Two ways:
 1. **Full config copy** -- copy `mod_config.cfg` and paste into the same path on the other machine. Carries every profile + settings.
-2. **Save as modpack** -- in the launcher's Modpacks tab, save your current profile as a modpack (a small `.zip` listing your enabled mods), send that zip to the other machine, drop it in the mods folder and click **Apply**. Mods with a ModWorkshop id are downloaded automatically; mods without one must be installed manually. See [Modpacks](Modpacks).
+2. **Save as modpack** -- in the launcher's Modpacks tab, save your current profile as a modpack (a small `.zip` listing your enabled mods), send that zip to the other machine, drop it in the mods folder and click **Apply**. Mods with a known download source are downloaded automatically; mods without one must be installed manually. See [Modpacks](Modpacks).
 
 **Reset one profile to empty**
 Delete all of its sections: `[profile.<name>.enabled]`, `[profile.<name>.priority]`, and, if present, `[profile.<name>.dep_ignore]` and `[profile.<name>.settings]`. Keep your other profiles.
@@ -217,7 +217,7 @@ Everything under `user://modloader_hooks/` is regenerated on demand:
 | `user://modloader_heartbeat.txt` | Crash-detection sentinel. Written each launch, deleted at clean boot. Presence on next launch = previous session crashed. |
 | `user://modloader_pass2_dirty` | Pass-2-in-progress marker. Presence on next launch = Pass 2 was interrupted mid-execution (crash, force-quit). Next launch wipes state and retries. |
 | `user://modloader_conflicts.txt` | Developer-mode only. Dumps the conflict report (which mods claim the same `res://` paths). |
-| `user://mws_cache/thumbs/` | Browse-tab thumbnail / banner image cache from ModWorkshop. `user://mws_cache/discover_snapshot.json` holds the last successful Browse landing (popular/latest) so the offline banner view survives relaunches. Search/filter API responses are cached in memory only. New in 3.3. |
+| `user://mws_cache/` | Browse-tab caches. `thumbs/` holds ModWorkshop thumbnail / banner images (VostokMods images stay in memory). `landing_<site>.json` holds each site's last successful Browse landing so the offline banner view survives relaunches, and `mods_meta_v2.json` caches the detail each installed mod's row shows. Search/filter API responses are cached in memory only. |
 
 **Deleting anything in the table above is safe.** Next launch regenerates whatever it needs. The "cost" is a slower cold boot because the hook pack has to rebuild.
 
@@ -261,7 +261,7 @@ A: `user://` is per-user state (your profiles, generated caches) -- preserved ac
 
 - [Mod-Format](Mod-Format) -- `mod.txt` schema (what each mod declares)
 - [Profile-Format](Profile-Format). The JSON format inside a modpack's `profile.json`
-- [Browse](Browse) -- installing mods from ModWorkshop (`user://mws_cache/`)
+- [Browse](Browse) -- installing mods from VostokMods or ModWorkshop (`user://mws_cache/`)
 - [Modpacks](Modpacks) -- `active_modpack`, the managed profile slots, and `.profile_snapshots`
 - [Architecture](Architecture) -- two-pass boot flow, `override.cfg` lifecycle
 - [Stability-Canaries](Stability-Canaries) -- crash recovery, safe mode, sentinel files

@@ -57,8 +57,12 @@ const VANILLA_CACHE_DIR := "user://modloader_hooks/vanilla"
 const MODWORKSHOP_VERSIONS_URL := "https://api.modworkshop.net/mods/versions"
 const MODWORKSHOP_DOWNLOAD_URL_TEMPLATE := "https://api.modworkshop.net/mods/%s/download"
 const MODWORKSHOP_PAGE_URL_TEMPLATE := "https://modworkshop.net/mod/%s"
-# ModWorkshop ID of the modloader itself (self-update check); <= 0 disables it.
-const MODLOADER_MODWORKSHOP_ID := 55623
+# GitHub repository that publishes loader releases, for the self-update
+# check; "" disables it. Release tags are "v<MODLOADER_VERSION>" and the
+# latest-release endpoint already excludes drafts and prereleases.
+const MODLOADER_GITHUB_REPO := "ametrocavich/vostok-mod-loader"
+const MODLOADER_RELEASES_API_URL := "https://api.github.com/repos/%s/releases/latest"
+const MODLOADER_RELEASES_PAGE_URL := "https://github.com/%s/releases/latest"
 const MODWORKSHOP_BATCH_SIZE := 100
 const API_CHECK_TIMEOUT := 15.0
 # HTTPRequest.timeout covers the whole transfer; mod bodies run to ~256MB.
@@ -162,6 +166,9 @@ var _ui_modpacks_scroll: ScrollContainer = null
 var _priority_save_pending: bool = false
 # Self-update check state; both cleared on UI close.
 var _modloader_latest_version: String = ""
+# Page of the release the self-update check found; "" until it runs, in
+# which case the alert falls back to the repository's latest-release page.
+var _modloader_release_url: String = ""
 var _ui_update_alert_btn: LinkButton = null
 var _has_loaded := false
 # Most recent mod.txt read result: "none", "ok", "parse_error" (details in
@@ -283,12 +290,6 @@ var _mws_cooldown_until_ms: int = 0
 # callers tell "offline" apart from a genuine HTTP 404.
 var _mws_last_transport_failed: bool = false
 
-# Last-good Browse discover landing (offline grace); mirrored to
-# user://mws_cache/discover_snapshot.json. Shape: {"data": {popular, latest},
-# "saved_at_unix"}. Serves only the discover landing on a failed live fetch;
-# filter/search responses are never snapshotted.
-var _mws_discover_snapshot: Dictionary = {}
-
 # Generic host-transport response cache, keyed by full URL (absolute, so
 # providers cannot collide). Entry shape matches _mws_cache.
 var _host_cache: Dictionary = {}
@@ -308,9 +309,9 @@ var _modpack_apply_in_progress: bool = false
 # downloads. Cleared at the start of every apply.
 var _modpack_apply_cancelled: bool = false
 
-# Update-check results: profile_key -> {latest_version, mw_id, full_path,
+# Update-check results: profile_key -> {latest_version, ref, full_path,
 # mod_name}. Read by Mods-tab rows for inline badges; resets on launcher
-# close. mw_id == 0 entries are not stored.
+# close. Entries with no host ref are not stored.
 var _mod_updates_state: Dictionary = {}
 var _mod_updates_check_in_progress: bool = false
 

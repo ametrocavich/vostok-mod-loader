@@ -25,9 +25,9 @@ Mod loader for Road to Vostok (Godot 4.6). Adds a pre-game UI for managing mods,
 Four tabs:
 
 - **Mods** -- detected mods with checkboxes and a priority spinbox. Higher priority loads later and wins file conflicts. Load-order preview on the right updates in real time. Profiles, the Developer Mode toggle, and dependency handling live here too.
-- **Browse** -- search and install mods straight from ModWorkshop. Discover popular/latest, filter by search/sort/category; **Download** installs straight into your `mods/` folder, and downloads queue and run one at a time. See the [Browse wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Browse).
-- **Modpacks** -- apply a shared setup someone sent you, or save your current setup as one. A modpack is a small `.zip` listing which mods to enable (plus their settings) -- not the mod files themselves. Apply downloads any missing mods from ModWorkshop (mods without a ModWorkshop listing must be added manually) and switches you to the author's exact setup; Unload restores your prior state. Only one modpack can be active at a time; your previous setup is backed up automatically before applying (**Restore backup** brings it back). See the [Modpacks wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Modpacks).
-- **Updates** -- for mods with `[updates] modworkshop=<id>` in `mod.txt`, check for and download updates from ModWorkshop.
+- **Browse** -- search and install mods straight from [VostokMods](https://vostokmods.net), or switch the source menu to ModWorkshop. Each site has a landing view plus search/sort/category filters; **Download** installs straight into your `mods/` folder, and downloads queue and run one at a time. See the [Browse wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Browse).
+- **Modpacks** -- apply a shared setup someone sent you, or save your current setup as one. A modpack is a small `.zip` listing which mods to enable (plus their settings) -- not the mod files themselves. Apply downloads any missing mods from the site each one came from (mods with no download source must be added manually) and switches you to the author's exact setup; Unload restores your prior state. Only one modpack can be active at a time; your previous setup is backed up automatically before applying (**Restore backup** brings it back). See the [Modpacks wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Modpacks).
+- **Updates** -- for mods that say where they came from (`[updates] source=` in `mod.txt`, or a download made from Browse), check for and download newer versions from that site.
 
 **Dependencies** are handled inline on the Mods tab, not as a separate tab: mods with `[dependencies] required=[...]` in `mod.txt` show a blocked row when a requirement is missing or disabled, with inline **Enable dependency** / **Load anyway** actions, and the loader skips mods whose required dependencies are not loadable.
 
@@ -70,7 +70,7 @@ priority=0
 MyModMain="res://MyMod/Main.gd"
 
 [updates]
-modworkshop=12345
+source="vostokmods:my-mod"
 
 [dependencies]
 required=["mod_configuration_menu"]
@@ -81,10 +81,10 @@ optional=["some_soft_integration"]
 |---|---|
 | `name` | Display name in the UI |
 | `id` | Unique ID. Duplicate IDs after the first loaded mod are skipped |
-| `version` | Used by the Updates tab to compare against ModWorkshop |
+| `version` | Used by the Updates tab to compare against the mod's site |
 | `priority` | Higher loads later, wins file conflicts. Default 0 |
 | `[autoload]` | `Name="res://path.gd"` (or `.tscn`). Prefix value with `!` to load before the game's own autoloads |
-| `[updates] modworkshop` | ModWorkshop mod ID |
+| `[updates] source` | Where the mod is hosted: `"vostokmods:<slug>"` or `"modworkshop:<id>"`. The older `modworkshop=<id>` form still works |
 | `[dependencies] required/optional` | Godot string arrays of mod IDs. Required deps must be installed, enabled, and load before the dependent mod |
 
 Mods without `mod.txt` still mount as resource packs. Their files override vanilla resources, but no autoloads run.

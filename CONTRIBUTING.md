@@ -155,21 +155,22 @@ renames are not.
 
 ### Adding a download surface
 
-Existing surfaces: Browse "Get" + queue (ui.gd -> `download_new_mod`), Mods-tab
-update badges (`download_and_replace_mod`), Updates-tab Download/Retry
-(`download_and_replace_mod`), missing-mod stub Download (ui.gd ->
-`download_new_mod`), modpack missing-mod fetch (modpacks.gd ->
-`download_new_mod(mws_id, version, true)`). The authoritative map lives above
-the download entry points in `src/mod_discovery.gd`.
+Existing surfaces: Browse "Download" + queue (ui.gd -> `download_mod_from_ref`),
+Mods-tab update badges and the Updates tab (`replace_mod_from_ref`), missing-mod
+stub Download (ui.gd -> `download_mod_from_ref(ref, version, true)`), modpack
+missing-mod fetch and retry (modpacks.gd -> the same call). The authoritative
+map lives above the download entry points in `src/mod_discovery.gd`.
 
-- `src/mod_discovery.gd: download_new_mod` currently fuses ModWorkshop
-  file-record resolution with the generic fetch/validate/install tail
-  (Content-Disposition filename derivation, `_is_safe_mod_filename`, collision
-  rename, `.download` temp file, zip/pck validation, rename-finalize). A
-  non-ModWorkshop surface (e.g. install-from-URL) needs that tail split out
-  first -- do not copy-paste it.
+- Both entry points take a host ref (`{provider, id}`, see `host_ref` in
+  `src/host_types.gd`) and resolve the file through `host_resolve_file`; the
+  host-neutral fetch/validate/install tail is
+  `_host_install_downloaded_archive` (Content-Disposition filename derivation,
+  `_is_safe_mod_filename`, collision rename, `.download` temp file, zip/pck
+  validation, rename-finalize). A new surface calls one of the two entry
+  points; a new host implements `host_resolve_file` in its adapter and never
+  touches the tail.
 - After a successful install: `_reload_entries_for_active_profile()` then
-  `_rebuild_mods_tab(tabs)` (the Browse Get handler shows the pattern,
+  `_rebuild_mods_tab(tabs)` (the Browse Download handler shows the pattern,
   including the `is_instance_valid` guards for a closed launcher window).
 
 ### Adding a registry section

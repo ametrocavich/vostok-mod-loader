@@ -4,13 +4,13 @@ A **modpack** is a mod list shipped as a single `.zip`: which mods are on, their
 
 The **Modpacks** tab is the third tab in the pre-launch window.
 
-A modpack is a small recipe file, not a copy of the mods themselves -- it lists which mods are on, their order, and where to download each one. Applying it downloads the actual mods from ModWorkshop. A mod can only be downloaded automatically if it's linked to ModWorkshop; any that aren't must be installed by hand. (Curious what's inside the file? See [Profile-Format](Profile-Format) -- the format inside a modpack's `profile.json`.)
+A modpack is a small recipe file, not a copy of the mods themselves -- it lists which mods are on, their order, and where to download each one. Applying it downloads the actual mods from the site each one came from (VostokMods or ModWorkshop). A mod can only be downloaded automatically if the pack knows where it is hosted; any that aren't must be installed by hand. (Curious what's inside the file? See [Profile-Format](Profile-Format) -- the format inside a modpack's `profile.json`.)
 
 ## Creating a modpack
 
 From the Modpacks tab, the **Save current profile as modpack** button saves your active profile as `<name>.zip` in your mods folder. It refuses to overwrite an existing zip. The save dialog takes an optional author handle (remembered for next time) and a description shown on the pack's row.
 
-If any enabled mod isn't linked to ModWorkshop, the dialog warns you first: those mods are still listed in the pack, but whoever applies it will have to install them by hand.
+If any enabled mod has no known download source, the dialog warns you first: those mods are still listed in the pack, but whoever applies it will have to install them by hand.
 
 While a modpack is active you can't save a new one. The button is disabled ("Unload the active modpack first").
 
@@ -138,4 +138,4 @@ See [Config-Files](Config-Files) for the full key reference.
 - [Browse](Browse) -- where Apply downloads missing mods from.
 - [Profile-Format](Profile-Format). The metroprofile v1 format inside a modpack's `profile.json`.
 - [Config-Files](Config-Files) -- `active_modpack`, `modpack_backup_profile`, and the managed profile sections on disk.
-- [Mod-Format](Mod-Format). The `[updates] modworkshop=<id>` field that feeds `sources`.
+- [Mod-Format](Mod-Format). The `[updates] source=` field that feeds `sources`.
