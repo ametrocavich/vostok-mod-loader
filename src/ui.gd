@@ -804,6 +804,19 @@ func _entry_mws_id(cfg: ConfigFile) -> int:
 	return _source_mws_id(_mod_source_from_cfg(cfg))
 
 
+## The host reference an installed mod resolves to: mod.txt's source= (or
+## legacy modworkshop=), else the [mod_sources] record cached at install time
+## for mods whose author never declared one. {} when neither names a host.
+## `persisted` is _get_persisted_mod_sources(), read once by the caller.
+func _entry_host_ref(entry: Dictionary, persisted: Dictionary) -> Dictionary:
+	var rec := _mod_source_from_cfg(entry.get("cfg"))
+	if str(rec["provider"]) == "":
+		rec = _normalize_source_record(persisted.get(str(entry.get("profile_key", ""))))
+	if str(rec["provider"]) == "":
+		return {}
+	return host_ref(str(rec["provider"]), str(rec["id"]))
+
+
 func _build_profile_sources() -> Dictionary:
 	var sources: Dictionary = {}
 	for entry in _ui_mod_entries:
@@ -3658,32 +3671,47 @@ func _make_close_icon(line: Color) -> ImageTexture:
 				img.set_pixel(a, 13 - i, line)
 	return ImageTexture.create_from_image(img)
 
-# Best-effort cached ModWorkshop summary for a mod id, from the Browse discover
-# snapshot (popular + latest). Gives the Mods tab an instant thumbnail + author
-# for mods already seen in Browse, with no network. {} when not cached. The
-# caller then fetches by id.
-func _mods_cached_summary_by_id(mod_id: int) -> Dictionary:
-	if mod_id <= 0:
+# Best-effort cached summary for a mod from its host's Browse landing
+# snapshot. Gives the Mods tab an instant thumbnail + author for mods already
+# seen in Browse, with no network. {} when not cached; the caller then
+# fetches by ref.
+func _mods_cached_summary(ref: Dictionary) -> Dictionary:
+	var key := host_ref_key(ref)
+	if key == "":
 		return {}
-	var data_v: Variant = mws_discover_snapshot().get("data")
-	if not (data_v is Dictionary):
+	var snap := _browse_landing_snapshot(str(ref["provider"]))
+	if snap.is_empty():
 		return {}
-	for key in ["popular", "latest"]:
-		var arr_v: Variant = (data_v as Dictionary).get(key)
-		if not (arr_v is Array):
+	for sec_v in (snap["sections"] as Array):
+		if not (sec_v is Dictionary):
 			continue
-		for row_v in (arr_v as Array):
-			if row_v is Dictionary and int((row_v as Dictionary).get("id", 0)) == mod_id:
-				return row_v
+		var rows_v: Variant = (sec_v as Dictionary).get("rows")
+		if not (rows_v is Array):
+			continue
+		for row_v in (rows_v as Array):
+			if not (row_v is Dictionary):
+				continue
+			var row: Dictionary = row_v
+			if row.get("ref") is Dictionary and host_ref_key(row["ref"]) == key:
+				return row
 	return {}
 
-# Persisted per-mod meta sidecar so relaunches don't re-fetch /mods/{id} per
-# installed MWS mod. One JSON file, {"<mod_id>": {"mod": <mod object>,
-# "saved_at": unix}}, under user://mws_cache/ (on modpacks.gd's override deny
-# list, so packs can't poison it). Entries older than _MODS_META_REFRESH_SEC
-# soft-refresh in the background.
-const _MODS_META_SIDECAR_PATH := "user://mws_cache/mods_meta.json"
+# Persisted per-mod meta sidecar so relaunches don't re-fetch every installed
+# mod's detail. One JSON file, {"<ref_key>": {"mod": <ModDetail>, "saved_at":
+# unix}}, under user://mws_cache/ (on modpacks.gd's override deny list, so
+# packs can't poison it). Entries older than _MODS_META_REFRESH_SEC
+# soft-refresh in the background. The v2 name leaves the pre-seam file, which
+# held raw ModWorkshop objects keyed by int, to rot harmlessly.
+const _MODS_META_SIDECAR_PATH := "user://mws_cache/mods_meta_v2.json"
 const _MODS_META_REFRESH_SEC := 86400
+
+# True when a memoized or sidecar record has every field the detail dialog
+# indexes directly. A hand-edited sidecar entry that fails this is skipped.
+func _mods_meta_record_complete(mod: Dictionary) -> bool:
+	for k in host_empty_summary():
+		if not mod.has(k):
+			return false
+	return mod["ref"] is Dictionary and mod["thumbnail"] is Dictionary and host_ref_valid(mod["ref"])
 
 # Lazy one-time seed of the meta memo from the sidecar. Every field is
 # shape-checked so a hand-edited file skips entries rather than crash;
@@ -3703,36 +3731,36 @@ func _mods_meta_sidecar_load() -> void:
 	if not (parsed is Dictionary):
 		return
 	for key_v in (parsed as Dictionary):
-		var mod_id := str(key_v).to_int()
-		if mod_id <= 0:
+		var key := str(key_v)
+		if host_ref_from_key(key).is_empty():
 			continue
 		var entry_v: Variant = (parsed as Dictionary)[key_v]
 		if not (entry_v is Dictionary):
 			continue
 		var mod_v: Variant = (entry_v as Dictionary).get("mod")
-		if not (mod_v is Dictionary) or (mod_v as Dictionary).is_empty():
+		if not (mod_v is Dictionary) or not _mods_meta_record_complete(mod_v):
 			continue
 		# saved_at arrives as a float after the JSON round-trip; int() it.
 		var saved_v: Variant = (entry_v as Dictionary).get("saved_at", 0)
 		if not (saved_v is int or saved_v is float) or int(saved_v) <= 0:
 			continue
 		# Never clobber fresher data a fetch already memoized this session.
-		if not _mods_mws_meta_by_id.has(mod_id):
-			_mods_mws_meta_by_id[mod_id] = mod_v
-			_mods_mws_meta_saved_at[mod_id] = int(saved_v)
+		if not _mods_meta_by_key.has(key):
+			_mods_meta_by_key[key] = mod_v
+			_mods_meta_saved_at[key] = int(saved_v)
 
-# Stamp mod_id as freshly fetched and rewrite the sidecar from the memo.
-# Only ids with a saved_at stamp (real /mods/{id} fetches) persist;
-# snapshot-sourced entries stay session-only. Best-effort write.
-func _mods_meta_sidecar_store(mod_id: int) -> void:
-	_mods_mws_meta_saved_at[mod_id] = int(Time.get_unix_time_from_system())
+# Stamp `key` as freshly fetched and rewrite the sidecar from the memo. Only
+# keys with a saved_at stamp (real detail fetches) persist; snapshot-sourced
+# entries stay session-only. Best-effort write.
+func _mods_meta_sidecar_store(key: String) -> void:
+	_mods_meta_saved_at[key] = int(Time.get_unix_time_from_system())
 	var out := {}
-	for id_v in _mods_mws_meta_saved_at:
-		var d: Variant = _mods_mws_meta_by_id.get(id_v, {})
+	for k in _mods_meta_saved_at:
+		var d: Variant = _mods_meta_by_key.get(k, {})
 		if d is Dictionary and not (d as Dictionary).is_empty():
-			out[str(id_v)] = {
+			out[str(k)] = {
 				"mod": d,
-				"saved_at": int(_mods_mws_meta_saved_at[id_v]),
+				"saved_at": int(_mods_meta_saved_at[k]),
 			}
 	DirAccess.make_dir_recursive_absolute(_MODS_META_SIDECAR_PATH.get_base_dir())
 	var f := FileAccess.open(_MODS_META_SIDECAR_PATH, FileAccess.WRITE)
@@ -3741,14 +3769,14 @@ func _mods_meta_sidecar_store(mod_id: int) -> void:
 	f.store_string(JSON.stringify(out))
 	f.close()
 
-# Paint ModWorkshop meta onto the current Mods-tab row for mod_id, resolved
-# via _mods_meta_nodes at paint time (nodes captured at fetch start may be
-# freed by a rebuild). No entry = memoize only. Idempotent per row: the
-# author line is added once (node-name guard).
-func _mods_apply_mws_meta(mod_id: int, data: Dictionary) -> void:
-	# One workshop id can back several rows (.vmz copy + dev-folder copy),
-	# so the mapping holds a list of row-node dicts.
-	var rows_v: Variant = _mods_meta_nodes.get(mod_id)
+# Paint host meta onto the current Mods-tab rows for `key`, resolved via
+# _mods_meta_nodes at paint time (nodes captured at fetch start may be freed
+# by a rebuild). No entry = memoize only. Idempotent per row: the author
+# line is added once (node-name guard).
+func _mods_apply_host_meta(key: String, data: Dictionary) -> void:
+	# One host mod can back several rows (.vmz copy + dev-folder copy), so
+	# the mapping holds a list of row-node dicts.
+	var rows_v: Variant = _mods_meta_nodes.get(key)
 	if not (rows_v is Array):
 		return
 	for nodes_v in (rows_v as Array):
@@ -3761,32 +3789,31 @@ func _mods_apply_mws_meta(mod_id: int, data: Dictionary) -> void:
 		var thumb_v: Variant = nodes.get("thumb")
 		if is_instance_valid(thumb_v) and thumb_v is TextureRect:
 			var thumb_rect: TextureRect = thumb_v
-			var thumb_record: Variant = data.get("thumbnail")
-			if thumb_record is Dictionary:
+			var image_v: Variant = data.get("thumbnail")
+			if image_v is Dictionary and str((image_v as Dictionary).get("url", "")) != "":
 				# Leave the caption in place; _set_thumb_ready clears it when
 				# a texture actually lands.
-				_browse_load_thumbnail_async(thumb_rect, thumb_record)
+				_browse_load_thumbnail_async(thumb_rect, image_v)
 			else:
-				# On MWS but no thumbnail record -- say so.
+				# Hosted, but no image -- say so.
 				_set_thumb_failed(thumb_rect, false)
 		var col_v: Variant = nodes.get("name_col")
 		if is_instance_valid(col_v) and col_v is VBoxContainer:
 			var name_col: VBoxContainer = col_v
-			if not name_col.has_node("MwsAuthorLabel"):
-				var user_dict: Dictionary = data.get("user", {}) if data.get("user") is Dictionary else {}
-				var author := str(user_dict.get("name", ""))
+			if not name_col.has_node("HostAuthorLabel"):
+				var author := str(data.get("author_name", ""))
 				if author != "":
 					var author_lbl := _make_sub_label("by " + author, COL_TEXT_DIM, "")
-					author_lbl.name = "MwsAuthorLabel"
+					author_lbl.name = "HostAuthorLabel"
 					name_col.add_child(author_lbl)
 					name_col.move_child(author_lbl, 1)  # right under the name
 
 # Paint the "load failed" overlay for a mod whose meta fetch failed outright.
-# Same paint-time lookup as _mods_apply_mws_meta, so a rebuild mid-fetch is
-# safe. Only call when no memoized data exists for the id -- a failed soft
+# Same paint-time lookup as _mods_apply_host_meta, so a rebuild mid-fetch is
+# safe. Only call when no memoized data exists for the key -- a failed soft
 # refresh must not caption an already-painted texture.
-func _mods_paint_meta_failed(mod_id: int) -> void:
-	var rows_v: Variant = _mods_meta_nodes.get(mod_id)
+func _mods_paint_meta_failed(key: String) -> void:
+	var rows_v: Variant = _mods_meta_nodes.get(key)
 	if not (rows_v is Array):
 		return
 	for nodes_v in (rows_v as Array):
@@ -3796,93 +3823,101 @@ func _mods_paint_meta_failed(mod_id: int) -> void:
 		if is_instance_valid(thumb_v) and thumb_v is TextureRect:
 			_set_thumb_failed(thumb_v as TextureRect, true)
 
-# Serialized background meta fetches: parallel per-row mws_get_mod calls at
-# window open could drain the guest 90 req/min budget. Ids queue here; one
-# drain loop fetches sequentially and stops while a rate cooldown is armed
-# (the per-id 60s retry window lets a later rebuild re-enqueue).
-var _mods_meta_fetch_queue: Array[int] = []
+# Serialized background meta fetches: parallel per-row detail calls at
+# window open could drain a host's guest rate budget. Refs queue here; one
+# drain loop fetches sequentially and skips a host while its cooldown is
+# armed (the per-key 60s retry window lets a later rebuild re-enqueue).
+var _mods_meta_fetch_queue: Array[Dictionary] = []
 var _mods_meta_fetch_active := false
 
-func _mods_meta_fetch_enqueue(mod_id: int) -> void:
-	# No dedupe needed: _mods_mws_meta_retry_at is armed before the enqueue,
-	# so the same id can't queue twice within its retry window.
-	_mods_meta_fetch_queue.append(mod_id)
+func _mods_meta_fetch_enqueue(ref: Dictionary) -> void:
+	# No dedupe needed: _mods_meta_retry_at is armed before the enqueue, so
+	# the same key can't queue twice within its retry window.
+	_mods_meta_fetch_queue.append(ref)
 	if _mods_meta_fetch_active:
 		return
 	_mods_meta_fetch_active = true
 	while not _mods_meta_fetch_queue.is_empty():
-		if mws_rate_cooldown_seconds() > 0:
-			# Don't spend the recovery window on background meta.
-			_mods_meta_fetch_queue.clear()
-			break
-		var next_id: int = int(_mods_meta_fetch_queue.pop_front())
-		var fetched: Variant = await mws_get_mod(next_id)
+		var next: Dictionary = _mods_meta_fetch_queue.pop_front()
+		var provider := str(next["provider"])
+		var cooling := host_rate_cooldown_seconds(provider) > 0
+		if provider == HOST_MODWORKSHOP and mws_rate_cooldown_seconds() > 0:
+			cooling = true
+		if cooling:
+			# Don't spend the recovery window on background meta. Other
+			# hosts' entries still drain.
+			continue
+		var key := host_ref_key(next)
+		var res := await host_get_mod(next)
 		var fetch_ok := false
-		if fetched is Dictionary:
-			var obj: Variant = (fetched as Dictionary).get("data", fetched)
-			if obj is Dictionary and not (obj as Dictionary).is_empty():
-				fetch_ok = true
-				_mods_mws_meta_by_id[next_id] = obj
-				# Persist real fetches; paint-time lookup is safe even if the
-				# row is gone by now.
-				_mods_meta_sidecar_store(next_id)
-				_mods_apply_mws_meta(next_id, obj)
+		if res["ok"] and res["data"] is Dictionary and _mods_meta_record_complete(res["data"]):
+			fetch_ok = true
+			_mods_meta_by_key[key] = res["data"]
+			# Persist real fetches; paint-time lookup is safe even if the
+			# row is gone by now.
+			_mods_meta_sidecar_store(key)
+			_mods_apply_host_meta(key, res["data"])
 		if not fetch_ok:
 			# Cold-path failure: caption the cell "load failed". A failed
 			# soft refresh keeps its already-painted memoized texture.
-			var memo_v: Variant = _mods_mws_meta_by_id.get(next_id)
+			var memo_v: Variant = _mods_meta_by_key.get(key)
 			if not (memo_v is Dictionary) or (memo_v as Dictionary).is_empty():
-				_mods_paint_meta_failed(next_id)
+				_mods_paint_meta_failed(key)
 	_mods_meta_fetch_active = false
 
-# Populate an installed mod row's MWS thumbnail + author and stash the mod
-# object for the name link's detail dialog. Memo-first (sidecar-seeded), then
-# the Browse snapshot, then a queued by-id fetch. Best-effort throughout;
-# painting resolves the row's current nodes at paint time.
-func _mods_load_mws_meta(mod_id: int) -> void:
+# Populate an installed mod row's host thumbnail + author and stash the
+# record for the name link's detail dialog. Memo-first (sidecar-seeded),
+# then the Browse snapshot, then a queued by-ref fetch. Best-effort
+# throughout; painting resolves the row's current nodes at paint time.
+func _mods_load_host_meta(ref: Dictionary) -> void:
+	var key := host_ref_key(ref)
+	if key == "":
+		return
 	_mods_meta_sidecar_load()
-	var data: Dictionary = _mods_mws_meta_by_id.get(mod_id, {})
+	var data: Dictionary = _mods_meta_by_key.get(key, {})
 	if not data.is_empty():
 		# Memoized: paint the row synchronously so it doesn't sit gray while
-		# an in-flight fetch for the same id finishes.
-		_mods_apply_mws_meta(mod_id, data)
+		# an in-flight fetch for the same key finishes.
+		_mods_apply_host_meta(key, data)
 		# Soft refresh: a sidecar entry older than a day re-fetches in the
 		# background. saved_at == 0 means session-sourced (snapshot); those
 		# never soft-refresh.
-		var saved_at := int(_mods_mws_meta_saved_at.get(mod_id, 0))
+		var saved_at := int(_mods_meta_saved_at.get(key, 0))
 		if saved_at <= 0 \
 				or int(Time.get_unix_time_from_system()) - saved_at < _MODS_META_REFRESH_SEC:
 			return
 		# Same retry window as the cold path; the queue serializes the fetch.
-		if Time.get_ticks_msec() < int(_mods_mws_meta_retry_at.get(mod_id, 0)):
+		if Time.get_ticks_msec() < int(_mods_meta_retry_at.get(key, 0)):
 			return
-		_mods_mws_meta_retry_at[mod_id] = Time.get_ticks_msec() + 60000
-		_mods_meta_fetch_enqueue(mod_id)
+		_mods_meta_retry_at[key] = Time.get_ticks_msec() + 60000
+		_mods_meta_fetch_enqueue(ref)
 		return
 	# Skip if a recent attempt failed or is still queued/in flight; the retry
 	# window is armed before the enqueue so racing rebuilds share one request.
-	if Time.get_ticks_msec() < int(_mods_mws_meta_retry_at.get(mod_id, 0)):
+	if Time.get_ticks_msec() < int(_mods_meta_retry_at.get(key, 0)):
 		return
-	_mods_mws_meta_retry_at[mod_id] = Time.get_ticks_msec() + 60000
-	data = _mods_cached_summary_by_id(mod_id)
+	_mods_meta_retry_at[key] = Time.get_ticks_msec() + 60000
+	data = _mods_cached_summary(ref)
 	if data.is_empty():
 		# Cold path: no memo, no snapshot -- queue the network fetch (see
 		# _mods_meta_fetch_enqueue for why not inline).
-		_mods_meta_fetch_enqueue(mod_id)
+		_mods_meta_fetch_enqueue(ref)
 		return
 	# Snapshot hit: memo for the session only.
-	_mods_mws_meta_by_id[mod_id] = data
-	_mods_apply_mws_meta(mod_id, data)
+	_mods_meta_by_key[key] = data
+	_mods_apply_host_meta(key, data)
 
-# Click handler for a Mods-row MWS name link: opens the Browse detail dialog
-# once the async load has filled `holder`; until then (or offline) it says so
+# Click handler for a Mods-row name link: opens the Browse detail dialog once
+# the async load has filled `holder`; until then (or offline) it says so
 # instead of opening an empty dialog.
-func _open_mods_mws_detail(holder: Dictionary) -> void:
-	if holder.has("data"):
-		_show_browse_mod_detail_dialog(holder["data"], func(_d, _b): pass)
+func _open_mods_host_detail(holder: Dictionary, ref: Dictionary) -> void:
+	var data_v: Variant = holder.get("data")
+	if data_v is Dictionary and _mods_meta_record_complete(data_v):
+		_show_browse_mod_detail_dialog(data_v, func(_d, _b): pass)
 	else:
-		_show_accept_dialog("ModWorkshop details",
-				"Still loading this mod's ModWorkshop page (or it's unavailable offline). Try again in a moment.",
+		var host := host_display_name(str(ref.get("provider", "")))
+		_show_accept_dialog(host + " details",
+				"Still loading this mod's " + host + " page (or it's unavailable offline). Try again in a moment.",
 				"Close", 380)
 
 func build_mods_tab(tabs: TabContainer) -> Control:
@@ -4610,6 +4645,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	# Hoisted once per build: _dependency_display_for_id's fallback rebuilds
 	# this map per call, O(rows x deps x mods) per keystroke without this.
 	var dep_names_by_id := _entries_by_mod_id(_ui_mod_entries)
+	var persisted_sources := _get_persisted_mod_sources()
 	for entry in _ui_mod_entries:
 		if not _mods_entry_visible(entry):
 			continue
@@ -4622,17 +4658,17 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		check.custom_minimum_size.x = 30
 		row.add_child(check)
 
-		# MWS info column: async thumbnail + author line + name click-through
-		# to the Browse detail dialog. Non-MWS mods keep the same-width cell
-		# so the name column stays aligned.
-		var row_cfg: ConfigFile = entry.get("cfg")
-		var row_mws_id := _entry_mws_id(row_cfg)
-		var mws_holder: Dictionary = {}
+		# Host info column: async thumbnail + author line + name click-through
+		# to the Browse detail dialog. Mods with no host source keep the
+		# same-width cell so the name column stays aligned.
+		var row_ref := _entry_host_ref(entry, persisted_sources)
+		var row_key := host_ref_key(row_ref)
+		var meta_holder: Dictionary = {}
 		var thumb_ref: TextureRect = null
 		# Every row gets a real thumbnail cell captioned "no thumbnail" from
 		# the start; a texture arriving later clears the caption.
 		var thumb_rect := _make_thumb_cell(row, Vector2(96, 54), true, true)
-		if row_mws_id > 0:
+		if row_key != "":
 			thumb_ref = thumb_rect
 
 		var name_col := VBoxContainer.new()
@@ -4640,10 +4676,10 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		name_col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		row.add_child(name_col)
 
-		# name_ctrl: clickable for MWS mods, plain Label otherwise; both take
-		# the enabled/blocked font-color overrides below.
+		# name_ctrl: clickable for hosted mods, plain Label otherwise; both
+		# take the enabled/blocked font-color overrides below.
 		var name_ctrl: Control
-		if row_mws_id > 0:
+		if row_key != "":
 			# Flat Button (not LinkButton) so clip_text keeps a long name from
 			# forcing a horizontal scrollbar; hover color is the click cue.
 			var name_lnk := Button.new()
@@ -4653,22 +4689,22 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			name_lnk.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 			name_lnk.alignment = HORIZONTAL_ALIGNMENT_LEFT
 			name_lnk.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			name_lnk.tooltip_text = str(entry["mod_name"]) + "  --  click for ModWorkshop details"
+			name_lnk.tooltip_text = str(entry["mod_name"]) + "  --  click for " + host_display_name(str(row_ref["provider"])) + " details"
 			name_lnk.add_theme_color_override("font_color", COL_OK if entry["enabled"] else COL_TEXT_DIM)
 			name_lnk.add_theme_color_override("font_hover_color", COL_TEXT_HI)
 			name_col.add_child(name_lnk)
-			name_lnk.pressed.connect(_open_mods_mws_detail.bind(mws_holder))
+			name_lnk.pressed.connect(_open_mods_host_detail.bind(meta_holder, row_ref))
 			# Register the row's live nodes before kicking the meta load so
 			# paints resolve to current nodes. Appended, not assigned:
-			# several rows can share one workshop id.
-			var meta_rows: Array = _mods_meta_nodes.get(row_mws_id, [])
+			# several rows can share one host mod.
+			var meta_rows: Array = _mods_meta_nodes.get(row_key, [])
 			meta_rows.append({
 				"thumb": thumb_ref,
 				"name_col": name_col,
-				"holder": mws_holder,
+				"holder": meta_holder,
 			})
-			_mods_meta_nodes[row_mws_id] = meta_rows
-			_mods_load_mws_meta(row_mws_id)
+			_mods_meta_nodes[row_key] = meta_rows
+			_mods_load_host_meta(row_ref)
 			name_ctrl = name_lnk
 		else:
 			var name_lbl := Label.new()
@@ -4960,6 +4996,83 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	margin.add_child(outer)
 	return margin
 
+# ----- Browse: source-neutral helpers ---------------------------------------
+
+# Installed mods keyed by host_ref_key (see _entry_host_ref for where a
+# mod's host comes from). Last-wins on duplicates.
+func _browse_install_map() -> Dictionary:
+	var out: Dictionary = {}
+	var persisted: Dictionary = _get_persisted_mod_sources()
+	for entry in _ui_mod_entries:
+		var key := host_ref_key(_entry_host_ref(entry, persisted))
+		if key != "":
+			out[key] = entry
+	return out
+
+
+# Read a counter off a ModSummary that may have been through a JSON round
+# trip (the landing snapshot), where every int comes back as a float.
+func _browse_metric(row: Dictionary, key: String) -> int:
+	var v: Variant = row.get(key, -1)
+	if v is int:
+		return v
+	if v is float:
+		return int(v)
+	return -1
+
+
+# Offline grace for the Browse landing, per host: the last fully populated
+# set of landing sections, kept in memory and written through to disk so a
+# first launch offline still shows something behind a cached-results banner.
+# Lives under user://mws_cache/, which modpacks.gd deny-lists, so a pack
+# cannot plant a fake landing.
+var _browse_landing_snapshots: Dictionary = {}
+const _BROWSE_LANDING_CACHE_DIR := "user://mws_cache"
+
+func _browse_landing_snapshot_path(provider: String) -> String:
+	return _BROWSE_LANDING_CACHE_DIR.path_join("landing_" + provider.validate_filename() + ".json")
+
+func _browse_landing_snapshot_store(provider: String, sections: Array) -> void:
+	var snap := {"sections": sections, "saved_at_unix": int(Time.get_unix_time_from_system())}
+	_browse_landing_snapshots[provider] = snap
+	DirAccess.make_dir_recursive_absolute(_BROWSE_LANDING_CACHE_DIR)
+	var path := _browse_landing_snapshot_path(provider)
+	# Write-then-rename so a crash mid-write cannot truncate the live copy.
+	var tmp := path + ".tmp"
+	var f := FileAccess.open(tmp, FileAccess.WRITE)
+	if f == null:
+		return
+	var wrote := f.store_string(JSON.stringify(snap))
+	var werr := f.get_error()
+	f.close()
+	if not wrote or werr != OK:
+		DirAccess.remove_absolute(tmp)
+		return
+	DirAccess.rename_absolute(tmp, path)
+
+func _browse_landing_snapshot(provider: String) -> Dictionary:
+	if _browse_landing_snapshots.has(provider):
+		return _browse_landing_snapshots[provider]
+	var path := _browse_landing_snapshot_path(provider)
+	if not FileAccess.file_exists(path):
+		return {}
+	var f := FileAccess.open(path, FileAccess.READ)
+	if f == null:
+		return {}
+	var parsed: Variant = JSON.parse_string(f.get_as_text())
+	f.close()
+	if not (parsed is Dictionary):
+		return {}
+	var snap: Dictionary = parsed
+	if not (snap.get("sections") is Array):
+		return {}
+	var saved_v: Variant = snap.get("saved_at_unix", 0)
+	if not (saved_v is int or saved_v is float) or int(saved_v) <= 0:
+		return {}
+	_browse_landing_snapshots[provider] = snap
+	return snap
+
+
 func build_browse_tab(tabs: TabContainer) -> Control:
 	var margin := _make_tab_margin()
 
@@ -4967,97 +5080,95 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	container.add_theme_constant_override("separation", SP_M)
 	margin.add_child(container)
 
-	# Shared mutable state. Lambdas capture primitives by VALUE in GDScript;
-	# routing through a Dictionary lets all the closures (search/sort/category
-	# handlers, load-more, do_get) read and mutate the same fields. "discover"
-	# mode hits popular-and-latest; any user input flips to "filter" mode which
-	# uses the paginated list_mods endpoint.
+	# Shared mutable state. Lambdas capture locals by VALUE, so everything the
+	# closures below read and write goes through this Dictionary. Per-host
+	# view records live under "views": a sort key or category chosen on one
+	# host never exists in another host's record, so it cannot leak.
+	var providers: PackedStringArray = host_browse_providers()
 	var state := {
-		"mode": "discover",
-		"query": "",
-		"sort": "bumped_at",
-		# featured: true while the sort dropdown sits on item 0 ("Featured",
-		# the curated landing). The empty-input handlers key on THIS flag --
-		# not on sort == "bumped_at", so "Recently updated" is a real sort
-		# that routes through the filter fetch like every other sort.
-		"featured": true,
-		"category_id": 0,
-		"next_page": 1,
-		"has_more": false,
-		# fetch_seq: monotonic counter incremented at the START of every list
-		# fetch (discover or filter). Each fetch captures its own seq, then
-		# checks it after await; if state["fetch_seq"] has advanced, a newer
-		# fetch is in flight and this one's result must NOT render. Without
-		# this guard, rapid sort/category clicks let the slowest response win
-		# whichever finishes last, so the UI shows results that don't match
-		# the dropdown's current value.
+		"provider": providers[0] if providers.size() > 0 else HOST_MODWORKSHOP,
+		"views": {},
+		# Monotonic per fetch; a completion whose seq is stale must not render.
 		"fetch_seq": 0,
-		# downloading_id: mws_id currently being downloaded. -1 = idle.
-		# Singletons (not concurrent) because the temp-file + collect rebuild
-		# would race; additional Get clicks land in download_queue and run
-		# sequentially after the current one finishes.
-		"downloading_id": -1,
-		# download_queue: Array of {mod_data, get_btn} dicts awaiting their
-		# turn. on_get drains this FIFO once the current download completes.
+		# host_ref_key of the download in flight, "" when idle. Downloads run
+		# one at a time; extra clicks queue.
+		"downloading_key": "",
 		"download_queue": [],
-		# queue_failures / queue_done_total: per-batch failure report. A failed
-		# item's status line is synchronously overwritten while the queue
-		# drains (next item's "Downloading...", then the success re-fetch), so
-		# failures accumulate here and are summarized once the queue empties.
 		"queue_failures": [],
 		"queue_done_total": 0,
-		# categories_loaded / categories_loading: the category dropdown is
-		# populated by a one-shot fetch at tab build. These gate the retry
-		# paths (banner Retry, next successful list fetch) so the dropdown can
-		# recover from a failed first fetch without ever double-populating.
-		"categories_loaded": false,
-		"categories_loading": false,
+		"queue_any_success": false,
 	}
 
-	# -- Toolbar: search + sort + category --
+	var make_view := func(provider: String) -> Dictionary:
+		var sorts: Array = host_sorts(provider)
+		var first: Dictionary = sorts[0] if not sorts.is_empty() else {}
+		var has_sections := not host_sections(provider).is_empty()
+		return {
+			"mode": "discover" if has_sections else "filter",
+			"query": "",
+			"sort_key": str(first.get("key", "")),
+			"sort_field": str(first.get("row_field", "")),
+			"sort_label": str(first.get("label", "")),
+			# true while the sort menu rests on the curated landing item.
+			"featured": has_sections,
+			"category_ref": "",
+			"category_name": "",
+			"cursor": "",
+			"has_more": false,
+			"loaded_rows": [],
+			"shown_count": 0,
+			"categories_loaded": false,
+			"categories_loading": false,
+		}
+	var view := func() -> Dictionary:
+		var p := str(state["provider"])
+		var views: Dictionary = state["views"]
+		if not views.has(p):
+			views[p] = make_view.call(p)
+		return views[p]
+
+	# -- Toolbar: source, search, sort, category --
 	var toolbar := HBoxContainer.new()
 	toolbar.add_theme_constant_override("separation", SP_M)
 	container.add_child(toolbar)
 
+	# The source switcher goes first because it scopes everything to its
+	# right. Built from host_browse_providers(), never host_providers(): a
+	# link-out host like Nexus must not appear in a listing control.
+	var provider_dropdown := OptionButton.new()
+	for p in providers:
+		provider_dropdown.add_item(host_display_name(p))
+		provider_dropdown.set_item_metadata(provider_dropdown.item_count - 1, p)
+	provider_dropdown.visible = providers.size() > 1
+	provider_dropdown.custom_minimum_size.y = CTRL_H
+	toolbar.add_child(provider_dropdown)
+	_wire_hint(provider_dropdown, "Which mod site to browse.")
+
 	var search_input := LineEdit.new()
-	search_input.placeholder_text = "Search mods..."
 	search_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	search_input.custom_minimum_size.x = 200
 	search_input.custom_minimum_size.y = CTRL_H
-	# The API 422s on a query over 150 chars, which the non-2xx handling would
-	# report as a connection problem no retry could fix. Stop it at the input.
-	search_input.max_length = MWS_QUERY_MAX_LEN
 	toolbar.add_child(search_input)
 
 	var sort_dropdown := OptionButton.new()
-	# Index -> API sort enum. Item 0 "Featured" is NOT a sort: it represents
-	# the curated Popular+Latest discover landing. It still maps to bumped_at
-	# in sort_keys so a search typed while Featured is selected has a sane
-	# sort. The real sorts follow; search honors the chosen sort (no
-	# best_match override).
-	sort_dropdown.add_item("Featured")
-	sort_dropdown.add_item("Recently updated")
-	sort_dropdown.add_item("Most downloaded")
-	sort_dropdown.add_item("Most liked")
-	sort_dropdown.add_item("Most viewed")
-	sort_dropdown.add_item("Newest")
-	var sort_keys := ["bumped_at", "bumped_at", "downloads", "likes", "views", "published_at"]
-	# Explicit, not incidental: the resting label is the Featured landing.
-	sort_dropdown.select(0)
 	toolbar.add_child(sort_dropdown)
 
 	var category_dropdown := OptionButton.new()
 	category_dropdown.add_item("All categories")
-	category_dropdown.set_item_metadata(0, 0)  # category_id 0 = no filter
+	category_dropdown.set_item_metadata(0, "")
 	toolbar.add_child(category_dropdown)
 
 	# OptionButton popups are sub-Windows; the launcher's always_on_top leaves
-	# them stranded behind the main window unless they are explicitly raised.
-	# Theme assignment is also explicit because theme inheritance does not
-	# always cross Window boundaries in Godot 4. Same fix the profile_opt
-	# dropdown applies in build_mods_tab. Unfolded rather than looped because
-	# iterating over an Array literal makes the loop variable untyped Variant
-	# and `var popup := dd.get_popup()` then fails type inference at parse time.
+	# them behind the main window unless raised, and theme inheritance does
+	# not always cross Window boundaries. Unfolded: iterating an Array literal
+	# makes the loop variable an untyped Variant and get_popup() then fails
+	# type inference at parse time.
+	var provider_popup := provider_dropdown.get_popup()
+	provider_popup.always_on_top = true
+	provider_popup.transient = true
+	if _ui_window != null and _ui_window.theme != null:
+		provider_popup.theme = _ui_window.theme
+
 	var sort_popup := sort_dropdown.get_popup()
 	sort_popup.always_on_top = true
 	sort_popup.transient = true
@@ -5070,13 +5181,48 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	if _ui_window != null and _ui_window.theme != null:
 		cat_popup.theme = _ui_window.theme
 
+	# Controls are built once; switching hosts only toggles visibility and
+	# repopulates items, so no signal is ever reconnected and focus survives.
+	# Capabilities that are off HIDE their control: a disabled control would
+	# promise "later", and these mean "this host does not do that".
+	var apply_provider_controls := func(provider: String):
+		var caps: Dictionary = host_caps(provider)
+		var v: Dictionary = view.call()
+		search_input.visible = bool(caps["search"])
+		search_input.max_length = host_limit(provider, "query_max_len", 150)
+		search_input.placeholder_text = "Search " + host_display_name(provider) + "..."
+		search_input.text = str(v["query"])
+		sort_dropdown.clear()
+		var has_sections := not host_sections(provider).is_empty()
+		if has_sections:
+			# Item 0 is the curated landing, not a sort; its metadata key is "".
+			sort_dropdown.add_item("Featured")
+			sort_dropdown.set_item_metadata(0, {"key": "", "row_field": "", "label": ""})
+		for opt_v in host_sorts(provider):
+			var opt: Dictionary = opt_v
+			sort_dropdown.add_item(str(opt.get("label", "")))
+			sort_dropdown.set_item_metadata(sort_dropdown.item_count - 1, opt)
+		sort_dropdown.visible = sort_dropdown.item_count > 0
+		var sel := 0
+		if not bool(v["featured"]):
+			for i in sort_dropdown.item_count:
+				var md: Variant = sort_dropdown.get_item_metadata(i)
+				if md is Dictionary and str((md as Dictionary).get("key", "")) != "" \
+						and str((md as Dictionary).get("key", "")) == str(v["sort_key"]):
+					sel = i
+					break
+		if sort_dropdown.item_count > 0:
+			sort_dropdown.select(sel)
+		category_dropdown.clear()
+		category_dropdown.add_item("All categories")
+		category_dropdown.set_item_metadata(0, "")
+		category_dropdown.visible = bool(caps["categories"])
+
 	container.add_child(HSeparator.new())
 
-	# Offline-grace banner slot. show_browse_banner (below) fills it when a
-	# list fetch fails (cached results / unreachable / rate limit) and the
-	# success paths clear it. Hidden when empty so it costs no height on the
-	# happy path; it sits above the list as a sibling, never over it, so it
-	# cannot block interaction with rendered rows.
+	# Offline-grace banner slot. show_browse_banner fills it when a fetch
+	# fails and the success paths clear it. A sibling above the list, never
+	# over it, so it cannot block rendered rows.
 	var banner_slot := VBoxContainer.new()
 	banner_slot.visible = false
 	container.add_child(banner_slot)
@@ -5086,27 +5232,18 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	status_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
 	container.add_child(status_lbl)
 
-	# Every Browse state change routes through here so the color always matches
-	# the message: COL_ACCENT in-progress, COL_OK success, COL_ERR failure,
-	# COL_TEXT_DIM neutral or meta.
-	#
-	# Override font_color rather than modulate, which would also
-	# tint child icons. Assigned before every closure that calls it, so
-	# by-value capture picks up a real Callable.
+	# Every Browse state change routes through here so the color always
+	# matches the message: COL_ACCENT in progress, COL_OK success, COL_ERR
+	# failure, COL_TEXT_DIM neutral.
 	var set_status := func(text: String, color: Color):
 		if not is_instance_valid(status_lbl):
 			return
 		status_lbl.text = text
 		status_lbl.add_theme_color_override("font_color", color)
 
-	# Mirror of set_status for downloads started from the detail dialog. The
-	# dialog is exclusive and covers the tab's status label, so failures and
-	# already-downloading/queued notices were invisible behind it. The
-	# dialog's button just flipped back to "Download" with no explanation.
-	# _show_browse_mod_detail_dialog tags its Download button with an
-	# in-dialog status Label (meta "browse_dialog_status"); when the button
-	# that initiated the download carries that tag, render the message there
-	# too. No-op for list-row buttons and freed dialogs.
+	# Mirror of set_status for downloads started from the detail dialog, which
+	# is exclusive and covers the tab's status label. The dialog tags its
+	# Download button with an in-dialog Label (meta "browse_dialog_status").
 	var set_dl_status := func(get_btn: Variant, text: String, color: Color):
 		if not is_instance_valid(get_btn):
 			return
@@ -5121,15 +5258,22 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			lbl.tooltip_text = text
 			lbl.add_theme_color_override("font_color", color)
 
-	# Failure reason for the offline banner. The 429 cooldown owns the copy
-	# while it is armed (rate-limited is actionable-by-waiting, unreachable
-	# is not); otherwise the generic unreachable line.
+	# Seconds left on this host's rate-limit cooldown. ModWorkshop traffic
+	# still arms the old client's cooldown as well, so read both.
+	var cooldown_seconds := func(provider: String) -> int:
+		var secs := host_rate_cooldown_seconds(provider)
+		if provider == HOST_MODWORKSHOP:
+			secs = maxi(secs, mws_rate_cooldown_seconds())
+		return secs
+
+	# Failure reason for the banner: the cooldown owns the copy while it is
+	# armed (waiting is actionable), else the generic unreachable line.
 	var browse_fail_reason := func() -> String:
-		# Single source for the rate-limit sentence: mws_error_status() returns
-		# the "rate limit reached, try again in Ns" copy when a cooldown is armed
-		# and the unreachable line otherwise -- identical to the old inline
-		# duplicate, but now the wording can't drift from the status label's.
-		return mws_error_status("ModWorkshop is unreachable.")
+		var p := str(state["provider"])
+		var secs: int = cooldown_seconds.call(p)
+		if secs > 0:
+			return "%s rate limit reached. Try again in %ds." % [host_display_name(p), secs]
+		return host_display_name(p) + " is unreachable."
 
 	var clear_browse_banner := func():
 		if not is_instance_valid(banner_slot):
@@ -5138,17 +5282,9 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			child.queue_free()
 		banner_slot.visible = false
 
-	# Banner with a Retry action, built through the single banner builder.
-	# edge_color COL_ACCENT is a notice such as showing-cached-results, COL_ERR
-	# an error such as no-cached-data, matching the adjacent status label.
-	# saved_at_unix > 0 adds a "Last refreshed Xm ago" note in FS_META
-	# COL_TEXT_DIM.
-	#
-	# Retry re-runs the
-	# current view's fetch through `state`: this lambda is created before
-	# do_discover_fetch / do_filter_fetch are assigned, and lambdas capture
-	# locals by value at creation, so the state dictionary is the only route to
-	# their real bodies.
+	# Banner with a Retry action. Retry re-runs the current view's fetch
+	# through `state`, because this lambda is created before the fetch
+	# lambdas are assigned and captures would be empty Callables.
 	var show_browse_banner := func(text: String, saved_at_unix: int, edge_color: Color):
 		if not is_instance_valid(banner_slot):
 			return
@@ -5166,14 +5302,8 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		retry_btn.text = "Retry"
 		banner_row.add_child(retry_btn)
 		retry_btn.pressed.connect(func():
-			# The category dropdown's one-shot fetch may have failed in the
-			# same outage that raised this banner; Retry is the tab's recovery
-			# affordance, so repopulate it too (guarded no-op once loaded).
 			(state["fn_populate_categories"] as Callable).call()
-			if str(state["mode"]) == "discover":
-				(state["fn_discover_fetch"] as Callable).call()
-			else:
-				(state["fn_filter_fetch"] as Callable).call(false)
+			(state["fn_route"] as Callable).call()
 		)
 		banner_slot.add_child(banner["panel"])
 		banner_slot.visible = true
@@ -5183,10 +5313,8 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	container.add_child(scroll)
 
-	# Right margin clears the vertical scrollbar so the Get button on each row
-	# doesn't sit underneath it. ScrollContainer in Godot 4 lays content out
-	# at full width and OVERLAYS the scrollbar -- without this margin the
-	# rightmost pixels of every row hide behind it.
+	# Right margin clears the vertical scrollbar, which Godot 4 overlays on
+	# the content; without it every row's rightmost pixels hide behind it.
 	var list_wrap := MarginContainer.new()
 	list_wrap.add_theme_constant_override("margin_right", SP_XL)
 	list_wrap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -5201,117 +5329,76 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	load_more_btn.visible = false
 	container.add_child(load_more_btn)
 
-	# Map mws_id -> entry (or absent if not installed). Recomputed every
-	# render because re-discovery after a successful Get rewrites
-	# _ui_mod_entries; rows flip from Get -> enable-toggle next render
-	# without a UI close/reopen.
-	var compute_install_map := func() -> Dictionary:
-		var out: Dictionary = {}
-		for entry in _ui_mod_entries:
-			var cfg: ConfigFile = entry.get("cfg")
-			if cfg == null:
-				continue
-			var mws_id := _entry_mws_id(cfg)
-			if mws_id > 0:
-				out[mws_id] = entry
-		return out
-
-	# Forward declarations: on_get's success branch + queue processor re-
-	# render the current view to flip duplicate Get buttons, so the fetch
-	# callables must be in scope. Bodies are assigned below.
-	var do_discover_fetch: Callable
-	var do_filter_fetch: Callable
-
-	# Enable/disable toggle from the Browse row. Mutates the entry in
-	# _ui_mod_entries (Dictionary references), saves via _save_ui_config,
-	# rebuilds the Mods tab so its row reflects the change.
-	var on_toggle := func(mws_id: int, enabled: bool, check: CheckBox):
-		for entry in _ui_mod_entries:
-			var cfg: ConfigFile = entry.get("cfg")
-			if cfg == null:
-				continue
-			var entry_mws := _entry_mws_id(cfg)
-			if entry_mws <= 0 or entry_mws != mws_id:
-				continue
-			# Same content-mod guard as the Mods-tab checkbox: disabling a
-			# mod that registers game content can stop an existing save that
-			# uses it from loading. Confirm first; if the user backs out,
-			# revert the checkbox without re-firing toggled.
-			var live_entry: Dictionary = entry
-			if not enabled and bool(entry.get("has_registry", false)):
-				var ok: bool = await _confirm_disable_content_mod(str(entry.get("mod_name", "this mod")))
-				if not ok:
-					if is_instance_valid(check):
-						check.set_pressed_no_signal(true)
-					return
-				# The launcher window can close while the dialog is open;
-				# the controls may be freed. A rescan while the dialog was
-				# open (e.g. a queued download landing) replaces
-				# _ui_mod_entries with fresh dicts, so write the confirmed
-				# state to the live entry, not the orphaned capture.
-				live_entry = _live_entry_for_profile_key(str(entry.get("profile_key", "")), entry)
-			live_entry["enabled"] = enabled
-			_save_ui_config()
-			if is_instance_valid(tabs):
-				_rebuild_mods_tab(tabs)
-			set_status.call(("Enabled " if enabled else "Disabled ") + str(live_entry.get("mod_name", "?")) + " in profile " + _active_profile, COL_TEXT_DIM)
+	# Enable/disable toggle from a Browse row. Mutates the live entry, saves,
+	# and rebuilds the Mods tab so its row agrees.
+	var on_toggle := func(ref_key: String, enabled: bool, check: CheckBox):
+		var entry_v: Variant = _browse_install_map().get(ref_key)
+		if not (entry_v is Dictionary):
 			return
+		var entry: Dictionary = entry_v
+		# Disabling a mod that registers game content can stop an existing
+		# save from loading; confirm first, and revert the box on cancel.
+		var live_entry: Dictionary = entry
+		if not enabled and bool(entry.get("has_registry", false)):
+			var ok: bool = await _confirm_disable_content_mod(str(entry.get("mod_name", "this mod")))
+			if not ok:
+				if is_instance_valid(check):
+					check.set_pressed_no_signal(true)
+				return
+			# A rescan while the dialog was open replaces _ui_mod_entries, so
+			# write to the live entry, not the orphaned capture.
+			live_entry = _live_entry_for_profile_key(str(entry.get("profile_key", "")), entry)
+		live_entry["enabled"] = enabled
+		_save_ui_config()
+		if is_instance_valid(tabs):
+			_rebuild_mods_tab(tabs)
+		set_status.call(("Enabled " if enabled else "Disabled ") + str(live_entry.get("mod_name", "?")) + " in profile " + _active_profile, COL_TEXT_DIM)
 
-	# Forward decl so on_get + queue processor can reference each other.
 	var perform_download_for_item: Callable
-
 	perform_download_for_item = func(item: Dictionary):
 		var mod_data: Dictionary = item["mod_data"]
 		var get_btn = item.get("get_btn")
-		var mws_id := _json_int(mod_data, "id")
-		state["downloading_id"] = mws_id
+		var ref: Dictionary = mod_data["ref"]
+		var provider := str(ref["provider"])
+		var host := host_display_name(provider)
+		var key := host_ref_key(ref)
+		state["downloading_key"] = key
 		if is_instance_valid(get_btn):
 			get_btn.disabled = true
 			get_btn.text = "Downloading..."
 		var queue: Array = state["download_queue"]
 		var qsuffix := (" (" + str(queue.size()) + " queued)") if not queue.is_empty() else ""
-		set_status.call("Downloading " + str(mod_data.get("name", "?")) + qsuffix + "...", COL_ACCENT)
-		set_dl_status.call(get_btn, "Downloading " + str(mod_data.get("name", "?")) + "...", COL_ACCENT)
+		set_status.call("Downloading " + str(mod_data["name"]) + qsuffix + "...", COL_ACCENT)
+		set_dl_status.call(get_btn, "Downloading " + str(mod_data["name"]) + "...", COL_ACCENT)
 
-		# Rate-limit pause, same as the modpack apply loop: once a 429 arms
-		# the cooldown, every remaining queued item's metadata lookup would
-		# fail fast in milliseconds and the whole batch would mass-fail.
-		# Wait it out with a visible countdown instead; the Browse tab stays
-		# interactive (no modal here). Bail if the launcher closes mid-wait.
+		# Rate-limit pause: once a 429 arms the cooldown every queued item
+		# would fail fast in milliseconds. Wait it out with a countdown; the
+		# tab stays interactive. Bail if the launcher closes mid-wait.
 		var rate_waited := false
-		while mws_rate_cooldown_seconds() > 0:
+		while int(cooldown_seconds.call(provider)) > 0:
 			rate_waited = true
 			if not is_instance_valid(status_lbl) or get_tree() == null:
-				state["downloading_id"] = -1
+				state["downloading_key"] = ""
 				return
-			var wait_s := mws_rate_cooldown_seconds()
-			set_status.call("Rate limited by ModWorkshop -- resuming in %ds" % wait_s, COL_ACCENT)
-			set_dl_status.call(get_btn, "Rate limited by ModWorkshop -- resuming in %ds" % wait_s, COL_ACCENT)
+			var wait_s: int = cooldown_seconds.call(provider)
+			set_status.call("Rate limited by %s -- resuming in %ds" % [host, wait_s], COL_ACCENT)
+			set_dl_status.call(get_btn, "Rate limited by %s -- resuming in %ds" % [host, wait_s], COL_ACCENT)
 			await get_tree().create_timer(1.0).timeout
 		if rate_waited and is_instance_valid(status_lbl):
-			set_status.call("Downloading " + str(mod_data.get("name", "?")) + "...", COL_ACCENT)
-			set_dl_status.call(get_btn, "Downloading " + str(mod_data.get("name", "?")) + "...", COL_ACCENT)
+			set_status.call("Downloading " + str(mod_data["name"]) + "...", COL_ACCENT)
+			set_dl_status.call(get_btn, "Downloading " + str(mod_data["name"]) + "...", COL_ACCENT)
 
-		var result: Dictionary = await download_new_mod(mws_id)
-		state["downloading_id"] = -1
+		var result: Dictionary = await download_mod_from_ref(ref)
+		state["downloading_key"] = ""
 
-		# The launcher window can be closed (Launch / X) during the multi-second
-		# download -- Browse downloads pop no modal. Everything below touches
-		# freed nodes (status_lbl, the Browse list, the tab). The file already
-		# landed on disk inside download_new_mod, so just stop cleanly.
+		# The launcher can close during a multi-second download; the file is
+		# already on disk, so just stop touching freed nodes.
 		if not is_instance_valid(status_lbl):
 			return
 
-		# Count every completed item (success or failure) so the drain summary
-		# below can say "N of M downloads failed".
 		state["queue_done_total"] = int(state.get("queue_done_total", 0)) + 1
 
 		if bool(result.get("ok", false)):
-			# Remember that this batch installed at least one mod; the drain
-			# below keys the one-shot rescan and row sync on it. The full
-			# mods-dir rescan + Mods-tab rebuild happen at drain, not here:
-			# per-item they re-opened every installed archive and rebuilt the
-			# hidden Mods tab once per queued download.
 			state["queue_any_success"] = true
 			if is_instance_valid(get_btn):
 				get_btn.text = "Installed"
@@ -5322,38 +5409,24 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			if is_instance_valid(get_btn):
 				get_btn.disabled = false
 				get_btn.text = "Download"
-			# Error copy pattern: what happened + what to do
-			# next; fall back to the connection hint when the downloader gave
-			# no detail rather than saying "unknown".
 			var err_detail := str(result.get("error", "")).strip_edges()
 			if err_detail.is_empty():
 				err_detail = "Check your connection and try again."
-			var fail_line := "Could not download " + str(mod_data.get("name", "mod")) + ". " + err_detail
+			var fail_line := "Could not download " + str(mod_data["name"]) + ". " + err_detail
 			set_status.call(fail_line, COL_ERR)
 			set_dl_status.call(get_btn, fail_line, COL_ERR)
-			# Remember the failure: while a queued batch drains, the status
-			# line above is synchronously overwritten by the next item's
-			# "Downloading...", so the drain summary below is the only report
-			# of mid-batch casualties that survives.
-			(state["queue_failures"] as Array).append(str(mod_data.get("name", "mod")) + " (" + err_detail + ")")
+			# The status line is overwritten as the queue drains, so the
+			# batch summary below is the only surviving report.
+			(state["queue_failures"] as Array).append(str(mod_data["name"]) + " (" + err_detail + ")")
 
-		# Drain queue or settle the batch. Re-rendering frees button refs in
-		# the queue, so re-render only once the queue is empty. Otherwise
-		# subsequent items lose their "Queued" button state mid-flight.
-		#
-		# Call through `state`, not the captured locals. GDScript lambdas
-		# capture locals BY VALUE at creation time; this lambda was created
-		# before perform_download_for_item / do_discover_fetch /
-		# do_filter_fetch were assigned, so the captured copies are empty
-		# Callables. `state` is a Dictionary (reference type), so the bindings
-		# stored on it at the end of build_browse_tab are visible here.
+		# Drain the queue before re-rendering: a re-render frees the button
+		# refs still queued.
 		var remaining: Array = state["download_queue"]
 		if not remaining.is_empty():
 			var next_item: Dictionary = remaining.pop_front()
 			(state["fn_perform_download"] as Callable).call(next_item)
 			return
 
-		# Queue drained -- settle the whole batch at once.
 		var any_success := bool(state.get("queue_any_success", false))
 		var failures: Array = state["queue_failures"]
 		var batch_total := int(state.get("queue_done_total", 0))
@@ -5361,9 +5434,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		state["queue_failures"] = []
 		state["queue_done_total"] = 0
 
-		# One mods-dir rescan + hidden Mods-tab rebuild for the whole batch
-		# (previously per successful item. A main-thread stall proportional
-		# to installed-mod count, multiplied by the queue length).
+		# One rescan + Mods-tab rebuild for the whole batch.
 		if any_success:
 			_reload_entries_for_active_profile()
 			if is_instance_valid(tabs):
@@ -5371,33 +5442,17 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 
 		if failures.is_empty():
 			if any_success:
-				# Re-render only after an all-success batch. The re-fetch
-				# exists to flip duplicate Get buttons to Installed; after a
-				# failure it would synchronously overwrite the failure report
-				# with "Loading..." before it ever rendered a frame.
-				#
-				# Carry the scroll position across the re-render: the full
-				# re-render resets the ScrollContainer to the top. The fetch
-				# lambdas consume restore_scroll and re-apply it one frame
-				# after rendering.
+				# Re-render so duplicate rows flip to Installed; carry the
+				# scroll position across it.
 				if is_instance_valid(scroll):
 					state["restore_scroll"] = int(scroll.scroll_vertical)
-				if str(state["mode"]) == "discover":
-					(state["fn_discover_fetch"] as Callable).call()
-				else:
-					(state["fn_filter_fetch"] as Callable).call(false)
+				(state["fn_route"] as Callable).call()
 			return
 
-		# At least one item failed. Skip the re-fetch (its completion would
-		# wipe the failure report with "N popular, M latest"); sync duplicate
-		# rows of installed mods in place instead -- same mod can appear in
-		# popular and latest, so the failure text stays visible.
+		# At least one failure: keep the report on screen, sync installed
+		# rows in place instead of re-fetching.
 		if any_success and is_instance_valid(scroll):
 			_refresh_browse_installed_rows(scroll)
-		# Persistent batch summary: for a lone download the full error set
-		# above is already on screen and stays; for a real batch it names
-		# every failed mod, since only the LAST item's outcome survived the
-		# drain before.
 		if batch_total > 1:
 			var fail_strs := PackedStringArray()
 			for f_v in failures:
@@ -5406,17 +5461,16 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 
 	var on_get: Callable
 	on_get = func(mod_data: Dictionary, get_btn: Button):
-		var mws_id := _json_int(mod_data, "id")
-		if int(state["downloading_id"]) != -1:
-			# Another download is in flight. Queue this one (unless it's the
-			# same mod already in-flight or already queued -- silent dedup).
-			if int(state["downloading_id"]) == mws_id:
+		var key := host_ref_key(mod_data["ref"])
+		if str(state["downloading_key"]) != "":
+			if str(state["downloading_key"]) == key:
 				set_status.call("Already downloading this mod", COL_TEXT_DIM)
 				set_dl_status.call(get_btn, "Already downloading this mod", COL_TEXT_DIM)
 				return
 			var queue: Array = state["download_queue"]
 			for q_v in queue:
-				if int((q_v as Dictionary).get("mod_data", {}).get("id", 0)) == mws_id:
+				var q_data: Dictionary = (q_v as Dictionary).get("mod_data", {})
+				if q_data.has("ref") and host_ref_key(q_data["ref"]) == key:
 					set_status.call("Already queued", COL_TEXT_DIM)
 					set_dl_status.call(get_btn, "Already queued", COL_TEXT_DIM)
 					return
@@ -5424,445 +5478,408 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			if is_instance_valid(get_btn):
 				get_btn.disabled = true
 				get_btn.text = "Queued"
-			var queued_line := "Queued " + str(mod_data.get("name", "?")) + " (" + str(queue.size()) + " in queue)"
+			var queued_line := "Queued " + str(mod_data["name"]) + " (" + str(queue.size()) + " in queue)"
 			set_status.call(queued_line, COL_TEXT_DIM)
 			set_dl_status.call(get_btn, queued_line, COL_TEXT_DIM)
 			return
 		perform_download_for_item.call({"mod_data": mod_data, "get_btn": get_btn})
 
-	var render_mod_rows := func(mods: Array, append: bool):
+	# Empty-state copy. A near-empty catalog on a new host must not read as a
+	# broken loader, so point at the other source when there is one.
+	var empty_copy := func() -> String:
+		var v: Dictionary = view.call()
+		if str(v["query"]) != "" or str(v["category_ref"]) != "":
+			return "No results. Try a different search or category."
+		var p := str(state["provider"])
+		if providers.size() > 1:
+			var other := ""
+			for q in providers:
+				if q != p:
+					other = host_display_name(q)
+					break
+			return "No mods on %s yet. Pick %s in the source menu to browse there." % [host_display_name(p), other]
+		return "No mods on " + host_display_name(p) + " yet."
+
+	var render_mod_rows := func(rows: Array, append: bool):
+		var v: Dictionary = view.call()
 		if not append:
 			for child in list.get_children():
 				child.queue_free()
-			# Give this view the same heading treatment the landing's sections
-			# get. Sits above the empty state too, so "no results" still says
-			# what was searched for.
-			var cat_name := ""
-			if is_instance_valid(category_dropdown) and int(state["category_id"]) > 0:
-				cat_name = category_dropdown.get_item_text(category_dropdown.selected)
 			var hdr := Label.new()
-			hdr.text = _browse_results_header_text(
-				str(state["query"]), str(state["sort"]), cat_name)
+			var sort_label := "" if bool(v["featured"]) or not sort_dropdown.visible else str(v["sort_label"])
+			hdr.text = _browse_results_header_text(str(v["query"]), sort_label, str(v["category_name"]))
 			hdr.add_theme_font_size_override("font_size", FS_HEAD)
 			hdr.add_theme_color_override("font_color", COL_TEXT)
-			# A long search string must not widen the list and force a
-			# horizontal scrollbar.
 			hdr.clip_text = true
 			hdr.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 			hdr.tooltip_text = hdr.text
 			hdr.mouse_filter = Control.MOUSE_FILTER_PASS
 			list.add_child(hdr)
 			list.add_child(HSeparator.new())
-		var install_map: Dictionary = compute_install_map.call()
-		for mod_data in mods:
-			if not (mod_data is Dictionary):
+		var install_map: Dictionary = _browse_install_map()
+		for row_v in rows:
+			if not (row_v is Dictionary):
 				continue
-			var mws_id := _json_int(mod_data as Dictionary, "id")
-			var entry_or_null: Variant = install_map.get(mws_id)
-			list.add_child(_browse_render_mod_row(mod_data, entry_or_null, on_get, on_toggle))
+			var row: Dictionary = row_v
+			list.add_child(_browse_render_mod_row(row, install_map.get(host_ref_key(row["ref"])), on_get, on_toggle))
 			list.add_child(HSeparator.new())
 
+	var do_discover_fetch: Callable
+	var do_filter_fetch: Callable
+
+	# The curated landing: one list query per section the host declares,
+	# rendered under the section's title. Hosts without sections never come
+	# here (route() sends them to the plain listing).
 	do_discover_fetch = func():
-		# Stamp this fetch with a fresh seq so any earlier in-flight fetch's
-		# completion handler sees the mismatch and bails. Snapshot into a
-		# local `my_seq` because state["fetch_seq"] will keep advancing if
-		# the user clicks again before the await returns.
+		var provider := str(state["provider"])
+		var v: Dictionary = view.call()
+		var sections: Array = host_sections(provider)
+		if sections.is_empty():
+			(state["fn_filter_fetch"] as Callable).call(false)
+			return
 		state["fetch_seq"] = int(state["fetch_seq"]) + 1
 		var my_seq := int(state["fetch_seq"])
-		# Consume any pending scroll carry (set by the post-download
-		# re-render) up front so a failed or superseded fetch cannot leak it
-		# into a later user-initiated fetch.
 		var my_restore := -1
 		if state.has("restore_scroll"):
 			my_restore = int(state["restore_scroll"])
 			state.erase("restore_scroll")
-		state["mode"] = "discover"
-		# Rendering the landing means "Featured" is the truthful dropdown
-		# label; sync state + selection so clearing a search/category (or the
-		# initial fetch) never leaves a sort name over the curated view.
-		# OptionButton.select() does not emit item_selected, so no recursion.
-		state["featured"] = true
-		state["sort"] = "bumped_at"
-		if is_instance_valid(sort_dropdown) and sort_dropdown.selected != 0:
+		v["mode"] = "discover"
+		v["featured"] = true
+		if sort_dropdown.visible and sort_dropdown.selected != 0:
 			sort_dropdown.select(0)
-		state["next_page"] = 1
-		state["has_more"] = false
-		state.erase("loaded_rows")
+		v["cursor"] = ""
+		v["has_more"] = false
+		v["loaded_rows"] = []
 		load_more_btn.visible = false
 		load_more_btn.disabled = true
 		set_status.call("Loading...", COL_TEXT_DIM)
-		var data: Variant = await mws_get_popular_and_latest()
-		# Stale completion: another fetch started during the await.
-		# Newer fetch's render owns the UI; drop ours.
-		if int(state["fetch_seq"]) != my_seq:
-			return
+
+		var results: Array = []
+		var ok_count := 0
+		for sec_v in sections:
+			var sec: Dictionary = sec_v
+			var limit := int(sec.get("limit", 10))
+			var res := await host_list_mods(provider, {"sort_key": str(sec.get("sort_key", "")), "cursor": "", "limit": limit})
+			if int(state["fetch_seq"]) != my_seq:
+				return
+			if not res["ok"]:
+				continue
+			ok_count += 1
+			var rows: Array = (res["data"] as Dictionary)["rows"]
+			if limit > 0 and rows.size() > limit:
+				rows = rows.slice(0, limit)
+			results.append({"title": str(sec.get("title", "")), "rows": rows})
 		if not is_instance_valid(status_lbl):
 			return
-		# Offline grace: a failed live fetch falls back to the last-good
-		# snapshot (this session's or a previous launch's, via disk) and
-		# renders it behind a cached-results banner instead of leaving the
-		# tab empty. No snapshot -> the old failure status, plus the
-		# banner's Retry affordance so recovery doesn't need a tab switch.
+
 		var cached_at := 0
-		if not (data is Dictionary):
-			var snap: Dictionary = mws_discover_snapshot()
+		if ok_count == 0:
+			var snap := _browse_landing_snapshot(provider)
 			if snap.is_empty():
-				set_status.call(mws_error_status("Could not load mods. Check your connection and try again."), COL_ERR)
+				set_status.call(host_display_name(provider) + ": could not load mods. Check your connection and try again.", COL_ERR)
 				show_browse_banner.call(browse_fail_reason.call(), 0, COL_ERR)
 				return
-			data = snap["data"]
+			results = snap["sections"]
 			cached_at = int(snap["saved_at_unix"])
-		var popular: Array = (data as Dictionary).get("popular", [])
-		var latest: Array = (data as Dictionary).get("latest", [])
+		elif ok_count == sections.size():
+			# Only a complete landing is worth remembering; a partial one
+			# must not clobber an older complete snapshot.
+			_browse_landing_snapshot_store(provider, results)
+
 		for child in list.get_children():
 			child.queue_free()
-		var install_map: Dictionary = compute_install_map.call()
-		if not popular.is_empty():
-			var pop_hdr := Label.new()
-			# "this week" because the backing sort is ModWorkshop's
-			# weekly_score. The label must match the parameter.
-			pop_hdr.text = "Popular this week"
-			pop_hdr.add_theme_font_size_override("font_size", FS_HEAD)
-			pop_hdr.add_theme_color_override("font_color", COL_TEXT)
-			list.add_child(pop_hdr)
+		var install_map: Dictionary = _browse_install_map()
+		var total := 0
+		var first_section := true
+		for sec_v in results:
+			var sec: Dictionary = sec_v
+			var rows: Array = sec.get("rows", [])
+			if rows.is_empty():
+				continue
+			if not first_section:
+				var spacer := Control.new()
+				spacer.custom_minimum_size.y = SP_M
+				list.add_child(spacer)
+			first_section = false
+			var hdr := Label.new()
+			hdr.text = str(sec.get("title", ""))
+			hdr.add_theme_font_size_override("font_size", FS_HEAD)
+			hdr.add_theme_color_override("font_color", COL_TEXT)
+			list.add_child(hdr)
 			list.add_child(HSeparator.new())
-			for mod_data in popular:
-				if not (mod_data is Dictionary):
+			for row_v in rows:
+				if not (row_v is Dictionary):
 					continue
-				var mws_id := _json_int(mod_data as Dictionary, "id")
-				list.add_child(_browse_render_mod_row(mod_data, install_map.get(mws_id), on_get, on_toggle))
+				var row: Dictionary = row_v
+				list.add_child(_browse_render_mod_row(row, install_map.get(host_ref_key(row["ref"])), on_get, on_toggle))
 				list.add_child(HSeparator.new())
-		if not latest.is_empty():
-			var spacer := Control.new()
-			spacer.custom_minimum_size.y = SP_M
-			list.add_child(spacer)
-			var lat_hdr := Label.new()
-			lat_hdr.text = "Latest"
-			lat_hdr.add_theme_font_size_override("font_size", FS_HEAD)
-			lat_hdr.add_theme_color_override("font_color", COL_TEXT)
-			list.add_child(lat_hdr)
-			list.add_child(HSeparator.new())
-			for mod_data in latest:
-				if not (mod_data is Dictionary):
-					continue
-				var mws_id := _json_int(mod_data as Dictionary, "id")
-				list.add_child(_browse_render_mod_row(mod_data, install_map.get(mws_id), on_get, on_toggle))
-				list.add_child(HSeparator.new())
+				total += 1
 		if cached_at > 0:
 			show_browse_banner.call("Showing cached results. " + str(browse_fail_reason.call()), cached_at, COL_ACCENT)
 		else:
 			clear_browse_banner.call()
-			# A live fetch landing proves connectivity is back: recover a
-			# category dropdown whose one-shot populate failed earlier
-			# (guarded no-op once loaded). Snapshot fallback proves nothing,
-			# hence the live-only branch. Through `state`: this lambda was
-			# created before populate_categories was assigned.
+			# A live fetch proves connectivity: recover a category menu whose
+			# first populate failed (no-op once loaded).
 			(state["fn_populate_categories"] as Callable).call()
-		set_status.call("%d popular, %d latest" % [popular.size(), latest.size()], COL_TEXT_DIM)
-		# Restore the pre-refetch scroll position one frame later: the fresh
-		# rows have no layout yet on this frame, so setting scroll_vertical
-		# now would clamp against a zero-height list.
+		if total == 0:
+			set_status.call(empty_copy.call(), COL_TEXT_DIM)
+		else:
+			set_status.call("%d mods" % total, COL_TEXT_DIM)
 		if my_restore >= 0:
 			await get_tree().process_frame
 			if int(state["fetch_seq"]) == my_seq and is_instance_valid(scroll):
 				scroll.scroll_vertical = my_restore
 
 	do_filter_fetch = func(append: bool):
+		var provider := str(state["provider"])
+		var caps: Dictionary = host_caps(provider)
+		var v: Dictionary = view.call()
 		state["fetch_seq"] = int(state["fetch_seq"]) + 1
 		var my_seq := int(state["fetch_seq"])
-		# Same pending-scroll-carry consumption as do_discover_fetch.
 		var my_restore := -1
 		if state.has("restore_scroll"):
 			my_restore = int(state["restore_scroll"])
 			state.erase("restore_scroll")
-		state["mode"] = "filter"
-		var page: int = int(state["next_page"]) if append else 1
+		v["mode"] = "filter"
+		var cursor := str(v["cursor"]) if append else ""
 		if not append:
-			state["next_page"] = 1
-			state["has_more"] = false
+			v["cursor"] = ""
+			v["has_more"] = false
 			load_more_btn.visible = false
-		# Disable Load more for the duration of the fetch so a rapid second
-		# click can't enqueue a redundant page request. The completion path
-		# re-derives visible/disabled from has_more.
 		load_more_btn.disabled = true
 		set_status.call("Loading..." if not append else "Loading more...", COL_TEXT_DIM)
-		# Search honors the chosen sort (default "Recently bumped" = bumped_at)
-		# instead of silently switching to best_match relevance. best_match pinned
-		# an exact-name match (e.g. an outdated "Ryhon Item Spawner") to the top
-		# regardless of upload date; a user searching wants most-recent first.
-		var sort: String = str(state["sort"])
-		var data: Variant = await mws_list_mods(str(state["query"]), sort, int(state["category_id"]), page)
+
+		var res := await host_list_mods(provider, {
+			"query": str(v["query"]),
+			"sort_key": str(v["sort_key"]),
+			"category_ref": str(v["category_ref"]),
+			"cursor": cursor,
+		})
 		if int(state["fetch_seq"]) != my_seq:
 			return
 		if not is_instance_valid(status_lbl):
 			return
-		if not (data is Dictionary):
-			set_status.call(mws_error_status("Could not search. Check your connection and try again."), COL_ERR)
-			# Only the discover landing has an offline snapshot (filter/search
-			# results are never cached), so a failed search gets the Retry
-			# banner but no cached rows. Append failures skip the banner: the
-			# already-rendered pages stay on screen and the re-enabled Load
-			# more button below IS the retry affordance.
+		if not res["ok"]:
+			set_status.call(host_error_message(provider, res), COL_ERR)
+			# Only the landing has an offline snapshot; a failed search gets
+			# the Retry banner. Append failures keep the rendered pages and the
+			# re-enabled Load more button is the retry.
 			if not append:
 				show_browse_banner.call(browse_fail_reason.call(), 0, COL_ERR)
-			load_more_btn.disabled = not bool(state["has_more"])
+			load_more_btn.disabled = not bool(v["has_more"])
 			return
-		var rows: Array = _mws_data_rows(data)
-		# Accumulate every page fetched for this query/filter so the sort and
-		# render below operate on the full loaded set; a fresh (non-append)
-		# fetch resets the accumulator. Dedup by id: a mod bumped between page
-		# fetches shifts server pages and can arrive twice.
+		var page: Dictionary = res["data"]
+		var rows: Array = page["rows"]
+		# Accumulate every page so the sort below runs on the full loaded set.
+		# Dedup by ref: a mod bumped between page fetches can arrive twice.
 		if append:
-			var acc: Array = state.get("loaded_rows", [])
+			var acc: Array = v["loaded_rows"]
 			var seen := {}
 			for r in acc:
-				if r is Dictionary:
-					seen[_json_int(r as Dictionary, "id")] = true
+				seen[host_ref_key((r as Dictionary)["ref"])] = true
 			for r in rows:
-				if not (r is Dictionary) or not seen.has(_json_int(r as Dictionary, "id")):
+				if not seen.has(host_ref_key((r as Dictionary)["ref"])):
 					acc.append(r)
 			rows = acc
-		state["loaded_rows"] = rows
-		# MWS ignores the sort param when a text query is present. It always
-		# returns relevance order, so an outdated exact-name match pins to the
-		# top no matter the dropdown. Re-sort client-side by the selected field.
-		# Sorting the accumulated set keeps multi-page results globally sorted
-		# (each page sorted in isolation used to per-page sawtooth on Load more).
-		# ISO date strings compare chronologically.
-		if str(state["query"]) != "":
-			var sort_key := str(state["sort"])
-			var numeric := sort_key == "downloads" or sort_key == "likes" or sort_key == "views"
+		v["loaded_rows"] = rows
+		# Some hosts ignore `sort` when a query is set. Re-sort client-side on
+		# the field the adapter named for the chosen sort.
+		if bool(caps["sort_ignored_with_query"]) and str(v["query"]) != "" and str(v["sort_field"]) != "":
+			var field := str(v["sort_field"])
 			rows.sort_custom(func(a, b):
-				if not (a is Dictionary):
-					return false
-				if not (b is Dictionary):
-					return true
-				if numeric:
-					# .get() default only covers absent keys; a present-but-null
-					# counter would make int(null) a runtime error. JSON numbers
-					# parse as float, so accept int/float and coerce junk to 0.
-					var av: Variant = (a as Dictionary).get(sort_key)
-					var bv: Variant = (b as Dictionary).get(sort_key)
-					var ai: int = int(av) if (av is int or av is float) else 0
-					var bi: int = int(bv) if (bv is int or bv is float) else 0
-					return ai > bi
-				return str((a as Dictionary).get(sort_key, "")) > str((b as Dictionary).get(sort_key, ""))
+				var av: Variant = (a as Dictionary).get(field)
+				var bv: Variant = (b as Dictionary).get(field)
+				if (av is int or av is float) and (bv is int or bv is float):
+					return int(av) > int(bv)
+				return str(av) > str(bv)
 			)
-		# .get()'s default only covers an ABSENT key; a present-but-null (or
-		# non-dict) meta would crash the typed assignment. Same guard shape
-		# as _mws_data_rows applies to the sibling data field.
-		var meta_v: Variant = (data as Dictionary).get("meta")
-		var meta: Dictionary = meta_v if meta_v is Dictionary else {}
-		# Same hazard one level down: meta's own fields can be present-but-
-		# null, and int(null) is a runtime error. _json_int type-checks.
-		var current_page: int = _json_int(meta, "current_page", page)
-		var last_page: int = _json_int(meta, "last_page", current_page)
-		var total: int = _json_int(meta, "total", rows.size())
-		state["next_page"] = current_page + 1
-		state["has_more"] = current_page < last_page
+		v["cursor"] = str(page["next_cursor"])
+		v["has_more"] = bool(page["has_more"])
 		clear_browse_banner.call()
-		# Successful live fetch: recover the category dropdown if its one-shot
-		# populate failed earlier (guarded no-op once loaded).
 		(state["fn_populate_categories"] as Callable).call()
-		# Full re-render of the accumulated set. On Load more this replaces
-		# the old per-page append -- required for the global re-sort above to
-		# actually show, so carry the current scroll position across the
-		# rebuild (restored one frame later below, same as the pending-carry
-		# path). A pending carry, if any, wins: it predates this fetch.
 		if append and my_restore < 0 and is_instance_valid(scroll):
 			my_restore = int(scroll.scroll_vertical)
 		render_mod_rows.call(rows, false)
-		# Count from the data, not the scene tree. render_mod_rows clears a
-		# non-append view with queue_free(), which Godot defers to end-of-frame,
-		# so list.get_child_count() in this same synchronous block still counts
-		# the just-freed old rows -- inflating "N of M mods" and (worse) keeping
-		# shown_so_far > 0 so the new "No results" empty state never appears.
-		# `rows` is the full accumulated set here, so no append arithmetic.
-		state["shown_count"] = rows.size()
-		var shown_so_far: int = int(state["shown_count"])
-		# Empty state as an invitation, not a bare zero.
-		if shown_so_far == 0:
-			set_status.call("No results. Try a different search or category.", COL_TEXT_DIM)
+		# Count from the data: queue_free() is deferred, so the just-freed rows
+		# would still be counted by the scene tree in this frame.
+		v["shown_count"] = rows.size()
+		var total := int(page["total"])
+		if rows.is_empty():
+			set_status.call(empty_copy.call(), COL_TEXT_DIM)
+		elif bool(caps["total_count"]) and total >= 0:
+			set_status.call("%d of %d mods" % [rows.size(), total], COL_TEXT_DIM)
 		else:
-			set_status.call("%d of %d mods" % [shown_so_far, total], COL_TEXT_DIM)
-		load_more_btn.visible = bool(state["has_more"])
-		load_more_btn.disabled = not bool(state["has_more"])
-		# Restore the pre-refetch scroll position one frame later: the fresh
-		# rows have no layout yet on this frame, so setting scroll_vertical
-		# now would clamp against a zero-height list.
+			set_status.call("%d mods" % rows.size(), COL_TEXT_DIM)
+		load_more_btn.visible = bool(v["has_more"])
+		load_more_btn.disabled = not bool(v["has_more"])
 		if my_restore >= 0:
 			await get_tree().process_frame
 			if int(state["fetch_seq"]) == my_seq and is_instance_valid(scroll):
 				scroll.scroll_vertical = my_restore
 
-	# Debounce: Godot 4 LineEdit's text_changed fires per keystroke. A timer
-	# armed on each keystroke and only the timeout actually queries the API
-	# means a 300ms typing pause before the network kicks in -- well within
-	# the 90 req/min/IP rate budget even when the user types fast.
+	# One definition of "show the landing or the listing?" for every handler.
+	var wants_discover := func() -> bool:
+		var v: Dictionary = view.call()
+		return str(v["query"]) == "" and str(v["category_ref"]) == "" and bool(v["featured"]) \
+				and not host_sections(str(state["provider"])).is_empty()
+	var route := func():
+		if wants_discover.call():
+			(state["fn_discover_fetch"] as Callable).call()
+		else:
+			(state["fn_filter_fetch"] as Callable).call(false)
+
+	# Debounce: text_changed fires per keystroke; only the timeout queries.
 	var search_debounce := Timer.new()
 	search_debounce.one_shot = true
 	search_debounce.wait_time = 0.3
 	container.add_child(search_debounce)
 	search_debounce.timeout.connect(func():
-		if str(state["query"]) == "" and int(state["category_id"]) == 0 and bool(state["featured"]):
-			do_discover_fetch.call()
-		else:
-			do_filter_fetch.call(false)
+		route.call()
 	)
-
 	search_input.text_changed.connect(func(new_text: String):
-		state["query"] = new_text.strip_edges()
+		var v: Dictionary = view.call()
+		v["query"] = new_text.strip_edges()
 		search_debounce.stop()
 		search_debounce.start()
 	)
 	search_input.text_submitted.connect(func(_t: String):
 		search_debounce.stop()
-		# Same routing as the debounce timeout: Enter in an EMPTY box while
-		# Featured is selected must (re)render the curated landing. An
-		# unconditional filter fetch here would show a flat sorted list under
-		# a "Featured" dropdown label.
-		if str(state["query"]) == "" and int(state["category_id"]) == 0 and bool(state["featured"]):
-			do_discover_fetch.call()
-		else:
-			do_filter_fetch.call(false)
+		route.call()
 	)
 
 	sort_dropdown.item_selected.connect(func(idx: int):
-		state["sort"] = sort_keys[idx] if idx >= 0 and idx < sort_keys.size() else "bumped_at"
-		# Item 0 = "Featured" (the curated landing); any real sort -- including
-		# "Recently updated" (bumped_at) -- routes through list_mods with the
-		# chosen sort, even with an empty query.
-		state["featured"] = idx == 0
-		if str(state["query"]) == "" and int(state["category_id"]) == 0 and bool(state["featured"]):
-			do_discover_fetch.call()
-		else:
-			do_filter_fetch.call(false)
+		var v: Dictionary = view.call()
+		var md: Variant = sort_dropdown.get_item_metadata(idx)
+		var opt: Dictionary = md if md is Dictionary else {}
+		var key := str(opt.get("key", ""))
+		v["featured"] = key == ""
+		if key != "":
+			v["sort_key"] = key
+			v["sort_field"] = str(opt.get("row_field", ""))
+			v["sort_label"] = str(opt.get("label", ""))
+		route.call()
 	)
 
 	category_dropdown.item_selected.connect(func(idx: int):
-		var cid_var = category_dropdown.get_item_metadata(idx)
-		state["category_id"] = int(cid_var) if cid_var != null else 0
-		if str(state["query"]) == "" and int(state["category_id"]) == 0 and bool(state["featured"]):
-			do_discover_fetch.call()
-		else:
-			do_filter_fetch.call(false)
+		var v: Dictionary = view.call()
+		var md: Variant = category_dropdown.get_item_metadata(idx)
+		v["category_ref"] = str(md) if md != null else ""
+		v["category_name"] = category_dropdown.get_item_text(idx) if idx > 0 else ""
+		route.call()
+	)
+
+	provider_dropdown.item_selected.connect(func(idx: int):
+		var p := str(provider_dropdown.get_item_metadata(idx))
+		if p == str(state["provider"]):
+			return
+		state["provider"] = p
+		var v: Dictionary = view.call()
+		# Categories are per host and the menu was just cleared; refetch.
+		v["categories_loaded"] = false
+		apply_provider_controls.call(p)
+		clear_browse_banner.call()
+		(state["fn_populate_categories"] as Callable).call()
+		route.call()
 	)
 
 	load_more_btn.pressed.connect(func():
 		do_filter_fetch.call(true)
 	)
 
-	# Populate categories asynchronously after the tab is visible. Each entry's
-	# metadata holds the API category_id; the visible label is just the name.
-	# Skip child categories for the first pass. A flat list of 40 items in a
-	# dropdown is already a stretch UX-wise, so surface only top-level
-	# (parent_id == null) and rely on search to find sub-category mods.
+	# Category menu, per host. Retry-able: the banner Retry and every
+	# successful list fetch re-invoke this until it lands, and the two flags
+	# keep a re-invocation from stacking a second fetch or double-populating.
 	var populate_categories := func():
-		# Retry-able, not one-shot: the banner Retry and every successful list
-		# fetch re-invoke this until it lands, so a failed first fetch
-		# (offline launch, rate-limit cooldown) no longer leaves an
-		# "All categories"-only dropdown for the whole session. The two flags
-		# make re-invocation safe: loaded = success is permanent for the
-		# session, loading = don't stack a second in-flight fetch (which
-		# would double-populate the items on a race).
-		if bool(state.get("categories_loaded", false)) or bool(state.get("categories_loading", false)):
+		var provider := str(state["provider"])
+		var v: Dictionary = view.call()
+		if not bool(host_caps(provider)["categories"]):
 			return
-		state["categories_loading"] = true
-		var data: Variant = await mws_get_categories()
-		# Bookkeeping BEFORE the validity guard so a freed dropdown can't
-		# leave the loading flag stuck true forever.
-		state["categories_loading"] = false
+		if bool(v["categories_loaded"]) or bool(v["categories_loading"]):
+			return
+		v["categories_loading"] = true
+		var res := await host_list_categories(provider)
+		v["categories_loading"] = false
 		if not is_instance_valid(category_dropdown):
 			return
-		if not (data is Dictionary):
-			# Leave categories_loaded false so the next Retry / successful
-			# list fetch attempts again.
+		# The user switched hosts mid-flight; these are not the menu's items.
+		if str(state["provider"]) != provider:
 			return
-		var rows: Array = _mws_data_rows(data)
-		for cat in rows:
-			if not (cat is Dictionary):
+		if not res["ok"]:
+			return
+		var cats: Array = res["data"]
+		var ids := {}
+		for c in cats:
+			ids[str((c as Dictionary)["id"])] = true
+		category_dropdown.clear()
+		category_dropdown.add_item("All categories")
+		category_dropdown.set_item_metadata(0, "")
+		for c in cats:
+			var cd: Dictionary = c
+			# A hierarchical host lists only its top level here (a parent that
+			# is itself a category); a flat host's group names are not ids,
+			# so every entry shows.
+			if str(cd["parent_id"]) != "" and ids.has(str(cd["parent_id"])):
 				continue
-			var cd: Dictionary = cat
-			# Only top-level for now.
-			if cd.get("parent_id") != null:
+			if str(cd["name"]) == "":
 				continue
-			var cat_name := str(cd.get("name", ""))
-			var cat_id := int(cd.get("id", 0))
-			if cat_name.is_empty() or cat_id == 0:
-				continue
-			category_dropdown.add_item(cat_name)
+			category_dropdown.add_item(str(cd["name"]))
 			var idx := category_dropdown.item_count - 1
-			category_dropdown.set_item_metadata(idx, cat_id)
-		state["categories_loaded"] = true
-	populate_categories.call()
+			category_dropdown.set_item_metadata(idx, str(cd["id"]))
+			if str(cd["id"]) == str(v["category_ref"]):
+				category_dropdown.select(idx)
+		v["categories_loaded"] = true
 
-	# Bind the forward-referenced lambdas onto `state` so the
-	# perform_download lambda (created before these were assigned) can reach
-	# their real values by reference at call time. See the capture note in
-	# perform_download_for_item's queue-drain block.
+	# Bind the forward-referenced lambdas onto `state` so closures created
+	# earlier reach their real values at call time.
 	state["fn_perform_download"] = perform_download_for_item
 	state["fn_discover_fetch"] = do_discover_fetch
 	state["fn_filter_fetch"] = do_filter_fetch
 	state["fn_populate_categories"] = populate_categories
+	state["fn_route"] = route
 
-	# Initial fetch is the curated landing page.
-	do_discover_fetch.call()
+	apply_provider_controls.call(str(state["provider"]))
+	populate_categories.call()
+	route.call()
 
 	return margin
 
 
 # Refresh the baked-at-render-time state of Browse rows in place. The
 # "Enabled in <profile>" checkboxes bake the profile name and enabled state
-# when rendered, and profile switches, modpack apply/unload, and Mods-tab
-# edits all change that state behind the Browse tab's back (the tab has no
-# rebuild path by design. Its content is network-fetched). Called from the
-# tab_changed listener when Browse is shown. In-place (no re-fetch, no
-# re-render) so search text, caret, scroll position, and loaded pages all
-# survive. Rows are found via the browse_mws_id meta tag set at render time.
+# when rendered, and profile switches, modpack apply/unload and Mods-tab
+# edits all change that behind the tab's back. In place, so search text,
+# caret, scroll and loaded pages survive. Rows are found via the
+# browse_ref_key meta tag set at render time.
 func _refresh_browse_installed_rows(root: Node) -> void:
 	if root == null or not is_instance_valid(root):
 		return
-	# mws_id -> entry for every installed mod that declares one. Last-wins,
-	# matching compute_install_map in build_browse_tab.
-	var by_id: Dictionary = {}
-	for entry in _ui_mod_entries:
-		var cfg: ConfigFile = entry.get("cfg")
-		if cfg == null:
-			continue
-		var mws_id := _entry_mws_id(cfg)
-		if mws_id > 0:
-			by_id[mws_id] = entry
+	var by_key: Dictionary = _browse_install_map()
 	var stack: Array = [root]
 	while not stack.is_empty():
 		var node: Node = stack.pop_back()
 		for child in node.get_children():
 			stack.push_back(child)
-		if not node.has_meta("browse_mws_id"):
+		if not node.has_meta("browse_ref_key"):
 			continue
-		var entry_v: Variant = by_id.get(int(node.get_meta("browse_mws_id")))
+		var entry_v: Variant = by_key.get(str(node.get_meta("browse_ref_key")))
 		if node is CheckBox:
 			var cb := node as CheckBox
 			if entry_v is Dictionary:
 				cb.disabled = false
 				cb.text = "Enabled in " + _active_profile
 				cb.tooltip_text = "Toggle this mod in profile: " + _active_profile + "."
-				# set_pressed_no_signal: this is a display sync, not a user
-				# toggle -- firing toggled here would re-save the profile.
+				# Display sync, not a user toggle: no signal, no profile save.
 				cb.set_pressed_no_signal(bool((entry_v as Dictionary).get("enabled", false)))
 			else:
-				# The mod was uninstalled behind the tab's back (Mods-tab Remove).
-				# Leave the row but make it inert: an enabled checkbox here toggles
-				# nothing (on_toggle finds no matching entry and falls through) yet
-				# still flips visually, falsely claiming a now-uninstalled mod was
-				# enabled/disabled in the profile.
+				# Uninstalled behind the tab's back. Keep the row, make it inert:
+				# a live checkbox would flip visually while toggling nothing.
 				cb.set_pressed_no_signal(false)
 				cb.disabled = true
 				cb.text = "Removed"
 				cb.tooltip_text = "This mod is no longer installed. Click its name and use Download to install it again."
 		elif node is Button and entry_v is Dictionary:
-			# A Download button whose mod is now installed (modpack apply or
-			# retry landed it). Skip in-flight buttons (Downloading/Queued,
-			# both disabled); the download path re-renders on its own.
+			# A Download button whose mod arrived some other way. Skip in-flight
+			# buttons (Downloading/Queued, both disabled).
 			var btn := node as Button
 			if not btn.disabled:
 				btn.text = "Installed"
@@ -5887,65 +5904,48 @@ func _json_truthy(v: Variant) -> bool:
 	return (v is bool and v) or ((v is int or v is float) and v != 0)
 
 
-# Render one row in the Browse tab list. Pulls from a ModSummary dict (live
-# response shape from /games/{id}/mods or /games/{id}/popular-and-latest).
-# Thumbnail loads asynchronously via _browse_load_thumbnail_async; the row
-# returns immediately with a gray placeholder. installed=true swaps the Get
-# button for a disabled "Installed" indicator -- update detection (delta vs
-# MWS' current version) lives in the Updates tab for now and isn't surfaced
-# here in this iteration.
-# Title for a filtered / searched / category Browse view. The curated landing
-# titles its own two sections ("Popular this week" / "Latest") but every other
-# view rendered a bare row list, so the only heading in the whole tab belonged
-# to Popular. It read as if that were a permanent title rather than one
-# section among several.
-#
-# Derived from the sort key actually sent to the API, not the dropdown index:
-# picking a category while the dropdown still reads "Featured" sends bumped_at,
-# and the header has to describe the results, not the control.
-func _browse_results_header_text(query: String, sort_key: String, category_name: String) -> String:
-	var sort_labels := {
-		"bumped_at": "Recently updated",
-		"downloads": "Most downloaded",
-		"likes": "Most liked",
-		"views": "Most viewed",
-		"published_at": "Newest",
-	}
+# Title for a filtered, searched or category view. The landing titles its
+# own sections; every other view gets one heading so "no results" still says
+# what was searched for. sort_label arrives resolved from the host's own sort
+# list; "" means the standing "All mods" listing.
+func _browse_results_header_text(query: String, sort_label: String, category_name: String) -> String:
 	var q := query.strip_edges()
 	var head: String = ("Results for \"" + q + "\"") if not q.is_empty() \
-			else str(sort_labels.get(sort_key, "Results"))
+			else (sort_label.strip_edges() if not sort_label.strip_edges().is_empty() else "All mods")
 	var cat := category_name.strip_edges()
 	if not cat.is_empty():
 		head += " in " + cat
 	return head
 
-func _browse_render_mod_row(mod_data: Dictionary, install_entry: Variant, on_get: Callable, on_toggle: Callable) -> Control:
+
+# Render one Browse row from a ModSummary record. Every field is present by
+# contract (host_types.gd), so this indexes directly. The thumbnail loads
+# asynchronously; the row returns immediately with a captioned placeholder.
+func _browse_render_mod_row(summary: Dictionary, install_entry: Variant, on_get: Callable, on_toggle: Callable) -> Control:
+	var ref: Dictionary = summary["ref"]
+	var provider := str(ref["provider"])
+	var caps: Dictionary = host_caps(provider)
+	var ref_key := host_ref_key(ref)
+
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", SP_L)
 
-	# Same cell the Mods tab builds, so a Browse mod with no image reads
-	# "no thumbnail" exactly like an installed one instead of sitting as a
-	# bare gray panel.
+	# Same cell the Mods tab builds, so a mod with no image reads "no
+	# thumbnail" like an installed one instead of a bare panel.
 	var thumb_rect := _make_thumb_cell(row, Vector2(96, 54))
-
-	var thumb_record = mod_data.get("thumbnail")
-	if thumb_record is Dictionary:
-		_browse_load_thumbnail_async(thumb_rect, thumb_record)
+	_browse_load_thumbnail_async(thumb_rect, summary["thumbnail"])
 
 	var info_col := VBoxContainer.new()
 	info_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	info_col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	row.add_child(info_col)
 
-	# Mod name doubles as the click target for the detail modal. Flat Button,
-	# not LinkButton: LinkButton has no clip_text/overrun support, so its min
-	# width equals the full text width and one long ModWorkshop name inflated
-	# the row past the list, forcing a horizontal scrollbar and pushing the
-	# Download/Enabled control out of view. Same recipe as the Mods-tab name
-	# link (hover color is the click cue in place of underline).
+	# The name is the click target for the detail dialog. A flat Button, not
+	# LinkButton: LinkButton cannot clip, so one long name inflated the row
+	# past the list and pushed the Download control out of view.
 	var name_lnk := Button.new()
 	name_lnk.flat = true
-	name_lnk.text = str(mod_data.get("name", "?"))
+	name_lnk.text = str(summary["name"])
 	name_lnk.clip_text = true
 	name_lnk.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	name_lnk.alignment = HORIZONTAL_ALIGNMENT_LEFT
@@ -5954,82 +5954,85 @@ func _browse_render_mod_row(mod_data: Dictionary, install_entry: Variant, on_get
 	name_lnk.add_theme_color_override("font_color", COL_TEXT)
 	name_lnk.add_theme_color_override("font_hover_color", COL_TEXT_HI)
 	name_lnk.tooltip_text = name_lnk.text
-	var captured_data_for_detail := mod_data
+	var captured_summary := summary
 	name_lnk.pressed.connect(func():
-		_show_browse_mod_detail_dialog(captured_data_for_detail, on_get)
+		_show_browse_mod_detail_dialog(captured_summary, on_get)
 	)
 	info_col.add_child(name_lnk)
 
-	var user_dict: Dictionary = mod_data.get("user", {}) if mod_data.get("user") is Dictionary else {}
-	var category_dict: Dictionary = mod_data.get("category", {}) if mod_data.get("category") is Dictionary else {}
-	var author: String = str(user_dict.get("name", ""))
-	var version: String = str(mod_data.get("version", "")).strip_edges()
-	var downloads: int = _json_int(mod_data, "downloads")
-	var likes: int = _json_int(mod_data, "likes")
-	var category: String = str(category_dict.get("name", ""))
-	var bumped_raw: String = str(mod_data.get("bumped_at", ""))
-	var bumped_short: String = _format_iso_datetime(bumped_raw)
-
+	# Meta line. A metric chip renders only when the host reports that metric
+	# and the value is real: -1 means "not reported", and a 0 is a real zero.
+	var metrics: PackedStringArray = caps["metrics"]
 	var meta_parts := PackedStringArray()
-	if author != "":
-		meta_parts.append("by " + author)
-	if version != "":
-		meta_parts.append("v" + version)
-	meta_parts.append(str(downloads) + " downloads")
-	if likes > 0:
+	if str(summary["author_name"]) != "":
+		meta_parts.append("by " + str(summary["author_name"]))
+	if str(summary["version"]) != "":
+		meta_parts.append("v" + str(summary["version"]))
+	var downloads := _browse_metric(summary, "downloads")
+	if metrics.has("downloads") and downloads >= 0:
+		meta_parts.append(str(downloads) + " downloads")
+	var likes := _browse_metric(summary, "likes")
+	if metrics.has("likes") and likes > 0:
 		meta_parts.append(str(likes) + " likes")
-	if category != "":
-		meta_parts.append(category)
-	if bumped_short != "":
-		meta_parts.append("updated " + bumped_short)
+	var views := _browse_metric(summary, "views")
+	if metrics.has("views") and views > 0:
+		meta_parts.append(str(views) + " views")
+	if str(summary["category_name"]) != "":
+		meta_parts.append(str(summary["category_name"]))
+	var updated_short := _format_iso_datetime(str(summary["updated_at"]))
+	if updated_short != "":
+		meta_parts.append("updated " + updated_short)
 
 	var meta_lbl := Label.new()
 	meta_lbl.text = " - ".join(meta_parts)
 	meta_lbl.add_theme_font_size_override("font_size", FS_META)
 	meta_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
 	meta_lbl.clip_text = true
-	# Ellipsis + hover tooltip.
 	meta_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	meta_lbl.tooltip_text = meta_lbl.text
 	meta_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
 	info_col.add_child(meta_lbl)
 
-	# Installed mods get an enable toggle bound to the active profile. The
-	# checkbox's existence implies install (un-installed mods show a Download
-	# button instead, never both), and the label embeds the profile name so
-	# users know what they're toggling.
-	var installed := install_entry is Dictionary
-	if installed:
+	# Installed mods get an enable toggle bound to the active profile; the
+	# checkbox's existence implies install. Others get Download when the host
+	# can serve a file, and a quiet label when it cannot: nothing inert may
+	# look pressable, since every other disabled Download here means
+	# "in flight" or "installed".
+	if install_entry is Dictionary:
 		var entry: Dictionary = install_entry as Dictionary
 		var enable_check := CheckBox.new()
 		enable_check.text = "Enabled in " + _active_profile
 		enable_check.button_pressed = bool(entry.get("enabled", false))
 		enable_check.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		# Tag with the mws id so _refresh_browse_installed_rows can re-derive
-		# this baked-at-render-time state when the tab is shown again.
-		enable_check.set_meta("browse_mws_id", _json_int(mod_data, "id"))
-		var captured_mws_id := _json_int(mod_data, "id")
+		enable_check.set_meta("browse_ref_key", ref_key)
+		var captured_key := ref_key
 		var captured_check := enable_check
 		enable_check.toggled.connect(func(on: bool):
-			on_toggle.call(captured_mws_id, on, captured_check)
+			on_toggle.call(captured_key, on, captured_check)
 		)
 		row.add_child(enable_check)
 		_wire_hint(enable_check, "Toggle this mod in profile: " + _active_profile + ".")
-	else:
+	elif bool(caps["resolve_file"]):
 		var get_btn := Button.new()
 		get_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		get_btn.text = "Download"
-		# Tag with the mws id so _refresh_browse_installed_rows can flip this
-		# to Installed if the mod arrives behind the tab's back (modpack
-		# apply, retry downloads).
-		get_btn.set_meta("browse_mws_id", _json_int(mod_data, "id"))
-		var captured := mod_data
+		get_btn.set_meta("browse_ref_key", ref_key)
+		var captured := summary
 		var captured_btn := get_btn
 		get_btn.pressed.connect(func():
 			on_get.call(captured, captured_btn)
 		)
 		row.add_child(get_btn)
-		_wire_hint(get_btn, "Download this mod from ModWorkshop.")
+		_wire_hint(get_btn, "Download this mod from " + host_display_name(provider) + ".")
+	else:
+		var browse_only := Label.new()
+		browse_only.text = "Browse only"
+		browse_only.add_theme_font_size_override("font_size", FS_META)
+		browse_only.add_theme_color_override("font_color", COL_TEXT_DIM)
+		browse_only.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		browse_only.mouse_filter = Control.MOUSE_FILTER_PASS
+		row.add_child(browse_only)
+		_wire_hint(browse_only, host_display_name(provider) + " does not provide downloads through the loader.")
 
 	return row
 
@@ -6153,69 +6156,57 @@ func _thumb_texture_cache_store(fn: String, tex: Texture2D) -> void:
 	_thumb_texture_cache[fn] = tex
 
 
-# Async thumbnail loader. Cache layout: user://mws_cache/thumbs/<storage_filename>.
-# Filenames from MWS are opaque/immutable per upload, so the storage filename
-# IS the cache key. A thumbnail replaced by the author gets a different file
-# name, so a fresh fetch happens naturally. No TTL, no manual cache busting.
-# Failures surface via _set_thumb_failed so the cell doesn't stay an
-# ambiguous gray panel. 1MB hard cap (download_body_size_limit below) defends
-# against malformed responses without limiting real thumbnails.
-func _browse_load_thumbnail_async(rect: TextureRect, image_record: Dictionary) -> void:
-	var fn: String = str(image_record.get("file", ""))
-	if fn.is_empty():
+# Async thumbnail loader for an ImageRef {url, thumb_url, cache_key}. A host
+# that promises an image never changes under its name gives a cache_key, and
+# that key is the on-disk cache filename under user://mws_cache/thumbs/. A
+# host that promises nothing gives "", and its images are held only in the
+# session memo so a stale file can never be served forever. Failures surface
+# via _set_thumb_failed so the cell never stays an ambiguous gray panel.
+func _browse_load_thumbnail_async(rect: TextureRect, image: Dictionary) -> void:
+	var url := str(image.get("url", ""))
+	if url.is_empty():
 		_set_thumb_failed(rect, false)
 		return
-	# Server-provided name: accept only a bare basename so path_join cannot
-	# escape the cache dir. Shared with the mod-download gate so both reject
-	# the same shapes.
-	if not _is_safe_basename(fn):
-		_set_thumb_failed(rect, false)
-		return
+	# Host-provided key headed into a path: accept only a bare basename so
+	# path_join cannot escape the cache dir.
+	var cache_key := str(image.get("cache_key", ""))
+	if cache_key != "" and not _is_safe_basename(cache_key):
+		cache_key = ""
+	var memo_key := cache_key if cache_key != "" else url
 
-	# Memory hit: already decoded this session -- no disk read, no decode.
-	var memo_tex_v: Variant = _thumb_texture_cache.get(fn)
+	# Memory hit: already decoded this session.
+	var memo_tex_v: Variant = _thumb_texture_cache.get(memo_key)
 	if memo_tex_v is Texture2D:
 		_set_thumb_ready(rect, memo_tex_v as Texture2D)
 		return
 
-	var cache_dir := "user://mws_cache/thumbs"
-	DirAccess.make_dir_recursive_absolute(cache_dir)
-	var cache_path := cache_dir.path_join(fn)
+	var cache_path := ""
+	if cache_key != "":
+		var cache_dir := "user://mws_cache/thumbs"
+		DirAccess.make_dir_recursive_absolute(cache_dir)
+		cache_path = cache_dir.path_join(cache_key)
+		# Disk hit. Any decode error falls through to a refetch rather than
+		# trusting the file.
+		if FileAccess.file_exists(cache_path):
+			var f := FileAccess.open(cache_path, FileAccess.READ)
+			if f != null:
+				var bytes := f.get_buffer(f.get_length())
+				f.close()
+				if bytes.size() > 0:
+					var img := _decode_image_buffer(bytes)
+					if img != null:
+						var disk_tex := ImageTexture.create_from_image(img)
+						_thumb_texture_cache_store(memo_key, disk_tex)
+						_set_thumb_ready(rect, disk_tex)
+						return
 
-	# Cache hit: try to deserialize bytes. load_*_from_buffer returns OK on
-	# match, so fall through to refetch on any decode error rather than
-	# trusting the on-disk file unconditionally.
-	if FileAccess.file_exists(cache_path):
-		var f := FileAccess.open(cache_path, FileAccess.READ)
-		if f != null:
-			var bytes := f.get_buffer(f.get_length())
-			f.close()
-			if bytes.size() > 0:
-				var img := _decode_image_buffer(bytes)
-				if img != null:
-					var disk_tex := ImageTexture.create_from_image(img)
-					_thumb_texture_cache_store(fn, disk_tex)
-					_set_thumb_ready(rect, disk_tex)
-					return
-
-	# Cache miss: fetch from CDN. The /mods/images/thumbs/ path returns 404
-	# in practice even when the record claims has_thumb=true, so use the
-	# full-size image URL. Mod thumbnails are typically 100-300KB; 1MB cap
-	# gives margin for higher-res covers without letting a malformed response
-	# eat memory.
-	var url := mws_image_url(image_record, false)
-	if url.is_empty():
-		_set_thumb_failed(rect, false)
-		return
-
+	# 1MB cap: mod thumbnails run 100-300KB; the cap defends against a
+	# malformed response without limiting real covers.
 	var req := HTTPRequest.new()
 	req.timeout = API_CHECK_TIMEOUT
 	req.download_body_size_limit = 1024 * 1024
 	add_child(req)
-	var headers := PackedStringArray([
-		"User-Agent: " + (MWS_USER_AGENT_TEMPLATE % MODLOADER_VERSION),
-	])
-	var err := req.request(url, headers)
+	var err := req.request(url, PackedStringArray(["User-Agent: " + (HOST_USER_AGENT_TEMPLATE % MODLOADER_VERSION)]))
 	if err != OK:
 		req.queue_free()
 		_set_thumb_failed(rect, true)
@@ -6262,15 +6253,16 @@ func _browse_load_thumbnail_async(rect: TextureRect, image_record: Dictionary) -
 	# the texture this session, just refetch next time. store_buffer returns
 	# bool since 4.3; drop a partial file rather than leaving a truncated
 	# cache entry around.
-	var out := FileAccess.open(cache_path, FileAccess.WRITE)
-	if out != null:
-		var wrote := out.store_buffer(cache_bytes)
-		out.close()
-		if not wrote:
-			DirAccess.remove_absolute(cache_path)
+	if cache_path != "":
+		var out := FileAccess.open(cache_path, FileAccess.WRITE)
+		if out != null:
+			var wrote := out.store_buffer(cache_bytes)
+			out.close()
+			if not wrote:
+				DirAccess.remove_absolute(cache_path)
 
 	var net_tex := ImageTexture.create_from_image(img)
-	_thumb_texture_cache_store(fn, net_tex)
+	_thumb_texture_cache_store(memo_key, net_tex)
 	_set_thumb_ready(rect, net_tex)
 
 
@@ -6405,35 +6397,32 @@ func _markdown_to_bbcode(md: String) -> String:
 # the file history (/mods/{id}/files) into a separate section once available.
 # The Get button forwards to the same on_get callback the list rows use, so
 # install state stays consistent between the row and the modal.
-func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> void:
+func _show_browse_mod_detail_dialog(summary: Dictionary, on_get: Callable) -> void:
+	var ref: Dictionary = summary["ref"]
+	var provider := str(ref["provider"])
+	var caps: Dictionary = host_caps(provider)
+	var ref_key := host_ref_key(ref)
+
 	var d := AcceptDialog.new()
-	d.title = str(mod_data.get("name", "?"))
+	d.title = str(summary["name"])
 	d.ok_button_text = "Close"
-	# Clamped to the launcher so the embedder can't clip it.
 	d.min_size = _dialog_fit_size(Vector2i(660, 540))
 
-	# Single content child for the AcceptDialog (it stacks added children over
-	# the same rect): scroll on top, a download-status line pinned below it so
-	# feedback stays visible regardless of scroll position.
+	# One content child for the AcceptDialog: scroll on top, a download
+	# status line pinned below it so feedback stays visible at any scroll.
 	var outer := VBoxContainer.new()
 	outer.add_theme_constant_override("separation", SP_S)
 	d.add_child(outer)
 
 	var scroll := ScrollContainer.new()
-	# Track the (possibly clamped) dialog size, minus 20x60 chrome allowance.
 	scroll.custom_minimum_size = Vector2(d.min_size - Vector2i(20, 60))
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	outer.add_child(scroll)
 
-	# In-dialog download status. This modal is exclusive and covers the Browse
-	# tab's status label, so a download started HERE used to fail (or dedupe)
-	# with no visible feedback. The button just flipped back to "Download".
-	# The Download button below carries this Label in its
-	# "browse_dialog_status" meta; build_browse_tab's set_dl_status mirror
-	# fills it. Hidden until the first message so it costs no height. clip
-	# + ellipsis, never autowrap: a long error must not inflate the dialog's
-	# min width (the tooltip carries the full text, set by the mirror).
+	# In-dialog download status: the modal covers the Browse tab's status
+	# label. build_browse_tab's set_dl_status finds this via the Download
+	# button's "browse_dialog_status" meta. Hidden until the first message.
 	var dl_status := Label.new()
 	dl_status.visible = false
 	dl_status.add_theme_font_size_override("font_size", FS_BODY)
@@ -6443,8 +6432,6 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 	dl_status.mouse_filter = Control.MOUSE_FILTER_PASS
 	outer.add_child(dl_status)
 
-	# Right-margin wrap so content doesn't sit under the scrollbar -- same
-	# trick the Browse tab's main list uses.
 	var inner_wrap := MarginContainer.new()
 	inner_wrap.add_theme_constant_override("margin_right", SP_XL)
 	inner_wrap.add_theme_constant_override("margin_left", SP_S)
@@ -6456,152 +6443,165 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	inner_wrap.add_child(box)
 
-	# Banner first if available, fall back to thumbnail. Both are Image
-	# records at /mods/images/{file}; the loader caches by filename so a
-	# thumbnail viewed here shares cache with the row's smaller render.
-	var banner_record = mod_data.get("banner")
-	var thumb_record = mod_data.get("thumbnail")
-	var img_record = banner_record if banner_record is Dictionary else thumb_record
-	# cover=false so the whole banner letterboxes inside the 220px band (the
-	# cell's surface colour mattes it) instead of being cover-cropped; row
-	# tiles keep the crop. Built only when there IS an image: unlike a 96x54
-	# row tile, a 220px band captioned "no thumbnail" is worse than no band.
-	if img_record is Dictionary:
-		var banner_rect := _make_thumb_cell(box, Vector2(0, 220), false)
-		_browse_load_thumbnail_async(banner_rect, img_record)
+	# Image band from the thumbnail now; the detail fetch below repaints it
+	# with the banner when the host has one. Built only when there is an
+	# image: a 220px band captioned "no thumbnail" is worse than no band.
+	var banner_rect: TextureRect = null
+	var thumb: Dictionary = summary["thumbnail"]
+	if str(thumb["url"]) != "":
+		banner_rect = _make_thumb_cell(box, Vector2(0, 220), false)
+		_browse_load_thumbnail_async(banner_rect, thumb)
 
-	var user_dict: Dictionary = mod_data.get("user", {}) if mod_data.get("user") is Dictionary else {}
-	var category_dict: Dictionary = mod_data.get("category", {}) if mod_data.get("category") is Dictionary else {}
+	var metrics: PackedStringArray = caps["metrics"]
 	var meta := Label.new()
 	var parts := PackedStringArray()
-	var author := str(user_dict.get("name", ""))
-	if author != "":
-		parts.append("by " + author)
-	var version := str(mod_data.get("version", "")).strip_edges()
-	if version != "":
-		parts.append("v" + version)
-	parts.append(str(_json_int(mod_data, "downloads")) + " downloads")
-	parts.append(str(_json_int(mod_data, "likes")) + " likes")
-	if category_dict.has("name"):
-		parts.append(str(category_dict["name"]))
-	var bumped := _format_iso_datetime(str(mod_data.get("bumped_at", "")))
-	if bumped != "":
-		parts.append("updated " + bumped)
+	if str(summary["author_name"]) != "":
+		parts.append("by " + str(summary["author_name"]))
+	if str(summary["version"]) != "":
+		parts.append("v" + str(summary["version"]))
+	var downloads := _browse_metric(summary, "downloads")
+	if metrics.has("downloads") and downloads >= 0:
+		parts.append(str(downloads) + " downloads")
+	var likes := _browse_metric(summary, "likes")
+	if metrics.has("likes") and likes >= 0:
+		parts.append(str(likes) + " likes")
+	var views := _browse_metric(summary, "views")
+	if metrics.has("views") and views >= 0:
+		parts.append(str(views) + " views")
+	if str(summary["category_name"]) != "":
+		parts.append(str(summary["category_name"]))
+	var updated_short := _format_iso_datetime(str(summary["updated_at"]))
+	if updated_short != "":
+		parts.append("updated " + updated_short)
 	meta.text = " - ".join(parts)
 	meta.add_theme_font_size_override("font_size", FS_META)
 	meta.add_theme_color_override("font_color", COL_TEXT_DIM)
 	meta.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	box.add_child(meta)
 
-	# Description: prefer the long-form `desc`, fall back to `short_desc`.
-	# ModWorkshop descriptions are Markdown (plus its {#hex}(...) color
-	# extension). Convert to BBCode and render in a RichTextLabel so headings,
-	# bold, lists, quotes, colors and links show instead of raw markup.
-	var desc_str := str(mod_data.get("desc", "")).strip_edges()
-	if desc_str.is_empty():
-		desc_str = str(mod_data.get("short_desc", "")).strip_edges()
-	if desc_str != "":
-		box.add_child(HSeparator.new())
-		var desc_hdr := Label.new()
-		desc_hdr.text = "Description"
-		desc_hdr.add_theme_font_size_override("font_size", FS_HEAD)
-		desc_hdr.add_theme_color_override("font_color", COL_TEXT)
-		box.add_child(desc_hdr)
-		var desc_rt := RichTextLabel.new()
-		desc_rt.bbcode_enabled = true
-		desc_rt.text = _markdown_to_bbcode(desc_str)
-		desc_rt.fit_content = true
-		desc_rt.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		desc_rt.selection_enabled = true
-		desc_rt.meta_underlined = true
-		desc_rt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		desc_rt.add_theme_color_override("default_color", COL_TEXT)
-		# Markdown links become [url=...]; open them in the system browser.
-		# Allowlist web schemes only. The URL comes from an untrusted remote
-		# description; OS.shell_open is ShellExecute on Windows, so an unchecked
-		# file://, UNC (\\host\share\x.exe), or custom-scheme link could launch
-		# arbitrary handlers off a link whose visible text looks harmless.
-		desc_rt.meta_clicked.connect(func(meta):
-			var u := str(meta).strip_edges()
-			if u.to_lower().begins_with("http://") or u.to_lower().begins_with("https://"):
-				OS.shell_open(u)
-		)
-		box.add_child(desc_rt)
+	if not bool(caps["resolve_file"]):
+		var note := Label.new()
+		note.text = host_display_name(provider) + " does not provide downloads through the loader."
+		note.add_theme_font_size_override("font_size", FS_META)
+		note.add_theme_color_override("font_color", COL_TEXT_DIM)
+		box.add_child(note)
 
-	box.add_child(HSeparator.new())
-	var files_hdr := Label.new()
-	files_hdr.text = "Files"
-	files_hdr.add_theme_font_size_override("font_size", FS_HEAD)
-	files_hdr.add_theme_color_override("font_color", COL_TEXT)
-	box.add_child(files_hdr)
-	var files_status := Label.new()
-	files_status.text = "Loading file list..."
-	files_status.add_theme_font_size_override("font_size", FS_BODY)
-	files_status.add_theme_color_override("font_color", COL_TEXT_DIM)
-	box.add_child(files_status)
-	var files_list := VBoxContainer.new()
-	files_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	box.add_child(files_list)
-
-	var mod_id := _json_int(mod_data, "id")
-	# Pin Get + Open-page to the dialog's native button bar (alongside Close)
-	# so they stay visible regardless of scroll position. add_button returns
-	# the actual Button so its text/disabled state can change during the install
-	# flow. right=false puts a button to the LEFT of the OK/Close button;
-	# right=true puts it on the right.
-	var page_btn := d.add_button("Open mod page in browser", false, "")
-	page_btn.pressed.connect(func():
-		OS.shell_open(MODWORKSHOP_PAGE_URL_TEMPLATE % str(mod_id))
+	# Description: the summary's short text now, the full description once
+	# the detail fetch lands. Adapters deliver BBCode, so nothing is
+	# converted here.
+	var desc_hdr := Label.new()
+	desc_hdr.text = "Description"
+	desc_hdr.add_theme_font_size_override("font_size", FS_HEAD)
+	desc_hdr.add_theme_color_override("font_color", COL_TEXT)
+	var desc_rt := RichTextLabel.new()
+	desc_rt.bbcode_enabled = true
+	desc_rt.fit_content = true
+	desc_rt.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	desc_rt.selection_enabled = true
+	desc_rt.meta_underlined = true
+	desc_rt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	desc_rt.add_theme_color_override("default_color", COL_TEXT)
+	# Links open in the system browser, web schemes only: the URL comes from
+	# an untrusted description, and OS.shell_open is ShellExecute on Windows.
+	desc_rt.meta_clicked.connect(func(meta_v):
+		var u := str(meta_v).strip_edges()
+		if u.to_lower().begins_with("http://") or u.to_lower().begins_with("https://"):
+			OS.shell_open(u)
 	)
-	# Check install state inline (no access to the build_browse_tab closures
-	# from here). If installed, render Get as disabled "Installed" so the
-	# button reflects reality -- enable toggling lives on the list row.
-	var already_installed := false
-	for entry in _ui_mod_entries:
-		var entry_id := _entry_mws_id(entry.get("cfg"))
-		if entry_id > 0 and entry_id == mod_id:
-			already_installed = true
-			break
-	var get_btn := d.add_button("Installed" if already_installed else "Download", true, "")
+	var desc_sep := HSeparator.new()
+	var show_description := func(bbcode: String):
+		if not is_instance_valid(desc_rt):
+			return
+		if bbcode.strip_edges().is_empty():
+			return
+		if desc_rt.get_parent() == null:
+			box.add_child(desc_sep)
+			box.add_child(desc_hdr)
+			box.add_child(desc_rt)
+		desc_rt.text = bbcode
+	show_description.call(str(summary["short_description"]))
+
+	# Files section only for hosts that expose version history.
+	var files_status: Label = null
+	var files_list: VBoxContainer = null
+	if bool(caps["file_history"]):
+		box.add_child(HSeparator.new())
+		var files_hdr := Label.new()
+		files_hdr.text = "Files"
+		files_hdr.add_theme_font_size_override("font_size", FS_HEAD)
+		files_hdr.add_theme_color_override("font_color", COL_TEXT)
+		box.add_child(files_hdr)
+		files_status = Label.new()
+		files_status.text = "Loading file list..."
+		files_status.add_theme_font_size_override("font_size", FS_BODY)
+		files_status.add_theme_color_override("font_color", COL_TEXT_DIM)
+		box.add_child(files_status)
+		files_list = VBoxContainer.new()
+		files_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		box.add_child(files_list)
+
+	# Page + Download pinned to the dialog's button bar beside Close, so they
+	# stay visible regardless of scroll.
+	var page_url := host_mod_page_url(ref)
+	if page_url != "":
+		var page_btn := d.add_button("Open mod page in browser", false, "")
+		page_btn.pressed.connect(func():
+			OS.shell_open(page_url)
+		)
+	var already_installed := _browse_install_map().has(ref_key)
 	if already_installed:
-		get_btn.disabled = true
-	else:
-		# The dialog's one primary action. List rows keep
-		# bare-theme Download buttons -- primary is at most one per surface.
+		var installed_btn := d.add_button("Installed", true, "")
+		installed_btn.disabled = true
+	elif bool(caps["resolve_file"]):
+		var get_btn := d.add_button("Download", true, "")
+		# The dialog's one primary action; list rows keep bare buttons.
 		style_primary_button(get_btn)
-		# Tag the button with the in-dialog status label so the Browse tab's
-		# download paths (set_dl_status) render feedback inside this dialog.
 		get_btn.set_meta("browse_dialog_status", dl_status)
-		var captured_data := mod_data
+		var captured_summary := summary
 		get_btn.pressed.connect(func():
-			on_get.call(captured_data, get_btn)
+			on_get.call(captured_summary, get_btn)
 		)
 
-	var primary_file_id := _json_int(mod_data, "download_id")
+	# Async detail: full description and banner. Any failure leaves the
+	# summary view standing; the dialog was complete without it.
+	var load_detail := func():
+		var res := await host_get_mod(ref)
+		if not res["ok"]:
+			return
+		if not is_instance_valid(d):
+			return
+		var detail: Dictionary = res["data"]
+		show_description.call(str(detail["description"]))
+		var banner: Dictionary = detail["banner"]
+		if str(banner["url"]) != "" and banner_rect != null and is_instance_valid(banner_rect):
+			_browse_load_thumbnail_async(banner_rect, banner)
+	load_detail.call()
+
 	var load_files := func():
-		var files_resp: Variant = await mws_list_files(mod_id)
+		if files_status == null:
+			return
+		var res := await host_list_files(ref)
 		if not is_instance_valid(files_status):
 			return
-		if not (files_resp is Dictionary):
-			files_status.text = mws_error_status("Could not load the file list. Check your connection and try again.")
+		if not res["ok"]:
+			files_status.text = host_error_message(provider, res)
 			files_status.add_theme_color_override("font_color", COL_ERR)
 			return
-		var files: Array = _mws_data_rows(files_resp)
+		var files: Array = res["data"]
 		if files.is_empty():
 			files_status.text = "No downloadable files yet."
 			return
 		files_status.queue_free()
+		var primary_id := str(summary["default_file_id"])
 		for file_v in files:
-			if not (file_v is Dictionary):
-				continue
 			var fd: Dictionary = file_v
 			var f_row := HBoxContainer.new()
 			f_row.add_theme_constant_override("separation", SP_L)
 			files_list.add_child(f_row)
 
 			var v_lbl := Label.new()
-			var v_str: String = "v" + str(fd.get("version", ""))
-			if _json_int(fd, "id") == primary_file_id and primary_file_id > 0:
+			var v_str: String = "v" + str(fd["version"])
+			if primary_id != "" and str(fd["id"]) == primary_id:
 				v_str += " (primary)"
 			v_lbl.text = v_str
 			v_lbl.custom_minimum_size.x = 140
@@ -6612,12 +6612,13 @@ func _show_browse_mod_detail_dialog(mod_data: Dictionary, on_get: Callable) -> v
 			f_row.add_child(v_lbl)
 
 			var size_lbl := Label.new()
-			size_lbl.text = _format_size(_json_int(fd, "size"))
+			var size := _browse_metric(fd, "size")
+			size_lbl.text = _format_size(size) if size >= 0 else ""
 			size_lbl.custom_minimum_size.x = 80
 			size_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
 			f_row.add_child(size_lbl)
 
-			var date_str := str(fd.get("created_at", ""))
+			var date_str := str(fd["created_at"])
 			if date_str.contains("T"):
 				date_str = date_str.split("T")[0]
 			var date_lbl := Label.new()

@@ -333,19 +333,20 @@ var _rebuilding_modpacks_tab: bool = false
 # ("Parent node is busy adding/removing children").
 var _rebuilding_tab_in_place: bool = false
 
-# Mods-tab MWS meta memo. _mws_get_json caches only successful parses, so
-# failed ids would refetch on every rebuild; memo successes for the session
-# and gate failures behind a retry window (one attempt per mod per minute).
-var _mods_mws_meta_by_id: Dictionary = {}       # mod_id -> mod object (successes only)
-var _mods_mws_meta_retry_at: Dictionary = {}    # mod_id -> ticks_msec before which not to refetch
+# Mods-tab host meta memo, keyed by host_ref_key. The seam caches only
+# successful responses, so failed refs would refetch on every rebuild; memo
+# successes for the session and gate failures behind a retry window (one
+# attempt per mod per minute).
+var _mods_meta_by_key: Dictionary = {}       # ref_key -> ModSummary or ModDetail (successes only)
+var _mods_meta_retry_at: Dictionary = {}     # ref_key -> ticks_msec before which not to refetch
 
-# Sidecar bookkeeping: mod_id -> unix time of last real /mods/{id} fetch.
-# Only ids here reach the on-disk sidecar; a stale stamp triggers the
+# Sidecar bookkeeping: ref_key -> unix time of the last real detail fetch.
+# Only keys here reach the on-disk sidecar; a stale stamp triggers the
 # background soft refresh. _mods_meta_sidecar_loaded gates the lazy read.
-var _mods_mws_meta_saved_at: Dictionary = {}
+var _mods_meta_saved_at: Dictionary = {}
 var _mods_meta_sidecar_loaded: bool = false
 
-# Live Mods-tab row nodes for MWS meta painting: mod_id -> Array of {thumb,
-# name_col, holder} (several rows can share a workshop id). Rebuilt every
+# Live Mods-tab row nodes for meta painting: ref_key -> Array of {thumb,
+# name_col, holder} (several rows can share one host mod). Rebuilt every
 # (re)build so a late async fetch paints current rows, not freed ones.
 var _mods_meta_nodes: Dictionary = {}
