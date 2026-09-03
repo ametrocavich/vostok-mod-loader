@@ -1174,19 +1174,25 @@ func _derive_updated_filename(old_file_name: String, headers: PackedStringArray,
 # download_new_mod). On success new_path / new_file_name reflect the on-disk
 # name, which may differ from target_path (Content-Disposition or version
 # bump). On failure temp + backup are cleaned up and the original is intact.
-func download_and_replace_mod(target_path: String, modworkshop_id: int) -> Dictionary:
+func replace_mod_from_ref(target_path: String, ref: Dictionary) -> Dictionary:
 	# The Mods-tab update badge shows the "error" string verbatim, so
 	# "unknown" must never be the answer.
 	var failure := {"ok": false, "new_path": target_path, "new_file_name": target_path.get_file(), "error": ""}
+	if not host_ref_valid(ref):
+		failure["error"] = "This mod has no download source recorded."
+		return failure
+	var provider := str(ref["provider"])
+	var resolved := await host_resolve_file(ref, "")
+	if not resolved["ok"]:
+		failure["error"] = _host_resolve_failure_copy(provider, resolved, "")
+		return failure
+	var file: Dictionary = resolved["data"]
 
 	var req := HTTPRequest.new()
 	req.timeout = API_DOWNLOAD_TIMEOUT
 	req.download_body_size_limit = 256 * 1024 * 1024
 	add_child(req)
-	# The API answers a default/empty User-Agent with a bodyless 403 (see
-	# mws_api.gd). No Accept header -- this is a file download, not JSON.
-	var err := req.request(MODWORKSHOP_DOWNLOAD_URL_TEMPLATE % str(modworkshop_id),
-		PackedStringArray(["User-Agent: " + (MWS_USER_AGENT_TEMPLATE % MODLOADER_VERSION)]))
+	var err := req.request(str(file["download_url"]), _host_download_headers(file))
 	if err != OK:
 		req.queue_free()
 		failure["error"] = "Could not start the download request (error %d)" % err
@@ -1194,16 +1200,14 @@ func download_and_replace_mod(target_path: String, modworkshop_id: int) -> Dicti
 	# request_completed -> [result, http_code, headers, body]
 	var res: Array = await req.request_completed
 	req.queue_free()
-	# Same throttle bucket as the Browse/updates surfaces: note rate headers
-	# so a 429 here arms the shared cooldown, and wrap the HTTP-error copy
-	# with the "try again in Ns" hint.
-	_mws_note_rate_headers(int(res[1]), res[2])
+	# Note rate headers so a 429 here arms the shared cooldown.
+	host_note_rate_headers(provider, int(res[1]), res[2])
 
 	if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] < 200 or res[1] >= 300:
 		if res[0] != HTTPRequest.RESULT_SUCCESS:
 			failure["error"] = "Download failed (connection error or timeout) -- check your network and retry"
 		else:
-			failure["error"] = mws_error_status("Download failed (HTTP %d)" % int(res[1]))
+			failure["error"] = host_error_status(provider, "Download failed (HTTP %d)" % int(res[1]))
 		return failure
 	var headers: PackedStringArray = res[2]
 	var response_body: PackedByteArray = res[3]
@@ -1273,7 +1277,13 @@ func download_and_replace_mod(target_path: String, modworkshop_id: int) -> Dicti
 	# New file is in place; the .bak (which is the old archive) can go.
 	if FileAccess.file_exists(backup_path):
 		DirAccess.remove_absolute(backup_path)
+	_record_installed_mod_source(new_file_name, ref, str(file["version"]))
 	return {"ok": true, "new_path": new_path, "new_file_name": new_file_name}
+
+
+# ModWorkshop-only entry point kept for its existing callers.
+func download_and_replace_mod(target_path: String, modworkshop_id: int) -> Dictionary:
+	return await replace_mod_from_ref(target_path, host_ref(HOST_MODWORKSHOP, str(modworkshop_id)))
 
 func _chunk_int_array(arr: Array[int], chunk_size: int) -> Array:
 	var result: Array = []
@@ -1281,46 +1291,17 @@ func _chunk_int_array(arr: Array[int], chunk_size: int) -> Array:
 		result.append(arr.slice(i, i + chunk_size))
 	return result
 
-# Browse-tab "Get". No existing file to back up, and the download hits
-# storage.modworkshop.net directly via the file record's download_url
-# (skips the api 302 hop). Empty `version` uses /files/primary; a set
-# version fetches that exact File record, which is how version-pinned
-# modpacks honor their pin. Filename: Content-Disposition -> ?filename=
-# query param -> synthesized "mws_<id>.zip". Returns { ok, file_name,
-# error }; on failure the temp file is cleaned up and mods/ is untouched.
-func download_new_mod(modworkshop_id: int, version: String = "", allow_rename_on_collision: bool = false) -> Dictionary:
+# Fetch an archive and adopt it into mods/. Provider-neutral: the caller has
+# already resolved a FileRecord through the seam, so nothing here knows which
+# host it is talking to beyond the copy. Returns {ok, file_name, error}; on
+# failure the temp file is cleaned up and mods/ is untouched.
+#
+# The "Already have a file named " prefix is a contract: modpacks.gd counts
+# that failure as already-installed by matching err.begins_with("Already have").
+func _host_install_downloaded_archive(provider: String, download_url: String, headers: PackedStringArray,
+		fallback_stem: String, filename_hint: String, version_hint: String,
+		allow_rename_on_collision: bool) -> Dictionary:
 	var failure := {"ok": false, "file_name": "", "error": "unknown"}
-
-	var file_meta: Variant
-	if version.is_empty():
-		# Primary (author's default) first; on 404 fall back to /files/latest,
-		# since the author may not have set a primary. Truly file-less mods
-		# fail at the latest step too.
-		file_meta = await mws_get_primary_file(modworkshop_id)
-		if not (file_meta is Dictionary):
-			file_meta = await mws_get_latest_file(modworkshop_id)
-	else:
-		file_meta = await mws_get_file_by_version(modworkshop_id, version)
-		if not (file_meta is Dictionary):
-			# No fallback to primary: silent substitution defeats version
-			# pinning. During a 429 cooldown "not available" would be a lie,
-			# hence the mws_error_status wrapping.
-			failure["error"] = mws_error_status("Version " + version + " not available on ModWorkshop")
-			return failure
-	if not (file_meta is Dictionary):
-		# Distinguish "offline" from "genuinely has no hosted file": a
-		# transport failure means the API was unreachable, not that the mod
-		# has no file.
-		if _mws_last_transport_failed:
-			failure["error"] = "Could not reach ModWorkshop. Check your connection and try again."
-		else:
-			failure["error"] = mws_error_status("This mod has no downloadable file on ModWorkshop. Check its mod page -- the author may host the download elsewhere.")
-		return failure
-	var download_url: String = str((file_meta as Dictionary).get("download_url", ""))
-	if download_url.is_empty():
-		failure["error"] = "ModWorkshop did not provide a download link for this mod. It may be hosted off-site -- check its ModWorkshop page."
-		return failure
-
 	if _mods_dir.is_empty():
 		_mods_dir = OS.get_executable_path().get_base_dir().path_join(MOD_DIR)
 	DirAccess.make_dir_recursive_absolute(_mods_dir)
@@ -1329,9 +1310,6 @@ func download_new_mod(modworkshop_id: int, version: String = "", allow_rename_on
 	req.timeout = API_DOWNLOAD_TIMEOUT
 	req.download_body_size_limit = 256 * 1024 * 1024
 	add_child(req)
-	var headers := PackedStringArray([
-		"User-Agent: " + (MWS_USER_AGENT_TEMPLATE % MODLOADER_VERSION),
-	])
 	var err := req.request(download_url, headers)
 	if err != OK:
 		req.queue_free()
@@ -1345,7 +1323,7 @@ func download_new_mod(modworkshop_id: int, version: String = "", allow_rename_on
 		if res[0] != HTTPRequest.RESULT_SUCCESS:
 			failure["error"] = "Download failed (connection error or timeout) -- check your network and retry"
 		else:
-			failure["error"] = mws_error_status("Download failed (HTTP %d)" % int(res[1]))
+			failure["error"] = host_error_status(provider, "Download failed (HTTP %d)" % int(res[1]))
 		return failure
 	var resp_headers: PackedStringArray = res[2]
 	var body: PackedByteArray = res[3]
@@ -1354,20 +1332,15 @@ func download_new_mod(modworkshop_id: int, version: String = "", allow_rename_on
 		return failure
 
 	# Same _is_safe_mod_filename gate as the update path: never trust a
-	# server name that isn't a basename with an accepted extension.
+	# server name that isn't a basename with an accepted extension. The
+	# adapter's filename_hint carries whatever its host knows (a ?filename=
+	# parameter, an asset name); the fallback stem is provider-specific so
+	# ModWorkshop installs keep the filenames they always had.
 	var derived_name := _filename_from_content_disposition(resp_headers)
+	if derived_name.is_empty() and _is_safe_mod_filename(filename_hint):
+		derived_name = filename_hint
 	if derived_name.is_empty():
-		var q := download_url.find("?filename=")
-		if q >= 0:
-			var raw := download_url.substr(q + 10).uri_decode()
-			# Strip subsequent query params (& delimits).
-			var amp := raw.find("&")
-			if amp >= 0:
-				raw = raw.substr(0, amp)
-			if _is_safe_mod_filename(raw):
-				derived_name = raw
-	if derived_name.is_empty():
-		derived_name = "mws_mod_" + str(modworkshop_id) + ".zip"
+		derived_name = fallback_stem + ".zip"
 
 	var temp_path := _mods_dir.path_join(derived_name + ".download")
 	var final_path := _mods_dir.path_join(derived_name)
@@ -1383,15 +1356,15 @@ func download_new_mod(modworkshop_id: int, version: String = "", allow_rename_on
 			# already-installed; reword it there too.
 			failure["error"] = "Already have a file named " + derived_name
 			return failure
-		var meta_version := str((file_meta as Dictionary).get("version", "")).strip_edges().lstrip("vV")
+		var meta_version := version_hint.strip_edges().lstrip("vV")
 		# Server-controlled string headed into a filename: "..\x" would
 		# traverse on Windows and a JSON null stringifies to "<null>";
 		# is_valid_filename rejects both classes.
 		if not meta_version.is_empty() and not meta_version.is_valid_filename():
 			meta_version = ""
 		if meta_version.is_empty():
-			# Last-ditch: the mod id suffix so the install can proceed.
-			meta_version = str(modworkshop_id)
+			# Last-ditch: a timestamp suffix so the install can proceed.
+			meta_version = str(int(Time.get_unix_time_from_system()))
 		var ext := derived_name.get_extension()
 		var stem := derived_name.get_basename()
 		derived_name = stem + "-v" + meta_version + ("." + ext if ext != "" else "")
@@ -1455,6 +1428,84 @@ func download_new_mod(modworkshop_id: int, version: String = "", allow_rename_on
 		return failure
 
 	return {"ok": true, "file_name": derived_name, "error": ""}
+
+
+## Download headers for a file fetch: our User-Agent (hosts answer a default
+## one with a bodyless 403) plus whatever per-file headers the adapter
+## attached, such as a signed-CDN token.
+func _host_download_headers(file: Dictionary) -> PackedStringArray:
+	var h := PackedStringArray(["User-Agent: " + (HOST_USER_AGENT_TEMPLATE % MODLOADER_VERSION)])
+	var extra: Variant = file.get("headers")
+	if extra is PackedStringArray:
+		h.append_array(extra)
+	return h
+
+
+## User-facing copy for a failed resolve. The codes the install path cares
+## about get specific wording; everything else falls through to the seam's
+## generic message.
+func _host_resolve_failure_copy(provider: String, res: Dictionary, version: String) -> String:
+	var host := host_display_name(provider)
+	match str(res.get("code", "")):
+		HOST_ERR_VERSION_NOT_FOUND:
+			return host_error_status(provider, "Version " + version + " not available on " + host)
+		HOST_ERR_NO_FILE:
+			if str(res.get("message", "")).contains("scan"):
+				return "This version has not passed " + host + "'s malware scan, so it cannot be downloaded yet."
+			return host_error_status(provider, "This mod has no downloadable file on " + host + ". Check its mod page -- the author may host the download elsewhere.")
+		HOST_ERR_OFFLINE:
+			return "Could not reach " + host + ". Check your connection and try again."
+		_:
+			return host_error_message(provider, res)
+
+
+## Record where a freshly installed archive came from, so update checks and
+## modpack exports work for it even when its mod.txt declares no source --
+## which is every mod installed from a host before its author adds the key.
+func _record_installed_mod_source(file_name: String, ref: Dictionary, version: String) -> void:
+	var entry := _build_archive_entry(_mods_dir, file_name, file_name.get_extension().to_lower())
+	var pk := str(entry.get("profile_key", ""))
+	if pk.is_empty():
+		return
+	_persist_single_mod_source(pk, {"provider": str(ref["provider"]), "id": str(ref["id"]), "version": version})
+
+
+## Synthesized filename stem when neither the server nor the adapter names
+## the file. ModWorkshop keeps "mws_mod_<id>" so existing installs are
+## recognized; other hosts get "<provider>_<id>" with the id made filename-safe.
+func _host_fallback_stem(ref: Dictionary) -> String:
+	var id := str(ref["id"])
+	if str(ref["provider"]) == HOST_MODWORKSHOP:
+		return "mws_mod_" + id
+	return str(ref["provider"]) + "_" + id.validate_filename()
+
+
+# Browse "Get" and modpack apply, for any host. Empty `version` installs
+# whatever the host considers current; a set version pins that exact file and
+# never substitutes another. Returns {ok, file_name, error}.
+func download_mod_from_ref(ref: Dictionary, version: String = "", allow_rename_on_collision: bool = false) -> Dictionary:
+	var failure := {"ok": false, "file_name": "", "error": "unknown"}
+	if not host_ref_valid(ref):
+		failure["error"] = "This mod has no download source recorded."
+		return failure
+	var provider := str(ref["provider"])
+	var res := await host_resolve_file(ref, version)
+	if not res["ok"]:
+		failure["error"] = _host_resolve_failure_copy(provider, res, version)
+		return failure
+	var file: Dictionary = res["data"]
+	var r := await _host_install_downloaded_archive(provider, str(file["download_url"]),
+			_host_download_headers(file), _host_fallback_stem(ref), str(file["filename_hint"]),
+			str(file["version"]), allow_rename_on_collision)
+	if r["ok"]:
+		_record_installed_mod_source(str(r["file_name"]), ref, str(file["version"]))
+	return r
+
+
+# ModWorkshop-only entry point kept for its existing callers; the work is
+# download_mod_from_ref.
+func download_new_mod(modworkshop_id: int, version: String = "", allow_rename_on_collision: bool = false) -> Dictionary:
+	return await download_mod_from_ref(host_ref(HOST_MODWORKSHOP, str(modworkshop_id)), version, allow_rename_on_collision)
 
 # .pck archives begin with the magic "GDPC"; cheap check so a CDN error
 # page saved under a .pck name isn't adopted as a mod.

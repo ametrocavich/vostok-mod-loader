@@ -19,7 +19,8 @@
 ## browsable: a link-out host like Nexus dispatches page_url but can never
 ## serve a listing, so Browse-style listings use host_browse_providers().
 func host_providers() -> PackedStringArray:
-	return PackedStringArray([HOST_MODWORKSHOP, HOST_VOSTOKMODS, HOST_NEXUS])
+	# Order is the product decision: index 0 is what the Browse tab opens on.
+	return PackedStringArray([HOST_VOSTOKMODS, HOST_MODWORKSHOP, HOST_NEXUS])
 
 
 ## host_providers() filtered by caps.browse. The Browse provider switcher is

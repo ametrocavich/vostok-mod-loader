@@ -11,6 +11,7 @@ func _mwsp_caps() -> Dictionary:
 	caps["search"] = true
 	caps["categories"] = true
 	caps["file_history"] = true
+	caps["resolve_file"] = true
 	caps["version_pin"] = true
 	caps["page_url"] = true
 	caps["total_count"] = true
@@ -24,12 +25,15 @@ func _mwsp_caps() -> Dictionary:
 func _mwsp_scalars() -> Dictionary:
 	var s := host_empty_scalars()
 	# Menu order. "Featured" is not a sort; it is the curated landing below.
+	# row_field names the ModSummary field each sort orders by; the Browse
+	# tab re-sorts search results client-side because this API ignores
+	# `sort` when `query` is set, and the mapping belongs with the key names.
 	s["sorts"] = [
-		{"key": "bumped_at", "label": "Recently updated"},
-		{"key": "downloads", "label": "Most downloaded"},
-		{"key": "likes", "label": "Most liked"},
-		{"key": "views", "label": "Most viewed"},
-		{"key": "published_at", "label": "Newest"},
+		{"key": "bumped_at", "label": "Recently updated", "row_field": "updated_at"},
+		{"key": "downloads", "label": "Most downloaded", "row_field": "downloads"},
+		{"key": "likes", "label": "Most liked", "row_field": "likes"},
+		{"key": "views", "label": "Most viewed", "row_field": "views"},
+		{"key": "published_at", "label": "Newest", "row_field": "published_at"},
 	]
 	# The popular-and-latest route is dead upstream (see mws_api.gd), so the
 	# landing is two ordinary list queries.
@@ -122,6 +126,7 @@ func _mwsp_summary(v: Variant) -> Dictionary:
 	s["published_at"] = str(row.get("published_at", ""))
 	s["short_description"] = str(row.get("short_desc", ""))
 	s["thumbnail"] = _mwsp_image(row.get("thumbnail"))
+	s["default_file_id"] = _host_id_str(row.get("download_id", ""))
 	return s
 
 

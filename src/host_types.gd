@@ -208,6 +208,10 @@ func host_empty_caps() -> Dictionary:
 		"search": false,
 		"categories": false,
 		"file_history": false,
+		# Whether host_resolve_file can produce a FileRecord. This is the one
+		# cap the Download button keys on; file_history is separate (a host
+		# can serve a current file without exposing history, and vice versa).
+		"resolve_file": false,
 		"version_pin": false,
 		"page_url": false,
 		"batch_versions": false,

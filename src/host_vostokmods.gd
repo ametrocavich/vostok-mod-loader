@@ -30,6 +30,7 @@ func _vmp_caps() -> Dictionary:
 	caps["search"] = true
 	caps["categories"] = true
 	caps["file_history"] = true
+	caps["resolve_file"] = true
 	caps["version_pin"] = true
 	caps["page_url"] = true
 	caps["total_count"] = true
@@ -44,12 +45,12 @@ func _vmp_scalars() -> Dictionary:
 	# default: it orders by the latest clean file, where `updated` bumps a mod
 	# to the top on any edit at all.
 	s["sorts"] = [
-		{"key": "newestFile", "label": "Newest release"},
-		{"key": "updated", "label": "Recently updated"},
-		{"key": "downloads", "label": "Most downloaded"},
-		{"key": "views", "label": "Most viewed"},
-		{"key": "followers", "label": "Most followed"},
-		{"key": "newest", "label": "Newest mod"},
+		{"key": "newestFile", "label": "Newest release", "row_field": "updated_at"},
+		{"key": "updated", "label": "Recently updated", "row_field": "updated_at"},
+		{"key": "downloads", "label": "Most downloaded", "row_field": "downloads"},
+		{"key": "views", "label": "Most viewed", "row_field": "views"},
+		{"key": "followers", "label": "Most followed", "row_field": ""},
+		{"key": "newest", "label": "Newest mod", "row_field": "published_at"},
 	]
 	s["landing_sections"] = [
 		{"key": "popular", "title": "Popular", "sort_key": "downloads", "limit": 10},
