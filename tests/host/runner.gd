@@ -103,7 +103,9 @@ const VM_ROW_JSON := """
  "thumbnailUrl": "https://files.vostokmods.net/mods/4/screenshots/example.png",
  "downloadsCount": 1, "followersCount": 7, "viewsCount": 42,
  "createdAt": "2026-08-01T00:00:00.000Z",
- "updatedAt": "2026-08-07T06:05:11.420Z", "latestGameVersion": null}
+ "updatedAt": "2026-08-07T06:05:11.420Z", "latestGameVersion": null,
+ "latestVersion": {"id": "v_1", "scanStatus": "clean", "downloadable": true,
+                   "createdAt": "2026-08-07T06:05:11.420Z"}}
 """
 
 # The same row with the nullable fields actually null. thumbnailUrl is null
@@ -112,7 +114,8 @@ const VM_ROW_NULLS_JSON := """
 {"id": "m_5", "slug": "nulls", "name": "Nulls", "summary": null,
  "author": "Ovrrde", "categories": [], "thumbnailUrl": null,
  "downloadsCount": 0, "followersCount": 0, "viewsCount": 0,
- "createdAt": null, "updatedAt": null, "latestGameVersion": null}
+ "createdAt": null, "updatedAt": null, "latestGameVersion": null,
+ "latestVersion": null}
 """
 
 # --- Tests -------------------------------------------------------------------
@@ -193,6 +196,8 @@ func _t2_vm_summary(ml: Object) -> void:
 	# category must win even though the tag is listed first.
 	_assert(str(s["category_name"]) == "Category 1",
 			"T2: group=categories wins over an earlier tag (got %s)" % str(s["category_name"]))
+	_assert(str(s["default_file_id"]) == "v_1",
+			"T2: a clean latestVersion on the card sets default_file_id (got %s)" % str(s["default_file_id"]))
 	var thumb: Variant = s["thumbnail"]
 	_assert(str(thumb["url"]) == "https://files.vostokmods.net/mods/4/screenshots/example.png",
 			"T2: thumbnailUrl passes through absolute (got %s)" % str(thumb["url"]))
@@ -219,6 +224,8 @@ func _t2_vm_summary(ml: Object) -> void:
 			"T2n: null updatedAt -> '' (got %s)" % str(n["updated_at"]))
 	_assert(str(n["category_name"]) == "",
 			"T2n: empty categories -> '' (got %s)" % str(n["category_name"]))
+	_assert(str(n["default_file_id"]) == "",
+			"T2n: null latestVersion -> no default_file_id (got %s)" % str(n["default_file_id"]))
 
 # A null id means "this host has no id for this row". str(null) is the literal
 # "<null>", which is non-empty and would sail through host_ref_valid, so this
@@ -454,7 +461,7 @@ func _t8_vm_pure_surface(ml: Object) -> void:
 	var sc: Variant = ml._vmp_scalars()
 	_assert(int(sc["query_max_len"]) == 100, "T8: q is capped at 100 by the schema")
 	_assert(int(sc["page_size"]) == 24, "T8: default limit is 24")
-	var allowed := ["downloads", "followers", "views", "newest", "updated"]
+	var allowed := ["downloads", "followers", "views", "newest", "updated", "newestFile"]
 	_assert((sc["sorts"] as Array).size() > 0, "T8: sorts is non-empty")
 	for opt in (sc["sorts"] as Array):
 		_assert(allowed.has(str((opt as Dictionary)["key"])),

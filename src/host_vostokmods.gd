@@ -40,17 +40,20 @@ func _vmp_caps() -> Dictionary:
 
 func _vmp_scalars() -> Dictionary:
 	var s := host_empty_scalars()
-	# Keys are the API's sort enum verbatim.
+	# Keys are the API's sort enum verbatim. newestFile is the site's own
+	# default: it orders by the latest clean file, where `updated` bumps a mod
+	# to the top on any edit at all.
 	s["sorts"] = [
+		{"key": "newestFile", "label": "Newest release"},
 		{"key": "updated", "label": "Recently updated"},
 		{"key": "downloads", "label": "Most downloaded"},
 		{"key": "views", "label": "Most viewed"},
 		{"key": "followers", "label": "Most followed"},
-		{"key": "newest", "label": "Newest"},
+		{"key": "newest", "label": "Newest mod"},
 	]
 	s["landing_sections"] = [
 		{"key": "popular", "title": "Popular", "sort_key": "downloads", "limit": 10},
-		{"key": "latest", "title": "Recently updated", "sort_key": "updated", "limit": 10},
+		{"key": "latest", "title": "New releases", "sort_key": "newestFile", "limit": 10},
 	]
 	s["query_max_len"] = _VM_QUERY_MAX_LEN
 	s["page_size"] = _VM_PAGE_SIZE
@@ -102,6 +105,13 @@ func _vmp_summary(v: Variant) -> Dictionary:
 	# size is served, and the empty cache_key keeps the image out of the disk
 	# cache: the host promises nothing about the URL staying the same bytes.
 	s["thumbnail"] = host_image(_host_str(row.get("thumbnailUrl")), "", "")
+	# Listing cards carry the newest clean version, so a mod with nothing to
+	# download is knowable before the detail fetch. default_file_id stays ""
+	# when there is no downloadable file, and the Browse tab reads that as
+	# "no Download button".
+	var latest: Variant = row.get("latestVersion")
+	if _vmp_downloadable(latest):
+		s["default_file_id"] = _host_str((latest as Dictionary).get("id"))
 	return s
 
 
