@@ -4653,16 +4653,20 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		row.add_child(check)
 
 		# Host info column: async thumbnail + author line + name click-through
-		# to the Browse detail dialog. Mods with no host source keep the
-		# same-width cell so the name column stays aligned.
+		# to the Browse detail dialog. A link-out host (Nexus) has no detail
+		# to fetch, so its name opens the mod page in the browser instead.
+		# Mods with no host source keep the same-width cell so the name
+		# column stays aligned.
 		var row_ref := _entry_host_ref(entry, persisted_sources)
 		var row_key := host_ref_key(row_ref)
+		var row_browsable := row_key != "" and bool(host_caps(str(row_ref["provider"]))["browse"])
+		var row_page_url := host_mod_page_url(row_ref) if row_key != "" else ""
 		var meta_holder: Dictionary = {}
 		var thumb_ref: TextureRect = null
 		# Every row gets a real thumbnail cell captioned "no thumbnail" from
 		# the start; a texture arriving later clears the caption.
 		var thumb_rect := _make_thumb_cell(row, Vector2(96, 54), true, true)
-		if row_key != "":
+		if row_browsable:
 			thumb_ref = thumb_rect
 
 		var name_col := VBoxContainer.new()
@@ -4673,7 +4677,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		# name_ctrl: clickable for hosted mods, plain Label otherwise; both
 		# take the enabled/blocked font-color overrides below.
 		var name_ctrl: Control
-		if row_key != "":
+		if row_browsable or row_page_url != "":
 			# Flat Button (not LinkButton) so clip_text keeps a long name from
 			# forcing a horizontal scrollbar; hover color is the click cue.
 			var name_lnk := Button.new()
@@ -4683,22 +4687,30 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			name_lnk.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 			name_lnk.alignment = HORIZONTAL_ALIGNMENT_LEFT
 			name_lnk.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			name_lnk.tooltip_text = str(entry["mod_name"]) + "  --  click for " + host_display_name(str(row_ref["provider"])) + " details"
+			var row_host := host_display_name(str(row_ref["provider"]))
+			name_lnk.tooltip_text = str(entry["mod_name"]) + ("  --  click for " + row_host + " details" if row_browsable \
+					else "  --  click to open the " + row_host + " page in your browser")
 			name_lnk.add_theme_color_override("font_color", COL_OK if entry["enabled"] else COL_TEXT_DIM)
 			name_lnk.add_theme_color_override("font_hover_color", COL_TEXT_HI)
 			name_col.add_child(name_lnk)
-			name_lnk.pressed.connect(_open_mods_host_detail.bind(meta_holder, row_ref))
-			# Register the row's live nodes before kicking the meta load so
-			# paints resolve to current nodes. Appended, not assigned:
-			# several rows can share one host mod.
-			var meta_rows: Array = _mods_meta_nodes.get(row_key, [])
-			meta_rows.append({
-				"thumb": thumb_ref,
-				"name_col": name_col,
-				"holder": meta_holder,
-			})
-			_mods_meta_nodes[row_key] = meta_rows
-			_mods_load_host_meta(row_ref)
+			if row_browsable:
+				name_lnk.pressed.connect(_open_mods_host_detail.bind(meta_holder, row_ref))
+				# Register the row's live nodes before kicking the meta load
+				# so paints resolve to current nodes. Appended, not assigned:
+				# several rows can share one host mod.
+				var meta_rows: Array = _mods_meta_nodes.get(row_key, [])
+				meta_rows.append({
+					"thumb": thumb_ref,
+					"name_col": name_col,
+					"holder": meta_holder,
+				})
+				_mods_meta_nodes[row_key] = meta_rows
+				_mods_load_host_meta(row_ref)
+			else:
+				var captured_page := row_page_url
+				name_lnk.pressed.connect(func():
+					OS.shell_open(captured_page)
+				)
 			name_ctrl = name_lnk
 		else:
 			var name_lbl := Label.new()
