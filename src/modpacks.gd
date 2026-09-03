@@ -707,6 +707,17 @@ func _get_missing_mods_for_modpack(entry: Dictionary) -> Array:
 		if inst_id_l != "":
 			installed_id_ver[inst_id_l + "@" + inst_ver] = true
 
+	# Lowercased ids that have a usable source under SOME key. An exporter can
+	# pair a stale enabled key ("foo@1.0") with the live sources key
+	# ("foo@2.0") when the author updated a mod right before saving; the stale
+	# key is the same mod, not a second one to report as unreachable.
+	var sourced_ids: Dictionary = {}
+	for k_v in sources.keys():
+		var sk := str(k_v)
+		var s_at := sk.find("@")
+		if s_at > 0 and str(_normalize_source_record(sources[k_v])["provider"]) != "":
+			sourced_ids[sk.substr(0, s_at).to_lower()] = true
+
 	# Walk the union of enabled + sources so a mod missing from `sources`
 	# surfaces as a "no source info" failure instead of a silent skip.
 	var seen: Dictionary = {}
@@ -732,6 +743,10 @@ func _get_missing_mods_for_modpack(entry: Dictionary) -> Array:
 			if installed_id_ver.has(src_id_l + "@" + src_ver):
 				continue
 		var src_data: Variant = sources.get(src_key)
+		if not (src_data is Dictionary) or (src_data as Dictionary).is_empty():
+			var at2 := src_key.find("@")
+			if at2 > 0 and sourced_ids.has(src_key.substr(0, at2).to_lower()):
+				continue
 		# Version is only honored when the record carries it: deriving it
 		# from the profile_key suffix strict-pins legacy modpacks against
 		# versions replaced upstream, mass-failing downloads.
@@ -754,6 +769,87 @@ func _get_missing_mods_for_modpack(entry: Dictionary) -> Array:
 				item["unreachable_reason"] = "the modpack does not say where this mod is hosted -- install it manually"
 		missing.append(item)
 	return missing
+
+
+## Rewrite a modpack profile's enabled/priority/dep_ignore keys from the
+## author's keys to the keys the same mods have on this machine. They differ
+## when the author's mod had no id (the key is zip:<their filename> and the
+## download lands under another name), or when the pack's enabled key
+## predates an update the author made before exporting. Resolution: exact
+## key, then id@version case-insensitively, then the pack's source record
+## against an installed mod's source. No id-prefix fallback: that would
+## silently accept the wrong version, which _apply_profile_to_entries
+## already handles by flagging the mismatch. Unresolved keys stay, so a
+## still-missing mod keeps its stub row. `sources` is the pack's own map
+## (pack key -> source record). Returns the number of keys rewritten.
+func _modpack_reconcile_profile_keys(profile_name: String, sources: Dictionary) -> int:
+	var cfg := ConfigFile.new()
+	if cfg.load(UI_CONFIG_PATH) != OK:
+		return 0
+	var persisted := _get_persisted_mod_sources()
+	var by_id_ver: Dictionary = {}
+	var by_ref: Dictionary = {}
+	var installed: Dictionary = {}
+	for e in _ui_mod_entries:
+		var pk := str(e.get("profile_key", ""))
+		if pk == "":
+			continue
+		installed[pk] = true
+		var id_l := str(e.get("mod_id", "")).to_lower()
+		if id_l != "" and not by_id_ver.has(id_l + "@" + str(e.get("version", ""))):
+			by_id_ver[id_l + "@" + str(e.get("version", ""))] = pk
+		var rk := host_ref_key(_entry_host_ref(e, persisted))
+		if rk != "" and not by_ref.has(rk):
+			by_ref[rk] = pk
+	var changed := 0
+	for suffix in [".enabled", ".priority", ".dep_ignore"]:
+		var sec := _profile_sec(profile_name, str(suffix))
+		if not cfg.has_section(sec):
+			continue
+		for k in cfg.get_section_keys(sec):
+			var pack_key := str(k)
+			if installed.has(pack_key):
+				continue
+			var target := ""
+			var at := pack_key.find("@")
+			if at > 0:
+				target = str(by_id_ver.get(pack_key.substr(0, at).to_lower() + "@" + pack_key.substr(at + 1), ""))
+			if target == "":
+				var rk := host_ref_key(_source_host_ref(_normalize_source_record(sources.get(pack_key))))
+				if rk != "":
+					target = str(by_ref.get(rk, ""))
+			if target == "" or target == pack_key:
+				continue
+			var value: Variant = cfg.get_value(sec, pack_key)
+			cfg.erase_section_key(sec, pack_key)
+			# An entry the pack already keyed correctly wins over a remap.
+			if not cfg.has_section_key(sec, target):
+				cfg.set_value(sec, target, value)
+			changed += 1
+	if changed > 0:
+		_log_info("[Modpack] reconciled %d profile key(s) with the installed mods" % changed)
+		_persist_ui_cfg(cfg)
+	return changed
+
+
+## The pack's source map, keyed by the author's profile keys. Read from the
+## zip so the reconcile step sees the same records the download loop used.
+func _modpack_sources(entry: Dictionary) -> Dictionary:
+	var file_path: String = str(entry.get("file_path", ""))
+	if file_path.is_empty():
+		return {}
+	var reader := ZIPReader.new()
+	if reader.open(file_path) != OK:
+		return {}
+	var bytes := reader.read_file("profile.json")
+	reader.close()
+	if bytes.is_empty():
+		return {}
+	var parsed_v: Variant = JSON.parse_string(bytes.get_string_from_utf8())
+	if not (parsed_v is Dictionary):
+		return {}
+	var sources_v: Variant = (parsed_v as Dictionary).get("sources")
+	return sources_v if sources_v is Dictionary else {}
 
 
 ## The host ref a normalized source record names, or {} when it names none.
@@ -1019,6 +1115,14 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 		else:
 			_log_warning("[Modpack] could not re-read mod_config.cfg after profile switch (error %d) -- skipping the active-flag re-assert (already set at step 1)" % cfg5_err)
 
+	elif done_dl > 0:
+		# The slot was kept (user edits survive); only its keys for the mods
+		# that just landed need matching to their installed names.
+		if _modpack_reconcile_profile_keys(modpack_profile, _modpack_sources(entry)) > 0:
+			var cfg_re := ConfigFile.new()
+			if cfg_re.load(UI_CONFIG_PATH) == OK:
+				_apply_profile_to_entries(cfg_re, _active_profile)
+
 	# 6. Refresh the Mods tab.
 	if tabs != null and is_instance_valid(tabs):
 		_rebuild_mods_tab(tabs)
@@ -1086,6 +1190,10 @@ func _materialize_modpack_profile(entry: Dictionary, profile_name: String) -> Di
 		if (iv is bool and iv) or ((iv is int or iv is float) and iv != 0):
 			cfg.set_value(ig_sec, str(k), true)
 	_persist_ui_cfg(cfg)
+	# The download phase already ran and _ui_mod_entries was rescanned, so
+	# the keys can be matched to what actually landed on disk.
+	var sources_v: Variant = pd.get("sources")
+	_modpack_reconcile_profile_keys(profile_name, sources_v if sources_v is Dictionary else {})
 
 	# Extract the MCM tree into the profile's snapshot slot; _switch_profile
 	# restores from it.
@@ -1235,6 +1343,13 @@ func retry_failed_downloads(failures: Array, progress: Callable = Callable()) ->
 			_log_warning("[Modpack][Retry]   failed: " + pk + " -- " + err)
 	if newly_downloaded > 0:
 		_ui_mod_entries = collect_mod_metadata()
+		# The retried mods may have landed under names the pack did not use.
+		var active := get_active_modpack()
+		if active != "":
+			for mp in _modpack_entries:
+				if str((mp as Dictionary).get("sanitized_name", "")) == active:
+					_modpack_reconcile_profile_keys(MODPACK_PROFILE_PREFIX + active, _modpack_sources(mp))
+					break
 		var cfg := ConfigFile.new()
 		cfg.load(UI_CONFIG_PATH)
 		_apply_profile_to_entries(cfg, _active_profile)
