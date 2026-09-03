@@ -5084,6 +5084,22 @@ func _browse_landing_snapshot(provider: String) -> Dictionary:
 	var saved_v: Variant = snap.get("saved_at_unix", 0)
 	if not (saved_v is int or saved_v is float) or int(saved_v) <= 0:
 		return {}
+	# The renderer indexes rows directly, so a row from an older build or a
+	# hand-edited file that lacks a field is dropped here, not crashed on.
+	var sections: Array = []
+	for sec_v in (snap["sections"] as Array):
+		if not (sec_v is Dictionary):
+			continue
+		var sec: Dictionary = sec_v
+		var rows_v: Variant = sec.get("rows")
+		if not (rows_v is Array):
+			continue
+		var rows: Array = []
+		for row_v in (rows_v as Array):
+			if row_v is Dictionary and _mods_meta_record_complete(row_v):
+				rows.append(row_v)
+		sections.append({"title": str(sec.get("title", "")), "rows": rows})
+	snap["sections"] = sections
 	_browse_landing_snapshots[provider] = snap
 	return snap
 
@@ -6010,9 +6026,12 @@ func _browse_render_mod_row(summary: Dictionary, install_entry: Variant, on_get:
 
 	# Installed mods get an enable toggle bound to the active profile; the
 	# checkbox's existence implies install. Others get Download when the host
-	# can serve a file, and a quiet label when it cannot: nothing inert may
-	# look pressable, since every other disabled Download here means
-	# "in flight" or "installed".
+	# can serve a file for this mod, and a quiet label when it cannot:
+	# nothing inert may look pressable, since every other disabled Download
+	# here means "in flight" or "installed". default_file_id "" means the
+	# host reports no downloadable file yet (VostokMods: nothing has passed
+	# its scan), so the button would only ever fail.
+	var can_download := bool(caps["resolve_file"]) and str(summary["default_file_id"]) != ""
 	if install_entry is Dictionary:
 		var entry: Dictionary = install_entry as Dictionary
 		var enable_check := CheckBox.new()
@@ -6027,7 +6046,7 @@ func _browse_render_mod_row(summary: Dictionary, install_entry: Variant, on_get:
 		)
 		row.add_child(enable_check)
 		_wire_hint(enable_check, "Toggle this mod in profile: " + _active_profile + ".")
-	elif bool(caps["resolve_file"]):
+	elif can_download:
 		var get_btn := Button.new()
 		get_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		get_btn.text = "Download"
@@ -6040,14 +6059,17 @@ func _browse_render_mod_row(summary: Dictionary, install_entry: Variant, on_get:
 		row.add_child(get_btn)
 		_wire_hint(get_btn, "Download this mod from " + host_display_name(provider) + ".")
 	else:
-		var browse_only := Label.new()
-		browse_only.text = "Browse only"
-		browse_only.add_theme_font_size_override("font_size", FS_META)
-		browse_only.add_theme_color_override("font_color", COL_TEXT_DIM)
-		browse_only.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		browse_only.mouse_filter = Control.MOUSE_FILTER_PASS
-		row.add_child(browse_only)
-		_wire_hint(browse_only, host_display_name(provider) + " does not provide downloads through the loader.")
+		var no_dl := Label.new()
+		no_dl.text = "No file yet" if bool(caps["resolve_file"]) else "Browse only"
+		no_dl.add_theme_font_size_override("font_size", FS_META)
+		no_dl.add_theme_color_override("font_color", COL_TEXT_DIM)
+		no_dl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		no_dl.mouse_filter = Control.MOUSE_FILTER_PASS
+		row.add_child(no_dl)
+		if bool(caps["resolve_file"]):
+			_wire_hint(no_dl, host_display_name(provider) + " has no downloadable file for this mod yet (it may still be scanning).")
+		else:
+			_wire_hint(no_dl, host_display_name(provider) + " does not provide downloads through the loader.")
 
 	return row
 
@@ -6494,6 +6516,7 @@ func _show_browse_mod_detail_dialog(summary: Dictionary, on_get: Callable) -> vo
 	meta.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	box.add_child(meta)
 
+	var can_download := bool(caps["resolve_file"]) and str(summary["default_file_id"]) != ""
 	if not bool(caps["resolve_file"]):
 		var note := Label.new()
 		note.text = host_display_name(provider) + " does not provide downloads through the loader."
@@ -6564,21 +6587,28 @@ func _show_browse_mod_detail_dialog(summary: Dictionary, on_get: Callable) -> vo
 			OS.shell_open(page_url)
 		)
 	var already_installed := _browse_install_map().has(ref_key)
-	if already_installed:
-		var installed_btn := d.add_button("Installed", true, "")
-		installed_btn.disabled = true
-	elif bool(caps["resolve_file"]):
+	# One slot so the async detail below can add the button late; lambdas
+	# capture by value, so the slot is a Dictionary, not a local.
+	var action := {"get_btn": null}
+	var add_download_button := func(record: Dictionary):
 		var get_btn := d.add_button("Download", true, "")
 		# The dialog's one primary action; list rows keep bare buttons.
 		style_primary_button(get_btn)
 		get_btn.set_meta("browse_dialog_status", dl_status)
-		var captured_summary := summary
 		get_btn.pressed.connect(func():
-			on_get.call(captured_summary, get_btn)
+			on_get.call(record, get_btn)
 		)
+		action["get_btn"] = get_btn
+	if already_installed:
+		var installed_btn := d.add_button("Installed", true, "")
+		installed_btn.disabled = true
+	elif can_download:
+		add_download_button.call(summary)
 
-	# Async detail: full description and banner. Any failure leaves the
-	# summary view standing; the dialog was complete without it.
+	# Async detail: full description and banner, and a Download button when
+	# the host now has a file the summary (possibly a cached one) did not
+	# know about. Any failure leaves the summary view standing; the dialog
+	# was complete without it.
 	var load_detail := func():
 		var res := await host_get_mod(ref)
 		if not res["ok"]:
@@ -6590,6 +6620,9 @@ func _show_browse_mod_detail_dialog(summary: Dictionary, on_get: Callable) -> vo
 		var banner: Dictionary = detail["banner"]
 		if str(banner["url"]) != "" and banner_rect != null and is_instance_valid(banner_rect):
 			_browse_load_thumbnail_async(banner_rect, banner)
+		if action["get_btn"] == null and not already_installed and bool(caps["resolve_file"]) \
+				and str(detail["default_file_id"]) != "":
+			add_download_button.call(detail)
 	load_detail.call()
 
 	var load_files := func():
