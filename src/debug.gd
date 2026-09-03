@@ -39,7 +39,9 @@ func _test_post_autoload_verify() -> void:
 # mod_config.cfg. Remove after verifying whether a mounted .gd + .gd.remap
 # beats the PCK's .gdc + .gd.remap for a given resource path.
 
-func _load_test_pack_flag() -> bool:
+# Static so the file-scope mount in boot.gd can read it before any instance
+# exists.
+static func _load_test_pack_flag() -> bool:
 	var cfg := ConfigFile.new()
 	if cfg.load(UI_CONFIG_PATH) != OK:
 		return false

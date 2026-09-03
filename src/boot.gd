@@ -391,13 +391,20 @@ static func _mount_previous_session() -> Dictionary:
 			log_lines.append("[FileScope] HOOK PACK path in pass_state but file missing: " + hook_abs)
 
 	# TEST HOOK: mount before any autoload runs so VFS serves the rewritten
-	# scripts to the first compilation.
+	# scripts to the first compilation. Gated on the same [settings] flag
+	# that builds the pack. With the flag off, a zip left behind by an
+	# earlier test session (or planted by a mod, since anything under
+	# user:// is writable once a mod has run) is deleted, never mounted.
 	var test_pack_path := ProjectSettings.globalize_path("user://test_pack_precedence.zip")
 	if FileAccess.file_exists(test_pack_path):
-		if ProjectSettings.load_resource_pack(test_pack_path, true):
-			log_lines.append("[FileScope] TEST: mounted test_pack_precedence.zip at static init")
+		if _load_test_pack_flag():
+			if ProjectSettings.load_resource_pack(test_pack_path, true):
+				log_lines.append("[FileScope] TEST: mounted test_pack_precedence.zip at static init")
+			else:
+				log_lines.append("[FileScope] TEST: FAILED to mount test_pack_precedence.zip")
 		else:
-			log_lines.append("[FileScope] TEST: FAILED to mount test_pack_precedence.zip")
+			DirAccess.remove_absolute(test_pack_path)
+			log_lines.append("[FileScope] removed a stale test_pack_precedence.zip (test flag is off)")
 
 	log_lines.append("[FileScope] Done -- %d archive(s) mounted" % mounted.size())
 	_write_filescope_log(log_lines)
