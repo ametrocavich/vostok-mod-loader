@@ -1,12 +1,12 @@
 # Build
 
-The installable artifact `modloader.gd` is **built** from the `src/` tree (`src/*.gd` plus `src/registry/*.gd`) -- 39 source files -- not edited directly. The editing surface is the `src/` tree; `modloader.gd` is produced on demand.
+The installable file, `modloader.gd`, is built from the `src/` tree (`src/*.gd` plus `src/registry/*.gd`, 48 files) and is not edited directly. Edit under `src/`, run `./build.sh`, then `./check.sh`.
 
 ## build.sh
 
 Source: [build.sh](https://github.com/ametrocavich/vostok-mod-loader/blob/development/build.sh).
 
-Concatenates the source files into a single `modloader.gd` at the repo root. Explicit ordering (not filename-based sort) is in the `FILES` array:
+Concatenates the source files into one `modloader.gd` at the repo root, with a blank line between files. The order is the `FILES` array, not a filename sort:
 
 ```bash
 FILES=(
@@ -20,7 +20,14 @@ FILES=(
     "$SRC/boot.gd"
     # Mod discovery + loading
     "$SRC/security_scan.gd"
+    # Mod-host seam. types -> transport -> dispatch, then one file per host.
+    "$SRC/host_types.gd"
+    "$SRC/host_http.gd"
+    "$SRC/host_api.gd"
     "$SRC/mws_api.gd"
+    "$SRC/host_mws.gd"
+    "$SRC/host_vostokmods.gd"
+    "$SRC/host_nexus.gd"
     "$SRC/mod_discovery.gd"
     "$SRC/modpacks.gd"
     "$SRC/mod_loading.gd"
@@ -66,16 +73,15 @@ FILES=(
 )
 ```
 
-Dependencies flow top-down -- earlier files may not reference code defined later. This mirrors how GDScript parses a file.
+Earlier files may not reference consts defined later, because GDScript resolves const initializers top to bottom. Function bodies can call anything; the whole file is one class. `host_api.gd` dispatches into adapters listed after it, the same shape `registry.gd` uses for its handlers.
 
-### Invariants enforced by build.sh
+### What build.sh checks
 
-Post-concat sanity checks ([build.sh:82-94](https://github.com/ametrocavich/vostok-mod-loader/blob/development/build.sh#L82)):
+- Every listed file exists, before anything is written.
+- The output has exactly one `extends` line (the one in `header.gd`).
+- The output has at most one `class_name` (there is none; the loader is the `ModLoader` autoload).
 
-- **Exactly one `extends` line**, and it must be at the very top ([header.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/header.gd)).
-- **At most one `class_name`** declaration (currently there is none. The loader is ModLoader autoload).
-
-Missing source file aborts before concat ([build.sh:70-73](https://github.com/ametrocavich/vostok-mod-loader/blob/development/build.sh#L70)).
+On a failure the `.tmp` is removed and nothing replaces the previous `modloader.gd`.
 
 ### Running it
 
@@ -83,58 +89,81 @@ Missing source file aborts before concat ([build.sh:70-73](https://github.com/am
 ./build.sh
 ```
 
-Produces `modloader.gd` at the repo root. Run after any `src/` edit and before testing in-game.
-
-`modloader.gd` is **not committed** (see `.gitignore`). It's downloaded from GitHub Releases by end users via the installer scripts:
+`modloader.gd` is listed in `.gitignore` and never committed. End users get it from GitHub Releases through the installer scripts:
 
 ```
 /releases/latest/download/modloader.gd
 /releases/latest/download/override.cfg
 ```
 
+## check.sh
+
+Source: [check.sh](https://github.com/ametrocavich/vostok-mod-loader/blob/development/check.sh). Run it after `build.sh`. It needs a Godot 4.6.1 binary: `GODOT=/path/to/godot ./check.sh`, or `godot` on PATH, or the maintainer's local install path baked into the script.
+
+The script never opens a window and never touches the game. It copies `modloader.gd` into a throwaway project under the system temp dir and runs Godot with `--headless --check-only`, which parses and type-checks and then exits. A 27,000-line single-namespace file fails in ways review does not catch (two files defining the same function, a call to a renamed function, a merge joining halves that were never built together), and any of those is a parse error in an autoload, which means the game does not start.
+
+After the parse, `check.sh` runs two grep invariants and six harnesses. Every harness assembles its own throwaway project, loads a neutered copy of `modloader.gd` (the `_filescope_mounted` initializer replaced by `{}`, so static init cannot run), and exits non-zero on any failed assertion. Each `check_*.sh` also takes `--prove`: it breaks the code under test in the temp copy and requires the harness to fail, which is how you know the gate can fail at all.
+
+| Gate | Runner | What it pins |
+|---|---|---|
+| await grep | inline in `check.sh` | No `out += ...` line in `src/rewriter*.gd` contains a literal `await`. An unconditional await makes every wrapped vanilla method a coroutine and breaks every caller at parse time; 3.3.0 shipped that. The only legal emission is the `aw` variable, set when the vanilla target is itself a coroutine |
+| docs grep | inline in `check.sh` | `docs/wiki/Hooks.md` does not describe the replace callback as always awaited. The 3.3.0 commit documented the bug as intended, in two places |
+| `check_codegen.sh` | `tests/codegen/runner.gd` | Runs the real rewriter over 13 fixtures (three synthetic `tests/codegen/Fixture*.gd`, ten decompiled vanilla scripts including `Database.gd`, `Loader.gd`, `Camera.gd`, `Character.gd`) and compiles the pristine source, the rewritten output at its canonical path, and a generated caller stub that invokes every wrapped method without `await`. Also asserts the wrapper signature is byte-identical and a masked rewrite renames only the masked methods. Skips with a banner on machines without the decompiled vanilla source |
+| `check_dispatch.sh` | `tests/codegen/dispatch_runner.gd` | Rewrites a synthetic fixture, attaches it to real Nodes, registers hooks through the public API and asserts dispatch behavior: T1 to T12 cover pre, replace with and without `skip_super`, post result mutation and the legacy 2-arg form, deferred callbacks, ordering by priority, replace single-owner, `unhook`, `_caller` across nested calls, re-entrancy guard release, two instances, coroutine vanilla methods, defaulted parameters. Never skips |
+| `check_detok.sh` | `tests/detok/runner.gd` | Builds the same token stream as a v101 buffer and as a v100 buffer (indices from 83 shifted down) and requires identical reconstruction; also that no `<tk?>` placeholder appears and `TK_EMPTY` is skipped. T1 to T5. Never skips |
+| `check_identity.sh` | `tests/identity/runner.gd` | Filename-stem normalization for mods without `id=`: an extension change or version bump collapses to one identity and the newest wins, distinct mods stay distinct, a declared id still wins, `.pck` never collapses. T1 to T6 |
+| `check_host.sh` | `tests/host/runner.gd` | The host seam's pure layer: ModWorkshop and VostokMods normalizers emit every field, the result envelope, the `provider:id` grammar rejects instead of guessing, on-disk source records of every era converge in one pass, the legacy `modworkshop_id` mirror is written only for ModWorkshop, and every declared capability has a dispatch arm. T1 to T9 |
+| `check_boot_state.sh` | `tests/boot_state/runner.gd` | The crash-loop breaker: the streak survives the crashed-Pass-2 wipe, one crash does not trip it, `MAX_RESTART_COUNT` crashes do, a clean finish resets it to zero, and Pass 2 clears it after the crash window (checked against the built source text). T1 to T6 |
+
+Each runner prints its assertion count on success (`[host] PASS: N assertion(s) across T1..T9`); the counts are computed at run time, not fixed.
+
+Godot is pinned at 4.6.1-stable in `check.sh`, `ci.yml` and `release-please.yml`. Move all three together.
+
+## Continuous integration
+
+Source: [.github/workflows/ci.yml](https://github.com/ametrocavich/vostok-mod-loader/blob/development/.github/workflows/ci.yml).
+
+Runs on every pull request and on pushes to `master` and `refactor/**`. It downloads Godot 4.6.1 (cached by version), runs `./build.sh`, then `./check.sh`. The harnesses that need the decompiled game source skip themselves with a banner, so the run is meaningful without shipping game files into CI.
+
 ## release-please
 
 Source: [.github/workflows/release-please.yml](https://github.com/ametrocavich/vostok-mod-loader/blob/development/.github/workflows/release-please.yml).
 
-Automates version bumps and changelog generation from [Conventional Commits](https://www.conventionalcommits.org/).
+Automates the version bump and the changelog from [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Flow
 
-1. PR merges to `master`.
-2. `release-please-action@v4` parses Conventional Commits since the last tag.
-3. Opens a follow-up PR titled something like "chore(master): release 3.3.0" that bumps `MODLOADER_VERSION` in [src/constants.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd) (the const between the `x-release-please` markers) and updates `CHANGELOG.md`.
-4. Merging that PR creates the git tag + GitHub Release.
-5. On release creation, the workflow rebuilds `modloader.gd` via `./build.sh` and uploads it as a release asset along with `override.cfg`, `windows-installer.bat`, and `linux-installer.sh`.
+1. A PR merges to `master`.
+2. `release-please-action@v4` parses the Conventional Commits since the last tag (`release-please-config.json`, `.release-please-manifest.json`).
+3. It opens a release PR ("chore(master): release 3.3.1" or similar) that bumps `MODLOADER_VERSION` in `src/constants.gd` and updates `CHANGELOG.md`. That constant is the only file release-please edits.
+4. Merging the release PR creates the tag and a draft GitHub Release.
+5. The same workflow then runs `./build.sh`, downloads Godot and runs `./check.sh` against the exact bytes about to ship (release-please rewrote `constants.gd` on the way in, so no PR compiled this file), uploads `modloader.gd`, `override.cfg`, `windows-installer.bat` and `linux-installer.sh` as release assets, and only then flips the release from draft to published.
 
-The workflow only rebuilds on release creation -- normal `master` pushes don't trigger a build.
+The draft step matters. From the moment a release is published, `/releases/latest/download/modloader.gd` resolves to it, and both installers fetch that URL. A build or upload failure on a published release left every new install failing on a 404.
+
+Normal pushes to `master` do not build anything; only a release creation does.
 
 ### Version-bump mapping
 
-From [CONTRIBUTING.md](https://github.com/ametrocavich/vostok-mod-loader/blob/development/CONTRIBUTING.md):
-
-**Triggers a bump:**
-
 | Type | Bump | Example |
 |---|---|---|
-| `feat:` | minor (3.2.0 -> 3.3.0) | new feature or user-facing behavior |
-| `fix:` | patch (3.2.0 -> 3.2.1) | bug fix |
-| `feat!:` / `fix!:` | major (3.2.0 -> 4.0.0) | breaking change |
+| `feat:` | minor (3.3.1 -> 3.4.0) | new feature or user-facing behavior |
+| `fix:` | patch (3.3.1 -> 3.3.2) | bug fix |
+| `feat!:` / `fix!:` | major (3.3.1 -> 4.0.0) | breaking change |
 
-**No bump** (appears under "Miscellaneous" in changelog):
-
-`chore:`, `docs:`, `refactor:`, `test:`, `perf:`, `build:`, `ci:`, `style:`.
+`chore:`, `docs:`, `refactor:`, `test:`, `perf:`, `build:`, `ci:` and `style:` do not bump; they appear under "Miscellaneous" in the changelog.
 
 ### Where the version lives
 
-The bump is applied by release-please to a single line:
+One line in `src/constants.gd`:
 
 ```gdscript
 # x-release-please-start-version
-const MODLOADER_VERSION := "3.2.1"
+const MODLOADER_VERSION := "3.3.1"
 # x-release-please-end
 ```
 
-Mods read the version at runtime via:
+Mods read it at runtime:
 
 ```gdscript
 var lib = Engine.get_meta("RTVModLib")
@@ -142,28 +171,23 @@ if lib.major_version() >= 3:
     use_new_api()
 ```
 
-Accessors ([hooks_api.gd:9-19](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd#L9)): `version() -> String`, `major_version() -> int`, `minor_version() -> int`, `patch_version() -> int`. All static.
+The accessors are static functions at the top of [hooks_api.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd): `version() -> String`, `major_version() -> int`, `minor_version() -> int`, `patch_version() -> int`.
 
 ## Branch model
 
 From [CONTRIBUTING.md](https://github.com/ametrocavich/vostok-mod-loader/blob/development/CONTRIBUTING.md):
 
-- **`development`** -- target for all contributor PRs. Feature branches merge here via **squash** (keeps each PR as a single clean conventional commit).
-- **`master`** -- release branch. Only maintainer PRs from `development -> master` land here, via **rebase-merge** so every individual commit is preserved for release-please to read.
+- `development` is the target for contributor PRs. Feature branches squash-merge into it, so each PR is one conventional commit.
+- `master` is the release branch. Only maintainer PRs from `development` land there, by rebase-merge, so release-please sees every commit.
 
-Contributor workflow:
+Contributor workflow: branch off `development`, PR against `development`, title the PR `<type>: <description>`. On merge it becomes one squashed commit.
 
-1. Branch off `development`.
-2. PR against `development`.
-3. PR title follows `<type>: <description>` (release-please reads this).
-4. On merge: squashed into one commit on `development`.
-
-Maintainers batch accumulated work into a `development -> master` PR when it's time to cut a release. Rebase-merge preserves individual commits so release-please can build an accurate changelog.
+When it is time to release, the maintainer opens a `development -> master` PR. After the rebase-merge the SHAs on `master` differ from the ones on `development`, so `development` is reset to `origin/master`; otherwise the two drift apart silently.
 
 ## Wiki sync
 
-This wiki is generated from [docs/wiki/*.md](https://github.com/ametrocavich/vostok-mod-loader/tree/development/docs/wiki) via [.github/workflows/wiki-sync.yml](https://github.com/ametrocavich/vostok-mod-loader/blob/development/.github/workflows/wiki-sync.yml).
+The wiki is generated from [docs/wiki/*.md](https://github.com/ametrocavich/vostok-mod-loader/tree/development/docs/wiki) by [.github/workflows/wiki-sync.yml](https://github.com/ametrocavich/vostok-mod-loader/blob/development/.github/workflows/wiki-sync.yml).
 
-The workflow triggers on push to `development` or `master` when `docs/wiki/**` changes. It clones `<repo>.wiki.git` using the default `GITHUB_TOKEN` (scoped to `contents: write`), rsyncs `docs/wiki/` into the clone with `--delete`, and pushes a commit. Since the wiki git repo is considered part of the repo's content scope, no PAT is needed.
+The workflow runs on a push to `development` or `master` that touches `docs/wiki/**` (and on manual dispatch). It clones `<repo>.wiki.git` with the default `GITHUB_TOKEN` (`contents: write`), rsyncs `docs/wiki/` into the clone with `--delete`, and pushes one commit named after the source SHA. The wiki repository counts as repo content, so no PAT is needed.
 
-To edit a page, PR changes to `docs/wiki/*.md` on `development`. The wiki updates itself on merge.
+To change a page, PR the edit to `docs/wiki/*.md` on `development`. The wiki updates on merge.

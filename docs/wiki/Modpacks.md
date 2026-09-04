@@ -1,63 +1,67 @@
 # Modpacks
 
-A **modpack** is a mod list shipped as a single `.zip`: which mods are on, their load order, the author's in-game mod settings, and where to download each mod from. Drop the zip into your mods folder, click **Apply**, and the launcher downloads anything you're missing and switches you to the author's exact setup. New in 3.3.0.
+A modpack is a mod list shipped as one small `.zip`: which mods are on, their load order, the author's in-game mod settings, and where to download each mod from. It does not contain the mods themselves. Drop the zip into your mods folder, click **Apply**, and the launcher downloads anything you are missing and switches you to the author's setup. New in 3.3.0.
 
 The **Modpacks** tab is the third tab in the pre-launch window.
 
-A modpack is a small recipe file, not a copy of the mods themselves -- it lists which mods are on, their order, and where to download each one. Applying it downloads the actual mods from the site each one came from (VostokMods or ModWorkshop). A mod can only be downloaded automatically if the pack knows where it is hosted; any that aren't must be installed by hand. (Curious what's inside the file? See [Profile-Format](Profile-Format) -- the format inside a modpack's `profile.json`.)
+Applying a pack downloads each mod from the site it came from, VostokMods or ModWorkshop. A mod can only be downloaded automatically if the pack knows where it is hosted; the rest you install by hand. Modpacks are local files. There is no site that hosts them; you share the zip however you like. Curious what is inside? See [Profile-Format](Profile-Format).
 
 ## Creating a modpack
 
-From the Modpacks tab, the **Save current profile as modpack** button saves your active profile as `<name>.zip` in your mods folder. It refuses to overwrite an existing zip. The save dialog takes an optional author handle (remembered for next time) and a description shown on the pack's row.
+The **Save current profile as modpack** button on the Modpacks tab saves your active profile as `<name>.zip` in your mods folder. If a zip of that name already exists the save is refused (`A file named <name>.zip already exists in your mods folder -- pick a different modpack name`). The save dialog takes an optional author handle, remembered for next time, and a description shown on the pack's row.
 
-If any enabled mod has no known download source, the dialog warns you first: those mods are still listed in the pack, but whoever applies it will have to install them by hand.
+If any enabled mod has no known download source (nothing in its `mod.txt`, and it was not installed through Browse), the dialog warns you first. Those mods are still listed in the pack, but whoever applies it will have to install them by hand.
 
-While a modpack is active you can't save a new one. The button is disabled ("Unload the active modpack first").
+While a modpack is active you cannot save a new one. The button is disabled with the hint `Unload the active modpack first`.
 
 ## Apply
 
-Click **Apply** on a modpack row: the launcher checks the pack, downloads any mods you're missing, backs up your current setup, and switches you to the pack's setup. A malformed pack fails clean. Your current setup is untouched.
+Click **Apply** on a modpack row. A confirmation names the pack, how many mods it activates, and how many it will download, then the launcher downloads the missing mods, backs up your current setup, and switches you to the pack's setup. A malformed pack fails before anything changes.
 
-Mods that fail to download show as failures you can retry. A mod the pack has no download link for shows an explicit reason -- "the modpack has no download info for this mod -- install it manually" -- rather than silently vanishing.
+Mods that fail to download show up in a summary you can retry from. A mod the pack has no download link for gets an explicit reason instead of vanishing:
 
-While a pack is applying you can **Cancel**; the in-flight download finishes (it can't be interrupted cleanly mid-request) but no further ones start, and you get a partial-success summary.
+- `the modpack has no download info for this mod -- install it manually`
+- `the modpack does not say where this mod is hosted -- install it manually`
+- `this mod is hosted on Nexus Mods, which the loader cannot download from -- install it manually`
+
+While the downloads run you can **Cancel**. The download in flight finishes (it cannot be interrupted cleanly mid-request), no further ones start, and the apply stops before touching your profiles: `Apply cancelled -- the modpack was not applied and your profiles are unchanged.` Any mods that had already downloaded stay in your mods folder.
 
 Only one modpack can be active at a time. To apply a different pack, **Unload** the current one first.
 
 ## Unload
 
-Click **Unload** to go back to exactly the setup you had before applying. Your mods, settings, and any files the pack replaced are restored.
+Click **Unload** to go back to the setup you had before applying. Your profile, your MCM settings, and any files the pack replaced are restored.
 
-Your edits to the pack are kept, so re-applying the same pack resumes where you left off rather than resetting to the author's defaults.
+Your edits to the pack are kept, so re-applying the same pack resumes where you left off instead of resetting to the author's defaults.
 
-**Safety stop:** if the backup is missing (corrupt or hand-edited launcher config), unload aborts and leaves everything untouched rather than wiping your setup. To force-remove the pack in that case, quit the game and delete the `active_modpack` line from `mod_config.cfg`.
+If the backup is missing (a corrupt or hand-edited launcher config), unload refuses and leaves everything untouched: `The backup for this modpack is missing, so nothing was unloaded and your profiles are untouched.` To force-remove the pack in that case, quit the game and delete the `active_modpack` line from `mod_config.cfg`.
 
 ## Re-apply
 
-Clicking **Apply** on the already-active pack is a re-apply: it re-runs only the download step (to pick up mods that failed the first time), so it never clobbers your backup and never discards edits you made while the pack was active. A **Retry failed** button in the apply summary re-attempts only the downloads that failed.
+Clicking **Apply** on the already-active pack re-runs only the download step, to pick up mods that failed the first time. It never overwrites your backup and never discards edits you made while the pack was active. The **Retry failed** button in the apply summary re-attempts only the downloads that failed.
 
 ## Restore backup
 
-As an extra safety net, a restore point is saved automatically right before every apply. The **Restore backup** button on the Modpacks tab rolls your profiles, mod settings, and overwritten files back to a point saved before a modpack was applied. Only the newest few restore points are kept.
+A restore point is saved automatically right before every apply. The **Restore backup** button on the Modpacks tab rolls your profiles, MCM settings, and overwritten files back to one of them. The five newest restore points are kept.
 
-Restoring is refused while a pack is active -- Unload first. Unload reverts the pack's files; restoring on top of an active pack would leave its files behind.
+Restoring is refused while a pack is active; Unload first. Unload reverts the pack's files, and restoring on top of an active pack would leave those files behind.
 
 ## While a pack is active, profile editing is limited
 
-While a modpack is active, the Mods tab treats your profile as locked:
+The Mods tab treats your profile as locked while a modpack is active:
 
-- The profile toolbar's **New / Rename / Delete** buttons are disabled ("Unload the active modpack first").
-- The per-row dependency quick-actions -- **Enable dependency**, **Load anyway**, **Re-check** -- are hidden. You can still see *why* a mod is blocked (the orange `won't load -- needs ...` line still renders); you just can't act on it inline until you unload the pack.
+- The profile toolbar's **New / Rename / Delete** buttons are disabled (`Unload the active modpack first`).
+- The per-row dependency actions **Enable dependency**, **Load anyway** and **Re-check** are hidden. The orange `won't load -- needs ...` line still shows why a mod is blocked; you just cannot act on it until you unload the pack.
 
-The Mods tab shows a banner noting the pack is active and that edits save to the pack's setup.
+A banner at the top of the Mods tab reads `Modpack "<name>" is active. Changes here save to the modpack, not your profiles.` with an **Unload** button beside it.
 
 ## For modpack authors
 
-Everything below is internals. You don't need any of it to use modpacks.
+Everything below is internals. You do not need any of it to use modpacks.
 
 ### Zip layout
 
-A modpack zip is exactly:
+A modpack zip is:
 
 ```
 MyPack.zip
@@ -67,19 +71,19 @@ MyPack.zip
     AnotherMod.json
 ```
 
-This is what distinguishes a modpack from a regular mod at scan time: a regular mod has `mod.txt` at the root; a modpack has `profile.json` at the root. The launcher sniffs the zip contents and routes modpacks into the Modpacks tab instead of the Mods tab.
+This is what distinguishes a modpack from a regular mod at scan time: a regular mod has `mod.txt` at the root, a modpack has `profile.json` at the root. The launcher sniffs the zip contents and routes modpacks into the Modpacks tab instead of the Mods tab.
 
-Anything else inside the zip is treated as a `user://` override file and copied into place on apply, **except** launcher-internal paths, which are silently dropped so a modpack can't tamper with launcher state: `mod_config.cfg`, `.profile_snapshots/`, `.modpack_backups/`, `mws_cache/`, `vmz_mount_cache/`, and anything starting with `modloader_`. Paths containing `..` or starting with `/` are rejected too. `MCM/` is handled by the per-profile MCM snapshot mechanic, not the generic override copy.
+Anything else inside the zip is treated as a `user://` override file and copied into place on apply, with these exceptions, which are silently dropped so a modpack cannot tamper with launcher state: `mod_config.cfg`, `mod_pass_state.cfg`, `.profile_snapshots/`, `.modpack_backups/`, `mws_cache/`, `vmz_mount_cache/`, anything starting with `modloader_`, and any `.pck` or `.vmz` file. Paths containing `..` or starting with `/` are rejected too. `MCM/` is handled by the per-profile MCM snapshot mechanism, not the generic override copy.
 
 ### `profile.json`
 
-A modpack's `profile.json` uses the metroprofile v1 format -- see [Profile-Format](Profile-Format) for the full field reference. The modpack-relevant fields:
+A modpack's `profile.json` uses the metroprofile v1 format; see [Profile-Format](Profile-Format) for the full field reference. The modpack-relevant fields:
 
 ```json
 {
   "metroprofile":      1,
   "name":              "Tarkov-style Economy",
-  "modloader_version": "3.3.0",
+  "modloader_version": "3.3.1",
   "exported_at":       "2026-06-20T18:02:55",
   "description":       "Harder AI + scarce loot",
   "author":            "somemodder",
@@ -92,8 +96,8 @@ A modpack's `profile.json` uses the metroprofile v1 format -- see [Profile-Forma
     "scarce_loot@1.4.0":    50
   },
   "sources": {
-    "harsher_ai@2.1.0":   { "provider": "modworkshop", "id": "12345", "modworkshop_id": 12345, "version": "2.1.0" },
-    "scarce_loot@1.4.0":  { "provider": "modworkshop", "id": "67890", "modworkshop_id": 67890 }
+    "harsher_ai@2.1.0":   { "provider": "vostokmods", "id": "harsher-ai", "version": "2.1.0" },
+    "scarce_loot@1.4.0":  { "provider": "modworkshop", "id": "67890", "modworkshop_id": 67890, "version": "1.4.0" }
   },
   "dep_ignore": {
     "harsher_ai@2.1.0": true
@@ -110,15 +114,15 @@ Required fields are validated before apply touches any state: `metroprofile` mus
 | Field | Type | Required | Meaning |
 |---|---|---|---|
 | `provider` | string | yes (new format) | Host token: `modworkshop`, `vostokmods`, or `nexus`. |
-| `id` | string | yes (new format) | That host's mod id. |
-| `modworkshop_id` | int | mirror | Legacy compatibility mirror, written **only** when `provider == "modworkshop"`. An older loader reads this; a newer one reads `provider`+`id`. Absent for non-ModWorkshop mods so an old loader does not download the wrong one. |
-| `version` | string | no | Exact version to pin. When set, apply fetches that version; when absent, it fetches the author's primary file. |
+| `id` | string | yes (new format) | That host's mod id. For VostokMods this is the slug. |
+| `modworkshop_id` | int | mirror | Compatibility mirror for older loaders, written only when `provider == "modworkshop"`. An older loader reads this; a newer one reads `provider` + `id`. Absent for other hosts so an old loader does not download an unrelated ModWorkshop mod with the same number. |
+| `version` | string | no | Exact version to pin. When set, apply fetches that version, or fails if the host no longer has it; when absent, it fetches the host's current file. |
 
-A record with neither a resolvable `provider`+`id` nor a positive `modworkshop_id` can't be auto-installed and shows up as an unresolved missing-mod stub.
+A record with neither a resolvable `provider` + `id` nor a positive `modworkshop_id` cannot be auto-installed and appears as a missing-mod row with a reason.
 
-> Each source record is `{provider, id, modworkshop_id?, version?}`. The `modworkshop_id` mirror is written only for ModWorkshop-hosted mods (it lets an older loader read the pack); other providers carry `provider` + `id` and no mirror. The launcher's auto-generated modpacks include `version`; older / hand-written ones may carry only the id, in which case the primary file is fetched. `sources` is built from each installed mod's `[updates] source=` (or the legacy `modworkshop=`) plus `[mod] version=`, so a mod that declares EITHER key gets a source entry and can be auto-installed; a mod that declares no source at all gets no entry and must be installed manually.
+`sources` is built from each installed mod's `[updates] source=` (or the legacy `modworkshop=`) plus `[mod] version=`. For a mod whose `mod.txt` declares neither, the launcher uses the record it wrote when it downloaded the mod through Browse. A mod with neither gets no entry and must be installed manually on the other side. The launcher's own exports always include `version`; hand-written packs may carry only the id, in which case the current file is fetched.
 
-At apply time, only an exact `profile_key` match (or a case-insensitive `mod_id@version` match) counts as already-installed; a different version of the same mod is treated as missing and the pinned version is fetched, landing beside the copy already there (rename-on-collision). After the downloads land, the pack's `enabled` / `priority` / `dep_ignore` keys are rewritten to the keys those mods actually have on the recipient's machine (matched by `mod_id@version`, or by the pack's source record against the installed mod's source), so a mod the author keyed by filename still enables when the host serves it under another name. A mod listed in `enabled` but absent from `sources` (or with no usable source record) is surfaced as an explicit failure row -- "the modpack has no download info for this mod -- install it manually" -- rather than silently vanishing.
+At apply time, only an exact `profile_key` match (or a case-insensitive `mod_id@version` match) counts as already installed. A different version of the same mod is treated as missing and the pinned version is fetched, landing beside the copy already there with a `-v<version>` suffix. After the downloads land, the pack's `enabled` / `priority` / `dep_ignore` keys are rewritten to the keys those mods actually have on the recipient's machine (matched by `mod_id@version`, or by the pack's source record against the installed mod's source), so a mod the author keyed by filename still enables when the host serves it under another name.
 
 ### Generated state
 
@@ -129,13 +133,13 @@ At apply time, only an exact `profile_key` match (or a case-insensitive `mod_id@
 | `mod_config.cfg` -> `profile._before_modpack_<name>.*` | pre-apply backup of your profile |
 | `user://.profile_snapshots/modpack__<name>/` | the pack's MCM |
 | `user://.profile_snapshots/_before_modpack_<name>/` | your pre-apply MCM + override snapshots + `overrides_manifest.json` |
-| `user://.modpack_backups/` | independent pre-apply restore points (newest few kept) -- what **Restore backup** restores |
+| `user://.modpack_backups/` | independent pre-apply restore points (five newest kept), what **Restore backup** restores |
 
 See [Config-Files](Config-Files) for the full key reference.
 
 ## Related
 
-- [Browse](Browse) -- where Apply downloads missing mods from.
-- [Profile-Format](Profile-Format). The metroprofile v1 format inside a modpack's `profile.json`.
-- [Config-Files](Config-Files) -- `active_modpack`, `modpack_backup_profile`, and the managed profile sections on disk.
-- [Mod-Format](Mod-Format). The `[updates] source=` field that feeds `sources`.
+- [Browse](Browse): where Apply downloads missing mods from.
+- [Profile-Format](Profile-Format): the metroprofile v1 format inside a modpack's `profile.json`.
+- [Config-Files](Config-Files): `active_modpack`, `modpack_backup_profile`, and the managed profile sections on disk.
+- [Mod-Format](Mod-Format): the `[updates] source=` field that feeds `sources`.
