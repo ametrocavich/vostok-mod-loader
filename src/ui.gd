@@ -5360,6 +5360,19 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	load_more_btn.visible = false
 	container.add_child(load_more_btn)
 
+	# Empty the list the moment the view changes. The fetch that follows
+	# clears it again on render, but that is seconds away, and until then
+	# the previous host's rows would sit under a toolbar that says
+	# otherwise. Search text is the exception: results stay while typing so
+	# a refinement does not blank the screen on every keystroke.
+	var clear_list_now := func(label: String):
+		if not is_instance_valid(list):
+			return
+		for child in list.get_children():
+			child.queue_free()
+		load_more_btn.visible = false
+		set_status.call(label, COL_TEXT_DIM)
+
 	# Enable/disable toggle from a Browse row. Mutates the live entry, saves,
 	# and rebuilds the Mods tab so its row agrees.
 	var on_toggle := func(ref_key: String, enabled: bool, check: CheckBox):
@@ -5788,6 +5801,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			v["sort_key"] = key
 			v["sort_field"] = str(opt.get("row_field", ""))
 			v["sort_label"] = str(opt.get("label", ""))
+		clear_list_now.call("Loading...")
 		route.call()
 	)
 
@@ -5796,6 +5810,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		var md: Variant = category_dropdown.get_item_metadata(idx)
 		v["category_ref"] = str(md) if md != null else ""
 		v["category_name"] = category_dropdown.get_item_text(idx) if idx > 0 else ""
+		clear_list_now.call("Loading...")
 		route.call()
 	)
 
@@ -5809,6 +5824,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		v["categories_loaded"] = false
 		apply_provider_controls.call(p)
 		clear_browse_banner.call()
+		clear_list_now.call("Loading " + host_display_name(p) + "...")
 		(state["fn_populate_categories"] as Callable).call()
 		route.call()
 	)
