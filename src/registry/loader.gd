@@ -327,12 +327,14 @@ func _register_shelter_or_map(id: String, data: Variant, default_shelter: bool, 
 		if not _register_scene_path(id, sp_data):
 			return false
 		auto_scene_path = true
+	# Without the registry rewrite, shelters is still vanilla's const Array
+	# and the append would fail at runtime. Refuse instead of half-registering.
+	if not ("_rtv_mod_shelters" in ldr):
+		push_warning("[Registry] register('%s', '%s'): Loader is missing _rtv_mod_shelters; rewriter didn't fire. Does any mod declare [registry]?" % [label, id])
+		return false
 	ldr.shelters.append(id)
 	# Compiler.Spawn's prelude consults this injected dict.
-	if "_rtv_mod_shelters" in ldr:
-		ldr._rtv_mod_shelters[id] = entry
-	else:
-		push_warning("[Registry] register('%s', '%s'): Loader is missing _rtv_mod_shelters; rewriter didn't fire. Does any mod declare [registry]?" % [label, id])
+	ldr._rtv_mod_shelters[id] = entry
 	reg[id] = {"auto_scene_path": auto_scene_path, "entry": entry, "kind": label}
 	_registry_registered["shelters"] = reg
 	_log_debug("[Registry] registered %s '%s' (shelter=%s, connected_to='%s')" \
