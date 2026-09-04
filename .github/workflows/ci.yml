@@ -2,8 +2,8 @@ name: ci
 
 # Build modloader.gd from src/ and put it in front of a real GDScript compiler.
 #
-# This exists because until now NOTHING compiled this project in CI. src/ is 30+
-# files concatenated into one 27,000-line script sharing a single namespace, so
+# src/ is 48 files concatenated into one 24,000-line script sharing a single
+# namespace, so
 # the failure modes are exactly the ones review misses: two files defining the
 # same top-level function, a call to a function a refactor renamed, a merge that
 # joins two halves that were never built together. Every one of those is a parse

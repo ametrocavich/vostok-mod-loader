@@ -1,6 +1,6 @@
 ## ----- mod_discovery.gd -----
 ## Scans the mods directory, parses mod.txt metadata, builds the ordered list
-## of mod entries, and handles ModWorkshop update checking + downloads.
+## of mod entries, and owns the host-neutral download and update-check path.
 
 func collect_mod_metadata() -> Array[Dictionary]:
 	var entries: Array[Dictionary] = []

@@ -1,54 +1,34 @@
 #!/usr/bin/env bash
 # check_boot_state.sh -- exercise the boot-state files and the crash-loop
-# breaker (backlog item W4.2).
+# breaker. Gate six of check.sh.
 #
-# ===========================================================================
-# THIS GATE IS EXPECTED TO FAIL AGAINST THE CURRENT TREE. IT IS NOT BROKEN.
-# ===========================================================================
-# tests/boot_state/runner.gd was written TEST-FIRST for W4.2, which is still
-# open. It asserts the invariant the breaker is supposed to provide, not the
-# behavior the code has today, so it fails until the fix lands. See the header
-# of the runner for the full contract the fix has to satisfy. Wire it into
-# check.sh when it goes green -- not before, or every other gate gets hidden
-# behind this one's exit code.
+# tests/boot_state/runner.gd drives the real boot functions (_write_pass_state,
+# _check_crash_recovery, _clear_restart_counter, _static_force_vanilla_state)
+# and the real state files, in production order, and asserts the invariant the
+# breaker provides: a crashed Pass 2 bumps the streak, the crash-recovery wipe
+# leaves the streak alone, two consecutive crashes trip the breaker, and any
+# clean finish resets it.
 #
-# Why this exists: W4.2 is a CRITICAL with no coverage at all. Pass 2 writes
-# PASS2_DIRTY_PATH and then clears the restart counter (lifecycle.gd) BEFORE
-# load_all_mods and autoload instantiation -- which is where a third-party mod
-# crashes the process. The next launch's static init sees the dirty marker and
-# calls _static_force_vanilla_state, which DELETES PASS_STATE_PATH, the file
-# the counter lives in. _check_crash_recovery then loads nothing and skips its
-# MAX_RESTART_COUNT body, so the counter is zero forever and the breaker never
-# trips: the player gets a permanent crash-to-desktop loop with no way out but
-# deleting files by hand. All of it is plain file state, so unlike B1 it can be
-# proven headlessly.
-#
-# SCOPE, honestly stated: the harness drives the real boot functions
-# (_write_pass_state, _check_crash_recovery, _clear_restart_counter,
-# _static_force_vanilla_state) and the real state files, in production order.
-# It does NOT prove that _run_pass_1 honors the refusal -- that decision is
-# inline in a function that shows the launcher window, mounts archives and
-# relaunches the process, so it cannot run headlessly. The one ordering fact
-# W4.2 turns on (the counter must not be cleared before the crash window) is
-# checked against the built source text instead, and says so.
+# What it cannot prove: that _run_pass_1 honors the tripped breaker. That
+# decision is inline in a function that shows the launcher window, mounts
+# archives and relaunches the process, so it cannot run headlessly. The one
+# ordering fact the breaker depends on (the streak is not cleared before the
+# crash window) is checked against the built source text instead, and the
+# assertion says so.
 #
 # Needs no decompiled vanilla corpus and no network, so it runs anywhere and
-# can NEVER skip. Never opens a window and never touches the game install:
+# never skips. Never opens a window and never touches the game install:
 # --headless only, against a throwaway project under the system temp dir. The
-# harness scribbles only in that throwaway project's own user:// dir, and it
-# refuses to start if an override.cfg already sits next to the Godot binary
-# (the breaker path writes that exact file).
+# harness writes only inside that project's own user:// dir, and it refuses
+# to start if an override.cfg already sits next to the Godot binary (the
+# breaker path writes that exact file).
 #
 # Usage:
 #   ./check_boot_state.sh              # build.sh must have run first
 #   ./check_boot_state.sh --prove      # self-test: run the harness clean, then
 #                                      #   neuter _clear_restart_counter in the
 #                                      #   TEMP copy (never src/) and require
-#                                      #   the harness to FAIL. Only meaningful
-#                                      #   once W4.2 is fixed: while the clean
-#                                      #   run still fails, this reports
-#                                      #   INCONCLUSIVE rather than pretending
-#                                      #   to have proven anything.
+#                                      #   the harness to FAIL.
 #   GODOT=/path/to/godot ./check_boot_state.sh
 
 set -uo pipefail
@@ -143,9 +123,7 @@ if [[ $PROVE -eq 1 ]]; then
         show_log "$WORK/run_baseline.log"
         elapsed=$((SECONDS - start_s))
         echo "INCONCLUSIVE: the harness already FAILS against the unmutated build (${elapsed}s)." >&2
-        echo "              That is EXPECTED while W4.2 is open -- this harness was written" >&2
-        echo "              test-first -- but it means --prove cannot demonstrate anything." >&2
-        echo "              Re-run --prove once the crash-loop breaker is fixed." >&2
+        echo "              Fix the baseline failure first; --prove cannot demonstrate anything until then." >&2
         echo "              Full log: $WORK/run_baseline.log" >&2
         exit 1
     fi
@@ -190,7 +168,5 @@ if [[ $status -eq 0 ]]; then
     echo "OK: boot-state harness passed in ${elapsed}s (full log: $WORK/run.log)"
 else
     echo "FAILED: boot-state harness (exit $status, ${elapsed}s). Full log: $WORK/run.log" >&2
-    echo "        If W4.2 is still open, this failure is the POINT: the harness was" >&2
-    echo "        written test-first against the crash-loop-breaker invariant." >&2
 fi
 exit $status

@@ -1032,7 +1032,7 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 	# them at 60s.
 	var attempted := filenames.size() - deferred.size()
 	if compile_proof_ok == 0 and attempted > 0:
-		_log_critical("[STABILITY] ALL %d rewrites failed to take effect -- VFS mount, hook pack, or cache eviction is broken. Mods will NOT work this session. Click 'Reset to Vanilla' in the UI or create modloader_disabled in the game folder." % attempted)
+		_log_critical("[STABILITY] ALL %d rewrites failed to take effect -- VFS mount, hook pack, or cache eviction is broken. Mods will NOT work this session. Click 'Launch vanilla' in the launcher or create modloader_disabled in the game folder." % attempted)
 	elif critical_failures.size() > 0:
 		_log_critical("[STABILITY] Hook rewrites missing on critical scripts: %s. Hooks on these scripts will NOT fire this session (likely cache-pinning fallback failure)." % ", ".join(critical_failures))
 	else:

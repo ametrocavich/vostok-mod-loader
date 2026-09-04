@@ -1,18 +1,14 @@
-## runner.gd -- boot-state / crash-loop-breaker harness (backlog item W4.2).
+## runner.gd -- boot-state / crash-loop-breaker harness.
 ## NOT part of the shipped loader. Executed by check_boot_state.sh inside a
 ## THROWAWAY Godot project assembled under the system temp dir; never run it
 ## against this repo or against the Road to Vostok install.
 ##
-## ===========================================================================
-## THIS HARNESS IS EXPECTED TO FAIL AGAINST THE CURRENT TREE. IT IS NOT BROKEN.
-## ===========================================================================
-## It was written TEST-FIRST for W4.2, which is still open. It asserts the
-## INVARIANT the crash-loop breaker is supposed to provide, not the behavior
-## the code has today. Until the fix lands, T2/T3/T4/T5 fail. When the fix
-## lands and every assertion passes, the harness becomes the regression gate
-## that keeps the breaker working.
+## Asserts the invariant the crash-loop breaker provides. It was written
+## before the breaker was fixed and failed against that tree; it is the
+## regression gate that keeps the breaker working now.
 ##
-## W4.2, precisely (verified against src/lifecycle.gd and src/boot.gd):
+## The bug it guards against, precisely (as it stood in src/lifecycle.gd and
+## src/boot.gd before the fix):
 ##   1. Pass 2 writes PASS2_DIRTY_PATH first thing (lifecycle.gd, top of
 ##      _run_pass_2), then calls _clear_restart_counter() -- BEFORE
 ##      load_all_mods and autoload instantiation, which is exactly where a
