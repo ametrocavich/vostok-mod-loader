@@ -212,6 +212,11 @@ func host_empty_caps() -> Dictionary:
 		# cap the Download button keys on; file_history is separate (a host
 		# can serve a current file without exposing history, and vice versa).
 		"resolve_file": false,
+		# Whether a listing row already says if the mod has a file to serve
+		# (default_file_id "" then means "nothing to download"). A host that
+		# leaves this false decides at download time, so the UI offers
+		# Download on every row.
+		"lists_downloadable": false,
 		"version_pin": false,
 		"page_url": false,
 		"batch_versions": false,

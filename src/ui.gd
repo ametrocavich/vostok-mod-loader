@@ -5048,6 +5048,11 @@ func _browse_landing_snapshot_path(provider: String) -> String:
 	return _BROWSE_LANDING_CACHE_DIR.path_join("landing_" + provider.validate_filename() + ".json")
 
 func _browse_landing_snapshot_store(provider: String, sections: Array) -> void:
+	# A landing served from the in-memory list cache is not a refresh;
+	# restamping it would make "Last refreshed" under-report the age.
+	var prev_v: Variant = _browse_landing_snapshots.get(provider)
+	if prev_v is Dictionary and JSON.stringify((prev_v as Dictionary).get("sections")) == JSON.stringify(sections):
+		return
 	var snap := {"sections": sections, "saved_at_unix": int(Time.get_unix_time_from_system())}
 	_browse_landing_snapshots[provider] = snap
 	DirAccess.make_dir_recursive_absolute(_BROWSE_LANDING_CACHE_DIR)
@@ -5116,8 +5121,13 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	# view records live under "views": a sort key or category chosen on one
 	# host never exists in another host's record, so it cannot leak.
 	var providers: PackedStringArray = host_browse_providers()
+	# Open on the source used last time; the first browsable host otherwise.
+	var initial_provider := providers[0] if providers.size() > 0 else HOST_MODWORKSHOP
+	var remembered := str(_get_ui_cfg_value("settings", "browse_source", ""))
+	if providers.has(remembered):
+		initial_provider = remembered
 	var state := {
-		"provider": providers[0] if providers.size() > 0 else HOST_MODWORKSHOP,
+		"provider": initial_provider,
 		"views": {},
 		# Monotonic per fetch; a completion whose seq is stale must not render.
 		"fetch_seq": 0,
@@ -5170,6 +5180,8 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	for p in providers:
 		provider_dropdown.add_item(host_display_name(p))
 		provider_dropdown.set_item_metadata(provider_dropdown.item_count - 1, p)
+		if p == initial_provider:
+			provider_dropdown.select(provider_dropdown.item_count - 1)
 	provider_dropdown.visible = providers.size() > 1
 	provider_dropdown.custom_minimum_size.y = CTRL_H
 	toolbar.add_child(provider_dropdown)
@@ -5550,7 +5562,9 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			for child in list.get_children():
 				child.queue_free()
 			var hdr := Label.new()
-			var sort_label := "" if bool(v["featured"]) or not sort_dropdown.visible else str(v["sort_label"])
+			# Every filtered list is sorted by sort_key, even one reached from
+			# Featured, so the header names that sort.
+			var sort_label := str(v["sort_label"]) if sort_dropdown.visible else ""
 			hdr.text = _browse_results_header_text(str(v["query"]), sort_label, str(v["category_name"]))
 			hdr.add_theme_font_size_override("font_size", FS_HEAD)
 			hdr.add_theme_color_override("font_color", COL_TEXT)
@@ -5801,6 +5815,14 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			v["sort_key"] = key
 			v["sort_field"] = str(opt.get("row_field", ""))
 			v["sort_label"] = str(opt.get("label", ""))
+		else:
+			# Back on Featured: a query typed from here sorts by the host's
+			# first sort, not by whatever was picked before.
+			var sorts: Array = host_sorts(str(state["provider"]))
+			var first: Dictionary = sorts[0] if not sorts.is_empty() else {}
+			v["sort_key"] = str(first.get("key", ""))
+			v["sort_field"] = str(first.get("row_field", ""))
+			v["sort_label"] = str(first.get("label", ""))
 		clear_list_now.call("Loading...")
 		route.call()
 	)
@@ -5819,6 +5841,7 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 		if p == str(state["provider"]):
 			return
 		state["provider"] = p
+		_set_ui_cfg_value("settings", "browse_source", p)
 		var v: Dictionary = view.call()
 		# Categories are per host and the menu was just cleared; refetch.
 		v["categories_loaded"] = false
@@ -6047,7 +6070,8 @@ func _browse_render_mod_row(summary: Dictionary, install_entry: Variant, on_get:
 	# here means "in flight" or "installed". default_file_id "" means the
 	# host reports no downloadable file yet (VostokMods: nothing has passed
 	# its scan), so the button would only ever fail.
-	var can_download := bool(caps["resolve_file"]) and str(summary["default_file_id"]) != ""
+	var can_download := bool(caps["resolve_file"]) \
+			and (not bool(caps["lists_downloadable"]) or str(summary["default_file_id"]) != "")
 	if install_entry is Dictionary:
 		var entry: Dictionary = install_entry as Dictionary
 		var enable_check := CheckBox.new()
@@ -6532,7 +6556,8 @@ func _show_browse_mod_detail_dialog(summary: Dictionary, on_get: Callable) -> vo
 	meta.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	box.add_child(meta)
 
-	var can_download := bool(caps["resolve_file"]) and str(summary["default_file_id"]) != ""
+	var can_download := bool(caps["resolve_file"]) \
+			and (not bool(caps["lists_downloadable"]) or str(summary["default_file_id"]) != "")
 	if not bool(caps["resolve_file"]):
 		var note := Label.new()
 		note.text = host_display_name(provider) + " does not provide downloads through the loader."
@@ -6573,7 +6598,7 @@ func _show_browse_mod_detail_dialog(summary: Dictionary, on_get: Callable) -> vo
 			box.add_child(desc_hdr)
 			box.add_child(desc_rt)
 		desc_rt.text = bbcode
-	show_description.call(str(summary["short_description"]))
+	show_description.call(_markdown_to_bbcode(str(summary["short_description"])))
 
 	# Files section only for hosts that expose version history.
 	var files_status: Label = null

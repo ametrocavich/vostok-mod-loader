@@ -79,6 +79,9 @@ func _mwsp_note_rate_headers(status: int, headers: PackedStringArray) -> void:
 func _mwsp_failure() -> Dictionary:
 	var cooldown := mws_rate_cooldown_seconds()
 	if cooldown > 0:
+		# Mirror the wrapped client's cooldown into the seam's table so
+		# host_error_status can print the countdown.
+		host_arm_cooldown(HOST_MODWORKSHOP, cooldown * 1000)
 		return host_err(HOST_ERR_RATE_LIMITED, 429, "rate limited", cooldown)
 	if _mws_last_transport_failed:
 		return host_err(HOST_ERR_OFFLINE, 0, "could not reach ModWorkshop")

@@ -31,6 +31,9 @@ func _vmp_caps() -> Dictionary:
 	caps["categories"] = true
 	caps["file_history"] = true
 	caps["resolve_file"] = true
+	# Cards carry latestVersion.downloadable, so a row with no clean file
+	# is known before any detail fetch.
+	caps["lists_downloadable"] = true
 	caps["version_pin"] = true
 	caps["page_url"] = true
 	caps["total_count"] = true
