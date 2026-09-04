@@ -809,18 +809,27 @@ func _rename_mcm_snapshot(old_name: String, new_name: String) -> void:
 ## for mods whose author never declared one. {} when neither names a host.
 ## `persisted` is _get_persisted_mod_sources(), read once by the caller.
 func _entry_host_ref(entry: Dictionary, persisted: Dictionary) -> Dictionary:
-	var rec := _mod_source_from_cfg(entry.get("cfg"))
-	if str(rec["provider"]) == "":
-		rec = _normalize_source_record(persisted.get(str(entry.get("profile_key", ""))))
+	var rec := _entry_source_record(entry, persisted)
 	if str(rec["provider"]) == "":
 		return {}
 	return host_ref(str(rec["provider"]), str(rec["id"]))
 
 
+## The full source record behind _entry_host_ref: {provider, id, version},
+## provider "" when the mod has no known host. mod.txt wins; the record
+## written at download time fills in for mods whose author declared nothing.
+func _entry_source_record(entry: Dictionary, persisted: Dictionary) -> Dictionary:
+	var rec := _mod_source_from_cfg(entry.get("cfg"))
+	if str(rec["provider"]) == "":
+		rec = _normalize_source_record(persisted.get(str(entry.get("profile_key", ""))))
+	return rec
+
+
 func _build_profile_sources() -> Dictionary:
 	var sources: Dictionary = {}
+	var persisted := _get_persisted_mod_sources()
 	for entry in _ui_mod_entries:
-		var rec := _mod_source_from_cfg(entry.get("cfg"))
+		var rec := _entry_source_record(entry, persisted)
 		if str(rec["provider"]) == "":
 			continue
 		sources[str(entry["profile_key"])] = _mod_source_payload(rec)
@@ -835,17 +844,17 @@ func _save_preferred_author(author: String) -> void:
 	_set_ui_cfg_value("settings", "preferred_author", author)
 
 
-# Enabled mods whose mod.txt declares no source (no [updates] source= or
-# legacy modworkshop=). They export without download info, so the
+# Enabled mods with no known host: neither mod.txt nor the record written at
+# download time names one. They export without download info, so the
 # save-as-modpack pre-confirm warns about them. Each entry is
 # {mod_name, profile_key}.
 func _enabled_mods_without_source() -> Array:
 	var out: Array = []
+	var persisted := _get_persisted_mod_sources()
 	for entry in _ui_mod_entries:
 		if not bool(entry.get("enabled", false)):
 			continue
-		var has_id := str(_mod_source_from_cfg(entry.get("cfg"))["provider"]) != ""
-		if not has_id:
+		if _entry_host_ref(entry, persisted).is_empty():
 			out.append({
 				"mod_name": str(entry.get("mod_name", "?")),
 				"profile_key": str(entry.get("profile_key", "?")),
