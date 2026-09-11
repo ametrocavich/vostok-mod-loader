@@ -175,6 +175,9 @@ func _build_modpack_entry(file_path: String) -> Dictionary:
 	var exported_at := str(pd.get("exported_at", ""))
 	var enabled: Dictionary = pd.get("enabled", {}) if pd.get("enabled") is Dictionary else {}
 	var enabled_count := _count_truthy(enabled)
+	# A pack imported from a mod site records where it came from, so the
+	# row can offer a refresh and the detail dialog a page link.
+	var hosted: Dictionary = pd.get("hosted", {}) if pd.get("hosted") is Dictionary else {}
 	return {
 		"file_path": file_path,
 		"file_name": file_path.get_file(),
@@ -185,6 +188,7 @@ func _build_modpack_entry(file_path: String) -> Dictionary:
 		"sanitized_name": _sanitize_profile_name(raw_name),
 		"enabled_count": enabled_count,
 		"total_count": enabled.size(),
+		"hosted": hosted,
 	}
 
 # Scan <game>/mods/ for modpack zips; called by the Modpacks tab build.
@@ -692,20 +696,13 @@ func _get_missing_mods_for_modpack(entry: Dictionary) -> Array:
 	var pd: Dictionary = parsed_v
 	var sources: Dictionary = pd.get("sources", {}) if pd.get("sources") is Dictionary else {}
 	var enabled_map: Dictionary = pd.get("enabled", {}) if pd.get("enabled") is Dictionary else {}
+	var unavailable: Dictionary = pd.get("unavailable", {}) if pd.get("unavailable") is Dictionary else {}
+	var checksums: Dictionary = pd.get("checksums", {}) if pd.get("checksums") is Dictionary else {}
 
-	# Installed profile_keys for exact match, plus (lowercase mod_id,
-	# version) for a fallback: saved and runtime-computed keys can disagree
-	# on casing or id format ("FixedDoors@1.1.0" vs "fixed_doors@1.1.0").
-	var installed_keys: Dictionary = {}
-	var installed_id_ver: Dictionary = {}
-	for installed_entry in _ui_mod_entries:
-		var pk: String = str(installed_entry.get("profile_key", ""))
-		if pk != "":
-			installed_keys[pk] = true
-		var inst_id_l: String = str(installed_entry.get("mod_id", "")).to_lower()
-		var inst_ver: String = str(installed_entry.get("version", ""))
-		if inst_id_l != "":
-			installed_id_ver[inst_id_l + "@" + inst_ver] = true
+	var index := _modpack_installed_index()
+	var installed_keys: Dictionary = index["keys"]
+	var installed_id_ver: Dictionary = index["id_ver"]
+	var installed_refs: Dictionary = index["refs"]
 
 	# Lowercased ids that have a usable source under SOME key. An exporter can
 	# pair a stale enabled key ("foo@1.0") with the live sources key
@@ -743,6 +740,17 @@ func _get_missing_mods_for_modpack(entry: Dictionary) -> Array:
 			if installed_id_ver.has(src_id_l + "@" + src_ver):
 				continue
 		var src_data: Variant = sources.get(src_key)
+		# Already installed from the same host at the pinned version (or at
+		# any version when the pack pins none). A hosted pack keys its mods
+		# by slug, so this is the match that stops a re-download per apply.
+		if _modpack_source_installed(src_data, installed_refs):
+			continue
+		if unavailable.has(src_key):
+			var reason := str(unavailable[src_key])
+			_log_warning("[Modpack] " + src_key + " is listed but unavailable (" + reason + ")")
+			missing.append({"profile_key": src_key, "ref": {}, "version": "", "source": _normalize_source_record(null),
+					"unreachable": true, "unreachable_reason": _hosted_unavailable_copy(reason)})
+			continue
 		if not (src_data is Dictionary) or (src_data as Dictionary).is_empty():
 			var at2 := src_key.find("@")
 			if at2 > 0 and sourced_ids.has(src_key.substr(0, at2).to_lower()):
@@ -756,7 +764,8 @@ func _get_missing_mods_for_modpack(entry: Dictionary) -> Array:
 		# re-reading the modpack zip.
 		_persist_single_mod_source(src_key, src_rec)
 		var ref := _source_host_ref(src_rec)
-		var item := {"profile_key": src_key, "ref": ref, "version": version, "source": src_rec}
+		var item := {"profile_key": src_key, "ref": ref, "version": version, "source": src_rec,
+				"sha256": str(checksums.get(src_key, ""))}
 		if not _modpack_ref_downloadable(ref):
 			# Not downloadable; surface an explanatory failure row.
 			item["unreachable"] = true
@@ -850,6 +859,51 @@ func _modpack_sources(entry: Dictionary) -> Dictionary:
 		return {}
 	var sources_v: Variant = (parsed_v as Dictionary).get("sources")
 	return sources_v if sources_v is Dictionary else {}
+
+
+## What is installed, three ways: by profile key, by lowercased id@version,
+## and by host ref (ref_key -> installed version). Saved and runtime keys can
+## disagree on casing or id format, and a pack from a mod site does not know
+## a mod's id at all, only its host ref.
+func _modpack_installed_index() -> Dictionary:
+	var keys: Dictionary = {}
+	var id_ver: Dictionary = {}
+	var refs: Dictionary = {}
+	var persisted := _get_persisted_mod_sources()
+	for installed_entry in _ui_mod_entries:
+		var pk: String = str(installed_entry.get("profile_key", ""))
+		if pk != "":
+			keys[pk] = true
+		var inst_id_l: String = str(installed_entry.get("mod_id", "")).to_lower()
+		var inst_ver: String = str(installed_entry.get("version", ""))
+		if inst_id_l != "":
+			id_ver[inst_id_l + "@" + inst_ver] = true
+		var rk := host_ref_key(_entry_host_ref(installed_entry, persisted))
+		if rk != "":
+			# Several installed copies: any version satisfies an unpinned
+			# record, and the exact one is looked up by value below.
+			var vers: Array = refs.get(rk, [])
+			vers.append(inst_ver)
+			refs[rk] = vers
+	return {"keys": keys, "id_ver": id_ver, "refs": refs}
+
+
+## True when a pack's source record names a host ref that is installed, at
+## the record's version when it pins one.
+func _modpack_source_installed(src_data: Variant, installed_refs: Dictionary) -> bool:
+	if not (src_data is Dictionary):
+		return false
+	var rec := _normalize_source_record(src_data)
+	var rk := host_ref_key(_source_host_ref(rec))
+	if rk == "" or not installed_refs.has(rk):
+		return false
+	var want := str(rec["version"]).strip_edges().lstrip("vV")
+	if want == "":
+		return true
+	for v in (installed_refs[rk] as Array):
+		if str(v).strip_edges().lstrip("vV") == want:
+			return true
+	return false
 
 
 ## The host ref a normalized source record names, or {} when it names none.
@@ -963,6 +1017,7 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 			var pk: String = str(item.get("profile_key", "?"))
 			var ref: Dictionary = item.get("ref", {})
 			var version: String = str(item.get("version", ""))
+			var sha: String = str(item.get("sha256", ""))
 			# Sourceless entries can't be downloaded; record as failures so
 			# the apply summary shows them.
 			if bool(item.get("unreachable", false)):
@@ -985,7 +1040,7 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 			# allow_rename_on_collision: the user's existing file and a
 			# different version can land side by side; scan-time dedup picks
 			# one rather than failing the download over a filename match.
-			var r: Dictionary = await download_mod_from_ref(ref, version, true)
+			var r: Dictionary = await download_mod_from_ref(ref, version, true, sha)
 			if bool(r.get("ok", false)):
 				done_dl += 1
 				_log_info("[Modpack]   ok: " + str(r.get("file_name", "?")))
@@ -1006,6 +1061,7 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 					"error": err,
 					"ref": ref,
 					"version": str(item.get("version", "")),
+					"sha256": sha,
 				})
 				_log_warning("[Modpack]   failed: " + pk + " -- " + err)
 		_ui_mod_entries = collect_mod_metadata()
@@ -1316,6 +1372,7 @@ func retry_failed_downloads(failures: Array, progress: Callable = Callable()) ->
 		var pk: String = str(item.get("profile_key", "?"))
 		var ref: Dictionary = item.get("ref", {})
 		var version: String = str(item.get("version", ""))
+		var sha: String = str(item.get("sha256", ""))
 		if not _modpack_ref_downloadable(ref):
 			still_failed.append(item)
 			continue
@@ -1328,7 +1385,7 @@ func retry_failed_downloads(failures: Array, progress: Callable = Callable()) ->
 		if progress.is_valid():
 			progress.call({"current": i + 1, "total": failures.size(), "mod_name": pk, "action": "retrying"})
 		_log_info("[Modpack][Retry] " + pk + " (" + host_ref_key(ref) + ")")
-		var r: Dictionary = await download_mod_from_ref(ref, version, true)
+		var r: Dictionary = await download_mod_from_ref(ref, version, true, sha)
 		if bool(r.get("ok", false)):
 			newly_downloaded += 1
 			_log_info("[Modpack][Retry]   ok: " + str(r.get("file_name", "?")))
@@ -1339,6 +1396,7 @@ func retry_failed_downloads(failures: Array, progress: Callable = Callable()) ->
 				"error": err,
 				"ref": ref,
 				"version": version,
+				"sha256": sha,
 			})
 			_log_warning("[Modpack][Retry]   failed: " + pk + " -- " + err)
 	if newly_downloaded > 0:

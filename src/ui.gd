@@ -2201,6 +2201,14 @@ func build_modpacks_tab(tabs: TabContainer) -> Control:
 		_show_save_modpack_dialog(profile_to_save, orphans, tabs)
 	)
 
+	var hosted_btn := Button.new()
+	hosted_btn.text = "Get from VostokMods"
+	hosted_btn.tooltip_text = "Browse the modpacks published on vostokmods.net, or paste a pack link."
+	hdr_row.add_child(hosted_btn)
+	hosted_btn.pressed.connect(func():
+		_show_hosted_packs_dialog(tabs)
+	)
+
 	var open_folder_btn := Button.new()
 	open_folder_btn.text = "Open mods folder"
 	open_folder_btn.tooltip_text = "Drop modpack zips into this folder -- they appear in the list next time you open this tab."
@@ -2244,7 +2252,7 @@ func build_modpacks_tab(tabs: TabContainer) -> Control:
 	if _modpack_entries.is_empty():
 		# Empty state teaches the concept, not just the mechanics.
 		var empty := Label.new()
-		empty.text = "No modpacks yet.\n\nA modpack is a shareable list of mods -- one small file that gives someone your exact setup in one click (the mods download automatically when they apply it).\n\nSave your current profile as a modpack above, or drop someone else's modpack zip into your mods folder."
+		empty.text = "No modpacks yet.\n\nA modpack is a shareable list of mods -- one small file that gives someone your exact setup in one click (the mods download automatically when they apply it).\n\nGet one from VostokMods above, save your current profile as a modpack, or drop someone else's modpack zip into your mods folder."
 		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		empty.add_theme_color_override("font_color", COL_TEXT_DIM)
 		list.add_child(empty)
@@ -2331,11 +2339,15 @@ func _modpacks_render_row(entry: Dictionary, active_modpack: String, tabs: TabCo
 
 	var enabled_count: int = int(entry.get("enabled_count", 0))
 	var total_count: int = int(entry.get("total_count", 0))
+	var hosted: Dictionary = entry.get("hosted", {}) if entry.get("hosted") is Dictionary else {}
+	var is_hosted := str(hosted.get("slug", "")) != ""
 	var meta_lbl := Label.new()
 	if total_count > 0:
 		meta_lbl.text = "%d of %d mods enabled - %s" % [enabled_count, total_count, str(entry.get("file_name", ""))]
 	else:
 		meta_lbl.text = str(entry.get("file_name", ""))
+	if is_hosted:
+		meta_lbl.text = "from VostokMods - " + meta_lbl.text
 	meta_lbl.add_theme_font_size_override("font_size", FS_META)
 	meta_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
 	meta_lbl.clip_text = true
@@ -2360,6 +2372,36 @@ func _modpacks_render_row(entry: Dictionary, active_modpack: String, tabs: TabCo
 		_show_modpack_detail_dialog(captured_entry_for_detail, captured_active, tabs)
 	)
 	_wire_hint(details_btn, "Open the modpack's full mod list and description.")
+
+	if is_hosted:
+		var refresh_btn := Button.new()
+		refresh_btn.text = "Refresh"
+		refresh_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		refresh_btn.disabled = is_active
+		row.add_child(refresh_btn)
+		_wire_hint(refresh_btn, "Unload this pack before refreshing it from VostokMods." if is_active \
+				else "Fetch the pack's current mod list from VostokMods.")
+		var captured_hosted_entry := entry
+		refresh_btn.pressed.connect(func():
+			if not is_instance_valid(refresh_btn):
+				return
+			refresh_btn.disabled = true
+			refresh_btn.text = "Refreshing..."
+			var r: Dictionary = await _hosted_refresh_pack(captured_hosted_entry)
+			if is_instance_valid(refresh_btn):
+				refresh_btn.disabled = false
+				refresh_btn.text = "Refresh"
+			if not is_instance_valid(_ui_window):
+				return
+			if not bool(r.get("ok", false)):
+				_show_error_dialog("Could not refresh modpack", str(r.get("error", "unknown")))
+			elif bool(r.get("changed", false)):
+				if is_instance_valid(tabs):
+					_rebuild_modpacks_tab(tabs)
+				_show_accept_dialog("Modpack updated", "\"" + str(r.get("name", "")) + "\" was updated from VostokMods. Apply it to get the changes.")
+			else:
+				_show_info_toast("\"" + str(r.get("name", "")) + "\" is up to date with VostokMods.")
+		)
 
 	if is_active:
 		var active_lbl := Label.new()
@@ -2668,12 +2710,15 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 	var installed_count := 0
 	var missing_count := 0
 
-	var installed_keys: Dictionary = {}
-	for ient in _ui_mod_entries:
-		installed_keys[str(ient.get("profile_key", ""))] = true
+	var index := _modpack_installed_index()
+	var installed_keys: Dictionary = index["keys"]
+	var installed_refs: Dictionary = index["refs"]
+	var unavailable_map: Dictionary = parsed.get("unavailable", {}) if parsed.get("unavailable") is Dictionary else {}
+	var key_installed := func(k: String) -> bool:
+		return installed_keys.has(k) or _modpack_source_installed(sources_map.get(k), installed_refs)
 
 	for k_v in enabled_map.keys():
-		if installed_keys.has(str(k_v)):
+		if key_installed.call(str(k_v)):
 			installed_count += 1
 		else:
 			missing_count += 1
@@ -2713,10 +2758,11 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 		for k_v in sorted_keys:
 			var k: String = str(k_v)
 			var en: bool = _json_truthy(enabled_map[k_v])
-			var installed: bool = installed_keys.has(k)
+			var installed: bool = key_installed.call(k)
 			# Either era's record shape; the normalizer decides which.
 			var src_rec := _normalize_source_record(sources_map.get(k_v))
 			var has_source: bool = str(src_rec["provider"]) != ""
+			var unavailable_reason: String = str(unavailable_map.get(k_v, ""))
 
 			var mod_row := HBoxContainer.new()
 			mod_row.add_theme_constant_override("separation", SP_M)
@@ -2730,7 +2776,8 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 			mod_row.add_child(en_lbl)
 
 			var key_lbl := Label.new()
-			key_lbl.text = k
+			# A hosted pack keys mods by slug; show the slug, not the prefix.
+			key_lbl.text = k.trim_prefix(HOSTED_KEY_PREFIX)
 			key_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			key_lbl.clip_text = true
 			# Ellipsis + hover tooltip.
@@ -2746,6 +2793,11 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 			elif has_source:
 				status_lbl.text = "Will download"
 				status_lbl.add_theme_color_override("font_color", COL_ACCENT)
+			elif unavailable_reason != "":
+				status_lbl.text = "Not available"
+				status_lbl.tooltip_text = _hosted_unavailable_copy(unavailable_reason)
+				status_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
+				status_lbl.add_theme_color_override("font_color", COL_ERR)
 			else:
 				status_lbl.text = "Manual install"
 				status_lbl.add_theme_color_override("font_color", COL_ERR)
@@ -2754,6 +2806,13 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 			mod_row.add_child(status_lbl)
 
 	# Action button on the dialog's native button bar.
+	var hosted_d: Dictionary = entry.get("hosted", {}) if entry.get("hosted") is Dictionary else {}
+	var page_url := str(hosted_d.get("url", ""))
+	if page_url.begins_with("https://vostokmods.net/"):
+		var page_btn := d.add_button("Open page on VostokMods", false, "")
+		page_btn.pressed.connect(func():
+			OS.shell_open(page_url)
+		)
 	if is_active:
 		var unload_btn := d.add_button("Unload", true, "")
 		style_danger_button(unload_btn)
@@ -2776,6 +2835,240 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 	_attach_ui_dialog(d)
 	_wire_accept_dismiss(d)
 	d.popup_centered()
+
+
+# Modpacks published on VostokMods: a paste box for a pack link and a
+# searchable list of packs. "Get" writes the pack into mods/ as a local
+# modpack zip; applying it is the same flow as any other pack.
+func _show_hosted_packs_dialog(tabs: TabContainer) -> void:
+	var d := AcceptDialog.new()
+	d.title = "Modpacks on VostokMods"
+	d.ok_button_text = "Close"
+	d.min_size = _dialog_fit_size(Vector2i(680, 560))
+
+	var outer := VBoxContainer.new()
+	outer.add_theme_constant_override("separation", SP_M)
+	d.add_child(outer)
+
+	var paste_row := HBoxContainer.new()
+	paste_row.add_theme_constant_override("separation", SP_M)
+	outer.add_child(paste_row)
+	var paste := LineEdit.new()
+	paste.placeholder_text = "Paste a modpack link from vostokmods.net"
+	paste.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	paste.custom_minimum_size.y = CTRL_H
+	paste_row.add_child(paste)
+	var add_btn := Button.new()
+	add_btn.text = "Add"
+	paste_row.add_child(add_btn)
+
+	var status := Label.new()
+	status.add_theme_font_size_override("font_size", FS_BODY)
+	status.add_theme_color_override("font_color", COL_TEXT_DIM)
+	status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	status.text = "Loading packs..."
+	outer.add_child(status)
+
+	var search_row := HBoxContainer.new()
+	search_row.add_theme_constant_override("separation", SP_M)
+	outer.add_child(search_row)
+	var search := LineEdit.new()
+	search.placeholder_text = "Search packs..."
+	search.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	search.custom_minimum_size.y = CTRL_H
+	search_row.add_child(search)
+	var sort_dropdown := OptionButton.new()
+	for opt in [["updated", "Recently updated"], ["newest", "Newest"], ["name", "Name"]]:
+		sort_dropdown.add_item(str(opt[1]))
+		sort_dropdown.set_item_metadata(sort_dropdown.item_count - 1, str(opt[0]))
+	var sort_popup := sort_dropdown.get_popup()
+	sort_popup.always_on_top = true
+	sort_popup.transient = true
+	search_row.add_child(sort_dropdown)
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.custom_minimum_size = Vector2(0, 320)
+	outer.add_child(scroll)
+	var list := VBoxContainer.new()
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(list)
+
+	var load_more := Button.new()
+	load_more.text = "Load more"
+	load_more.visible = false
+	outer.add_child(load_more)
+
+	# Local hosted packs by slug, so a row can read "Added" instead of "Get".
+	var local_by_slug := func() -> Dictionary:
+		var out := {}
+		for e in _modpack_entries:
+			var h: Dictionary = e.get("hosted", {}) if e.get("hosted") is Dictionary else {}
+			if str(h.get("slug", "")) != "":
+				out[str(h.get("slug", ""))] = e
+		return out
+
+	var state := {"cursor": "", "seq": 0, "busy": false}
+
+	var after_import := func(r: Dictionary, get_btn: Button):
+		if not is_instance_valid(d):
+			return
+		if not bool(r.get("ok", false)):
+			status.text = str(r.get("error", "unknown"))
+			status.add_theme_color_override("font_color", COL_ERR)
+			if is_instance_valid(get_btn):
+				get_btn.disabled = false
+				get_btn.text = "Get"
+			return
+		_modpack_entries = collect_modpack_metadata()
+		if is_instance_valid(tabs):
+			_rebuild_modpacks_tab(tabs)
+		status.text = "Added \"" + str(r.get("name", "")) + "\" to your modpacks. Close this window and click Apply on it."
+		status.add_theme_color_override("font_color", COL_OK)
+		if is_instance_valid(get_btn):
+			get_btn.text = "Added"
+			get_btn.disabled = true
+
+	var render := func(rows: Array, append: bool):
+		if not append:
+			for c in list.get_children():
+				c.queue_free()
+		var local: Dictionary = local_by_slug.call()
+		for row_v in rows:
+			var row: Dictionary = row_v
+			var line := HBoxContainer.new()
+			line.add_theme_constant_override("separation", SP_L)
+			list.add_child(line)
+			var col := VBoxContainer.new()
+			col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+			line.add_child(col)
+			var name_lbl := Label.new()
+			name_lbl.text = str(row["name"])
+			name_lbl.add_theme_font_size_override("font_size", FS_EMPH)
+			name_lbl.add_theme_color_override("font_color", COL_TEXT_HI)
+			name_lbl.clip_text = true
+			name_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+			col.add_child(name_lbl)
+			var parts := PackedStringArray()
+			if str(row["author"]) != "":
+				parts.append("by " + str(row["author"]))
+			if int(row["mod_count"]) >= 0:
+				parts.append("%d mods" % int(row["mod_count"]))
+			var when := _format_iso_datetime(str(row["updated_at"]))
+			if when != "":
+				parts.append("updated " + when)
+			col.add_child(_make_sub_label(" - ".join(parts), COL_TEXT_DIM, ""))
+			if str(row["summary"]) != "":
+				var sum_lbl := _make_sub_label(str(row["summary"]), COL_TEXT, "")
+				sum_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+				col.add_child(sum_lbl)
+			var page_btn := Button.new()
+			page_btn.text = "Page"
+			page_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+			var captured_page := str(row["page_url"])
+			page_btn.pressed.connect(func():
+				if captured_page.begins_with("https://vostokmods.net/"):
+					OS.shell_open(captured_page)
+			)
+			line.add_child(page_btn)
+			var get_btn := Button.new()
+			get_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+			var slug := str(row["slug"])
+			if local.has(slug):
+				get_btn.text = "Added"
+				get_btn.disabled = true
+			else:
+				get_btn.text = "Get"
+			line.add_child(get_btn)
+			var captured_manifest := str(row["manifest_url"])
+			get_btn.pressed.connect(func():
+				if not is_instance_valid(get_btn):
+					return
+				get_btn.disabled = true
+				get_btn.text = "Getting..."
+				status.text = "Fetching \"" + str(row["name"]) + "\"..."
+				status.add_theme_color_override("font_color", COL_TEXT_DIM)
+				var r: Dictionary = await _hosted_pack_from_link(captured_manifest)
+				after_import.call(r, get_btn)
+			)
+			list.add_child(HSeparator.new())
+
+	var fetch := func(append: bool):
+		state["seq"] = int(state["seq"]) + 1
+		var my_seq := int(state["seq"])
+		if not append:
+			state["cursor"] = ""
+		load_more.disabled = true
+		status.text = "Loading packs..." if not append else "Loading more..."
+		status.add_theme_color_override("font_color", COL_TEXT_DIM)
+		var md: Variant = sort_dropdown.get_item_metadata(sort_dropdown.selected)
+		var res: Dictionary = await _vmp_list_modpacks({
+			"query": search.text, "sort": str(md) if md != null else "", "cursor": str(state["cursor"]),
+		})
+		if not is_instance_valid(d) or int(state["seq"]) != my_seq:
+			return
+		if not res["ok"]:
+			status.text = host_error_message(HOST_VOSTOKMODS, res)
+			status.add_theme_color_override("font_color", COL_ERR)
+			load_more.disabled = false
+			return
+		var page: Dictionary = res["data"]
+		render.call(page["rows"], append)
+		state["cursor"] = str(page["next_cursor"])
+		load_more.visible = bool(page["has_more"])
+		load_more.disabled = not bool(page["has_more"])
+		var total := int(page["total"])
+		if (page["rows"] as Array).is_empty() and not append:
+			status.text = "No packs match." if search.text.strip_edges() != "" else "No modpacks on VostokMods yet."
+		elif total >= 0:
+			status.text = "%d pack(s) on VostokMods" % total
+		else:
+			status.text = ""
+
+	var debounce := Timer.new()
+	debounce.one_shot = true
+	debounce.wait_time = 0.3
+	d.add_child(debounce)
+	debounce.timeout.connect(func(): fetch.call(false))
+	search.text_changed.connect(func(_t: String):
+		debounce.stop()
+		debounce.start()
+	)
+	search.text_submitted.connect(func(_t: String):
+		debounce.stop()
+		fetch.call(false)
+	)
+	sort_dropdown.item_selected.connect(func(_i: int): fetch.call(false))
+	load_more.pressed.connect(func(): fetch.call(true))
+
+	var add_from_paste := func():
+		if bool(state["busy"]):
+			return
+		var text := paste.text.strip_edges()
+		if text.is_empty():
+			return
+		state["busy"] = true
+		add_btn.disabled = true
+		status.text = "Fetching the pack..."
+		status.add_theme_color_override("font_color", COL_TEXT_DIM)
+		var r: Dictionary = await _hosted_pack_from_link(text)
+		state["busy"] = false
+		if is_instance_valid(add_btn):
+			add_btn.disabled = false
+		after_import.call(r, null)
+		if bool(r.get("ok", false)) and is_instance_valid(paste):
+			paste.text = ""
+			# The list's Get buttons may now say Added.
+			fetch.call(false)
+	add_btn.pressed.connect(add_from_paste)
+	paste.text_submitted.connect(func(_t: String): add_from_paste.call())
+
+	_attach_ui_dialog(d)
+	_wire_accept_dismiss(d)
+	d.popup_centered()
+	fetch.call(false)
 
 
 # Mirror of _rebuild_mods_tab, preserving current_tab. The

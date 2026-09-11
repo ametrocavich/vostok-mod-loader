@@ -1,6 +1,6 @@
 # Modules
 
-A tour of the `src/` tree. The order follows the `FILES` array in `build.sh`, which is the order the files are concatenated into `modloader.gd`. Dependencies flow top-down: a const referenced by another const's initializer must come earlier, and everything shares one namespace. Function bodies can call anything anywhere. 48 files as of 3.3.1.
+A tour of the `src/` tree. The order follows the `FILES` array in `build.sh`, which is the order the files are concatenated into `modloader.gd`. Dependencies flow top-down: a const referenced by another const's initializer must come earlier, and everything shares one namespace. Function bodies can call anything anywhere. 49 files as of 3.3.1.
 
 Links point at the file; function names are the anchors. Line numbers drift.
 
@@ -122,6 +122,10 @@ Modpack discovery, apply, unload. A modpack is a `.zip` in `<game>/mods/` with `
 - `_materialize_modpack_profile` is the live parser of `profile.json`. Its sole writer is `_profile_to_json_string` in `ui.gd`.
 - Packs may ship file overrides; `_apply_modpack_overrides` copies them under `user://` with a deny list (`MODPACK_OVERRIDE_DENY_PREFIXES`, which includes `mws_cache/`, and no `.pck` / `.vmz`).
 
+
+### [hosted_modpacks.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hosted_modpacks.gd)
+
+Modpacks published on vostokmods.net. Turns a pack manifest (`GET /api/modpacks/{slug}/manifest`) into an ordinary local modpack zip so the apply path in `modpacks.gd` needs no second format. `_hosted_manifest_to_profile` builds the `profile.json` payload (mods keyed `vostokmods:<slug>`, sources pinned to the manifest version, `unavailable` and `checksums` maps, a `hosted` record with the site's change hash); `_hosted_mcm_files` writes the pack's MCM settings, merging an MCM export file into per-mod `config.ini` the way MCM's own Import does; `_hosted_pack_from_link` and `_hosted_refresh_pack` are the network entry points. The site's listing and manifest calls live in `host_vostokmods.gd` (`_vmp_list_modpacks`, `_vmp_fetch_modpack_manifest`, `_vmp_modpack_manifest_url`), called directly because packs are a VostokMods feature.
 ### [mod_loading.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_loading.gd)
 
 The runtime loading pipeline: mounts archives, scans `.gd` files, registers file claims, queues autoloads, applies `[script_extend]` / `[script_overrides]`.

@@ -4,7 +4,21 @@ A modpack is a mod list shipped as one small `.zip`: which mods are on, their lo
 
 The **Modpacks** tab is the third tab in the pre-launch window.
 
-Applying a pack downloads each mod from the site it came from, VostokMods or ModWorkshop. A mod can only be downloaded automatically if the pack knows where it is hosted; the rest you install by hand. Modpacks are local files. There is no site that hosts them; you share the zip however you like. Curious what is inside? See [Profile-Format](Profile-Format).
+Applying a pack downloads each mod from the site it came from, VostokMods or ModWorkshop. A mod can only be downloaded automatically if the pack knows where it is hosted; the rest you install by hand. A pack is a local zip you can share however you like, and VostokMods also publishes packs you can pull straight into the launcher (see [Packs from VostokMods](#packs-from-vostokmods)). Curious what is inside the zip? See [Profile-Format](Profile-Format).
+
+## Packs from VostokMods
+
+**Get from VostokMods** on the Modpacks tab opens the packs published on vostokmods.net. Search them, sort by recently updated, newest or name, and click **Get** on one, or paste a pack link into the box at the top (the pack's page address or the "Copy loader link" from the site both work) and click **Add**. The launcher fetches the pack's mod list and writes it into your mods folder as `vostokmods-<slug>.zip`, and from there it is an ordinary modpack: **Apply**, **Unload** and **Restore backup** all work the same way.
+
+A pack from the site lists VostokMods mods only. Each mod is downloaded by its slug at the version the pack names, and when the site publishes a checksum for the file the download is checked against it. A mod the site cannot serve right now shows as **Not available** in the pack's details, with the reason on hover, and is reported on apply instead of downloaded:
+
+- `this mod's file is still being scanned by VostokMods -- try again in a while`
+- `this mod has no downloadable file on VostokMods yet -- try again later`
+- `this mod was removed from VostokMods -- install it manually`
+
+Packs published on the site carry their MCM settings, and applying one restores them the same way a local pack's `MCM/` folder is restored.
+
+A pack you got from the site shows `from VostokMods` in its row and a **Refresh** button. Refresh asks the site whether the pack changed (its mod list, pinned versions or settings); if it did, the local zip is rewritten and you apply it again to pick up the changes. An active pack cannot be refreshed; unload it first. The pack's details dialog has an **Open page on VostokMods** button.
 
 ## Creating a modpack
 
@@ -60,6 +74,8 @@ A banner at the top of the Mods tab reads `Modpack "<name>" is active. Changes h
 Everything below is internals. You do not need any of it to use modpacks.
 
 ### Zip layout
+
+A pack written by **Get from VostokMods** has the same layout; its `profile.json` carries three extra optional fields (`hosted`, `unavailable`, `checksums`) described in [Profile-Format](Profile-Format), and its mods are keyed `vostokmods:<slug>` until apply rewrites them to the installed mods' own keys.
 
 A modpack zip is:
 
@@ -128,7 +144,7 @@ At apply time, only an exact `profile_key` match (or a case-insensitive `mod_id@
 
 | Path | What |
 |---|---|
-| `mods/<name>.zip` | the modpack itself (you put it there) |
+| `mods/<name>.zip` | the modpack itself (you put it there, or **Get from VostokMods** wrote it as `vostokmods-<slug>.zip`) |
 | `mod_config.cfg` -> `profile.modpack__<name>.*` | live state of the applied pack |
 | `mod_config.cfg` -> `profile._before_modpack_<name>.*` | pre-apply backup of your profile |
 | `user://.profile_snapshots/modpack__<name>/` | the pack's MCM |

@@ -21,7 +21,7 @@ src/
   host_vostokmods.gd       # VostokMods adapter (the default host)
   host_nexus.gd            # Nexus adapter, link-out only
   mod_discovery.gd         # scan mods, parse metadata, ordering, downloads
-  modpacks.gd              # modpack scan/apply/unload + restore points
+  modpacks.gd, hosted_modpacks.gd              # modpack scan/apply/unload + restore points
   mod_loading.gd           # mount + apply mods at runtime
   conflict_report.gd       # developer-mode diagnostics
   ui.gd                    # launcher window + tabs
@@ -42,7 +42,7 @@ src/
   debug.gd                 # test scaffolding (gated behind a config flag)
 ```
 
-48 files, in `build.sh`'s `FILES` order (the concat order).
+49 files, in `build.sh`'s `FILES` order (the concat order).
 `docs/wiki/Modules.md` has the per-file tour.
 
 ### Building and checking locally

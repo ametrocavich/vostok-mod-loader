@@ -1,6 +1,6 @@
 # Build
 
-The installable file, `modloader.gd`, is built from the `src/` tree (`src/*.gd` plus `src/registry/*.gd`, 48 files) and is not edited directly. Edit under `src/`, run `./build.sh`, then `./check.sh`.
+The installable file, `modloader.gd`, is built from the `src/` tree (`src/*.gd` plus `src/registry/*.gd`, 49 files) and is not edited directly. Edit under `src/`, run `./build.sh`, then `./check.sh`.
 
 ## build.sh
 
@@ -30,6 +30,7 @@ FILES=(
     "$SRC/host_nexus.gd"
     "$SRC/mod_discovery.gd"
     "$SRC/modpacks.gd"
+    "$SRC/hosted_modpacks.gd"
     "$SRC/mod_loading.gd"
     "$SRC/conflict_report.gd"
     # UI

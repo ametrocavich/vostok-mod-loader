@@ -23,6 +23,11 @@ const _VM_TTL_CATEGORIES_MS := 60 * 60 * 1000
 const _VM_QUERY_MAX_LEN := 100
 const _VM_PAGE_SIZE := 24
 
+# Modpack manifests: the format this build understands. A higher number
+# means the site changed the shape in a way that needs loader work.
+const VM_MODPACK_FORMAT := 2
+const _VM_MODPACK_PAGE_SIZE := 20
+
 
 func _vmp_caps() -> Dictionary:
 	var caps := host_empty_caps()
@@ -351,3 +356,156 @@ func _vmp_latest_versions(ids: PackedStringArray, on_progress: Callable) -> Dict
 		return host_err(HOST_ERR_BAD_RESPONSE, 0,
 				"could not read a version for any of the %d mods checked" % failures)
 	return host_ok(versions)
+
+
+# ----- modpacks --------------------------------------------------------------
+#
+# Packs are a VostokMods feature (the site hosts VostokMods mods only), so
+# these are called by hosted_modpacks.gd directly rather than through the
+# seam. Same transport, cache and cooldown as everything else here.
+
+## One row of GET /api/modpacks -> a pack summary.
+func _vmp_modpack_summary(v: Variant) -> Dictionary:
+	var s := {
+		"slug": "", "name": "", "summary": "", "author": "", "cover_url": "",
+		"mod_count": -1, "manifest_url": "", "page_url": "", "updated_at": "",
+	}
+	if not (v is Dictionary):
+		return s
+	var row: Dictionary = v
+	s["slug"] = _host_str(row.get("slug")).strip_edges()
+	s["name"] = _host_str(row.get("name"))
+	if s["name"] == "":
+		s["name"] = s["slug"]
+	s["summary"] = _host_str(row.get("summary"))
+	s["author"] = _host_str(row.get("author"))
+	s["cover_url"] = _host_str(row.get("coverUrl"))
+	s["mod_count"] = _host_count(row.get("modCount"))
+	s["manifest_url"] = _host_str(row.get("manifestUrl"))
+	if s["manifest_url"] == "" and s["slug"] != "":
+		s["manifest_url"] = VM_API_BASE + "/modpacks/" + str(s["slug"]).uri_encode() + "/manifest"
+	s["page_url"] = _host_str(row.get("url"))
+	if s["page_url"] == "" and s["slug"] != "":
+		s["page_url"] = VM_SITE_BASE + "/modpack/" + str(s["slug"]).uri_encode()
+	s["updated_at"] = _host_str(row.get("updatedAt"))
+	return s
+
+
+## Browse or search packs. q keys: query, sort (updated|newest|name), cursor
+## (page number as text). Data is a host_page of pack summaries.
+func _vmp_list_modpacks(q: Dictionary) -> Dictionary:
+	var params := {"page": maxi(1, str(q.get("cursor", "")).to_int()), "limit": _VM_MODPACK_PAGE_SIZE}
+	var query := str(q.get("query", "")).strip_edges()
+	if query != "":
+		params["q"] = query.substr(0, _VM_QUERY_MAX_LEN)
+	var sort_key := str(q.get("sort", ""))
+	if sort_key != "":
+		params["sort"] = sort_key
+	var res := await _hnet_get_json(HOST_VOSTOKMODS, VM_API_BASE + "/modpacks" + _hnet_query(params), _VM_TTL_LIST_MS)
+	if not res["ok"]:
+		return res
+	var body: Variant = res["data"]
+	if not (body is Dictionary):
+		return host_err(HOST_ERR_BAD_RESPONSE, 0, "VostokMods sent an unexpected response")
+	var rows := []
+	var raw_rows: Variant = (body as Dictionary).get("modpacks")
+	if raw_rows is Array:
+		for row in (raw_rows as Array):
+			var s := _vmp_modpack_summary(row)
+			if str(s["slug"]) != "":
+				rows.append(s)
+	var page := _host_count((body as Dictionary).get("page"))
+	var page_count := _host_count((body as Dictionary).get("pageCount"))
+	var has_more := page > 0 and page_count > page
+	return host_ok(host_page(rows, has_more, str(page + 1) if has_more else "",
+			_host_count((body as Dictionary).get("total"))))
+
+
+## The manifest URL for whatever a user pasted: the manifest link itself,
+## the pack's page address, either without a scheme, or a bare slug. "" for
+## anything that is not on vostokmods.net, so a manifest can never be
+## fetched from a host of the pasted link's choosing.
+func _vmp_modpack_manifest_url(text: String) -> String:
+	var t := text.strip_edges()
+	if t.is_empty():
+		return ""
+	var lower := t.to_lower()
+	var rest := ""
+	if lower.begins_with("https://") or lower.begins_with("http://"):
+		rest = t.substr(t.find("//") + 2)
+	elif lower.begins_with("vostokmods.net") or lower.begins_with("www.vostokmods.net"):
+		rest = t
+	else:
+		# A bare slug: letters, digits and hyphens only.
+		for ch in lower:
+			if not ((ch >= "a" and ch <= "z") or (ch >= "0" and ch <= "9") or ch == "-"):
+				return ""
+		return VM_API_BASE + "/modpacks/" + lower + "/manifest"
+	var slash := rest.find("/")
+	var host := (rest if slash < 0 else rest.substr(0, slash)).to_lower()
+	var at := host.find("@")
+	if at >= 0:
+		return ""
+	var colon := host.find(":")
+	if colon >= 0:
+		host = host.substr(0, colon)
+	if host != "vostokmods.net" and host != "www.vostokmods.net":
+		return ""
+	var path := "" if slash < 0 else rest.substr(slash)
+	var q := path.find("?")
+	if q >= 0:
+		path = path.substr(0, q)
+	var h := path.find("#")
+	if h >= 0:
+		path = path.substr(0, h)
+	var parts := PackedStringArray()
+	for seg in path.split("/", false):
+		parts.append(seg)
+	# /api/modpacks/<slug>/manifest  or  /modpack/<slug>
+	var slug := ""
+	if parts.size() == 4 and parts[0] == "api" and parts[1] == "modpacks" and parts[3] == "manifest":
+		slug = parts[2]
+	elif parts.size() == 2 and (parts[0] == "modpack" or parts[0] == "modpacks"):
+		slug = parts[1]
+	slug = slug.uri_decode().strip_edges().to_lower()
+	if slug.is_empty():
+		return ""
+	for ch in slug:
+		if not ((ch >= "a" and ch <= "z") or (ch >= "0" and ch <= "9") or ch == "-"):
+			return ""
+	return VM_API_BASE + "/modpacks/" + slug + "/manifest"
+
+
+## Shape check for a manifest before anything is written from it. Returns ""
+## when usable, else a one-line reason.
+func _vmp_validate_manifest(m: Variant) -> String:
+	if not (m is Dictionary):
+		return "the manifest is not a JSON object"
+	var d: Dictionary = m
+	var format := _host_count(d.get("format"))
+	if format > VM_MODPACK_FORMAT:
+		return "this modpack was made for a newer version of the mod loader -- update the mod loader and try again"
+	if format < 1:
+		return "the manifest has no format number"
+	if _host_str(d.get("slug")).strip_edges().is_empty():
+		return "the manifest has no slug"
+	if not (d.get("mods") is Array):
+		return "the manifest has no mod list"
+	return ""
+
+
+## GET a manifest by its (already normalized) URL. Data is the manifest with
+## manifest_url filled in. Not cached: the site caps its own cache at 60s and
+## the whole point of a refresh is to see the current list.
+func _vmp_fetch_modpack_manifest(url: String) -> Dictionary:
+	if not url.begins_with(VM_API_BASE + "/modpacks/"):
+		return host_err(HOST_ERR_NOT_FOUND, 0, "not a VostokMods modpack link")
+	var res := await _hnet_get_json(HOST_VOSTOKMODS, url, 0)
+	if not res["ok"]:
+		return res
+	var why := _vmp_validate_manifest(res["data"])
+	if why != "":
+		return host_err(HOST_ERR_BAD_RESPONSE, 0, why)
+	var manifest: Dictionary = (res["data"] as Dictionary).duplicate()
+	manifest["manifest_url"] = url
+	return host_ok(manifest)

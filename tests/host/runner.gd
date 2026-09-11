@@ -67,6 +67,7 @@ func _run() -> void:
 	_t7_modtxt_reader(ml)
 	_t8_vm_pure_surface(ml)
 	_t9_caps_match_wiring(ml)
+	_t10_hosted_modpacks(ml)
 
 	_finish()
 
@@ -506,6 +507,120 @@ func _t9_caps_match_wiring(ml: Object) -> void:
 		_assert(str(ml.host_display_name(provider)) != "",
 				"T9: %s has no display name" % provider)
 
+# A format-2 manifest shaped like the site's own reference doc: one
+# available mod with a checksum, one unavailable (scanning), one removed;
+# mcmConfig carries both shapes at once (a raw per-mod file and an MCM
+# export whose ImportModData must merge into another mod's config.ini).
+const VM_MANIFEST_JSON := """\n{"format": 2, "slug": "hardcore-survival", "name": "Hardcore Survival",\n "summary": "Short description", "author": "Ovrrde",\n "url": "https://vostokmods.net/modpack/hardcore-survival",\n "coverUrl": null, "updatedAt": "2026-09-11T16:07:32.051Z",\n "hash": "0123abcd",\n "mcmConfig": {\n   "doinkoink-mcm/config.ini": "[General]\n\nvolume={\\\"value\\\": 3}\n",\n   "export.ini": "[some-mod]\n\nImportModData={\\\"friendlyName\\\": \\\"Some Mod\\\"}\nspeed={\\\"value\\\": 7, \\\"import_data\\\": {\\\"section\\\": \\\"Movement\\\"}}\n",\n   "../evil.ini": "[x]\n\nImportModData={}\n"\n },\n "mods": [\n   {"loadOrder": 1, "slug": "mod-configuration-menu", "name": "MCM", "author": "metro",\n    "available": true, "reason": null, "version": "2.9.2", "fileName": "mcm.vmz",\n    "fileSize": 4404019, "sha256": "AB12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",\n    "downloadUrl": "https://vostokmods.net/api/mods/mod-configuration-menu/versions/2.9.2/download",\n    "pageUrl": "https://vostokmods.net/mod/mod-configuration-menu"},\n   {"loadOrder": 2, "slug": "still-scanning", "name": "Scanning", "author": "x",\n    "available": false, "reason": "scanning", "version": null, "fileName": null,\n    "fileSize": null, "sha256": null, "downloadUrl": null, "pageUrl": null},\n   {"loadOrder": 3, "slug": "gone", "name": "Gone", "author": "x",\n    "available": false, "reason": "removed", "version": null, "fileName": null,\n    "fileSize": null, "sha256": null, "downloadUrl": null, "pageUrl": null}\n ]}\n"""
+
+const VM_PACK_ROW_JSON := """
+{"id": "01a09139", "slug": "test", "name": "Test", "summary": "", "author": "Admin Prime",
+ "authorId": "admin", "authorAvatarUrl": null, "createdAt": "2026-09-11T16:07:32.051Z",
+ "updatedAt": "2026-09-11T16:30:14.194Z", "modCount": 14, "coverUrl": null,
+ "manifestUrl": "https://vostokmods.net/api/modpacks/test/manifest",
+ "url": "https://vostokmods.net/modpack/test"}
+"""
+
+func _t10_hosted_modpacks(ml: Object) -> void:
+	# Link normalization: every accepted spelling lands on the manifest URL,
+	# and nothing off vostokmods.net is ever fetched.
+	var want := "https://vostokmods.net/api/modpacks/hardcore-survival/manifest"
+	for text in [
+		"https://vostokmods.net/api/modpacks/hardcore-survival/manifest",
+		"http://vostokmods.net/modpack/hardcore-survival",
+		"vostokmods.net/modpack/hardcore-survival?utm=1",
+		"https://www.vostokmods.net/modpack/Hardcore-Survival/",
+		"hardcore-survival",
+	]:
+		_assert(str(ml._vmp_modpack_manifest_url(text)) == want,
+				"T10: link '%s' -> manifest URL (got '%s')" % [text, str(ml._vmp_modpack_manifest_url(text))])
+	for text in [
+		"https://evil.example/api/modpacks/x/manifest",
+		"https://vostokmods.net.evil.example/modpack/x",
+		"https://vostokmods.net@evil.example/modpack/x",
+		"https://vostokmods.net/mod/some-mod",
+		"has space",
+		"",
+	]:
+		_assert(str(ml._vmp_modpack_manifest_url(text)) == "",
+				"T10: link '%s' must be refused (got '%s')" % [text, str(ml._vmp_modpack_manifest_url(text))])
+
+	# Listing row normalizer.
+	var row: Variant = JSON.parse_string(VM_PACK_ROW_JSON)
+	var s: Dictionary = ml._vmp_modpack_summary(row)
+	_assert(str(s["slug"]) == "test" and str(s["name"]) == "Test", "T10: pack summary slug/name")
+	_assert(int(s["mod_count"]) == 14, "T10: pack summary mod_count reads a JSON float as int")
+	_assert(str(s["manifest_url"]).ends_with("/api/modpacks/test/manifest"), "T10: pack summary manifest_url")
+	_assert(str(s["page_url"]) == "https://vostokmods.net/modpack/test", "T10: pack summary page_url")
+	_assert(str(s["cover_url"]) == "", "T10: null coverUrl reads as empty, not '<null>'")
+
+	# Manifest validation.
+	var manifest: Variant = JSON.parse_string(VM_MANIFEST_JSON)
+	_assert(manifest is Dictionary, "T10: manifest fixture parses")
+	_assert(str(ml._vmp_validate_manifest(manifest)) == "", "T10: a format-2 manifest validates")
+	var newer: Dictionary = (manifest as Dictionary).duplicate()
+	newer["format"] = 3
+	_assert(str(ml._vmp_validate_manifest(newer)) != "", "T10: a newer format is refused")
+	_assert(str(ml._vmp_validate_manifest({"format": 2, "slug": "x"})) != "", "T10: a manifest with no mods is refused")
+
+	# Manifest -> profile.json conversion.
+	var conv: Dictionary = ml._hosted_manifest_to_profile(manifest)
+	var profile: Dictionary = conv["profile"]
+	_assert(int(profile["metroprofile"]) == 1, "T10: hosted pack is a metroprofile v1 payload")
+	_assert(str(profile["name"]) == "Hardcore Survival" and str(profile["author"]) == "Ovrrde",
+			"T10: name and author carried over")
+	var enabled: Dictionary = profile["enabled"]
+	_assert(enabled.size() == 3 and enabled.has("vostokmods:mod-configuration-menu") and enabled.has("vostokmods:gone"),
+			"T10: every listed mod is enabled under a slug key (got %s)" % str(enabled.keys()))
+	var priority: Dictionary = profile["priority"]
+	_assert(int(priority["vostokmods:mod-configuration-menu"]) == 1 and int(priority["vostokmods:gone"]) == 3,
+			"T10: priority follows loadOrder")
+	var sources: Dictionary = profile.get("sources", {})
+	_assert(sources.size() == 1 and sources.has("vostokmods:mod-configuration-menu"),
+			"T10: only available mods get a source record (got %s)" % str(sources.keys()))
+	var src: Dictionary = sources["vostokmods:mod-configuration-menu"]
+	_assert(str(src["provider"]) == "vostokmods" and str(src["id"]) == "mod-configuration-menu" and str(src["version"]) == "2.9.2",
+			"T10: source record pins the manifest version")
+	var rec: Dictionary = ml._normalize_source_record(src)
+	_assert(str(rec["provider"]) == "vostokmods" and str(rec["version"]) == "2.9.2",
+			"T10: the source record round-trips through the normalizer")
+	_assert(not src.has("modworkshop_id"), "T10: no ModWorkshop mirror on a VostokMods record")
+	var unavailable: Dictionary = profile.get("unavailable", {})
+	_assert(str(unavailable.get("vostokmods:still-scanning", "")) == "scanning" and str(unavailable.get("vostokmods:gone", "")) == "removed",
+			"T10: unavailable mods keep the site's reason")
+	var checksums: Dictionary = profile.get("checksums", {})
+	_assert(str(checksums.get("vostokmods:mod-configuration-menu", "")) == "ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+			"T10: sha256 is kept, lowercased")
+	var hosted: Dictionary = profile["hosted"]
+	_assert(str(hosted["slug"]) == "hardcore-survival" and str(hosted["hash"]) == "0123abcd" and int(hosted["format"]) == 2,
+			"T10: hosted record carries slug, hash and format")
+	_assert(str(ml._hosted_unavailable_copy("scanning")).contains("scanned"), "T10: scanning reason has its own copy")
+
+	# MCM: the raw file passes through, the export merges into the other
+	# mod's config.ini, and the traversal key is dropped.
+	var mcm: Dictionary = conv["mcm"]
+	_assert(mcm.has("doinkoink-mcm/config.ini") and str(mcm["doinkoink-mcm/config.ini"]).contains("volume"),
+			"T10: raw per-mod MCM file kept verbatim")
+	_assert(mcm.has("some-mod/config.ini"), "T10: MCM export merged into some-mod/config.ini (got %s)" % str(mcm.keys()))
+	if mcm.has("some-mod/config.ini"):
+		var cf := ConfigFile.new()
+		_assert(cf.parse(str(mcm["some-mod/config.ini"])) == OK, "T10: merged config parses")
+		var v: Variant = cf.get_value("Movement", "speed", null)
+		_assert(v is Dictionary and int((v as Dictionary).get("value", 0)) == 7 and not (v as Dictionary).has("import_data"),
+				"T10: merged value lands in its import_data.section without the import_data marker")
+	for k in mcm.keys():
+		_assert(not str(k).contains(".."), "T10: MCM key with .. must not survive (%s)" % str(k))
+	_assert(not mcm.has("x/config.ini"), "T10: an export under an unsafe key is not merged")
+	var warnings: PackedStringArray = conv["warnings"]
+	_assert(warnings.size() >= 1, "T10: the unsafe MCM key produced a warning")
+
+	# Pack file path never escapes mods/.
+	var path := str(ml._hosted_pack_file_path("../Weird Slug!"))
+	_assert(path.get_file() == "vostokmods-weirdslug.zip",
+			"T10: pack file name is reduced to [a-z0-9-] (got %s)" % path.get_file())
+	_assert(str(ml._hosted_pack_file_path("!!!")) == "", "T10: a slug with nothing safe in it yields no path")
+
+
 func _assert_same_keys(ml: Object, s: Variant, label: String) -> void:
 	var want: Array = (ml.host_empty_summary() as Dictionary).keys()
 	want.sort()
@@ -530,7 +645,7 @@ func _fail(msg: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("[host] PASS: %d assertion(s) across T1..T9" % _assertions)
+		print("[host] PASS: %d assertion(s) across T1..T10" % _assertions)
 		quit(0)
 		return
 	for m in _failures:

@@ -1283,7 +1283,7 @@ func replace_mod_from_ref(target_path: String, ref: Dictionary) -> Dictionary:
 # that failure as already-installed by matching err.begins_with("Already have").
 func _host_install_downloaded_archive(provider: String, download_url: String, headers: PackedStringArray,
 		fallback_stem: String, filename_hint: String, version_hint: String,
-		allow_rename_on_collision: bool) -> Dictionary:
+		allow_rename_on_collision: bool, expected_sha256: String = "") -> Dictionary:
 	var failure := {"ok": false, "file_name": "", "error": "unknown"}
 	if _mods_dir.is_empty():
 		_mods_dir = OS.get_executable_path().get_base_dir().path_join(MOD_DIR)
@@ -1313,6 +1313,16 @@ func _host_install_downloaded_archive(provider: String, download_url: String, he
 	if body.is_empty():
 		failure["error"] = "The download came back empty. Try again later."
 		return failure
+	# A pack that names the file's checksum gets it checked: a swapped or
+	# truncated download is refused before it ever reaches mods/.
+	if expected_sha256 != "":
+		var ctx := HashingContext.new()
+		ctx.start(HashingContext.HASH_SHA256)
+		ctx.update(body)
+		var got := ctx.finish().hex_encode()
+		if got != expected_sha256.to_lower():
+			failure["error"] = "The downloaded file does not match the checksum the modpack lists. Try again later; if it keeps failing, the file on the site may have changed."
+			return failure
 
 	# Same _is_safe_mod_filename gate as the update path: never trust a
 	# server name that isn't a basename with an accepted extension. The
@@ -1466,7 +1476,8 @@ func _host_fallback_stem(ref: Dictionary) -> String:
 # Browse "Get" and modpack apply, for any host. Empty `version` installs
 # whatever the host considers current; a set version pins that exact file and
 # never substitutes another. Returns {ok, file_name, error}.
-func download_mod_from_ref(ref: Dictionary, version: String = "", allow_rename_on_collision: bool = false) -> Dictionary:
+func download_mod_from_ref(ref: Dictionary, version: String = "", allow_rename_on_collision: bool = false,
+		expected_sha256: String = "") -> Dictionary:
 	var failure := {"ok": false, "file_name": "", "error": "unknown"}
 	if not host_ref_valid(ref):
 		failure["error"] = "This mod has no download source recorded."
@@ -1479,7 +1490,7 @@ func download_mod_from_ref(ref: Dictionary, version: String = "", allow_rename_o
 	var file: Dictionary = res["data"]
 	var r := await _host_install_downloaded_archive(provider, str(file["download_url"]),
 			_host_download_headers(file), _host_fallback_stem(ref), str(file["filename_hint"]),
-			str(file["version"]), allow_rename_on_collision)
+			str(file["version"]), allow_rename_on_collision, expected_sha256)
 	if r["ok"]:
 		_record_installed_mod_source(str(r["file_name"]), ref, str(file["version"]))
 	return r

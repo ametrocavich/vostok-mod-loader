@@ -39,6 +39,9 @@ The JSON is plain UTF-8 `profile.json` at the root of a modpack zip, next to an 
 | `author` | no | String | Author handle from the save dialog. Omitted when empty. |
 | `sources` | no | Dictionary | `profile_key -> {provider: String, id: String, modworkshop_id?: int, version?: String}`. Derived from each installed mod's `[updates] source=` (or legacy `modworkshop=`) plus `[mod] version=`, or, when `mod.txt` declares nothing, from the `[mod_sources]` record the launcher wrote when it downloaded the mod; lets apply download missing mods and pin exact versions. Only enabled mods' sources are written. The legacy `modworkshop_id` mirror is emitted if and only if `provider == "modworkshop"`, so an older loader reading a VostokMods record treats it as source-less instead of downloading an unrelated ModWorkshop mod of the same number. |
 | `dep_ignore` | no | Dictionary | `profile_key -> true`, sparse (true-only entries). The "Load anyway" dependency overrides, re-materialized on apply. |
+| `hosted` | no | Dictionary | Present on a pack the launcher pulled from a mod site: `{provider, slug, url, manifest_url, hash, format}`. `hash` is the site's own change token; **Refresh** re-fetches the manifest and rewrites the zip when it differs. |
+| `unavailable` | no | Dictionary | `profile_key -> reason` for mods the site listed but could not serve when the pack was fetched (`scanning`, `no_files`, `removed`). Apply reports these instead of downloading. |
+| `checksums` | no | Dictionary | `profile_key -> sha256 hex` for mods whose file checksum the site published. The download is refused if the bytes do not match. |
 
 Like `sources`, the `priority` and `dep_ignore` dictionaries are filtered to the enabled set on export.
 
@@ -50,6 +53,7 @@ Profile keys identify mods across installs. Two shapes:
 
 - `"<mod_id>@<version>"` for mods whose `mod.txt` declares `[mod] id=...`. The version segment may be empty (`"foo@"`). Identity survives a `.vmz` rename. See `_entry_from_config` in [mod_discovery.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd).
 - `"zip:<file_name>"` for mods without a declared `mod_id`. Identity is the archive filename, so renaming the `.vmz` orphans the profile entry.
+- `"vostokmods:<slug>"` in a pack pulled from VostokMods, where the mod's `mod.txt` id is not known until the file is downloaded. After the downloads land, apply rewrites these keys to the installed mods' own keys by matching each pack entry's source record against the installed mod's source.
 
 ## Version-mismatch handling on apply
 
