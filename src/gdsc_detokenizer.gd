@@ -106,33 +106,105 @@ const TK_INF := 93
 const TK_NAN := 94
 const TK_EOF := 99
 
+# ----- vanilla bytes straight from the game's PCK ---------------------------
+#
+# Hook-pack generation runs after mod archives are mounted, so a read through
+# the VFS at res://Scripts/X.gd can return a MOD's file, not the game's. The
+# detokenizer therefore reads the bytes out of the game's own .pck by offset,
+# and only that source is ever written to the vanilla cache. The VFS is a
+# fallback for builds with no PCK beside the executable (the editor, the
+# test harnesses), and what it returns is never cached.
+
+# "Scripts/X.gdc" -> {path, offset, size}, built once per session.
+var _game_pck_index: Dictionary = {}
+var _game_pck_path: String = ""
+var _game_pck_indexed: bool = false
+# Tests point this at a synthetic pack; "" means look beside the executable.
+var _game_pck_path_override: String = ""
+# Set by _detokenize_script: whether the bytes it decoded came from the PCK.
+var _last_detokenize_from_pck: bool = false
+
+func _locate_game_pck() -> String:
+	if _game_pck_path_override != "":
+		return _game_pck_path_override
+	var exe_dir := OS.get_executable_path().get_base_dir()
+	for cand in ["RTV.pck", OS.get_executable_path().get_file().get_basename() + ".pck"]:
+		var p := exe_dir.path_join(cand)
+		if FileAccess.file_exists(p):
+			return p
+	return ""
+
+func _ensure_game_pck_index() -> void:
+	if _game_pck_indexed:
+		return
+	_game_pck_indexed = true
+	_game_pck_path = _locate_game_pck()
+	if _game_pck_path == "":
+		return
+	for e_v in _security_pck_list_with_offsets(_game_pck_path):
+		var e: Dictionary = e_v
+		# Godot pads directory paths with NULs to a 4-byte boundary.
+		var rel := str(e["path"]).trim_prefix("res://").trim_prefix("/").rstrip("\u0000")
+		if rel != "":
+			_game_pck_index[rel] = e
+	if _game_pck_index.is_empty():
+		_log_warning("[Detokenize] %s has no readable file table (encrypted or unknown format) -- vanilla scripts will be read through the VFS and not cached" % _game_pck_path)
+
+## The stored bytes for a vanilla script: its compiled .gdc first, then the
+## plain .gd. Empty when the PCK is unavailable or has no such entry.
+func _vanilla_bytes_from_pck(script_path: String) -> PackedByteArray:
+	_ensure_game_pck_index()
+	if _game_pck_index.is_empty():
+		return PackedByteArray()
+	var rel := script_path.trim_prefix("res://")
+	var candidates := [rel.trim_suffix(".gd") + ".gdc", rel]
+	for cand in candidates:
+		if not _game_pck_index.has(cand):
+			continue
+		var e: Dictionary = _game_pck_index[cand]
+		var size := int(e["size"])
+		if size <= 0:
+			continue
+		var f := FileAccess.open(_game_pck_path, FileAccess.READ)
+		if f == null:
+			return PackedByteArray()
+		f.seek(int(e["offset"]))
+		var bytes := f.get_buffer(size)
+		f.close()
+		if bytes.size() == size:
+			return bytes
+	return PackedByteArray()
+
 func _detokenize_script(script_path: String) -> String:
+	_last_detokenize_from_pck = false
 	# Zero-byte PCK entries (RTV ships CasettePlayer.gd empty) have nothing
 	# to decode; return empty silently, it is not an IO failure.
 	if _pck_zero_byte_paths.has(script_path):
 		return ""
-	# FileAccess on res:// can fail for PCK-embedded files depending on the
-	# container format; try res://, then globalized, then .gdc.
-	var raw := PackedByteArray()
-
-	var f := FileAccess.open(script_path, FileAccess.READ)
-	if f:
-		raw = f.get_buffer(f.get_length())
-		f.close()
-
-	if raw.is_empty():
-		var glob_path := ProjectSettings.globalize_path(script_path)
-		f = FileAccess.open(glob_path, FileAccess.READ)
+	var raw := _vanilla_bytes_from_pck(script_path)
+	if not raw.is_empty():
+		_last_detokenize_from_pck = true
+	else:
+		# No PCK to read from: fall back to the VFS. FileAccess on res:// can
+		# fail for PCK-embedded files depending on the container format; try
+		# res://, then globalized, then .gdc.
+		var f := FileAccess.open(script_path, FileAccess.READ)
 		if f:
 			raw = f.get_buffer(f.get_length())
-			f.close()
+		f.close()
+
+		if raw.is_empty():
+			var glob_path := ProjectSettings.globalize_path(script_path)
+			f = FileAccess.open(glob_path, FileAccess.READ)
+			if f:
+				raw = f.get_buffer(f.get_length())
+				f.close()
+		if raw.is_empty():
+			var gdc_path := script_path.replace(".gd", ".gdc")
+			raw = FileAccess.get_file_as_bytes(gdc_path)
 
 	if raw.is_empty():
-		var gdc_path := script_path.replace(".gd", ".gdc")
-		raw = FileAccess.get_file_as_bytes(gdc_path)
-
-	if raw.is_empty():
-		_log_warning("[Detokenize] Cannot read bytes from: %s (tried res://, globalized, .gdc)" % script_path)
+		_log_warning("[Detokenize] Cannot read bytes from: %s (tried the game PCK, res://, globalized, .gdc)" % script_path)
 		return ""
 
 	# -- Header (12 bytes) --
@@ -423,12 +495,39 @@ func _gdsc_variant_to_source(value: Variant) -> String:
 			_log_critical("[Detokenize] Constant pool holds an unexpected Variant type %d -- cannot render it as source. The rewritten script would not compile." % typeof(value))
 			return "null"
 
+# The cache's format. Bumped when what may be in the cache changes; an older
+# or missing stamp wipes the directory. Format 2 is the first that holds only
+# PCK-sourced text, so every cache written before it is dropped as possibly
+# poisoned by a mod's file read through the VFS.
+const _VANILLA_CACHE_FORMAT := 2
+const _VANILLA_CACHE_STAMP := "format"
+var _vanilla_cache_checked: bool = false
+
+func _ensure_vanilla_cache_format() -> void:
+	if _vanilla_cache_checked:
+		return
+	_vanilla_cache_checked = true
+	var dir := ProjectSettings.globalize_path(VANILLA_CACHE_DIR)
+	var stamp_file := VANILLA_CACHE_DIR.path_join(_VANILLA_CACHE_STAMP)
+	var have := FileAccess.get_file_as_string(stamp_file).strip_edges() if FileAccess.file_exists(stamp_file) else ""
+	if have == str(_VANILLA_CACHE_FORMAT):
+		return
+	if DirAccess.dir_exists_absolute(dir):
+		_log_info("[Detokenize] vanilla cache is format '%s', want %d -- rebuilding it" % [have, _VANILLA_CACHE_FORMAT])
+		_wipe_shallow_tree(dir)
+	DirAccess.make_dir_recursive_absolute(dir)
+	var f := FileAccess.open(stamp_file, FileAccess.WRITE)
+	if f != null:
+		f.store_string(str(_VANILLA_CACHE_FORMAT))
+		f.close()
+
 func _read_vanilla_source(script_path: String) -> String:
 	# On-disk cache first. Never call load(script_path) here: any load()
 	# makes ResourceFormatLoaderGDScript cache the PCK's tokenized result
 	# at script_path (via the PCK's stale .gd.remap), and later hook-pack
 	# mounts + loads then hit that entry instead of the rewrite. The cache
 	# must stay cold until the hook pack is mounted.
+	_ensure_vanilla_cache_format()
 	var cache_file := VANILLA_CACHE_DIR.path_join(script_path.trim_prefix("res://"))
 	if FileAccess.file_exists(cache_file):
 		var cached := FileAccess.get_file_as_string(cache_file)
@@ -446,7 +545,13 @@ func _read_vanilla_source(script_path: String) -> String:
 		_log_critical("[Hooks] Detokenized source for %s already contains rewrite markers -- possible stale overlay. Delete %s and restart." \
 				% [script_path, ProjectSettings.globalize_path(HOOK_PACK_DIR)])
 		return ""
-	_save_vanilla_source(script_path, source)
+	# Only text read out of the game's PCK is worth remembering. A VFS read
+	# may have come from a mounted mod, and caching that would keep the
+	# mod's code running after it is uninstalled.
+	if _last_detokenize_from_pck:
+		_save_vanilla_source(script_path, source)
+	else:
+		_log_debug("[Detokenize] %s read through the VFS (no game PCK) -- not cached" % script_path)
 	return source
 
 func _save_vanilla_source(script_path: String, source: String) -> void:

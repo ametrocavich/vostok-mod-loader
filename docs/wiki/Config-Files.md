@@ -217,7 +217,7 @@ Everything here is regenerated on demand:
 | Path | Contents |
 |---|---|
 | `user://modloader_hooks/framework_pack_<millis>.zip` | The generated hook pack, mounted at static init. Each Pass-1 generation picks a fresh timestamp suffix (Godot's `load_resource_pack` dedups by path and would keep stale mount offsets). Old generations are cleaned up before mount. |
-| `user://modloader_hooks/vanilla/` | Cached detokenized vanilla source, keyed by exe mtime. Speeds up later hook-pack generation. |
+| `user://modloader_hooks/vanilla/` | Cached vanilla script source, decoded from the game's own `.pck` (never from a mounted mod), wiped on a game update. A `format` stamp at its root names the cache layout; a missing or older stamp rebuilds the cache. Speeds up later hook-pack generation. |
 | `user://vmz_mount_cache/` | `.vmz -> .zip` copies so Godot's `load_resource_pack` can mount them, plus `.zip.src` sidecars naming the source. |
 | `user://modloader_early/` | Extracted copies of `!`-prefixed early-autoload scripts that live inside archives. |
 | `user://modloader_heartbeat.txt` | Crash-detection sentinel. Written each launch, deleted at clean boot. Present on the next launch = the previous session crashed. |

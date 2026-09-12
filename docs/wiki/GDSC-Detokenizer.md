@@ -4,6 +4,11 @@ The loader needs source for every vanilla `.gd` it rewrites. An exported game sh
 
 `check_detok.sh` covers the reader against synthetic buffers (see [Build](Build#checksh)). Function names below are the anchors; line numbers drift.
 
+
+## Where the bytes come from
+
+Hook-pack generation runs after mod archives are mounted, so reading `res://Scripts/X.gd` through the VFS can return a mod's file instead of the game's. The detokenizer therefore reads a script's bytes straight out of the game's `.pck` by offset (`_vanilla_bytes_from_pck`, using the same file-table parser the security scanner uses), trying the compiled `.gdc` entry first and the plain `.gd` second. The VFS is only a fallback when no `.pck` sits beside the executable (the editor, the test harnesses), and text obtained that way is never written to the vanilla cache. The cache directory carries a `format` stamp; a cache without the current stamp is wiped before use, which is how installs poisoned by an older loader recover on upgrade.
+
 ## Supported versions
 
 `TOKENIZER_VERSION` 100 (Godot 4.3-4.4) and 101 (Godot 4.5-4.6), the `GDSC_VERSION_V100` / `V101` constants. Anything else is refused: `_detokenize_script` logs a critical and returns empty, and [canary B](Stability-Canaries#canary-b-gdsc-tokenizer-version) stops hook pack generation with one message before that can cascade through every script.

@@ -87,6 +87,9 @@ func _run() -> void:
 	_t3_no_placeholders(ml)
 	_t4_tk_empty_skipped(ml)
 	_t5_shifted_indices_all_render(ml)
+	_t6_vfs_read_is_not_cached(ml)
+	_t7_pck_wins_over_vfs(ml)
+	_t8_old_cache_format_is_dropped(ml)
 
 	_finish()
 
@@ -193,6 +196,125 @@ func _t5_shifted_indices_all_render(ml: Object) -> void:
 
 # Map a v101 token stream to the v100 indices that encode the SAME tokens.
 # v100 predates "..." at 83, so everything from 83 up sits one lower.
+# --- Vanilla-cache poisoning (B1) --------------------------------------------
+#
+# Hook-pack generation reads vanilla scripts after mod archives are mounted.
+# A mod shipping a plain-text res://Scripts/X.gd used to be read through the
+# VFS, accepted as vanilla, and cached forever. These three tests pin the
+# fix: a VFS read is never cached, the game's PCK bytes win over whatever the
+# VFS serves, and a cache written by an older loader is dropped.
+
+const CACHE_DIR := "user://modloader_hooks/vanilla"
+
+# A pack-format-2 .pck holding plain-text files, laid out the way
+# _security_pck_list_with_offsets reads it back.
+func _write_fake_pck(path: String, files: Dictionary) -> bool:
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		return false
+	f.store_32(0x43504447)  # "GDPC"
+	f.store_32(2)           # PACK_FORMAT_V2
+	f.store_32(4); f.store_32(6); f.store_32(0)
+	f.store_32(0)           # pack flags: not encrypted
+	var file_base_pos := f.get_position()
+	f.store_64(0)           # file_base, patched below
+	for i in 16:
+		f.store_32(0)
+	f.store_32(files.size())
+	var entries := []
+	var data_offset := 0
+	for p in files:
+		var bytes: PackedByteArray = str(files[p]).to_utf8_buffer()
+		entries.append({"path": str(p), "offset": data_offset, "bytes": bytes})
+		data_offset += bytes.size()
+	for e in entries:
+		var pb: PackedByteArray = str(e["path"]).to_utf8_buffer()
+		f.store_32(pb.size())
+		f.store_buffer(pb)
+		f.store_64(int(e["offset"]))
+		f.store_64((e["bytes"] as PackedByteArray).size())
+		f.store_buffer(PackedByteArray([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))
+		f.store_32(0)
+	var file_base := f.get_position()
+	for e in entries:
+		f.store_buffer(e["bytes"])
+	f.seek(file_base_pos)
+	f.store_64(file_base)
+	f.close()
+	return true
+
+func _write_text(path: String, text: String) -> bool:
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(path.get_base_dir()))
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		return false
+	f.store_string(text)
+	f.close()
+	return true
+
+func _reset_detok_state(ml: Object) -> void:
+	ml.set("_game_pck_index", {})
+	ml.set("_game_pck_path", "")
+	ml.set("_game_pck_indexed", false)
+	ml.set("_vanilla_cache_checked", false)
+	var dir := ProjectSettings.globalize_path(CACHE_DIR)
+	if DirAccess.dir_exists_absolute(dir):
+		ml._wipe_shallow_tree(dir)
+		DirAccess.remove_absolute(dir)
+
+func _t6_vfs_read_is_not_cached(ml: Object) -> void:
+	_reset_detok_state(ml)
+	# No game PCK anywhere near this harness: the VFS fallback serves the
+	# planted file, exactly what a mounted mod would look like in the game.
+	ml.set("_game_pck_path_override", "")
+	_assert(_write_text("res://Scripts/Poison.gd", "extends Node\nvar poisoned = true\n"),
+			"T6: planted a plain-text script in the project")
+	var src := str(ml._read_vanilla_source("res://Scripts/Poison.gd"))
+	_assert(src.contains("poisoned"), "T6: with no PCK the VFS text is still returned (nothing better exists)")
+	_assert(not bool(ml.get("_last_detokenize_from_pck")), "T6: the read is flagged as not from the PCK")
+	_assert(not FileAccess.file_exists(CACHE_DIR + "/Scripts/Poison.gd"),
+			"T6: a VFS read must never be written to the vanilla cache")
+
+func _t7_pck_wins_over_vfs(ml: Object) -> void:
+	_reset_detok_state(ml)
+	var pck := "user://fake_game.pck"
+	_assert(_write_fake_pck(pck, {
+		"res://Scripts/Foo.gd": "extends Node\nvar from_pck = true\n",
+		"res://Scripts/Bar.gd": "extends Node\nvar bar_from_pck = true\n",
+	}), "T7: wrote a synthetic game pack")
+	ml.set("_game_pck_path_override", ProjectSettings.globalize_path(pck))
+	# The VFS serves a different file at the same path: a mod's override.
+	_assert(_write_text("res://Scripts/Foo.gd", "extends Node\nvar poisoned = true\n"),
+			"T7: planted a competing plain-text script in the project")
+	var src := str(ml._read_vanilla_source("res://Scripts/Foo.gd"))
+	_assert(src.contains("from_pck") and not src.contains("poisoned"),
+			"T7: the PCK bytes win over the VFS file (got: %s)" % _oneline(src))
+	_assert(bool(ml.get("_last_detokenize_from_pck")), "T7: the read is flagged as from the PCK")
+	var cached := FileAccess.get_file_as_string(CACHE_DIR + "/Scripts/Foo.gd")
+	_assert(cached.contains("from_pck") and not cached.contains("poisoned"),
+			"T7: the cache holds the PCK text, never the VFS text")
+	_assert(FileAccess.get_file_as_string(CACHE_DIR + "/format").strip_edges() == "2",
+			"T7: the cache carries its format stamp")
+	# Second read comes from the cache and still says the same thing.
+	var again := str(ml._read_vanilla_source("res://Scripts/Foo.gd"))
+	_assert(again == src, "T7: the cached read matches the first read")
+
+func _t8_old_cache_format_is_dropped(ml: Object) -> void:
+	_reset_detok_state(ml)
+	var pck := "user://fake_game.pck"
+	ml.set("_game_pck_path_override", ProjectSettings.globalize_path(pck))
+	# A cache written by an older loader: no stamp, and a poisoned entry.
+	_assert(_write_text(CACHE_DIR + "/Scripts/Bar.gd", "extends Node\nvar poisoned = true\n"),
+			"T8: planted an unstamped, poisoned cache entry")
+	var src := str(ml._read_vanilla_source("res://Scripts/Bar.gd"))
+	_assert(src.contains("bar_from_pck") and not src.contains("poisoned"),
+			"T8: an unstamped cache is wiped and the PCK text is used (got: %s)" % _oneline(src))
+	var cached := FileAccess.get_file_as_string(CACHE_DIR + "/Scripts/Bar.gd")
+	_assert(cached.contains("bar_from_pck"), "T8: the rebuilt cache holds the PCK text")
+	# Cleanup so the throwaway project's res:// stays clean for --prove.
+	DirAccess.remove_absolute(ProjectSettings.globalize_path("res://Scripts/Foo.gd"))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path("res://Scripts/Poison.gd"))
+
 func _to_v100_indices(toks: Array) -> Array:
 	var out: Array = []
 	for t in toks:
@@ -296,7 +418,7 @@ func _fail(msg: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("[detok] PASS: %d assertion(s) across T1..T5" % _assertions)
+		print("[detok] PASS: %d assertion(s) across T1..T8" % _assertions)
 		quit(0)
 		return
 	for m in _failures:
