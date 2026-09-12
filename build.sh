@@ -29,7 +29,6 @@ FILES=(
     "$SRC/host_types.gd"
     "$SRC/host_http.gd"
     "$SRC/host_api.gd"
-    "$SRC/mws_api.gd"
     "$SRC/host_mws.gd"
     "$SRC/host_vostokmods.gd"
     "$SRC/host_nexus.gd"

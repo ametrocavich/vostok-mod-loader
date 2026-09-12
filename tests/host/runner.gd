@@ -75,7 +75,7 @@ func _run() -> void:
 
 # A ModWorkshop listing row shaped exactly like a GET /games/864/mods `data`
 # row: the field names are the ones host_mws.gd's normalizers read and
-# mws_api.gd's endpoint notes document (id, name, user.name, category.name,
+# host_mws.gd's endpoint notes document (id, name, user.name, category.name,
 # version, downloads/likes/views, bumped_at, published_at, short_desc,
 # thumbnail{file,has_thumb}). Parsed from JSON text, not written as a GDScript
 # literal, so every number arrives as a FLOAT -- exactly as production

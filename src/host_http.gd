@@ -6,7 +6,6 @@
 ## (host_types.gd), never a bare null, so callers can tell offline from 404
 ## from rate-limited.
 
-# Aliased, not copied, so this and mws_api.gd cannot drift until the merge.
 const HOST_USER_AGENT_TEMPLATE := MWS_USER_AGENT_TEMPLATE
 
 const HOST_JSON_BODY_LIMIT := 8 * 1024 * 1024

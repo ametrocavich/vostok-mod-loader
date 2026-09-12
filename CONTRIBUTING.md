@@ -16,7 +16,6 @@ src/
   host_types.gd            # host-seam records, refs, failure codes
   host_http.gd             # shared HTTP transport, cache, cooldowns
   host_api.gd              # the seam: one match per operation, per provider
-  mws_api.gd               # original ModWorkshop client (called by host_mws only)
   host_mws.gd              # ModWorkshop adapter
   host_vostokmods.gd       # VostokMods adapter (the default host)
   host_nexus.gd            # Nexus adapter, link-out only
@@ -42,7 +41,7 @@ src/
   debug.gd                 # test scaffolding (gated behind a config flag)
 ```
 
-50 files, in `build.sh`'s `FILES` order (the concat order).
+49 files, in `build.sh`'s `FILES` order (the concat order).
 `docs/wiki/Modules.md` has the per-file tour.
 
 ### Building and checking locally

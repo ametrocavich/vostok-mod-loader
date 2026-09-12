@@ -3454,10 +3454,10 @@ func show_mod_ui() -> void:
 	_ui_modpacks_scroll = null
 	_ui_updates_scroll = null
 	_ui_updates_check_btn = null
-	# Drop the Browse-tab API cache (session-only; the autoload survives
+	# Drop the host API response cache (session-only; the autoload survives
 	# launcher reopen). Disk-cached thumbnails stay -- immutable storage keys
 	# are valid indefinitely. In-flight HTTPRequests self-queue_free.
-	_mws_cache.clear()
+	_host_cache.clear()
 	# Mods-tab row nodes die with the window; drop the mapping so a meta fetch
 	# resolving after close paints nothing (it still memoizes + persists).
 	_mods_meta_nodes.clear()
@@ -4144,10 +4144,7 @@ func _mods_meta_fetch_enqueue(ref: Dictionary) -> void:
 	while not _mods_meta_fetch_queue.is_empty():
 		var next: Dictionary = _mods_meta_fetch_queue.pop_front()
 		var provider := str(next["provider"])
-		var cooling := host_rate_cooldown_seconds(provider) > 0
-		if provider == HOST_MODWORKSHOP and mws_rate_cooldown_seconds() > 0:
-			cooling = true
-		if cooling:
+		if host_rate_cooldown_seconds(provider) > 0:
 			# Don't spend the recovery window on background meta. Other
 			# hosts' entries still drain.
 			continue
@@ -5620,13 +5617,8 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 			lbl.tooltip_text = text
 			lbl.add_theme_color_override("font_color", color)
 
-	# Seconds left on this host's rate-limit cooldown. ModWorkshop traffic
-	# still arms the old client's cooldown as well, so read both.
 	var cooldown_seconds := func(provider: String) -> int:
-		var secs := host_rate_cooldown_seconds(provider)
-		if provider == HOST_MODWORKSHOP:
-			secs = maxi(secs, mws_rate_cooldown_seconds())
-		return secs
+		return host_rate_cooldown_seconds(provider)
 
 	# Failure reason for the banner: the cooldown owns the copy while it is
 	# armed (waiting is actionable), else the generic unreachable line.

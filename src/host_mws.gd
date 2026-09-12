@@ -1,9 +1,22 @@
 ## ----- host_mws.gd -----
-## ModWorkshop adapter: reference implementation of the host seam. Wraps the
-## mws_api.gd client and normalizes its payloads into host_types.gd records;
-## the client moves in here (and mws_api.gd is deleted) once every caller has
-## migrated off the mws_* names, so keep the wrap thin. Endpoint behavior is
-## documented in mws_api.gd.
+## ModWorkshop adapter: reference implementation of the host seam. Talks to
+## api.modworkshop.net through the shared transport in host_http.gd and
+## normalizes its payloads into host_types.gd records.
+##
+## Endpoints are documented at github.com/ModWorkshop/site
+## (backend/routes/api.php). Rate budget: 90 req/min/IP unauthenticated,
+## x-ratelimit-remaining on every response. Every request needs a real
+## User-Agent: an empty or default one gets a bodyless 403. The envelope
+## shape (data vs bare object) varies by endpoint, so unwrapping is done per
+## operation below.
+
+# Cache TTLs: listings go stale fast, detail and history rarely, categories
+# barely. The file endpoints get a short TTL so a stale download_url does
+# not outlive a CDN rotation.
+const _MWS_TTL_LIST_MS := 5 * 60 * 1000
+const _MWS_TTL_DETAIL_MS := 30 * 60 * 1000
+const _MWS_TTL_CATEGORIES_MS := 60 * 60 * 1000
+const _MWS_TTL_PRIMARY_MS := 60 * 1000
 
 func _mwsp_caps() -> Dictionary:
 	var caps := host_empty_caps()
@@ -55,11 +68,8 @@ func _mwsp_mod_page_url(id: String) -> String:
 
 
 ## Laravel dialect: 429 + Retry-After in seconds, X-RateLimit-Remaining on
-## every response. Only reached once MWS traffic moves onto the shared
-## transport; until then the wrapped client arms its own cooldown, which is
-## what _mwsp_failure() reads.
+## every response.
 func _mwsp_note_rate_headers(status: int, headers: PackedStringArray) -> void:
-	_mws_note_rate_headers(status, headers)
 	var wait_s := _hnet_header_value(headers, "Retry-After").to_int()
 	if status == 429:
 		# An absent or HTTP-date Retry-After gives wait_s == 0; pass 0 through
@@ -74,21 +84,32 @@ func _mwsp_note_rate_headers(status: int, headers: PackedStringArray) -> void:
 		host_arm_cooldown(HOST_MODWORKSHOP, 0)
 
 
-## Turn the wrapped client's null-on-failure into a code; the client keeps
-## just enough state to tell the three cases apart.
-func _mwsp_failure() -> Dictionary:
-	var cooldown := mws_rate_cooldown_seconds()
-	if cooldown > 0:
-		# Mirror the wrapped client's cooldown into the seam's table so
-		# host_error_status can print the countdown.
-		host_arm_cooldown(HOST_MODWORKSHOP, cooldown * 1000)
-		return host_err(HOST_ERR_RATE_LIMITED, 429, "rate limited", cooldown)
-	if _mws_last_transport_failed:
-		return host_err(HOST_ERR_OFFLINE, 0, "could not reach ModWorkshop")
-	return host_err(HOST_ERR_BAD_RESPONSE, 0, "ModWorkshop sent an unexpected response")
+## Pull the "data" array out of a list response; an `as Array` cast would
+## crash on data:null or a non-array (an error page served with a 2xx).
+func _mws_data_rows(resp: Variant) -> Array:
+	if not (resp is Dictionary):
+		return []
+	var d: Variant = (resp as Dictionary).get("data", [])
+	return d if d is Array else []
+
+
+func _mwsp_games_url(tail: String) -> String:
+	return MWS_API_BASE + "/games/" + str(MWS_RTV_GAME_ID) + tail
 
 
 # ----- normalizers -----
+
+## Full URL for an Image record ({file, has_thumb}); the smaller /thumbs/
+## variant when wanted and available. The URL convention's one home.
+func mws_image_url(image_record: Dictionary, want_thumb: bool = false) -> String:
+	var fn: String = str(image_record.get("file", ""))
+	if fn.is_empty():
+		return ""
+	var has_thumb: bool = bool(image_record.get("has_thumb", false))
+	if want_thumb and has_thumb:
+		return MWS_STORAGE_BASE + "/mods/images/thumbs/" + fn
+	return MWS_STORAGE_BASE + "/mods/images/" + fn
+
 
 ## MWS Image record ({file, has_thumb}) -> ImageRef. `file` is an opaque
 ## storage filename that never changes for a given image, so it doubles as
@@ -159,16 +180,33 @@ func _mwsp_filename_hint(download_url: String) -> String:
 
 # ----- operations -----
 
+## Search / sort / filter the RTV catalog -> {data: [rows], meta}. The
+## search parameter is `query` (max 150; `search`, `q` and `name` are
+## silently ignored). limit caps at 50; larger values 422. Sort enum:
+## bumped_at (default), published_at, likes, downloads, views, score,
+## weekly_score, daily_score, random, best_match, name.
 func _mwsp_list_mods(q: Dictionary) -> Dictionary:
 	# MWS pages by number; the seam speaks cursors, so convert here.
 	var page := maxi(1, str(q.get("cursor", "")).to_int())
-	var raw: Variant = await mws_list_mods(
-		str(q.get("query", "")),
-		str(q.get("sort_key", "bumped_at")),
-		str(q.get("category_ref", "")).to_int(),
-		page)
+	var params := PackedStringArray()
+	var query := str(q.get("query", ""))
+	if query != "":
+		# Clamp rather than 422; an over-limit query would read as a
+		# connection error.
+		params.append("query=" + query.substr(0, MWS_QUERY_MAX_LEN).uri_encode())
+	var sort_key := str(q.get("sort_key", ""))
+	params.append("sort=" + (sort_key if sort_key != "" else "bumped_at"))
+	params.append("limit=" + str(MWS_PAGE_LIMIT))
+	params.append("page=" + str(page))
+	var category_id := str(q.get("category_ref", "")).to_int()
+	if category_id > 0:
+		params.append("category_id=" + str(category_id))
+	var res := await _hnet_get_json(HOST_MODWORKSHOP, _mwsp_games_url("/mods?" + "&".join(params)), _MWS_TTL_LIST_MS)
+	if not res["ok"]:
+		return res
+	var raw: Variant = res["data"]
 	if not (raw is Dictionary):
-		return _mwsp_failure()
+		return host_err(HOST_ERR_BAD_RESPONSE, 0, "ModWorkshop sent an unexpected response")
 
 	var rows := []
 	for row in _mws_data_rows(raw):
@@ -185,10 +223,15 @@ func _mwsp_list_mods(q: Dictionary) -> Dictionary:
 	return host_ok(host_page(rows, has_more, next_cursor, _host_count(meta.get("total"))))
 
 
+## /mods/{id} returns the mod object directly (name, user, desc/short_desc,
+## thumbnail and banner).
 func _mwsp_get_mod(ref: Dictionary) -> Dictionary:
-	var raw: Variant = await mws_get_mod(str(ref["id"]).to_int())
+	var res := await _hnet_get_json(HOST_MODWORKSHOP, MWS_API_BASE + "/mods/" + str(ref["id"]).uri_encode(), _MWS_TTL_DETAIL_MS)
+	if not res["ok"]:
+		return res
+	var raw: Variant = res["data"]
 	if not (raw is Dictionary):
-		return _mwsp_failure()
+		return host_err(HOST_ERR_BAD_RESPONSE, 0, "ModWorkshop sent an unexpected response")
 	# /mods/{id} returns the object directly, but callers also feed listing
 	# rows through here; unwrap a {data} envelope when present.
 	var row: Dictionary = raw
@@ -203,10 +246,13 @@ func _mwsp_get_mod(ref: Dictionary) -> Dictionary:
 	return host_ok(detail)
 
 
+## Full file history -> {data: [File], meta}; each File carries version,
+## size, created_at and its own download_url.
 func _mwsp_list_files(ref: Dictionary) -> Dictionary:
-	var raw: Variant = await mws_list_files(str(ref["id"]).to_int())
-	if not (raw is Dictionary):
-		return _mwsp_failure()
+	var res := await _hnet_get_json(HOST_MODWORKSHOP, MWS_API_BASE + "/mods/" + str(ref["id"]).uri_encode() + "/files", _MWS_TTL_DETAIL_MS)
+	if not res["ok"]:
+		return res
+	var raw: Variant = res["data"]
 	var files := []
 	for row in _mws_data_rows(raw):
 		var f := _mwsp_file(row)
@@ -215,32 +261,35 @@ func _mwsp_list_files(ref: Dictionary) -> Dictionary:
 	return host_ok(files)
 
 
+## /files/primary is the author-pinned default (display_order = 0).
+## /files/latest sorts by the API's own key (semver desc, excludes
+## prereleases) and can return an older file than primary, so it is only
+## the fallback when no primary is designated. /files/{version} is the
+## record for an exact version; a missing one is reported as such, never
+## substituted, since a pinned modpack apply depends on it.
 func _mwsp_resolve_file(ref: Dictionary, version: String) -> Dictionary:
-	var mod_id := str(ref["id"]).to_int()
+	var base := MWS_API_BASE + "/mods/" + str(ref["id"]).uri_encode() + "/files"
 
 	if version != "":
-		var pinned: Variant = await mws_get_file_by_version(mod_id, version)
-		if not (pinned is Dictionary):
-			# The client collapses offline, rate-limited and 5xx into the same
-			# null a real 404 produces; ask it which happened before reporting
-			# "that version is gone" for what may be a dropped connection.
-			if _mws_last_transport_failed or mws_rate_cooldown_seconds() > 0:
-				return _mwsp_failure()
-			# Genuinely absent: the author deleted the upload or never made it.
-			return host_err(HOST_ERR_VERSION_NOT_FOUND, 404,
-					"version %s is not available" % version)
-		return _mwsp_file_result(pinned)
+		var pinned := await _hnet_get_json(HOST_MODWORKSHOP, base + "/" + version.uri_encode(), _MWS_TTL_PRIMARY_MS)
+		if not pinned["ok"]:
+			if str(pinned["code"]) == HOST_ERR_NOT_FOUND:
+				# Genuinely absent: the author deleted the upload or never made it.
+				return host_err(HOST_ERR_VERSION_NOT_FOUND, 404,
+						"version %s is not available" % version)
+			return pinned
+		return _mwsp_file_result(pinned["data"])
 
-	# Author-pinned default first; /files/latest can return an older file
-	# (see mws_api.gd), so it is only the fallback.
-	var primary: Variant = await mws_get_primary_file(mod_id)
-	if primary is Dictionary:
-		return _mwsp_file_result(primary)
-	var latest: Variant = await mws_get_latest_file(mod_id)
-	if latest is Dictionary:
-		return _mwsp_file_result(latest)
-	if _mws_last_transport_failed or mws_rate_cooldown_seconds() > 0:
-		return _mwsp_failure()
+	var primary := await _hnet_get_json(HOST_MODWORKSHOP, base + "/primary", _MWS_TTL_PRIMARY_MS)
+	if primary["ok"] and primary["data"] is Dictionary:
+		return _mwsp_file_result(primary["data"])
+	if not primary["ok"] and str(primary["code"]) != HOST_ERR_NOT_FOUND:
+		return primary
+	var latest := await _hnet_get_json(HOST_MODWORKSHOP, base + "/latest", _MWS_TTL_PRIMARY_MS)
+	if latest["ok"] and latest["data"] is Dictionary:
+		return _mwsp_file_result(latest["data"])
+	if not latest["ok"] and str(latest["code"]) != HOST_ERR_NOT_FOUND:
+		return latest
 	return host_err(HOST_ERR_NO_FILE, 404, "that mod has no downloadable file")
 
 
@@ -251,10 +300,13 @@ func _mwsp_file_result(raw: Variant) -> Dictionary:
 	return host_ok(f)
 
 
+## Category list -> {data: [Category], meta}. Tree-shaped via parent_id;
+## top-level nodes have parent_id == null.
 func _mwsp_list_categories() -> Dictionary:
-	var raw: Variant = await mws_get_categories()
-	if not (raw is Dictionary):
-		return _mwsp_failure()
+	var res := await _hnet_get_json(HOST_MODWORKSHOP, _mwsp_games_url("/categories"), _MWS_TTL_CATEGORIES_MS)
+	if not res["ok"]:
+		return res
+	var raw: Variant = res["data"]
 	var out := []
 	for row in _mws_data_rows(raw):
 		if not (row is Dictionary):

@@ -1,6 +1,6 @@
 # Modules
 
-A tour of the `src/` tree. The order follows the `FILES` array in `build.sh`, which is the order the files are concatenated into `modloader.gd`. Dependencies flow top-down: a const referenced by another const's initializer must come earlier, and everything shares one namespace. Function bodies can call anything anywhere. 50 files as of 3.3.1.
+A tour of the `src/` tree. The order follows the `FILES` array in `build.sh`, which is the order the files are concatenated into `modloader.gd`. Dependencies flow top-down: a const referenced by another const's initializer must come earlier, and everything shares one namespace. Function bodies can call anything anywhere. 49 files as of 3.3.1.
 
 Links point at the file; function names are the anchors. Line numbers drift.
 
@@ -78,14 +78,6 @@ Shared HTTP transport: `_hnet_get_json` with the User-Agent, body cap, per-URL T
 ### [host_api.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/host_api.gd)
 
 The seam. `host_list_mods`, `host_get_mod`, `host_list_files`, `host_resolve_file`, `host_list_categories`, `host_latest_versions` (async) and `host_caps`, `host_display_name`, `host_mod_page_url`, `host_sorts`, `host_sections`, `host_limit`, `host_error_message` (synchronous). Dispatch is an explicit `match` on the provider, the same shape `registry.gd` uses, so the synchronous operations stay synchronous; a Callable table would turn each into a coroutine, and `host_mod_page_url` is called from code that has to return a Control. `host_providers()` lists the providers in display order (VostokMods first, so Browse opens on it); `host_browse_providers()` filters that by the `browse` capability, which is what the Browse source menu is built from. An adapter that declares a capability without a dispatch arm returns `HOST_ERR_UNWIRED`, which `check_host.sh` T9 pins.
-
-### [mws_api.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mws_api.gd)
-
-The original ModWorkshop client: async wrappers over `HTTPRequest` that return a parsed Variant or `null`. Public methods are `mws_*`, helpers `_mws_*`. It keeps its own cache (`_mws_cache`) and 429 cooldown (`_mws_cooldown_until_ms`), which the adapter mirrors into the seam's cooldown table so the UI reads one status.
-
-- Every request carries a User-Agent; `api.modworkshop.net` answers an empty or default one with a bodyless 403.
-- `mws_list_mods` pages at `MWS_PAGE_LIMIT` (50); the API 422s larger values and search queries over 150 characters.
-- Only `host_mws.gd` calls this file now. The Browse tab, the Updates tab and every download go through `host_api.gd`. The remaining step is to re-point these endpoints at `host_http.gd` and fold the file into the adapter.
 
 ### [host_mws.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/host_mws.gd)
 

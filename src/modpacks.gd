@@ -921,13 +921,8 @@ func _modpack_ref_downloadable(ref: Dictionary) -> bool:
 	return bool(host_caps(str(ref["provider"]))["resolve_file"])
 
 
-## Seconds left on a host's rate-limit cooldown. ModWorkshop traffic still
-## arms the old client's cooldown as well, so read both.
 func _modpack_cooldown_seconds(provider: String) -> int:
-	var secs := host_rate_cooldown_seconds(provider)
-	if provider == HOST_MODWORKSHOP:
-		secs = maxi(secs, mws_rate_cooldown_seconds())
-	return secs
+	return host_rate_cooldown_seconds(provider)
 
 
 # Wait out an armed rate-limit cooldown on one host: once a 429 arms it,

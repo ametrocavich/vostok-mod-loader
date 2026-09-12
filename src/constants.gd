@@ -68,13 +68,12 @@ const API_CHECK_TIMEOUT := 15.0
 # HTTPRequest.timeout covers the whole transfer; mod bodies run to ~256MB.
 const API_DOWNLOAD_TIMEOUT := 300.0
 
-# MWS API (mws_api.gd): an empty/default User-Agent gets a 403; game 864 = RTV.
+# ModWorkshop API (host_mws.gd): an empty/default User-Agent gets a 403; game 864 = RTV.
 const MWS_API_BASE := "https://api.modworkshop.net"
 const MWS_STORAGE_BASE := "https://storage.modworkshop.net"
 const MWS_RTV_GAME_ID := 864
 const MWS_PAGE_LIMIT := 50
 # Buffer cap for JSON API responses (list pages run ~100KB at limit=50).
-const MWS_JSON_BODY_LIMIT := 8 * 1024 * 1024
 # The API caps search queries at 150 chars and answers longer ones with a 422.
 const MWS_QUERY_MAX_LEN := 150
 const MWS_USER_AGENT_TEMPLATE := "vostok-mod-loader/%s (+https://github.com/ametrocavich/vostok-mod-loader)"
@@ -278,20 +277,9 @@ var _rtv_re_ret_value: RegEx
 # clobber static-init overlays.
 var _filescope_mounted: Dictionary = _mount_previous_session()
 
-# Browse-tab API response cache, keyed by full URL. Session memory only.
-# Entry: {data: Variant, expires_at: int (msec)}; evicted on read.
-var _mws_cache: Dictionary = {}
-
-# 429 backoff: ticks_msec moment requests may resume; until then network
-# calls fail fast and the cache above still serves. 0 = no cooldown.
-var _mws_cooldown_until_ms: int = 0
-
-# Whether the last _mws_get_json failed at the transport layer, letting
-# callers tell "offline" apart from a genuine HTTP 404.
-var _mws_last_transport_failed: bool = false
-
-# Generic host-transport response cache, keyed by full URL (absolute, so
-# providers cannot collide). Entry shape matches _mws_cache.
+# Host-transport response cache, keyed by full URL (absolute, so providers
+# cannot collide). Entry: {data: Variant, expires_at: int (msec)}; evicted
+# on read. Session memory only.
 var _host_cache: Dictionary = {}
 
 # Rate-limit cooldowns, provider id -> ticks_msec resume moment.
