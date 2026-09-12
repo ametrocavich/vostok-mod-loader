@@ -150,6 +150,7 @@ func _run() -> void:
 	_t5_clean_finish_resets_to_zero()
 	_t6_pass2_clears_after_the_crash_window()
 	_t7_hook_status_reaches_the_launcher()
+	_t8_pass_state_reads_coerce()
 
 	_finish()
 
@@ -381,6 +382,33 @@ func _t6_pass2_clears_after_the_crash_window() -> void:
 # even though today's _run_pass_2 calls it BEFORE the crash window. Baking that
 # call in here would pin the bug and make the harness unfixable. The call-site
 # ordering is T6's job.
+# --- T8: pass-state reads never raise ---------------------------------------
+
+# mod_pass_state.cfg is hand-editable and can be half-written by a crash. A
+# wrong-typed value used to raise inside the static initializer that mounts
+# the previous session, which nothing could catch, so the loader stopped
+# before any of its own recovery branches. Every read now coerces.
+func _t8_pass_state_reads_coerce() -> void:
+	var cfg := ConfigFile.new()
+	cfg.set_value("state", "modloader_version", 3.31)          # number, not text
+	cfg.set_value("state", "exe_mtime", "1699999999")           # text, not int
+	cfg.set_value("state", "restart_count", null)               # nothing at all
+	cfg.set_value("state", "archive_paths", "just/one/path.zip") # a string, not an array
+	cfg.set_value("state", "hook_pack_wrapped_paths", ["res://Scripts/A.gd", 7, "res://Scripts/B.gd"])
+	_assert(str(_ml._state_str(cfg, "modloader_version", "")) == "",
+			"T8: a non-string version reads as the default")
+	_assert(int(_ml._state_int(cfg, "exe_mtime", 0)) == 1699999999,
+			"T8: an integer written as text still reads as that integer")
+	_assert(int(_ml._state_int(cfg, "restart_count", 0)) == 0,
+			"T8: a null count reads as 0")
+	_assert((_ml._state_paths(cfg, "archive_paths") as PackedStringArray).is_empty(),
+			"T8: a non-array path list reads as empty (boot then skips the mount)")
+	var wrapped: PackedStringArray = _ml._state_paths(cfg, "hook_pack_wrapped_paths")
+	_assert(wrapped.size() == 2 and wrapped[0] == "res://Scripts/A.gd",
+			"T8: an untyped array keeps its string entries and drops the rest")
+	_assert(int(_ml._state_int(cfg, "absent", 42)) == 42 and str(_ml._state_str(cfg, "absent", "d")) == "d",
+			"T8: missing keys read as their defaults")
+
 # --- T7: hook health record ----------------------------------------------------
 
 # Hook-pack generation runs after the launcher closes, so the only way a
@@ -625,7 +653,7 @@ func _cleanup_exe_cfg() -> void:
 func _finish() -> void:
 	_cleanup_exe_cfg()
 	if _failures.is_empty():
-		print("[boot-state] PASS: %d assertion(s) across T1..T7" % _assertions)
+		print("[boot-state] PASS: %d assertion(s) across T1..T8" % _assertions)
 		quit(0)
 		return
 	for m in _failures:

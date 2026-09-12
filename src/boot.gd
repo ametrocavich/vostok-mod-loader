@@ -200,6 +200,51 @@ static func _static_write_cfg_atomic(cfg_path: String, content: String) -> bool:
 		DirAccess.remove_absolute(bak)
 	return true
 
+# The pass-state file is hand-editable and survives crashes mid-write, so
+# every read coerces: a value of the wrong type reads as its default rather
+# than raising a typed-assignment error inside a static initializer, where
+# nothing could catch it and the boot would stop before any recovery branch.
+static func _state_str(cfg: ConfigFile, key: String, default: String) -> String:
+	var v: Variant = cfg.get_value("state", key, default)
+	return v if v is String else default
+
+static func _state_int(cfg: ConfigFile, key: String, default: int) -> int:
+	var v: Variant = cfg.get_value("state", key, default)
+	if v is int:
+		return v
+	if v is float:
+		return int(v)
+	if v is String and str(v).strip_edges().is_valid_int():
+		return str(v).strip_edges().to_int()
+	return default
+
+static func _state_paths(cfg: ConfigFile, key: String) -> PackedStringArray:
+	var v: Variant = cfg.get_value("state", key, PackedStringArray())
+	if v is PackedStringArray:
+		return v
+	var out := PackedStringArray()
+	if v is Array:
+		for item in (v as Array):
+			if item is String and str(item) != "":
+				out.append(str(item))
+	return out
+
+# A folder mod is recorded by its cache zip under TMP_DIR. The zip outlives
+# the folder, so "the file exists" is not enough: the source folder must
+# too, or the deleted mod would mount for one more session.
+static func _static_archive_source_present(path: String) -> bool:
+	var abs_path := path if not path.begins_with("res://") and not path.begins_with("user://") \
+			else ProjectSettings.globalize_path(path)
+	if not FileAccess.file_exists(abs_path):
+		return false
+	var file_name := path.get_file()
+	if not file_name.ends_with("_dev.zip"):
+		return true
+	if not (path.begins_with(TMP_DIR) or path.begins_with(ProjectSettings.globalize_path(TMP_DIR))):
+		return true
+	var folder := OS.get_executable_path().get_base_dir().path_join(MOD_DIR).path_join(file_name.trim_suffix("_dev.zip"))
+	return DirAccess.dir_exists_absolute(folder)
+
 static func _mount_previous_session() -> Dictionary:
 	var mounted: Dictionary = {}
 	var log_lines: PackedStringArray = []
@@ -231,7 +276,7 @@ static func _mount_previous_session() -> Dictionary:
 		return mounted
 	# Different modloader version: wipe pass state and reset override.cfg, whose
 	# stale [autoload_prepend] entries would fail to load before _ready runs.
-	var saved_ver: String = cfg.get_value("state", "modloader_version", "")
+	var saved_ver := _state_str(cfg, "modloader_version", "")
 	if saved_ver != MODLOADER_VERSION:
 		log_lines.append("[FileScope] Version mismatch: saved=%s current=%s -- wiping" % [saved_ver, MODLOADER_VERSION])
 		# Rewriter output semantics can change across versions, so a stale
@@ -242,7 +287,7 @@ static func _mount_previous_session() -> Dictionary:
 		_write_filescope_log(log_lines)
 		return mounted
 	# Detect game updates -- exe mtime change means vanilla scripts may have changed.
-	var saved_exe_mtime: int = cfg.get_value("state", "exe_mtime", 0)
+	var saved_exe_mtime := _state_int(cfg, "exe_mtime", 0)
 	if saved_exe_mtime != 0:
 		var current_exe_mtime := FileAccess.get_modified_time(OS.get_executable_path())
 		if current_exe_mtime != saved_exe_mtime:
@@ -254,7 +299,7 @@ static func _mount_previous_session() -> Dictionary:
 			_static_reset_override_cfg(log_lines)
 			_write_filescope_log(log_lines)
 			return mounted
-	var paths: PackedStringArray = cfg.get_value("state", "archive_paths", PackedStringArray())
+	var paths := _state_paths(cfg, "archive_paths")
 	if paths.is_empty():
 		log_lines.append("[FileScope] Pass state has no archive paths -- skipping")
 		_write_filescope_log(log_lines)
@@ -267,12 +312,13 @@ static func _mount_previous_session() -> Dictionary:
 	for path in paths:
 		var abs_path := path if not path.begins_with("res://") and not path.begins_with("user://") \
 				else ProjectSettings.globalize_path(path)
-		if FileAccess.file_exists(abs_path):
+		if _static_archive_source_present(path):
 			log_lines.append("[FileScope]   EXISTS: " + abs_path)
 			continue
 		# Source gone: treat as missing even if a same-basename cache zip
-		# survived. Mounting the stale cache would serve old content before
-		# Pass 1 can mount the replacement.
+		# survived (a .vmz copy, or a folder mod's _dev.zip). Mounting the
+		# stale cache would serve old content before Pass 1 can mount the
+		# replacement.
 		log_lines.append("[FileScope]   MISSING: " + abs_path)
 		any_missing = true
 
@@ -316,8 +362,8 @@ static func _mount_previous_session() -> Dictionary:
 	# A first-ever session has no pass_state entry: skip, and those scripts run
 	# PCK bytecode for one launch. No fallback by filename -- orphans from a
 	# lost pass_state entry cannot be told apart; the cleanup below sweeps them.
-	var hook_pack: String = cfg.get_value("state", "hook_pack_path", "") as String
-	var wrapped_paths: PackedStringArray = cfg.get_value("state", "hook_pack_wrapped_paths", PackedStringArray())
+	var hook_pack := _state_str(cfg, "hook_pack_path", "")
+	var wrapped_paths := _state_paths(cfg, "hook_pack_wrapped_paths")
 	# Windows can't delete a mounted pack mid-session, so prior sessions leave
 	# framework_pack_*.zip orphans; nothing is mounted yet, so sweep them now.
 	_static_cleanup_orphan_hook_packs(hook_pack, log_lines)
@@ -706,9 +752,9 @@ func _persist_hook_pack_state(pack_path: String, wrapped_paths: PackedStringArra
 	cfg.set_value("state", "hook_pack_wrapped_paths", wrapped_paths)
 	# Seed exe_mtime only when missing: Pass 1 persists the hook pack before
 	# _write_pass_state runs, and _write_pass_state's value is authoritative.
-	if int(cfg.get_value("state", "exe_mtime", 0)) == 0:
+	if _state_int(cfg, "exe_mtime", 0) == 0:
 		cfg.set_value("state", "exe_mtime", FileAccess.get_modified_time(OS.get_executable_path()))
-	if cfg.get_value("state", "modloader_version", "") == "":
+	if _state_str(cfg, "modloader_version", "") == "":
 		cfg.set_value("state", "modloader_version", MODLOADER_VERSION)
 	if cfg.save(PASS_STATE_PATH) == OK:
 		_log_info("[RTVCodegen] Persisted hook pack path for next-session static-init mount: %s (%d wrapped path(s))" \
@@ -717,7 +763,7 @@ func _persist_hook_pack_state(pack_path: String, wrapped_paths: PackedStringArra
 func _write_pass_state(archive_paths: PackedStringArray, state_hash: String = "") -> Error:
 	var cfg := ConfigFile.new()
 	cfg.load(PASS_STATE_PATH)
-	var count: int = cfg.get_value("state", "restart_count", 0)
+	var count := _state_int(cfg, "restart_count", 0)
 	cfg.set_value("state", "restart_count", count + 1)
 	# Mirror the attempt into the durable streak, which survives the
 	# crashed-Pass-2 wipe and is what _crash_breaker_tripped reads.
@@ -821,7 +867,7 @@ func _check_crash_recovery() -> void:
 	_log_warning("Heartbeat detected -- previous launch may have crashed")
 	var cfg := ConfigFile.new()
 	if cfg.load(PASS_STATE_PATH) == OK:
-		var count: int = cfg.get_value("state", "restart_count", 0)
+		var count := _state_int(cfg, "restart_count", 0)
 		if count >= MAX_RESTART_COUNT:
 			_log_critical("Restart loop (%d crashes) -- resetting to clean state" % count)
 			_restore_clean_override_cfg()
@@ -898,7 +944,7 @@ func _clear_restart_counter() -> void:
 	if cfg.load(PASS_STATE_PATH) == OK:
 		# Skip the save when already 0; this runs every launch on the
 		# hash-match fast path.
-		if int(cfg.get_value("state", "restart_count", 0)) == 0:
+		if _state_int(cfg, "restart_count", 0) == 0:
 			return
 		cfg.set_value("state", "restart_count", 0)
 		cfg.save(PASS_STATE_PATH)

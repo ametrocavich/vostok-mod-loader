@@ -253,7 +253,8 @@ func _run_pass_2() -> void:
 	# Restore script overrides from pass state and apply before hooks.
 	var _pass_cfg := ConfigFile.new()
 	if _pass_cfg.load(PASS_STATE_PATH) == OK:
-		var saved_overrides: Array = _pass_cfg.get_value("state", "script_overrides", [])
+		var so_v: Variant = _pass_cfg.get_value("state", "script_overrides", [])
+		var saved_overrides: Array = so_v if so_v is Array else []
 		for entry in saved_overrides:
 			if entry is Dictionary and entry.has("vanilla_path") and entry.has("mod_script_path") and entry.has("mod_name") and entry.has("priority"):
 				_pending_script_overrides.append(entry)
