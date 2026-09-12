@@ -149,6 +149,7 @@ func _run() -> void:
 	_t4_max_crashes_trip_and_stay_tripped()
 	_t5_clean_finish_resets_to_zero()
 	_t6_pass2_clears_after_the_crash_window()
+	_t7_hook_status_reaches_the_launcher()
 
 	_finish()
 
@@ -380,6 +381,72 @@ func _t6_pass2_clears_after_the_crash_window() -> void:
 # even though today's _run_pass_2 calls it BEFORE the crash window. Baking that
 # call in here would pin the bug and make the harness unfixable. The call-site
 # ordering is T6's job.
+# --- T7: hook health record ----------------------------------------------------
+
+# Hook-pack generation runs after the launcher closes, so the only way a
+# player learns a game update broke the rewriter is the record generation
+# leaves behind. Pins: a failure record produces a launcher notice; a record
+# from another loader build or another game build is ignored; the
+# game-updated marker produces a notice on its own and only a healthy
+# activation clears it.
+func _t7_hook_status_reaches_the_launcher() -> void:
+	var status_path := str(_ml.HOOK_STATUS_PATH)
+	var marker_path := str(_ml.GAME_UPDATED_MARKER_PATH)
+	var clear := func():
+		for p in [status_path, marker_path]:
+			if FileAccess.file_exists(p):
+				DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
+	clear.call()
+	_assert((_ml._hook_status_problem() as Dictionary).is_empty(),
+			"T7: no record and no marker -> nothing to show")
+
+	_ml._hook_status_write({"state": "all_failed", "attempted": 12, "ok": 0})
+	var problem: Dictionary = _ml._hook_status_problem()
+	_assert(str(problem.get("severity", "")) == "error" and str(problem.get("text", "")).contains("12"),
+			"T7: an all-failed record is an error notice naming the count (got %s)" % str(problem))
+
+	_ml._hook_status_write({"state": "critical_failed", "attempted": 12, "ok": 9,
+			"critical_failures": ["res://Scripts/Controller.gd", "res://Scripts/Camera.gd"]})
+	problem = _ml._hook_status_problem()
+	_assert(str(problem.get("text", "")).contains("Controller.gd") and str(problem.get("text", "")).contains("Camera.gd"),
+			"T7: a critical-failure record names the scripts")
+
+	_ml._hook_status_write({"state": "unsupported_gdsc", "gdsc_version": 102})
+	problem = _ml._hook_status_problem()
+	_assert(str(problem.get("severity", "")) == "error" and str(problem.get("text", "")).contains("v102"),
+			"T7: an unsupported-format record names the version")
+
+	# Another loader build wrote it: a loader update may have fixed it, so
+	# the record is ignored until this build writes its own.
+	var f := FileAccess.open(status_path, FileAccess.WRITE)
+	f.store_string(JSON.stringify({"state": "all_failed", "attempted": 3, "loader_version": "0.0.0",
+			"exe_mtime": FileAccess.get_modified_time(OS.get_executable_path())}))
+	f.close()
+	_assert((_ml._hook_status_problem() as Dictionary).is_empty(),
+			"T7: a record from another loader version is ignored")
+	# Another game build wrote it: the exe changed since.
+	f = FileAccess.open(status_path, FileAccess.WRITE)
+	f.store_string(JSON.stringify({"state": "all_failed", "attempted": 3, "loader_version": str(_ml.MODLOADER_VERSION),
+			"exe_mtime": 12345}))
+	f.close()
+	_assert((_ml._hook_status_problem() as Dictionary).is_empty(),
+			"T7: a record from another game build is ignored")
+
+	# The game-updated marker alone is a notice, not an error.
+	clear.call()
+	_ml._static_mark_game_updated()
+	problem = _ml._hook_status_problem()
+	_assert(str(problem.get("severity", "")) == "notice" and str(problem.get("text", "")).contains("updated"),
+			"T7: the game-updated marker shows a notice (got %s)" % str(problem))
+	# A no-mods session does not prove hooks work on the new build.
+	_ml._hook_status_write({"state": "ok", "attempted": 0})
+	_assert(FileAccess.file_exists(marker_path), "T7: an empty session keeps the marker")
+	# A healthy activation does.
+	_ml._hook_status_write({"state": "ok", "attempted": 5, "ok": 5})
+	_assert(not FileAccess.file_exists(marker_path), "T7: a healthy activation clears the marker")
+	_assert((_ml._hook_status_problem() as Dictionary).is_empty(), "T7: nothing to show after a healthy activation")
+	clear.call()
+
 func _crashed_launch() -> void:
 	_next_launch_boot()
 	_arm_two_pass_restart()
@@ -558,7 +625,7 @@ func _cleanup_exe_cfg() -> void:
 func _finish() -> void:
 	_cleanup_exe_cfg()
 	if _failures.is_empty():
-		print("[boot-state] PASS: %d assertion(s) across T1..T6" % _assertions)
+		print("[boot-state] PASS: %d assertion(s) across T1..T7" % _assertions)
 		quit(0)
 		return
 	for m in _failures:

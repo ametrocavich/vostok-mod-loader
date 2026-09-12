@@ -248,6 +248,8 @@ static func _mount_previous_session() -> Dictionary:
 		if current_exe_mtime != saved_exe_mtime:
 			log_lines.append("[FileScope] Game exe mtime changed -- wiping hook cache")
 			_static_wipe_hook_cache()
+			# The launcher tells the player; a healthy activation clears it.
+			_static_mark_game_updated()
 			DirAccess.remove_absolute(ProjectSettings.globalize_path(PASS_STATE_PATH))
 			_static_reset_override_cfg(log_lines)
 			_write_filescope_log(log_lines)

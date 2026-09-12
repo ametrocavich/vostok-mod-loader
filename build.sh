@@ -73,6 +73,7 @@ FILES=(
     "$SRC/rewriter_registry_inject.gd"  # declaration transforms, preludes, registry appendices
     "$SRC/rewriter_autofix.gd"          # legacy-GDScript autofix + bare-base/reload strippers
     "$SRC/hook_pack.gd"
+    "$SRC/hook_status.gd"
     # Orchestration
     "$SRC/lifecycle.gd"
     "$SRC/main_menu_hook.gd"

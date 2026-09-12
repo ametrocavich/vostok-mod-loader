@@ -143,8 +143,9 @@ func _ensure_game_pck_index() -> void:
 		return
 	for e_v in _security_pck_list_with_offsets(_game_pck_path):
 		var e: Dictionary = e_v
-		# Godot pads directory paths with NULs to a 4-byte boundary.
-		var rel := str(e["path"]).trim_prefix("res://").trim_prefix("/").rstrip("\u0000")
+		# The same decode _parse_pck_file_list relies on: the utf8 decode
+		# stops at the NUL padding Godot writes after each path.
+		var rel := str(e["path"]).trim_prefix("res://").trim_prefix("/")
 		if rel != "":
 			_game_pck_index[rel] = e
 	if _game_pck_index.is_empty():

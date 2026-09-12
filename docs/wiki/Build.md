@@ -1,6 +1,6 @@
 # Build
 
-The installable file, `modloader.gd`, is built from the `src/` tree (`src/*.gd` plus `src/registry/*.gd`, 49 files) and is not edited directly. Edit under `src/`, run `./build.sh`, then `./check.sh`.
+The installable file, `modloader.gd`, is built from the `src/` tree (`src/*.gd` plus `src/registry/*.gd`, 50 files) and is not edited directly. Edit under `src/`, run `./build.sh`, then `./check.sh`.
 
 ## build.sh
 
@@ -66,6 +66,7 @@ FILES=(
     "$SRC/rewriter_registry_inject.gd"
     "$SRC/rewriter_autofix.gd"
     "$SRC/hook_pack.gd"
+    "$SRC/hook_status.gd"
     # Orchestration
     "$SRC/lifecycle.gd"
     "$SRC/main_menu_hook.gd"

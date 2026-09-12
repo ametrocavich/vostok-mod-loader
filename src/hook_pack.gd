@@ -131,12 +131,16 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	if tok_version != -1 and tok_version != GDSC_VERSION_V100 and tok_version != GDSC_VERSION_V101:
 		_log_critical("[STABILITY] Unsupported GDSC tokenizer v%d on Godot %s. This ModLoader supports v100 (Godot 4.3-4.4) and v101 (Godot 4.5-4.6). Hook pack generation disabled -- script hooks will not fire. See README for supported Godot versions." \
 				% [tok_version, Engine.get_version_info().get("string", "unknown")])
+		_hook_status_write({"state": HOOK_STATE_UNSUPPORTED_GDSC, "gdsc_version": tok_version})
 		return ""
 	if tok_version != -1:
 		_log_info("[STABILITY] Detokenizer compatible: GDSC v%d on Godot %s" \
 				% [tok_version, Engine.get_version_info().get("string", "unknown")])
 
 	if _loaded_mod_ids.is_empty():
+		# Nothing to rewrite is a healthy outcome; a stale failure record
+		# from a session that had mods must not outlive the mods.
+		_hook_status_write({"state": HOOK_STATE_OK, "attempted": 0})
 		return ""
 
 	# Canary C: round-trip one vanilla script through the detokenizer and
@@ -150,6 +154,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	if tok_version != -1 and not _canary_detokenizer_roundtrip_ok():
 		_log_critical("[STABILITY] Detokenized vanilla source failed the indentation sanity check on Godot %s (GDSC version is still %d). Two known causes: the .gdc column format changed, or the game's scripts are no longer indented with 4 spaces per level -- _indent_from_column's `col / 4` depends on that. See the note above _indent_from_column in gdsc_detokenizer.gd. Hook pack generation disabled -- script hooks will not fire. Update the ModLoader to a version that supports this game build." \
 				% [Engine.get_version_info().get("string", "unknown"), tok_version])
+		_hook_status_write({"state": HOOK_STATE_DETOK_FAILED, "gdsc_version": tok_version})
 		return ""
 
 	# Opt-in gate: user mods run against unmodified vanilla unless at least
@@ -956,37 +961,6 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 	# CACHE_MODE_IGNORE preempt.
 	_persist_hook_pack_state(pack_path, _wrapped_paths_packed(filenames))
 
-	# End-to-end probes (dev-mode only): register real hooks via the public
-	# API on known methods across three phases (menu tick, menu UI click,
-	# gameplay). If the first set fires and the last doesn't, it's timing;
-	# if none fire but the dispatch counter is high, _hooks lookup is broken.
-	# The probes fire every physics tick and the 30s timer prints ~30 lines.
-	if not _developer_mode:
-		return
-	var probe_counts := {
-		"loader_pp": 0, "simulation_proc": 0, "profiler_proc": 0,
-		"menu_ready": 0, "settings_load": 0,
-		"controller_pp": 0, "character_pp": 0, "camera_pp": 0,
-	}
-	Engine.set_meta("_rtv_probe_counts", probe_counts)
-	Engine.set_meta("_rtv_probe_first_args", {})
-	var _bump := func(key: String, arg):
-		var pc: Dictionary = Engine.get_meta("_rtv_probe_counts", {})
-		pc[key] = int(pc.get(key, 0)) + 1
-		Engine.set_meta("_rtv_probe_counts", pc)
-		var fa: Dictionary = Engine.get_meta("_rtv_probe_first_args", {})
-		if not fa.has(key):
-			fa[key] = str(arg)
-			Engine.set_meta("_rtv_probe_first_args", fa)
-	hook("loader-_physics_process-pre", func(d): _bump.call("loader_pp", d), 100)
-	hook("simulation-_process-pre", func(d): _bump.call("simulation_proc", d), 100)
-	hook("profiler-_process-pre", func(d): _bump.call("profiler_proc", d), 100)
-	hook("menu-_ready-pre", func(): _bump.call("menu_ready", "(no args)"), 100)
-	hook("settings-loadpreferences-pre", func(): _bump.call("settings_load", "(no args)"), 100)
-	hook("controller-_physics_process-pre", func(d): _bump.call("controller_pp", d), 100)
-	hook("character-_physics_process-pre", func(d): _bump.call("character_pp", d), 100)
-	hook("camera-_physics_process-pre", func(d): _bump.call("camera_pp", d), 100)
-
 	# Compile proof: an activated script's method list must contain the
 	# renamed vanilla (_rtv_vanilla_Movement) alongside the wrapper at the
 	# original name.
@@ -1043,6 +1017,47 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 				% [compile_proof_ok, attempted,
 					(" (%d pinned-fallback)" % compile_proof_fail.size()) if compile_proof_fail.size() > 0 else "",
 					deferred_tag])
+
+	# The record the next launcher reads. Written after the log lines so a
+	# player who never opens the log still learns hooks are not working.
+	var status := {"state": HOOK_STATE_OK, "attempted": attempted, "ok": compile_proof_ok}
+	if compile_proof_ok == 0 and attempted > 0:
+		status["state"] = HOOK_STATE_ALL_FAILED
+	elif critical_failures.size() > 0:
+		status["state"] = HOOK_STATE_CRITICAL_FAILED
+		status["critical_failures"] = Array(critical_failures)
+	_hook_status_write(status)
+
+	# End-to-end probes (dev-mode only): register real hooks via the public
+	# API on known methods across three phases (menu tick, menu UI click,
+	# gameplay). If the first set fires and the last doesn't, it's timing;
+	# if none fire but the dispatch counter is high, _hooks lookup is broken.
+	# The probes fire every physics tick and the 30s timer prints ~30 lines.
+	if not _developer_mode:
+		return
+	var probe_counts := {
+		"loader_pp": 0, "simulation_proc": 0, "profiler_proc": 0,
+		"menu_ready": 0, "settings_load": 0,
+		"controller_pp": 0, "character_pp": 0, "camera_pp": 0,
+	}
+	Engine.set_meta("_rtv_probe_counts", probe_counts)
+	Engine.set_meta("_rtv_probe_first_args", {})
+	var _bump := func(key: String, arg):
+		var pc: Dictionary = Engine.get_meta("_rtv_probe_counts", {})
+		pc[key] = int(pc.get(key, 0)) + 1
+		Engine.set_meta("_rtv_probe_counts", pc)
+		var fa: Dictionary = Engine.get_meta("_rtv_probe_first_args", {})
+		if not fa.has(key):
+			fa[key] = str(arg)
+			Engine.set_meta("_rtv_probe_first_args", fa)
+	hook("loader-_physics_process-pre", func(d): _bump.call("loader_pp", d), 100)
+	hook("simulation-_process-pre", func(d): _bump.call("simulation_proc", d), 100)
+	hook("profiler-_process-pre", func(d): _bump.call("profiler_proc", d), 100)
+	hook("menu-_ready-pre", func(): _bump.call("menu_ready", "(no args)"), 100)
+	hook("settings-loadpreferences-pre", func(): _bump.call("settings_load", "(no args)"), 100)
+	hook("controller-_physics_process-pre", func(d): _bump.call("controller_pp", d), 100)
+	hook("character-_physics_process-pre", func(d): _bump.call("character_pp", d), 100)
+	hook("camera-_physics_process-pre", func(d): _bump.call("camera_pp", d), 100)
 
 	# Autoload inspection (dev-only diagnostic): a live autoload node can
 	# still hold the original bytecode via get_script() even when the script

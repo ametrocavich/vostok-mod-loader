@@ -4232,6 +4232,23 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	var outer := VBoxContainer.new()
 	outer.size_flags_vertical = Control.SIZE_EXPAND_FILL
 
+	# Hook health from the previous session. Generation runs after this
+	# window closes, so this is the only place a player learns that a game
+	# update broke the rewriter without reading the log.
+	var hook_problem := _hook_status_problem()
+	if not hook_problem.is_empty():
+		var is_error := str(hook_problem.get("severity", "")) == "error"
+		var hook_banner := _make_banner(str(hook_problem.get("text", "")), COL_ERR if is_error else COL_ACCENT)
+		var update_btn := Button.new()
+		update_btn.text = "Check for loader update"
+		var hook_banner_row: HBoxContainer = hook_banner["row"]
+		hook_banner_row.add_child(update_btn)
+		update_btn.pressed.connect(func():
+			OS.shell_open(_modloader_release_page_url())
+		)
+		_wire_hint(update_btn, "Open the loader's release page in your browser.")
+		outer.add_child(hook_banner["panel"])
+
 	# Active-modpack banner with a one-click Unload.
 	var active_modpack := get_active_modpack()
 	if active_modpack != "":

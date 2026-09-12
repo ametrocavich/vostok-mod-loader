@@ -1,6 +1,6 @@
 # Modules
 
-A tour of the `src/` tree. The order follows the `FILES` array in `build.sh`, which is the order the files are concatenated into `modloader.gd`. Dependencies flow top-down: a const referenced by another const's initializer must come earlier, and everything shares one namespace. Function bodies can call anything anywhere. 49 files as of 3.3.1.
+A tour of the `src/` tree. The order follows the `FILES` array in `build.sh`, which is the order the files are concatenated into `modloader.gd`. Dependencies flow top-down: a const referenced by another const's initializer must come earlier, and everything shares one namespace. Function bodies can call anything anywhere. 50 files as of 3.3.1.
 
 Links point at the file; function names are the anchors. Line numbers drift.
 
@@ -264,6 +264,10 @@ Mod sources are not rewritten. A mod script that extends a wrapped vanilla sees 
 
 ## Orchestration
 
+
+### [hook_status.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_status.gd)
+
+The hook system's last outcome, written where the launcher can read it (`user://modloader_hook_status.json`). Generation and activation run after the launcher closes, so without this a game update that breaks the rewriter is visible only in the log. `_hook_status_write` is called from the canary B and C stops, the no-mods short-circuit and the end of activation; `_hook_status_problem` turns the record (and the static-init `modloader_game_updated` marker) into the banner `build_mods_tab` shows. Records from another loader version or another game executable are ignored.
 ### [lifecycle.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd)
 
 `_ready` clears the one-shot vanilla sentinel or dispatches to `_run_pass_1` / `_run_pass_2`. `_modloader_restart` is the shared relaunch helper (keeps the Steam rendering flags, forwards user args). `reopen_mod_ui` is the post-boot entry from the main-menu button; it restarts into a clean Pass 1 when the session is dirty. The finish helpers `_finish_with_existing_mounts` and `_finish_single_pass` register the meta, generate the pack, instantiate queued autoloads, run the dev-mode diagnostics, emit `frameworks_ready`, clear the heartbeat and the streak, and reload the current scene if anything mounted. See [Architecture](Architecture).

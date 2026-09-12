@@ -36,13 +36,13 @@ src/
   rewriter_rewrite.gd      # rename + wrap orchestrator, wrapper emitter
   rewriter_registry_inject.gd  # per-script transforms, preludes, appendices
   rewriter_autofix.gd      # legacy-GDScript autofix, base()/reload strippers
-  hook_pack.gd             # hook pack generator + activator
+  hook_pack.gd, hook_status.gd             # hook pack generator + activator
   lifecycle.gd             # _ready + pass orchestration
   main_menu_hook.gd        # in-game Mods button on the RTV main menu
   debug.gd                 # test scaffolding (gated behind a config flag)
 ```
 
-49 files, in `build.sh`'s `FILES` order (the concat order).
+50 files, in `build.sh`'s `FILES` order (the concat order).
 `docs/wiki/Modules.md` has the per-file tour.
 
 ### Building and checking locally

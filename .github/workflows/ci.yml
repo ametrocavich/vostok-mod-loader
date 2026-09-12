@@ -2,7 +2,7 @@ name: ci
 
 # Build modloader.gd from src/ and put it in front of a real GDScript compiler.
 #
-# src/ is 49 files concatenated into one 24,000-line script sharing a single
+# src/ is 50 files concatenated into one 24,000-line script sharing a single
 # namespace, so
 # the failure modes are exactly the ones review misses: two files defining the
 # same top-level function, a call to a function a refactor renamed, a merge that
