@@ -135,29 +135,14 @@ func _resolve_event_patch_target(id: Variant) -> Array:
 	push_warning("[Registry] patch('events', ...): id must be a String handle or an EventData Resource")
 	return [null, null]
 
-func _append_event(id: Variant, field: String, values: Array, allow_duplicates: bool) -> bool:
+# append, prepend and remove_from share one body; `op` selects the operation.
+func _array_op_event(id: Variant, field: String, op: String, values: Array, allow_duplicates: bool) -> bool:
 	var resolved := _resolve_event_patch_target(id)
 	var target: Resource = resolved[0]
 	var key = resolved[1]
 	if target == null:
 		return false
-	return _array_op_on_resource("events", key, target, field, "append", values, allow_duplicates)
-
-func _prepend_event(id: Variant, field: String, values: Array, allow_duplicates: bool) -> bool:
-	var resolved := _resolve_event_patch_target(id)
-	var target: Resource = resolved[0]
-	var key = resolved[1]
-	if target == null:
-		return false
-	return _array_op_on_resource("events", key, target, field, "prepend", values, allow_duplicates)
-
-func _remove_from_event(id: Variant, field: String, values: Array) -> bool:
-	var resolved := _resolve_event_patch_target(id)
-	var target: Resource = resolved[0]
-	var key = resolved[1]
-	if target == null:
-		return false
-	return _array_op_on_resource("events", key, target, field, "remove_from", values, false)
+	return _array_op_on_resource("events", key, target, field, op, values, allow_duplicates)
 
 
 func _patch_event(id: Variant, fields: Dictionary) -> bool:

@@ -157,26 +157,13 @@ func _override_sound(id: String, data: Variant) -> bool:
 	_log_debug("[Registry] overrode sound '%s'" % id)
 	return true
 
-func _append_sound(id: String, field: String, values: Array, allow_duplicates: bool) -> bool:
+# append, prepend and remove_from share one body; `op` selects the operation.
+func _array_op_sound(id: String, field: String, op: String, values: Array, allow_duplicates: bool) -> bool:
 	var target := _lookup_sound(id)
 	if target == null:
-		push_warning("[Registry] append('sounds', '%s'): no sound with that id" % id)
+		push_warning("[Registry] %s('sounds', '%s'): no sound with that id" % [op, id])
 		return false
-	return _array_op_on_resource("sounds", id, target, field, "append", values, allow_duplicates)
-
-func _prepend_sound(id: String, field: String, values: Array, allow_duplicates: bool) -> bool:
-	var target := _lookup_sound(id)
-	if target == null:
-		push_warning("[Registry] prepend('sounds', '%s'): no sound with that id" % id)
-		return false
-	return _array_op_on_resource("sounds", id, target, field, "prepend", values, allow_duplicates)
-
-func _remove_from_sound(id: String, field: String, values: Array) -> bool:
-	var target := _lookup_sound(id)
-	if target == null:
-		push_warning("[Registry] remove_from('sounds', '%s'): no sound with that id" % id)
-		return false
-	return _array_op_on_resource("sounds", id, target, field, "remove_from", values, false)
+	return _array_op_on_resource("sounds", id, target, field, op, values, allow_duplicates)
 
 
 func _patch_sound(id: String, fields: Dictionary) -> bool:

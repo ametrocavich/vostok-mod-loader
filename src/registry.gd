@@ -337,33 +337,18 @@ func _array_op_dispatch(registry: String, id: Variant, field: String, op: String
 			if not (id is String):
 				push_warning("[Registry] %s('items', ...): id must be a String" % op)
 				return false
-			match op:
-				"append":      return _append_item(id, field, arr, allow_duplicates)
-				"prepend":     return _prepend_item(id, field, arr, allow_duplicates)
-				"remove_from": return _remove_from_item(id, field, arr)
+			return _array_op_item(id, field, op, arr, allow_duplicates)
 		"sounds":
 			if not (id is String):
 				push_warning("[Registry] %s('sounds', ...): id must be a String" % op)
 				return false
-			match op:
-				"append":      return _append_sound(id, field, arr, allow_duplicates)
-				"prepend":     return _prepend_sound(id, field, arr, allow_duplicates)
-				"remove_from": return _remove_from_sound(id, field, arr)
+			return _array_op_sound(id, field, op, arr, allow_duplicates)
 		"recipes":
-			match op:
-				"append":      return _append_recipe(id, field, arr, allow_duplicates)
-				"prepend":     return _prepend_recipe(id, field, arr, allow_duplicates)
-				"remove_from": return _remove_from_recipe(id, field, arr)
+			return _array_op_recipe(id, field, op, arr, allow_duplicates)
 		"events":
-			match op:
-				"append":      return _append_event(id, field, arr, allow_duplicates)
-				"prepend":     return _prepend_event(id, field, arr, allow_duplicates)
-				"remove_from": return _remove_from_event(id, field, arr)
+			return _array_op_event(id, field, op, arr, allow_duplicates)
 		"trader_tasks":
-			match op:
-				"append":      return _append_trader_task(id, field, arr, allow_duplicates)
-				"prepend":     return _prepend_trader_task(id, field, arr, allow_duplicates)
-				"remove_from": return _remove_from_trader_task(id, field, arr)
+			return _array_op_trader_task(id, field, op, arr, allow_duplicates)
 		"inputs":
 			push_warning("[Registry] %s: 'inputs' has no Array-typed fields (display_label/default_event/deadzone are scalars; use patch instead)" % op)
 			return false
@@ -374,10 +359,7 @@ func _array_op_dispatch(registry: String, id: Variant, field: String, op: String
 			if not (id is String):
 				push_warning("[Registry] %s('resources', ...): id must be a res:// path String" % op)
 				return false
-			match op:
-				"append":      return _append_resource(id, field, arr, allow_duplicates)
-				"prepend":     return _prepend_resource(id, field, arr, allow_duplicates)
-				"remove_from": return _remove_from_resource(id, field, arr)
+			return _array_op_resource(id, field, op, arr, allow_duplicates)
 		"scene_nodes":
 			push_warning("[Registry] %s: 'scene_nodes' patches store literal property values applied on scene-load; Array-merge isn't supported (read the property in a hook and patch the merged value instead)" % op)
 			return false
