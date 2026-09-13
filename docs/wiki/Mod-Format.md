@@ -165,7 +165,7 @@ Duplicate autoload names are logged and skipped (first wins). A path that exists
 | `source` | String | Where this mod is hosted, as `"<provider>:<id>"`. Enables the Updates tab and modpack auto-download. Preferred over `modworkshop`. |
 | `modworkshop` | int | Legacy ModWorkshop mod id. Still read, no sunset planned; equivalent to `source="modworkshop:<id>"`. |
 
-`source` is the provider-qualified form. The provider is a known host token: `vostokmods` (the id is the mod's slug, the last part of its page URL), `modworkshop` (the numeric mod id), or `nexus` (numeric; link-out only, no downloads). The provider is matched case-insensitively. A value with no colon is rejected, not guessed, so `source="12345"` is an error rather than a ModWorkshop id; the row says so (`mod.txt has an unrecognized [updates] source=...`). A malformed `source=` falls through to `modworkshop=` when both are present.
+`source` is the provider-qualified form. The provider is a known host token: `vostokmods` (the id is the mod's slug, the last part of its page URL) or `modworkshop` (the numeric mod id). The provider is matched case-insensitively. A value with no colon is rejected, not guessed, so `source="12345"` is an error rather than a ModWorkshop id; the row says so (`mod.txt has an unrecognized [updates] source=...`). A malformed `source=` falls through to `modworkshop=` when both are present.
 
 For a VostokMods mod, declare the slug, which is the last part of the mod's page URL (`vostokmods.net/mod/<slug>`):
 
@@ -184,7 +184,7 @@ modworkshop=12345
 
 The `modworkshop=` line keeps older loaders working; the `source=` line is what newer loaders read first. A mod hosted anywhere other than ModWorkshop must declare only `source=` and must not add a `modworkshop=` line, because an older loader would treat that number as a ModWorkshop id and download an unrelated mod.
 
-Declaring a source also makes the mod auto-downloadable when someone applies a modpack that includes it (VostokMods and ModWorkshop serve files; Nexus does not). The loader records the source plus `[mod] version` and fetches it on the recipient's machine. Mods with no source must be installed by hand by modpack recipients.
+Declaring a source also makes the mod auto-downloadable when someone applies a modpack that includes it. The loader records the source plus `[mod] version` and fetches it on the recipient's machine. Mods with no source must be installed by hand by modpack recipients.
 
 A mod downloaded through the Browse tab is remembered by the launcher (in `mod_config.cfg` `[mod_sources]`) even when its `mod.txt` declares nothing, so the Updates tab and modpacks still know where it came from on that machine. Declaring `source=` is what makes that knowledge travel with the mod.
 

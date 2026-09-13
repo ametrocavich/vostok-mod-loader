@@ -287,7 +287,7 @@ func _t5_ref_grammar(ml: Object) -> void:
 	_assert(str(r2.get("provider", "")) == "vostokmods" and str(r2.get("id", "")) == "example",
 			"T5: vostokmods:example parses (got %s)" % str(r2))
 	# Ids are opaque and may themselves contain colons: split on the FIRST.
-	var r3: Variant = ml.host_ref_from_key("nexus:collection/riverwood:v2")
+	var r3: Variant = ml.host_ref_from_key("vostokmods:collection/riverwood:v2")
 	_assert(str(r3.get("id", "")) == "collection/riverwood:v2",
 			"T5: id keeps everything after the first colon (got %s)" % str(r3.get("id", "")))
 	for bad in ["12345", "steam:123", "modworkshop:", "modworkshop:   ", ":123", ""]:
@@ -479,13 +479,12 @@ func _t8_vm_pure_surface(ml: Object) -> void:
 # other until now.
 func _t9_caps_match_wiring(ml: Object) -> void:
 	# Each host has its own id grammar, and a page-URL builder is right to
-	# refuse an id that cannot be one of its own (Nexus ids are integers,
+	# refuse an id that cannot be one of its own (ModWorkshop ids are integers,
 	# VostokMods ids are slugs). Probe each with an id IT would accept, or the
 	# check measures the fixture rather than the wiring.
 	var sample := {
 		ml.HOST_MODWORKSHOP: "12345",
 		ml.HOST_VOSTOKMODS: "example-slug",
-		ml.HOST_NEXUS: "51",
 	}
 	for provider in ml.host_providers():
 		var caps: Variant = ml.host_caps(provider)

@@ -11,12 +11,11 @@
 ## source= key uses; one parser serves both so they cannot drift.
 
 const HOST_MODWORKSHOP := "modworkshop"
-const HOST_NEXUS := "nexus"
 const HOST_VOSTOKMODS := "vostokmods"
 
 ## Providers the on-disk parser accepts. Anything else is rejected at parse
 ## time so a typo fails loudly instead of resolving to the wrong host.
-const HOST_PROVIDERS_KNOWN: Array[String] = ["modworkshop", "nexus", "vostokmods"]
+const HOST_PROVIDERS_KNOWN: Array[String] = ["modworkshop", "vostokmods"]
 
 # Failure codes. Each exists because some caller branches on it.
 const HOST_ERR_OFFLINE := "offline"                       # no HTTP response at all

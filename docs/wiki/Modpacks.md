@@ -36,7 +36,6 @@ Mods that fail to download show up in a summary you can retry from. A mod the pa
 
 - `the modpack has no download info for this mod -- install it manually`
 - `the modpack does not say where this mod is hosted -- install it manually`
-- `this mod is hosted on Nexus Mods, which the loader cannot download from -- install it manually`
 
 While the downloads run you can **Cancel**. The download in flight finishes (it cannot be interrupted cleanly mid-request), no further ones start, and the apply stops before touching your profiles: `Apply cancelled -- the modpack was not applied and your profiles are unchanged.` Any mods that had already downloaded stay in your mods folder.
 
@@ -129,7 +128,7 @@ Required fields are validated before apply touches any state: `metroprofile` mus
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `provider` | string | yes (new format) | Host token: `modworkshop`, `vostokmods`, or `nexus`. |
+| `provider` | string | yes (new format) | Host token: `modworkshop` or `vostokmods`. |
 | `id` | string | yes (new format) | That host's mod id. For VostokMods this is the slug. |
 | `modworkshop_id` | int | mirror | Compatibility mirror for older loaders, written only when `provider == "modworkshop"`. An older loader reads this; a newer one reads `provider` + `id`. Absent for other hosts so an old loader does not download an unrelated ModWorkshop mod with the same number. |
 | `version` | string | no | Exact version to pin. When set, apply fetches that version, or fails if the host no longer has it; when absent, it fetches the host's current file. |

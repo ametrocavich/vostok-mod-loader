@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # check.sh -- parse-check the built modloader.gd with the real GDScript compiler.
 #
-# Why this exists: modloader.gd is 24k+ lines assembled from 55 files that share
+# Why this exists: modloader.gd is 24k+ lines assembled from 54 files that share
 # one namespace, and it only ever runs inside the game. Hand-reading catches
 # typos but not "this function does not exist" or "this type does not line up"
 # -- exactly the errors a refactor introduces. Godot's own front end catches

@@ -31,7 +31,6 @@ FILES=(
     "$SRC/host_api.gd"
     "$SRC/host_mws.gd"
     "$SRC/host_vostokmods.gd"
-    "$SRC/host_nexus.gd"
     "$SRC/mod_discovery.gd"
     "$SRC/modpacks.gd"
     "$SRC/hosted_modpacks.gd"

@@ -8,8 +8,6 @@ Browse opens on [VostokMods](https://vostokmods.net), the Road to Vostok communi
 
 VostokMods scans every upload before serving it. Browse only offers versions the site has cleared, so a mod whose newest file is still being scanned shows **No file yet** instead of a **Download** button until the scan finishes.
 
-Nexus Mods is not in the source menu. The loader knows Nexus only as a page link: for a mod whose `mod.txt` says `source="nexus:<id>"`, clicking its name on the Mods tab opens the Nexus page in your browser. No listing, no download, no update check.
-
 The loader does not fetch its own updates from either site. The version link in the launcher header checks the loader's GitHub releases.
 
 ## Layout

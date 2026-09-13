@@ -18,7 +18,6 @@ src/
   host_api.gd              # the seam: one match per operation, per provider
   host_mws.gd              # ModWorkshop adapter
   host_vostokmods.gd       # VostokMods adapter (the default host)
-  host_nexus.gd            # Nexus adapter, link-out only
   mod_discovery.gd         # scan mods, parse metadata, ordering, downloads
   modpacks.gd              # modpack scan/apply/unload + restore points
   hosted_modpacks.gd       # packs published on VostokMods, turned into local pack zips
@@ -49,7 +48,7 @@ src/
   debug.gd                 # test scaffolding (gated behind a config flag)
 ```
 
-55 files, in `build.sh`'s `FILES` order (the concat order).
+54 files, in `build.sh`'s `FILES` order (the concat order).
 `docs/wiki/Modules.md` has the per-file tour.
 
 ### Building and checking locally
@@ -206,8 +205,7 @@ renames are not.
 - `docs/wiki/Browse.md` and `docs/wiki/Mod-Format.md` (the `source=` value).
 
 Downloads need nothing host-specific beyond `host_resolve_file`; the install
-tail is shared (next section). Nexus is the reference for a link-out-only
-host; keep it that way.
+tail is shared (next section).
 
 ### Adding a download surface
 

@@ -1,6 +1,6 @@
 # Modules
 
-A tour of the `src/` tree. The order follows the `FILES` array in `build.sh`, which is the order the files are concatenated into `modloader.gd`. Dependencies flow top-down: a const referenced by another const's initializer must come earlier, and everything shares one namespace. Function bodies can call anything anywhere. 55 files as of 3.4.0.
+A tour of the `src/` tree. The order follows the `FILES` array in `build.sh`, which is the order the files are concatenated into `modloader.gd`. Dependencies flow top-down: a const referenced by another const's initializer must come earlier, and everything shares one namespace. Function bodies can call anything anywhere. 54 files as of 3.4.0.
 
 Links point at the file; function names are the anchors. Line numbers drift.
 
@@ -69,7 +69,7 @@ Every network operation against a mod site goes through one function in `host_ap
 
 ### [host_types.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/host_types.gd)
 
-The provider-neutral vocabulary. Provider ids (`HOST_MODWORKSHOP`, `HOST_VOSTOKMODS`, `HOST_NEXUS`), the failure codes (`HOST_ERR_OFFLINE`, `HOST_ERR_RATE_LIMITED`, `HOST_ERR_NO_FILE`, ...), the result envelope (`host_ok` / `host_err`), and the record constructors: `host_ref` / `host_ref_key` / `host_ref_from_key` for the `provider:id` grammar shared with mod.txt's `source=`, plus `host_empty_summary`, `host_empty_detail`, `host_empty_file`, `host_page`, `host_empty_caps`, `host_empty_scalars`. Every field in every record is always present with its declared type; missing data is a sentinel (`""`, `-1`, empty), never an absent key.
+The provider-neutral vocabulary. Provider ids (`HOST_MODWORKSHOP`, `HOST_VOSTOKMODS`), the failure codes (`HOST_ERR_OFFLINE`, `HOST_ERR_RATE_LIMITED`, `HOST_ERR_NO_FILE`, ...), the result envelope (`host_ok` / `host_err`), and the record constructors: `host_ref` / `host_ref_key` / `host_ref_from_key` for the `provider:id` grammar shared with mod.txt's `source=`, plus `host_empty_summary`, `host_empty_detail`, `host_empty_file`, `host_page`, `host_empty_caps`, `host_empty_scalars`. Every field in every record is always present with its declared type; missing data is a sentinel (`""`, `-1`, empty), never an absent key.
 
 ### [host_http.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/host_http.gd)
 
@@ -86,10 +86,6 @@ ModWorkshop adapter (`_mwsp_*`). Declares the capabilities (browse, search, cate
 ### [host_vostokmods.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/host_vostokmods.gd)
 
 VostokMods adapter (`_vmp_*`), the default host. Talks to `https://vostokmods.net/api` through `host_http.gd`. A mod's identity is its slug, so a ref is `host_ref("vostokmods", "<slug>")` and mod.txt declares `source="vostokmods:<slug>"`. The host scans uploads and marks unscanned or dirty versions `downloadable: false`; the adapter reports those as having no file, so Browse shows "No file yet" instead of a Download button. Listing pages are 24 rows and the search query caps at 100 characters.
-
-### [host_nexus.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/host_nexus.gd)
-
-Nexus Mods adapter (`_nxp_*`), link-out only by policy. The one capability is `page_url`: `nexus:<int>` composes the public mod-page URL, and only a bare positive integer composes one (the URL is handed to `OS.shell_open`). No listing, no download, no API key. The header says not to "finish" it.
 
 ### [mod_discovery.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd)
 
