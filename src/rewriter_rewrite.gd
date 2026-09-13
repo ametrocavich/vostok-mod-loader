@@ -101,7 +101,7 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask
 	# duplicates it and the script fails to compile. Log the cause at generation time.
 	for fe in hookable:
 		if not renamed_methods.has(fe["name"]):
-			_log_critical("[RTVCodegen] %s: internal rename failure on method '%s' -- the rewritten script will fail to compile and ALL hooks on this script are disabled. Please report this modloader bug (include game version)." \
+			_log_critical("[RTVCodegen] %s: internal rename failure on method '%s' -- the rewritten script will fail to compile and every hook on this script is disabled. Report this loader bug with the game version." \
 					% [parsed.get("filename", "?"), str(fe["name"])])
 
 	# Pass 1.5: prelude injection into specific bodies (post-rename targets).
