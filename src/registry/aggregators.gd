@@ -1,14 +1,9 @@
 ## ----- registry/aggregators.gd -----
-## Aggregator helpers (item/weapon/magazine/attachment/furniture bundles)
-## that fan out to primitive registries (ITEMS, SCENES, LOOT, TRADER_POOLS)
-## and patch related vanilla state; no state of their own.
-##
-## Magazine and attachment share _register_compat_item: vanilla's
-## `compatible` field accepts both interchangeably, the API split is for
-## readability. `magazines` / `fits_attachments` / `fits_weapons` take id
-## strings resolved via _lookup_item (mod + vanilla); inline magazine
-## bundles register first, then attach to the weapon's compatible. All
-## helpers return a Dictionary of granular per-step success bools.
+## Aggregator helpers (item/weapon/magazine/attachment/furniture bundles) that
+## fan out to the primitive registries and patch related vanilla state; no
+## state of their own. Magazine and attachment share _register_compat_item
+## (vanilla's `compatible` accepts both). Id strings resolve via _lookup_item;
+## inline magazine bundles register first. All return per-step success bools.
 
 # -------- weapons --------
 
@@ -44,7 +39,6 @@ func _register_weapon(id: String, data: Variant) -> Dictionary:
 		if not d.has(required):
 			push_warning("[Registry] register('weapons', '%s'): missing required key '%s'" % [id, required])
 			return result
-	# Step 1: load + register the weapon ItemData.
 	var weapon_item: Resource = load(d["item_path"])
 	if weapon_item == null:
 		push_warning("[Registry] register('weapons', '%s'): failed to load item from '%s'" % [id, d["item_path"]])
@@ -55,15 +49,14 @@ func _register_weapon(id: String, data: Variant) -> Dictionary:
 	if not result["items"]:
 		# Without the item the rest has nothing to attach `compatible` to.
 		return result
-	# Step 2: world scene.
 	var world_scene: Resource = load(d["scene_path"])
 	if world_scene != null:
 		result["scene"] = _register_scene(id, world_scene)
-	# Step 3: rig scene. Rig id convention: "<weapon_id>_Rig".
+	# Rig id convention: "<weapon_id>_Rig".
 	var rig_scene: Resource = load(d["rig_path"])
 	if rig_scene != null:
 		result["rig"] = _register_scene(id + "_Rig", rig_scene)
-	# Step 4: magazines. Mixed array of inline bundles + id strings.
+	# Magazines: a mixed array of inline bundles and id strings.
 	var compatible_additions: Array = []
 	if d.has("magazines") and d["magazines"] is Array:
 		for entry in d["magazines"]:
@@ -71,7 +64,7 @@ func _register_weapon(id: String, data: Variant) -> Dictionary:
 			result["magazines"].append(mag_result)
 			if mag_result.get("item_data") != null:
 				compatible_additions.append(mag_result["item_data"])
-	# Step 5: fits_attachments. Failures don't abort; append what resolves.
+	# fits_attachments: failures do not abort; append what resolves.
 	if d.has("fits_attachments") and d["fits_attachments"] is Array:
 		for att_id in d["fits_attachments"]:
 			if not (att_id is String):
@@ -84,8 +77,7 @@ func _register_weapon(id: String, data: Variant) -> Dictionary:
 			result["fits_attachments"].append(att_id)
 			if not (att_item in compatible_additions):
 				compatible_additions.append(att_item)
-	# Step 6: extend the weapon's compatible array in one shot, via
-	# _patch_item so revert tracking still works.
+	# Extend the weapon's compatible array in one shot via _patch_item so revert tracking works.
 	if not compatible_additions.is_empty():
 		var existing: Array = []
 		if "compatible" in weapon_item:
@@ -96,7 +88,7 @@ func _register_weapon(id: String, data: Variant) -> Dictionary:
 			if not (add in existing):
 				existing.append(add)
 		_patch_item(id, {"compatible": existing})
-	# Step 7: loot tables. Each entry becomes one register(LOOT, ...) call.
+	# Loot tables: one register(LOOT, ...) call each.
 	if d.has("loot_tables") and d["loot_tables"] is Array:
 		for table_name in d["loot_tables"]:
 			if not (table_name is String):
@@ -104,17 +96,15 @@ func _register_weapon(id: String, data: Variant) -> Dictionary:
 			var loot_id: String = "%s_in_%s" % [id, table_name]
 			if _register_loot(loot_id, {"item": weapon_item, "table": String(table_name)}):
 				result["loot_count"] = int(result["loot_count"]) + 1
-	# Step 8: optional AI loadout, auto-using this weapon's scene and id.
-	# Failure is reported in result.ai_loadout but doesn't fail the weapon;
-	# it still spawns as loot, it just won't be carried by AI.
+	# Optional AI loadout using this weapon's scene and id. Failure is reported
+	# in result.ai_loadout but does not fail the weapon.
 	if d.has("ai_loadout"):
 		var al: Variant = d["ai_loadout"]
 		if not (al is Dictionary):
 			push_warning("[Registry] register('weapons', '%s'): ai_loadout must be a Dictionary, got %s" % [id, typeof(al)])
 			result["ai_loadout"] = false
 		else:
-			# Pin weapon_scene to the already-loaded scene resource; avoids a
-			# re-load and a possible scene-id resolution miss.
+			# Pin weapon_scene to the loaded resource; avoids a re-load and a scene-id miss.
 			var loadout_data: Dictionary = (al as Dictionary).duplicate()
 			loadout_data["weapon_scene"] = world_scene
 			result["ai_loadout"] = _register_ai_loadout(id, loadout_data)
@@ -124,9 +114,8 @@ func _register_weapon(id: String, data: Variant) -> Dictionary:
 	_log_debug("[Registry] register_weapon('%s') result: %s" % [id, result])
 	return result
 
-# Per-magazine processing inside register_weapon. Accepts a Dictionary
-# (inline bundle) or a String (id ref). Returns {id, ok, item_data,
-# items?, scene?, loot_count?}; item_data is null on resolution failure.
+# Per-magazine processing inside register_weapon: an inline bundle or an id
+# ref. Returns {id, ok, item_data, items?, scene?, loot_count?}.
 func _register_weapon_magazine_entry(entry: Variant) -> Dictionary:
 	if entry is String:
 		var mag: Resource = _lookup_item(entry)
@@ -140,9 +129,8 @@ func _register_weapon_magazine_entry(entry: Variant) -> Dictionary:
 			push_warning("[Registry] register_weapon: inline magazine missing 'id' string key")
 			return {"id": "", "ok": false, "item_data": null}
 		var sub: Dictionary = _register_magazine(d["id"], d)
-		# Only resolve item_data when the inline item actually registered: on
-		# an id collision _lookup_item would resolve to the unrelated
-		# colliding item and silently wire it into the weapon's compatible.
+		# Only resolve item_data when the inline item registered: on an id collision
+		# _lookup_item would wire the unrelated colliding item into compatible.
 		var sub_item: Resource = null
 		if sub.get("items", false):
 			sub_item = _lookup_item(d["id"])
@@ -159,22 +147,18 @@ func _register_weapon_magazine_entry(entry: Variant) -> Dictionary:
 
 # -------- magazines --------
 
-# Standalone magazine. Required: item_path, scene_path. Optional:
-# icon_path, fits_weapons (id list), loot_tables. Returns:
-# {ok, items, scene, fits_weapons: [String], fits_weapons_failed: [String],
-#  loot_count}
+# Standalone magazine. Required: item_path, scene_path; optional icon_path,
+# fits_weapons, loot_tables. Returns {ok, items, scene, fits_weapons, fits_weapons_failed, loot_count}.
 func _register_magazine(id: String, data: Variant) -> Dictionary:
 	return _register_compat_item(id, data, "magazines")
 
 # -------- attachments --------
 
-# Same shape as magazine (see header for why the split exists).
+# Same shape as magazine.
 func _register_attachment(id: String, data: Variant) -> Dictionary:
 	return _register_compat_item(id, data, "attachments")
 
-# Shared implementation for magazines + attachments. Both register an item
-# + scene + optional loot, then patch `compatible` on each weapon listed
-# in fits_weapons.
+# Shared body for magazines and attachments: item, scene, optional loot, then patch `compatible` on each fits_weapons target.
 func _register_compat_item(id: String, data: Variant, label: String) -> Dictionary:
 	var result: Dictionary = {
 		"ok": false,
@@ -204,7 +188,6 @@ func _register_compat_item(id: String, data: Variant, label: String) -> Dictiona
 	var scene: Resource = load(d["scene_path"])
 	if scene != null:
 		result["scene"] = _register_scene(id, scene)
-	# fits_weapons: patch each target weapon's `compatible` to include this item.
 	if d.has("fits_weapons") and d["fits_weapons"] is Array:
 		for weapon_id in d["fits_weapons"]:
 			if not (weapon_id is String):
@@ -239,15 +222,12 @@ func _register_compat_item(id: String, data: Variant, label: String) -> Dictiona
 # -------- generic items --------
 
 # Generic item bundle (consumables, keys, tools, ammo, ...). Schema:
-#   item_path     -- required, res:// to the .tres ItemData
-#   scene_path    -- optional world .tscn
-#   icon_path     -- optional, assigned to item.icon
-#   loot_tables   -- optional table names, one register('loot', ...) each
-#   trader_pools  -- optional trader names ("Generalist", "Doctor",
-#                    "Gunsmith", "Grandma"); flips the ItemData flag
-# Returns {ok, items, scene, loot_count, trader_pool_count,
-#          trader_pools: [String], trader_pools_failed: [String]}.
-# `scene` is vacuously true when no scene_path was provided.
+#   item_path      required, res:// to the .tres ItemData
+#   scene_path     optional world .tscn (`scene` is true when omitted)
+#   icon_path      optional, assigned to item.icon
+#   loot_tables    optional table names, one register('loot', ...) each
+#   trader_pools   optional trader names; flips the ItemData flag
+# Returns {ok, items, scene, loot_count, trader_pool_count, trader_pools, trader_pools_failed}.
 func _register_item_bundle(id: String, data: Variant) -> Dictionary:
 	var result: Dictionary = {
 		"ok": false,
@@ -274,7 +254,6 @@ func _register_item_bundle(id: String, data: Variant) -> Dictionary:
 	result["items"] = _register_item(id, item_data)
 	if not result["items"]:
 		return result
-	# No scene_path means intentionally skipped; `scene` stays true.
 	if d.has("scene_path"):
 		var scene: Resource = load(d["scene_path"])
 		if scene != null:
@@ -289,8 +268,7 @@ func _register_item_bundle(id: String, data: Variant) -> Dictionary:
 			var loot_id: String = "%s_in_%s" % [id, table_name]
 			if _register_loot(loot_id, {"item": item_data, "table": String(table_name)}):
 				result["loot_count"] = int(result["loot_count"]) + 1
-	# Trader pools: one register('trader_pools', ...) per name; failures
-	# tracked per-pool.
+	# Trader pools: one register per name; failures tracked per pool.
 	if d.has("trader_pools") and d["trader_pools"] is Array:
 		for pool_name in d["trader_pools"]:
 			if not (pool_name is String):
@@ -307,18 +285,14 @@ func _register_item_bundle(id: String, data: Variant) -> Dictionary:
 
 # -------- furniture --------
 
-# Furniture: ItemData with type="Furniture" plus a placed world scene.
-# Never spawns from loot pools; obtained via trader supply; on purchase
-# vanilla routes it to the catalog grid (Interface.gd branches on
-# itemData.type == "Furniture"). Hence: scene_path required, loot_tables
-# forbidden, trader_pools defaults to ["Generalist"] with a warn, optional
+# Furniture: ItemData with type="Furniture" plus a placed world scene. Never
+# spawns from loot pools; bought from traders, where vanilla routes it to the
+# catalog grid by itemData.type. So: scene_path required, loot_tables
+# forbidden, trader_pools defaults to ["Generalist"] with a warning, optional
 # inline recipe filed under Recipes.furniture.
-# Schema: item_path (required), scene_path (required), icon_path?,
-#   trader_pools?, recipe? {input: Array[ItemData], time: float,
-#   audio?: AudioEvent} -- output is implicit, category locked to
-#   "furniture".
-# Returns: {ok, items, scene, trader_pool_count, trader_pools: [String],
-#           trader_pools_failed: [String], recipe: bool}
+# Schema: item_path, scene_path (both required), icon_path?, trader_pools?,
+#   recipe? {input: Array[ItemData], time: float, audio?: AudioEvent}.
+# Returns {ok, items, scene, trader_pool_count, trader_pools, trader_pools_failed, recipe}.
 func _register_furniture_bundle(id: String, data: Variant) -> Dictionary:
 	var result: Dictionary = {
 		"ok": false,
@@ -340,8 +314,7 @@ func _register_furniture_bundle(id: String, data: Variant) -> Dictionary:
 			return result
 	if d.has("loot_tables"):
 		push_warning("[Registry] register_furniture('%s'): loot_tables is not supported (furniture isn't loot-pool spawnable in vanilla; use trader_pools instead). Ignored." % id)
-	# Wrong ItemData.type warns but doesn't fail: vanilla routes by type at
-	# runtime, the item just won't reach the catalog when bought.
+	# Wrong ItemData.type warns but does not fail; the item just misses the catalog.
 	var item_data: Resource = load(d["item_path"])
 	if item_data == null:
 		push_warning("[Registry] register_furniture('%s'): failed to load item from '%s'" % [id, d["item_path"]])
@@ -358,8 +331,7 @@ func _register_furniture_bundle(id: String, data: Variant) -> Dictionary:
 		push_warning("[Registry] register_furniture('%s'): failed to load scene from '%s'" % [id, d["scene_path"]])
 	else:
 		result["scene"] = _register_scene(id, scene)
-	# Default to ["Generalist"] with a warn so unobtainable furniture
-	# surfaces at register time.
+	# Default to ["Generalist"] with a warning so unobtainable furniture surfaces now.
 	var pools: Array = []
 	if d.has("trader_pools") and d["trader_pools"] is Array and not (d["trader_pools"] as Array).is_empty():
 		pools = d["trader_pools"]
@@ -376,8 +348,7 @@ func _register_furniture_bundle(id: String, data: Variant) -> Dictionary:
 		else:
 			result["trader_pools_failed"].append(String(pool_name))
 	if d.has("recipe"):
-		# Every requested-but-failed path must set result["recipe"] = false
-		# to keep the null-vs-bool contract.
+		# Every requested-but-failed path sets result["recipe"] = false (null-vs-bool contract).
 		if not (d["recipe"] is Dictionary):
 			push_warning("[Registry] register_furniture('%s'): recipe must be a Dictionary, got %s" % [id, typeof(d["recipe"])])
 			result["recipe"] = false
@@ -397,28 +368,23 @@ func _register_furniture_bundle(id: String, data: Variant) -> Dictionary:
 	_log_debug("[Registry] register_furniture('%s') result: %s" % [id, result])
 	return result
 
-# Construct a fresh RecipeData from the modder's recipe dict; output is
-# implicit. Returns null if the typed-array coercion fails.
+# A fresh RecipeData from the recipe dict; output is implicit. null if coercion fails.
 func _build_furniture_recipe(id: String, output_item: Resource, rd: Dictionary) -> Resource:
 	var script: GDScript = load("res://Scripts/RecipeData.gd") as GDScript
 	if script == null:
 		push_warning("[Registry] register_furniture('%s'): failed to load RecipeData.gd; recipe skipped" % id)
 		return null
 	var recipe: Resource = script.new()
-	# rd is mod-supplied (often from JSON, where nulls are ordinary).
-	# .get()'s default only covers an absent key: a present-but-null value
-	# flows through, and float(null) / bool(null) / String(null) are runtime
-	# constructor errors in Godot 4. Type-check before every coercion here.
+	# rd is mod-supplied, often from JSON where nulls are ordinary; .get()'s
+	# default only covers an absent key, so type-check before every coercion.
 	var name_raw: Variant = rd.get("name")
 	recipe.set("name", name_raw if name_raw is String else id)
 	var time_raw: Variant = rd.get("time")
 	recipe.set("time", float(time_raw) if (time_raw is int or time_raw is float) else 1.0)
 	if rd.has("audio"):
 		recipe.set("audio", rd["audio"])
-	# Build the typed input array without naming ItemData: referencing the
-	# game class would force-compile vanilla ItemData.gd before hook-pack
-	# activation (see shared.gd). duplicate() of the recipe's own declared
-	# `input` preserves element typing.
+	# Build the typed input array without naming ItemData: referencing the game
+	# class would force-compile vanilla ItemData.gd before hook-pack activation.
 	var typed_input: Array = []
 	var declared_input = recipe.get("input")
 	if declared_input is Array:
@@ -431,7 +397,6 @@ func _build_furniture_recipe(id: String, output_item: Resource, rd: Dictionary) 
 	if typed_input.is_empty():
 		return null
 	recipe.set("input", typed_input)
-	# Output is the item being registered, as a single-element typed array.
 	var typed_output: Array = []
 	var declared_output = recipe.get("output")
 	if declared_output is Array:
@@ -442,17 +407,14 @@ func _build_furniture_recipe(id: String, output_item: Resource, rd: Dictionary) 
 		push_warning("[Registry] register_furniture('%s'): output ItemData isn't typed as ItemData; recipe skipped" % id)
 		return null
 	recipe.set("output", typed_output)
-	# Optional proximity flags.
 	for flag in ["heat", "workbench", "testbench", "shelter"]:
 		if rd.has(flag):
-			# _json_truthy is null-tolerant (see the coercion note above).
 			recipe.set(flag, _json_truthy(rd[flag]))
 	return recipe
 
 # -------- shared helpers --------
 
-# Load an icon and assign to item_data.icon if the field exists.
-# Best-effort: icons are cosmetic, failures warn but don't abort.
+# Load an icon into item_data.icon if the field exists; best-effort.
 func _apply_icon(item_data: Resource, icon_path: String, owner_id: String) -> void:
 	if not _object_has_property(item_data, "icon"):
 		return

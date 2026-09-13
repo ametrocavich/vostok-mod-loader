@@ -107,13 +107,10 @@ const TK_NAN := 94
 const TK_EOF := 99
 
 # ----- vanilla bytes straight from the game's PCK ---------------------------
-#
-# Hook-pack generation runs after mod archives are mounted, so a read through
-# the VFS at res://Scripts/X.gd can return a MOD's file, not the game's. The
-# detokenizer therefore reads the bytes out of the game's own .pck by offset,
-# and only that source is ever written to the vanilla cache. The VFS is a
-# fallback for builds with no PCK beside the executable (the editor, the
-# test harnesses), and what it returns is never cached.
+# Hook-pack generation runs after mod archives are mounted, so a VFS read at
+# res://Scripts/X.gd can return a mod's file. The detokenizer reads the bytes
+# out of the game's own .pck by offset, and only that source is ever cached.
+# The VFS is a fallback for builds with no PCK (editor, harnesses), never cached.
 
 # "Scripts/X.gdc" -> {path, offset, size}, built once per session.
 var _game_pck_index: Dictionary = {}
@@ -143,8 +140,7 @@ func _ensure_game_pck_index() -> void:
 		return
 	for e_v in _security_pck_list_with_offsets(_game_pck_path):
 		var e: Dictionary = e_v
-		# The same decode _parse_pck_file_list relies on: the utf8 decode
-		# stops at the NUL padding Godot writes after each path.
+		# Same decode as _parse_pck_file_list: utf8 decode stops at the NUL padding.
 		var rel := str(e["path"]).trim_prefix("res://").trim_prefix("/")
 		if rel != "":
 			_game_pck_index[rel] = e
@@ -178,17 +174,15 @@ func _vanilla_bytes_from_pck(script_path: String) -> PackedByteArray:
 
 func _detokenize_script(script_path: String) -> String:
 	_last_detokenize_from_pck = false
-	# Zero-byte PCK entries (RTV ships CasettePlayer.gd empty) have nothing
-	# to decode; return empty silently, it is not an IO failure.
+	# Zero-byte PCK entries have nothing to decode; not an IO failure.
 	if _pck_zero_byte_paths.has(script_path):
 		return ""
 	var raw := _vanilla_bytes_from_pck(script_path)
 	if not raw.is_empty():
 		_last_detokenize_from_pck = true
 	else:
-		# No PCK to read from: fall back to the VFS. FileAccess on res:// can
-		# fail for PCK-embedded files depending on the container format; try
-		# res://, then globalized, then .gdc.
+		# No PCK: fall back to the VFS. FileAccess on res:// can fail for
+		# PCK-embedded files; try res://, then globalized, then .gdc.
 		var f := FileAccess.open(script_path, FileAccess.READ)
 		if f:
 			raw = f.get_buffer(f.get_length())
@@ -277,8 +271,7 @@ func _detokenize_script(script_path: String) -> String:
 	for _i in const_count:
 		if offset + 4 > buf.size():
 			break
-		# bytes_to_var() doesn't report consumed size; round-trip through
-		# var_to_bytes() to advance the offset.
+		# bytes_to_var() does not report consumed size; round-trip through var_to_bytes().
 		var remaining := buf.slice(offset)
 		var val = bytes_to_var(remaining)
 		constants.append(val)
@@ -313,9 +306,8 @@ func _detokenize_script(script_path: String) -> String:
 			break
 		var raw_type: int = buf.decode_u32(offset)
 		var tk_type: int = raw_type & _GDSC_TOKEN_MASK
-		# v100 has no "..." token, so indices 83+ sit one lower than the
-		# v101 table. Normalize at decode; unnormalized, ":" reads as "...",
-		# NEWLINE as "_", and EOF is missed so the stream never terminates.
+		# v100 has no "..." token, so indices 83+ sit one lower than the v101 table;
+		# unnormalized, ":" reads as "..." and EOF is missed.
 		if version == GDSC_VERSION_V100 and tk_type >= _GDSC_V100_SHIFT_FROM:
 			tk_type += 1
 		var data_idx: int = raw_type >> _GDSC_TOKEN_BITS
@@ -323,8 +315,7 @@ func _detokenize_script(script_path: String) -> String:
 		offset += token_len
 
 	# The section loops break silently on overrun and a failed bytes_to_var
-	# desyncs the offset; cross-check against header counts so bad input
-	# fails loudly instead of reconstructing (and caching) garbage.
+	# desyncs the offset; cross-check the header counts so bad input fails loudly.
 	if identifiers.size() != ident_count or constants.size() != const_count or tokens.size() != token_count:
 		_log_critical("[Detokenize] Section truncation/desync in %s: idents %d/%d consts %d/%d tokens %d/%d -- refusing partial reconstruction" \
 				% [script_path, identifiers.size(), ident_count, constants.size(), const_count, tokens.size(), token_count])
@@ -352,8 +343,7 @@ func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Arr
 
 		if line_map.has(i):
 			var new_line: int = line_map[i]
-			# Line values are raw u32s; a corrupt buffer can yield values
-			# that spin this loop for billions of iterations.
+			# Line values are raw u32s; a corrupt buffer could spin this loop for billions of iterations.
 			if new_line - current_line_num > 10000:
 				_log_critical("[Detokenize] Absurd line jump %d -> %d -- corrupt line map, aborting reconstruction" % [current_line_num, new_line])
 				return ""
@@ -380,8 +370,7 @@ func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Arr
 			prev_tk = tk
 			continue
 
-		# TK_EMPTY would otherwise fall through to the "<tk0>" placeholder
-		# and corrupt the output.
+		# TK_EMPTY would fall through to the "<tk0>" placeholder.
 		if tk == TK_EMPTY:
 			continue
 
@@ -412,10 +401,9 @@ func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Arr
 			if _SPACE_BEFORE.has(tk):
 				add_space_before = true
 			elif tk == TK_IDENTIFIER or tk == TK_LITERAL or tk == TK_ANNOTATION or (tk >= TK_KW_FIRST and tk <= TK_KW_LAST):
-				# IDENTIFIER, LITERAL, ANNOTATION, or any keyword -- space before
-				# unless prev was an opener, dot, $, ~, !, indent, newline. The
-				# annotation exclusion applies only to identifiers (part of the
-				# annotation name), not to keywords like var/func after @export.
+				# IDENTIFIER, LITERAL, ANNOTATION, or any keyword: space before unless prev
+				# was an opener, dot, $, ~, !, indent, newline. The annotation exclusion
+				# applies only to identifiers, not to keywords like var/func after @export.
 				var skip_anno := (prev_tk == TK_ANNOTATION and (tk == TK_IDENTIFIER or tk == TK_ANNOTATION))  # ident/anno after anno
 				if not skip_anno \
 						and prev_tk != TK_PAREN_OPEN and prev_tk != TK_BRACKET_OPEN \
@@ -425,8 +413,7 @@ func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Arr
 						and prev_tk != TK_NEWLINE and prev_tk != -1:
 					add_space_before = true
 			elif tk == TK_PAREN_OPEN:
-				# Space before ( after control-flow keywords, but not after
-				# function-like keywords (func, preload, super, assert, await).
+				# Space before ( after control-flow keywords, not after func/preload/super/assert/await.
 				if prev_tk >= TK_KW_FIRST and prev_tk <= TK_KW_WHEN:  # if..when (control flow)
 					add_space_before = true
 			elif tk == TK_NOT or tk == TK_BANG:
@@ -437,8 +424,7 @@ func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Arr
 
 		current_line += text
 
-		# _SPACE_AFTER covers operators/keywords/punctuation; identifiers,
-		# literals, closers, PI/TAU/INF/NAN and _ also want a space after.
+		# Identifiers, literals, closers, PI/TAU/INF/NAN and _ also want a space after.
 		need_space = _SPACE_AFTER.has(tk) or tk == TK_IDENTIFIER or tk == TK_LITERAL \
 				or tk == TK_PAREN_CLOSE or tk == TK_BRACKET_CLOSE or tk == TK_BRACE_CLOSE \
 				or tk == TK_PI or tk == TK_TAU or tk == TK_INF \
@@ -454,12 +440,10 @@ func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Arr
 		result += "\n"
 	return result
 
-# Column -> leading tab count. Godot's tokenizer counts one column per
-# character (a tab is one column; tab_size never reaches the column value).
-# RTV's vanilla source is 4-space indented, so columns run 1, 5, 9, 13 and
-# col / 4 recovers the depth. Tab or 2-space source would collapse to
-# depth 0 -- stability canary C in hook_pack.gd catches that. A relative
-# indent stack would corrupt depth on statements wrapped inside ( or [.
+# Column -> leading tab count. Godot counts one column per character, and
+# RTV's vanilla source is 4-space indented, so col / 4 recovers the depth.
+# Tab or 2-space source would collapse to depth 0; canary C catches that. A
+# relative indent stack would corrupt depth on statements wrapped inside ( or [.
 func _indent_from_column(col: int) -> int:
 	@warning_ignore("integer_division")
 	return col / 4
@@ -473,8 +457,7 @@ func _gdsc_variant_to_source(value: Variant) -> String:
 		TYPE_INT:
 			return str(value)
 		TYPE_FLOAT:
-			# str() renders bare "inf"/"nan", which are not valid GDScript;
-			# emit the builtin constants instead.
+			# str() renders bare "inf"/"nan", which are not valid GDScript.
 			if is_inf(value):
 				return "INF" if value > 0.0 else "-INF"
 			if is_nan(value):
@@ -490,16 +473,14 @@ func _gdsc_variant_to_source(value: Variant) -> String:
 		TYPE_NODE_PATH:
 			return '^"%s"' % str(value).c_escape()
 		_:
-			# The constant pool only holds literals; vectors/colors/arrays
-			# arrive as constructor tokens, never here. str() on an
-			# unexpected type is not valid GDScript, so fail loudly.
+			# The constant pool only holds literals; vectors and arrays arrive as
+			# constructor tokens. str() on an unexpected type is not valid GDScript.
 			_log_critical("[Detokenize] Constant pool holds an unexpected Variant type %d -- cannot render it as source. The rewritten script would not compile." % typeof(value))
 			return "null"
 
-# The cache's format. Bumped when what may be in the cache changes; an older
-# or missing stamp wipes the directory. Format 2 is the first that holds only
-# PCK-sourced text, so every cache written before it is dropped as possibly
-# poisoned by a mod's file read through the VFS.
+# The cache's format; an older or missing stamp wipes the directory. Format 2
+# is the first that holds only PCK-sourced text, so every earlier cache is
+# dropped as possibly poisoned by a mod's file read through the VFS.
 const _VANILLA_CACHE_FORMAT := 2
 const _VANILLA_CACHE_STAMP := "format"
 var _vanilla_cache_checked: bool = false
@@ -523,11 +504,9 @@ func _ensure_vanilla_cache_format() -> void:
 		f.close()
 
 func _read_vanilla_source(script_path: String) -> String:
-	# On-disk cache first. Never call load(script_path) here: any load()
-	# makes ResourceFormatLoaderGDScript cache the PCK's tokenized result
-	# at script_path (via the PCK's stale .gd.remap), and later hook-pack
-	# mounts + loads then hit that entry instead of the rewrite. The cache
-	# must stay cold until the hook pack is mounted.
+	# On-disk cache first. Never call load(script_path) here: any load() caches
+	# the PCK's tokenized result at that path, and later hook-pack loads hit it
+	# instead of the rewrite. The cache must stay cold until the pack is mounted.
 	_ensure_vanilla_cache_format()
 	var cache_file := VANILLA_CACHE_DIR.path_join(script_path.trim_prefix("res://"))
 	if FileAccess.file_exists(cache_file):
@@ -540,15 +519,13 @@ func _read_vanilla_source(script_path: String) -> String:
 	if source.is_empty():
 		return ""
 
-	# A rewrite served at the vanilla path means a stale mount contaminated
-	# the detokenize input; catch it loudly so it is not rewritten twice.
+	# A rewrite served at the vanilla path means a stale mount contaminated the input.
 	if "_rtv_ready_done" in source or 'Engine.get_meta("RTVModLib"' in source:
 		_log_critical("[Hooks] Detokenized source for %s already contains rewrite markers -- possible stale overlay. Delete %s and restart." \
 				% [script_path, ProjectSettings.globalize_path(HOOK_PACK_DIR)])
 		return ""
-	# Only text read out of the game's PCK is worth remembering. A VFS read
-	# may have come from a mounted mod, and caching that would keep the
-	# mod's code running after it is uninstalled.
+	# Only text read from the game's PCK is cached. A VFS read may have come
+	# from a mounted mod, and caching it would keep that mod's code running after uninstall.
 	if _last_detokenize_from_pck:
 		_save_vanilla_source(script_path, source)
 	else:
@@ -561,15 +538,12 @@ func _save_vanilla_source(script_path: String, source: String) -> void:
 	var cache_file := VANILLA_CACHE_DIR.path_join(script_path.trim_prefix("res://"))
 	DirAccess.make_dir_recursive_absolute(
 		ProjectSettings.globalize_path(cache_file.get_base_dir()))
-	# Write to a .tmp sibling and rename into place: a crash mid-write must
-	# not leave a truncated file that _read_vanilla_source would trust as
-	# pristine vanilla forever.
+	# Write to a .tmp sibling and rename into place; a truncated file would be trusted forever.
 	var tmp_file := cache_file + ".tmp"
 	var f := FileAccess.open(tmp_file, FileAccess.WRITE)
 	if f == null:
 		return
-	# store_string returns bool since Godot 4.3; remove the partial file on
-	# any write error.
+	# store_string returns bool; remove the partial file on any write error.
 	var ok := f.store_string(source)
 	var err := f.get_error()
 	f.close()
@@ -577,8 +551,7 @@ func _save_vanilla_source(script_path: String, source: String) -> void:
 		_log_warning("[Detokenize] Vanilla cache write failed for %s (err %d) -- removing partial file" % [cache_file, err])
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(tmp_file))
 		return
-	# rename_absolute replaces an existing target, so a stale empty file at
-	# the final path can't block the swap.
+	# rename_absolute replaces an existing target, so a stale file cannot block the swap.
 	var rename_err := DirAccess.rename_absolute(
 		ProjectSettings.globalize_path(tmp_file),
 		ProjectSettings.globalize_path(cache_file))

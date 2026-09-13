@@ -1,33 +1,24 @@
 # Inline source-rewrite generator. Renames each hookable method to
 # _rtv_vanilla_<name> and appends a <name> wrapper that dispatches through
-# RTVModLib hooks, then calls the renamed original.
-#
-# Rewrites the vanilla script in place rather than generating a wrapper
-# class: shipped at res://Scripts/<Name>.gd it is the script Godot compiles
-# for that path -- no extends chain, and no bug #83542 regardless of what
-# mods do with take_over_path.
-#
-# Caller must pass pristine vanilla source; already-rewritten input
-# produces duplicate-function parse errors.
+# RTVModLib hooks, then calls the renamed original. The vanilla script is
+# rewritten in place rather than wrapped by a subclass: shipped at
+# res://Scripts/<Name>.gd it is the script Godot compiles for that path, so no
+# extends chain and no bug #83542. Input must be pristine vanilla source.
 
 func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask: Dictionary = {}) -> String:
-	# method_mask restricts which methods get renamed + wrapped. Empty =
-	# wrap every non-static method (REGISTRY_TARGETS and the "[hooks]
-	# <path> = *" wildcard); non-empty = wrap only declared methods, the
-	# rest stay vanilla with no dispatch overhead.
+	# method_mask restricts which methods get renamed and wrapped. Empty = wrap
+	# every non-static method (REGISTRY_TARGETS and the "*" wildcard).
 	var apply_mask: bool = not method_mask.is_empty()
 	var hookable: Array = []
 	for fe in parsed["functions"]:
 		if fe["is_static"]:
 			continue
-		# Mask keys are lowercased (see add_hook() in hooks_api.gd), so
-		# "updatetooltip" matches vanilla "UpdateToolTip".
+		# Mask keys are lowercased, so "updatetooltip" matches vanilla "UpdateToolTip".
 		if apply_mask and not method_mask.has(fe["name"].to_lower()):
 			continue
 		hookable.append(fe)
 
-	# Warn on any declared hook method with no matching non-static vanilla
-	# method; otherwise the hook silently never fires.
+	# Warn on a declared method with no matching vanilla method; the hook would never fire.
 	if apply_mask:
 		var _mask_nonstatic: Dictionary = {}
 		var _mask_static: Dictionary = {}
@@ -53,13 +44,11 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask
 	for fe in hookable:
 		hookable_names[fe["name"]] = true
 
-	# IXP ships CRLF source; the appended wrappers use LF. Mixed endings
-	# make GDScript's parser raise a misleading "tab character for
-	# indentation" error, so strip all CR up front.
+	# IXP ships CRLF source and the wrappers use LF; mixed endings make the
+	# parser raise a misleading indentation error, so strip all CR up front.
 	var src: String = source.replace("\r\n", "\n").replace("\r", "\n")
 
-	# Repair Godot-3-era syntax before the rename+wrapper pipeline so every
-	# downstream step sees valid source. No-op for clean files.
+	# Repair Godot-3-era syntax first so every downstream step sees valid source.
 	var autofix := _rtv_autofix_legacy_syntax(src)
 	src = autofix["source"]
 	var af_total: int = int(autofix["bodyless"]) + int(autofix["tool"]) \
@@ -68,9 +57,7 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask
 		_log_info("[Autofix] %s: %d bodyless, %d @tool, %d @onready, %d @export, %d base()->super -- legacy syntax normalized" \
 				% [parsed.get("filename", "?"), autofix["bodyless"], autofix["tool"], autofix["onready"], autofix["export"], autofix.get("base", 0)])
 
-	# Per-script declaration transforms: make compile-time-immutable
-	# declarations runtime-mutable so the registry can swap them. Details
-	# live on each transform function in rewriter_registry_inject.gd.
+	# Per-script declaration transforms (rewriter_registry_inject.gd) make compile-time consts runtime-mutable.
 	var fn: String = parsed.get("filename", "")
 	if fn == "Database.gd":
 		src = _rtv_rewrite_database_constants(src)
@@ -79,21 +66,16 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask
 	elif fn == "AISpawner.gd":
 		src = _rtv_rewrite_aispawner_agent_assignments(src)
 
-	# Pass 1: rename top-level "func <name>(" to "func _rtv_vanilla_<name>("
-	# and rewrite bare super() calls in that body to super.<name>().
-	# Inner-class (indented) methods keep their names. class_name stays
-	# intact: scripts ship at res://Scripts/<Name>.gd matching the PCK's
-	# class-cache registration, and extends-by-path needs it to resolve.
-	#
-	# super() means "parent's version of the current function"; after the
-	# rename it would resolve to _rtv_vanilla_<name> on the parent, which
-	# doesn't exist. super.<explicit>() passes through untouched.
+	# Pass 1: rename top-level "func <name>(" to "func _rtv_vanilla_<name>(" and
+	# rewrite bare super() in that body to super.<name>(), since super() means
+	# the parent's version of the current function and would resolve to a
+	# nonexistent _rtv_vanilla_<name>. Inner-class methods keep their names;
+	# class_name stays intact so the PCK's class-cache registration still matches.
 	var lines: PackedStringArray = src.split("\n")
 	var current_hooked_method: String = ""
 	var renamed_methods: Dictionary = {}
 	for i in lines.size():
 		var line: String = lines[i]
-		# Top-level line (no indent): may open or close a method block.
 		if not line.is_empty() and line[0] != "\t" and line[0] != " ":
 			current_hooked_method = ""
 			if line.begins_with("func "):
@@ -108,30 +90,25 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask
 						current_hooked_method = method_name
 						renamed_methods[method_name] = true
 			continue
-		# Indented line: inside some block. If inside a renamed method, rewrite
-		# bare super( / super ( to super.<orig_name>( so it still resolves.
+		# Indented line inside a renamed method: rewrite bare super( so it resolves.
 		if current_hooked_method.is_empty():
 			continue
 		if not ("super" in line):
 			continue
 		lines[i] = _rewrite_bare_super(line, current_hooked_method)
 
-	# If the rename pass missed a hookable method, the wrapper appended
-	# below duplicates the still-unrenamed vanilla method and the whole
-	# script fails to compile. Log at generation time, with the cause,
-	# instead of leaving a bare engine parse error.
+	# If the rename pass missed a hookable method, the appended wrapper
+	# duplicates it and the script fails to compile. Log the cause at generation time.
 	for fe in hookable:
 		if not renamed_methods.has(fe["name"]):
 			_log_critical("[RTVCodegen] %s: internal rename failure on method '%s' -- the rewritten script will fail to compile and ALL hooks on this script are disabled. Please report this modloader bug (include game version)." \
 					% [parsed.get("filename", "?"), str(fe["name"])])
 
-	# Pass 1.5: prelude injection at the top of specific vanilla function
-	# bodies (post-rename, so targets are _rtv_vanilla_<Name>).
+	# Pass 1.5: prelude injection into specific bodies (post-rename targets).
 	var indent := _detect_indent_style(src)
 	lines = _rtv_apply_prelude_injections(parsed.get("filename", ""), lines, "_rtv_vanilla_", indent)
 
-	# Pass 2: append dispatch wrappers at EOF, matching the source's indent
-	# style (see _detect_indent_style).
+	# Pass 2: append dispatch wrappers at EOF in the source's indent style.
 	var prefix := _rtv_script_hook_prefix(parsed["filename"])
 	var appended := "\n\n# --- Metro mod loader inline hook dispatch wrappers ---\n"
 	for fe in hookable:
@@ -142,11 +119,9 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask
 
 	return "\n".join(lines) + appended
 
-# Rewrite bare `super(` / `super (` to `super.<method>(`, preserving the
-# rest of the line. Skips `super.<something>(` and anything at/after the
-# first `#`. String literals are not tracked: a "super(" inside a string
-# would be rewritten (text only, never code structure); detokenized vanilla
-# input makes this a non-case.
+# Rewrite bare `super(` to `super.<method>(`, preserving the rest of the line.
+# Skips `super.<something>(` and anything after the first `#`. String literals
+# are not tracked; detokenized vanilla input makes that a non-case.
 func _rewrite_bare_super(line: String, method_name: String) -> String:
 	var scan_end := line.length()
 	var comment_idx := line.find("#")
@@ -179,9 +154,8 @@ func _rewrite_bare_super(line: String, method_name: String) -> String:
 		scan_end += delta
 	return out
 
-# Return the leading whitespace of the first indented line as the indent
-# unit (tab fallback). Generated code must match the file's style because
-# GDScript forbids mixing tabs and spaces; IXP uses 4-space, vanilla RTV tabs.
+# The leading whitespace of the first indented line, as the indent unit (tab
+# fallback). GDScript forbids mixing tabs and spaces; IXP uses 4-space, RTV tabs.
 func _detect_indent_style(source: String) -> String:
 	for line: String in source.split("\n"):
 		if line.is_empty():
@@ -208,8 +182,7 @@ func _rtv_leading_indent(line: String) -> String:
 		n += 1
 	return line.substr(0, n)
 
-# Produces one inline dispatch wrapper that calls _rtv_vanilla_<name>(...),
-# living in the same class as the renamed body (no inheritance chain).
+# One inline dispatch wrapper that calls _rtv_vanilla_<name>(...) in the same class.
 
 func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "\t") -> String:
 	var method_name: String = fe["name"]
@@ -223,8 +196,7 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 	var is_void: bool = is_engine_void or not bool(fe["has_return_value"])
 	var aw: String = "await " if is_coro else ""
 
-	# Preserve the return type annotation: without it callers infer Variant,
-	# and strict-typed var decls in mod subclasses fail to parse.
+	# Preserve the return type annotation, or strict-typed decls in mod subclasses fail to parse.
 	var return_annot: String = ""
 	var rt = fe.get("return_type")
 	if rt != null and not (rt as String).is_empty():
@@ -237,34 +209,29 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 	var I3: String = indent + indent + indent
 
 	var out := ""
-	# Re-entry guard (_wrapper_active): a mod wrapper whose body calls
-	# super() into vanilla's wrapper would dispatch again; the nested call
-	# runs just the vanilla body. One dispatch per logical call.
+	# Re-entry guard (_wrapper_active): a mod wrapper whose body calls super()
+	# into vanilla's wrapper would dispatch again. One dispatch per logical call.
 	if not is_void:
 		out += "%s\n" % sig
-		# Engine.get_meta with a Nil default still prints an error when the
-		# key is absent (Godot 4.6 object.cpp:1155); has_meta keeps
-		# early-boot wrappers quiet before _register_rtv_modlib_meta runs.
+		# Engine.get_meta with a Nil default still prints an error when the key is
+		# absent; has_meta keeps early-boot wrappers quiet.
 		out += "%sif not Engine.has_meta(\"RTVModLib\"):\n" % I1
 		out += "%sreturn %s%s\n" % [I2, aw, vanilla_call]
 		out += "%svar _lib = Engine.get_meta(\"RTVModLib\")\n" % I1
 		# Short-circuit when no mod has called hook() this session.
 		out += "%sif not _lib._any_mod_hooked:\n" % I1
 		out += "%sreturn %s%s\n" % [I2, aw, vanilla_call]
-		# Per-hook-base short-circuit: _any_mod_hooked is sticky-true, but
-		# most wrapped methods still have no hooks of their own.
+		# Per-hook-base short-circuit: most wrapped methods have no hooks of their own.
 		out += "%sif not _lib._hooked_bases.has(\"%s\"):\n" % [I1, hook_base]
 		out += "%sreturn %s%s\n" % [I2, aw, vanilla_call]
-		# Dev-mode dispatch counter; surfaces runaway method calls in the
-		# 30s top-15 summary. Non-dev cost is one branch per dispatch.
+		# Dev-mode dispatch counter for the 30s summary; one branch per dispatch otherwise.
 		out += "%sif _lib._developer_mode:\n" % I1
 		out += "%s_lib._dispatch_counts[\"%s\"] = int(_lib._dispatch_counts.get(\"%s\", 0)) + 1\n" % [I2, hook_base, hook_base]
 		out += "%svar _rtv_wa_key: String = str(get_instance_id()) + \":%s\"\n" % [I1, hook_base]
 		out += "%sif _lib._wrapper_active.has(_rtv_wa_key):\n" % I1
 		out += "%sreturn %s%s\n" % [I2, aw, vanilla_call]
 		out += "%s_lib._wrapper_active[_rtv_wa_key] = true\n" % I1
-		# Save/restore _caller so nested wrappers don't leak stale values;
-		# re-set before post-dispatch so post hooks see the right caller.
+		# Save/restore _caller so nested wrappers do not leak stale values.
 		out += "%svar _rtv_prev_caller = _lib._caller\n" % I1
 		out += "%s_lib._caller = self\n" % I1
 		out += "%s_lib._dispatch(\"%s-pre\", %s)\n" % [I1, hook_base, args_array]
@@ -287,8 +254,7 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		out += "%selse:\n" % I1
 		out += "%s_result = %s%s\n" % [I2, aw, vanilla_call]
 		out += "%s_lib._caller = self\n" % I1
-		# Post hooks get args + [_result]; a non-null return replaces
-		# _result for downstream callbacks. See hooks_api._dispatch_post.
+		# Post hooks get args + [_result]; a non-null return replaces _result (see _dispatch_post).
 		out += "%s_result = _lib._dispatch_post(\"%s-post\", %s, _result)\n" % [I1, hook_base, args_array]
 		out += "%s_lib._dispatch_deferred(\"%s-callback\", %s)\n" % [I1, hook_base, args_array]
 		out += "%s_lib._wrapper_active.erase(_rtv_wa_key)\n" % I1
