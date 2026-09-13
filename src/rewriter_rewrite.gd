@@ -296,20 +296,17 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		out += "%sreturn _result\n" % I1
 	else:
 		out += "%s\n" % sig
-		# Same has_meta guard as non-void branch above.
+		# Same guards and short-circuits as the non-void branch above.
 		out += "%sif not Engine.has_meta(\"RTVModLib\"):\n" % I1
 		out += "%s%s%s\n" % [I2, aw, vanilla_call]
 		out += "%sreturn\n" % I2
 		out += "%svar _lib = Engine.get_meta(\"RTVModLib\")\n" % I1
-		# Global short-circuit: see non-void branch above.
 		out += "%sif not _lib._any_mod_hooked:\n" % I1
 		out += "%s%s%s\n" % [I2, aw, vanilla_call]
 		out += "%sreturn\n" % I2
-		# Per-hook-base short-circuit: see non-void branch above.
 		out += "%sif not _lib._hooked_bases.has(\"%s\"):\n" % [I1, hook_base]
 		out += "%s%s%s\n" % [I2, aw, vanilla_call]
 		out += "%sreturn\n" % I2
-		# Dev-mode-only per-method dispatch counter (see non-void branch).
 		out += "%sif _lib._developer_mode:\n" % I1
 		out += "%s_lib._dispatch_counts[\"%s\"] = int(_lib._dispatch_counts.get(\"%s\", 0)) + 1\n" % [I2, hook_base, hook_base]
 		out += "%svar _rtv_wa_key: String = str(get_instance_id()) + \":%s\"\n" % [I1, hook_base]
@@ -317,7 +314,6 @@ func _rtv_dispatch_inline_src(fe: Dictionary, prefix: String, indent: String = "
 		out += "%s%s%s\n" % [I2, aw, vanilla_call]
 		out += "%sreturn\n" % I2
 		out += "%s_lib._wrapper_active[_rtv_wa_key] = true\n" % I1
-		# _caller save/restore: see non-void branch above.
 		out += "%svar _rtv_prev_caller = _lib._caller\n" % I1
 		out += "%s_lib._caller = self\n" % I1
 		out += "%s_lib._dispatch(\"%s-pre\", %s)\n" % [I1, hook_base, args_array]

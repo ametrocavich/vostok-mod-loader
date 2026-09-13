@@ -48,7 +48,7 @@ func _rtv_inject_database_registry(indent: String) -> String:
 # _rtv_vanilla_scenes dict var; everything else stays put. Compile-time
 # const lookup bypasses _get() and consts can't be shadowed at runtime, so
 # the dict is what lets _get() route names through the mod override layer.
-# ANCHOR: vanilla Database.gd -- top-level `const X = preload("...")` declarations; silent no-op if the game changes the decl style.
+# Vanilla anchor: top-level `const X = preload("...")` declarations in Database.gd; silent no-op if the game changes the decl style.
 func _rtv_rewrite_database_constants(source: String) -> String:
 	var lines: PackedStringArray = source.split("\n")
 	var entries: PackedStringArray = []  # "KEY = PRELOAD"
@@ -89,7 +89,7 @@ func _rtv_rewrite_database_constants(source: String) -> String:
 # mod shelter names at runtime. The scene-path consts (const Cabin = "...")
 # stay consts -- LoadScene references them directly; the prelude injection
 # handles mod scene paths instead.
-# ANCHOR: vanilla Loader.gd -- top-level `const shelters = [...]` declaration; silent no-op if renamed/restructured.
+# Vanilla anchor: top-level `const shelters = [...]` declaration in Loader.gd; silent no-op if renamed or restructured.
 func _rtv_rewrite_loader_shelters(source: String) -> String:
 	var lines: PackedStringArray = source.split("\n")
 	var re := RegEx.new()
@@ -196,7 +196,7 @@ func _rtv_inject_prelude(lines: PackedStringArray, func_name: String, prelude_li
 # return). Vanilla's if-elif won't match mod names, so the tail's
 # change_scene_to_file picks up the scenePath set here and mods reuse the
 # full vanilla loading flow (fade, label, timer, scene change).
-# ANCHOR: vanilla Loader.gd::LoadScene -- relies on locals `scenePath` + `scene`, gameData.menu/shelter/permadeath/tutorial flags, and the tail change_scene_to_file(scenePath).
+# Vanilla anchor: Loader.gd::LoadScene relies on locals `scenePath` + `scene`, gameData.menu/shelter/permadeath/tutorial flags, and the tail change_scene_to_file(scenePath).
 func _rtv_loader_loadscene_prelude() -> PackedStringArray:
 	var p := PackedStringArray()
 	p.append("\t# --- Metro mod loader: scene_paths registry prelude ---")
@@ -290,7 +290,7 @@ func _rtv_inject_loader_registry(indent: String) -> String:
 # AISpawner.gd: rewrite each `agent = <name>` so the assignment routes
 # through _rtv_resolve_ai_type (defined in the registry appendix), which
 # picks between the vanilla scene and a mod override for the zone.
-# ANCHOR: vanilla AISpawner.gd::_ready -- `agent = <ident>` assignment lines inside the Zone if/elif; silent no-op if the mapping moves.
+# Vanilla anchor: AISpawner.gd::_ready `agent = <ident>` assignment lines inside the Zone if/elif; silent no-op if the mapping moves.
 func _rtv_rewrite_aispawner_agent_assignments(source: String) -> String:
 	var lines: PackedStringArray = source.split("\n")
 	var re := RegEx.new()
@@ -321,7 +321,7 @@ func _rtv_rewrite_aispawner_agent_assignments(source: String) -> String:
 # `species` array before vanilla's random-spawn loop picks from it. Each
 # instance filters by its own node name ("all" is a wildcard). Duplicate
 # scenes are skipped to keep the random-pick weight stable.
-# ANCHOR: vanilla FishPool.gd::_ready -- relies on local `species: Array[PackedScene]` declared before the random-spawn loop.
+# Vanilla anchor: FishPool.gd::_ready relies on local `species: Array[PackedScene]` declared before the random-spawn loop.
 func _rtv_fishpool_ready_prelude() -> PackedStringArray:
 	var p := PackedStringArray()
 	p.append("\t# --- Metro mod loader: fish_species registry prelude ---")
@@ -344,7 +344,7 @@ func _rtv_fishpool_ready_prelude() -> PackedStringArray:
 #      fall through to vanilla.
 # With no relevant mod loaded the prelude is a tight branch with no
 # behavior change.
-# ANCHOR: vanilla Compiler.gd::Spawn -- relies on locals `spawnTarget`/`transitions`/`waypoints`/`controller` (leading var decls), gameData.previousMap, and /root/Map.mapName.
+# Vanilla anchor: Compiler.gd::Spawn relies on locals `spawnTarget`/`transitions`/`waypoints`/`controller` (leading var decls), gameData.previousMap, and /root/Map.mapName.
 func _rtv_compiler_spawn_prelude() -> PackedStringArray:
 	var p := PackedStringArray()
 	p.append("\t# --- Metro mod loader: shelters/maps registry prelude ---")
@@ -413,14 +413,14 @@ func _rtv_compiler_spawn_prelude() -> PackedStringArray:
 
 # AI.SelectWeapon prelude: applies ai_loadouts entries to self.weapons
 # before vanilla picks at random from the augmented pool.
-# ANCHOR: vanilla AI.gd::SelectWeapon -- relies on the `weapons` child container + hidden-until-picked child contract.
+# Vanilla anchor: AI.gd::SelectWeapon relies on the `weapons` child container + hidden-until-picked child contract.
 func _rtv_ai_selectweapon_prelude() -> PackedStringArray:
 	var p := PackedStringArray()
 	p.append("\t# --- Metro mod loader: ai_loadouts registry prelude ---")
 	p.append("\t_rtv_apply_ai_loadouts()")
 	return p
 
-# ANCHOR: vanilla AI.gd fields `weapons`/`boss`/`AISpawner` + AISpawner.Zone enum key names "Area05"/"BorderZone"/"Vostok" (hardcoded in the emitted match below).
+# Vanilla anchor: AI.gd fields `weapons`/`boss`/`AISpawner` + AISpawner.Zone enum key names "Area05"/"BorderZone"/"Vostok" (hardcoded in the emitted match below).
 func _rtv_inject_ai_registry(indent: String) -> String:
 	# AI.gd registry appendix: reads the ai_loadouts Engine-meta list and
 	# injects weapon instances into self.weapons. Category comes from
@@ -486,7 +486,7 @@ func _rtv_inject_ai_registry(indent: String) -> String:
 	out += I1 + I1 + I1 + "return \"\"\n"
 	return out
 
-# ANCHOR: vanilla AISpawner.gd Zone enum -- emitted resolver converts zone int via Zone.keys().
+# Vanilla anchor: AISpawner.gd Zone enum; the emitted resolver converts the zone int via Zone.keys().
 func _rtv_inject_aispawner_registry(indent: String) -> String:
 	# Resolver helper for the rewritten `agent = _rtv_resolve_ai_type(...)`
 	# assignments. Lookup goes through Engine metadata because AISpawner is

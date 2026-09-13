@@ -413,9 +413,9 @@ func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Arr
 				add_space_before = true
 			elif tk == TK_IDENTIFIER or tk == TK_LITERAL or tk == TK_ANNOTATION or (tk >= TK_KW_FIRST and tk <= TK_KW_LAST):
 				# IDENTIFIER, LITERAL, ANNOTATION, or any keyword -- space before
-				# unless prev was an opener, dot, $, ~, !, indent, newline.
-				# Note: annotation excluded only for identifiers (part of the
-				# annotation name), not for keywords like var/func after @export.
+				# unless prev was an opener, dot, $, ~, !, indent, newline. The
+				# annotation exclusion applies only to identifiers (part of the
+				# annotation name), not to keywords like var/func after @export.
 				var skip_anno := (prev_tk == TK_ANNOTATION and (tk == TK_IDENTIFIER or tk == TK_ANNOTATION))  # ident/anno after anno
 				if not skip_anno \
 						and prev_tk != TK_PAREN_OPEN and prev_tk != TK_BRACKET_OPEN \
@@ -586,9 +586,9 @@ func _save_vanilla_source(script_path: String, source: String) -> void:
 		_log_warning("[Detokenize] Vanilla cache rename failed for %s (err %d) -- cache skipped this session" % [cache_file, rename_err])
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(tmp_file))
 
-# ANCHOR: probe_paths assume vanilla RTV ships Camera/Controller/Audio/AI
-# under res://Scripts/. If a game update renames all four this returns -1,
-# and _generate_hook_pack then proceeds without canary B protection.
+# Assumes vanilla RTV ships Camera/Controller/Audio/AI under res://Scripts/.
+# If a game update renames all four this returns -1, and _generate_hook_pack
+# then proceeds without canary B protection.
 func _probe_gdsc_version() -> int:
 	var probe_paths := ["res://Scripts/Camera.gd", "res://Scripts/Controller.gd",
 			"res://Scripts/Audio.gd", "res://Scripts/AI.gd"]
