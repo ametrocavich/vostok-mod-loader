@@ -932,7 +932,7 @@ func _browse_populate_categories(state: Dictionary) -> void:
 # text, caret, scroll and loaded pages survive. Rows are found through the
 # browse_ref_key meta tag set at render time.
 func _refresh_browse_installed_rows(root: Node) -> void:
-	if root == null or not is_instance_valid(root):
+	if not is_instance_valid(root):
 		return
 	var by_key: Dictionary = _browse_install_map()
 	var stack: Array = [root]
@@ -1218,7 +1218,7 @@ func _show_browse_mod_detail_dialog(summary: Dictionary, on_get: Callable) -> vo
 		var detail: Dictionary = res["data"]
 		show_description.call(str(detail["description"]))
 		var banner: Dictionary = detail["banner"]
-		if str(banner["url"]) != "" and banner_rect != null and is_instance_valid(banner_rect):
+		if str(banner["url"]) != "" and is_instance_valid(banner_rect):
 			_browse_load_thumbnail_async(banner_rect, banner)
 		if action["get_btn"] == null and not already_installed and bool(caps["resolve_file"]) \
 				and str(detail["default_file_id"]) != "":

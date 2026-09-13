@@ -1058,7 +1058,7 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 				_apply_profile_to_entries(cfg_re, _active_profile)
 
 	# 6. Refresh the Mods tab.
-	if tabs != null and is_instance_valid(tabs):
+	if is_instance_valid(tabs):
 		_rebuild_mods_tab(tabs)
 
 	return {
@@ -1206,7 +1206,7 @@ func unload_modpack(tabs: TabContainer) -> Dictionary:
 		_log_warning("[Modpack] unload: backup-slot restore incomplete (overrides_ok=" + str(overrides_ok) + ", mcm_ok=" + str(mcm_ok) + ") -- leaving " + MCM_SNAPSHOT_BASE.path_join(backup_profile) + " in place; it will be cleaned up by the next apply/unload")
 
 	# 7. Refresh the Mods tab.
-	if tabs != null and is_instance_valid(tabs):
+	if is_instance_valid(tabs):
 		_rebuild_mods_tab(tabs)
 
 	return {"ok": true, "error": ""}

@@ -272,9 +272,8 @@ func _run_modpack_retry(failures: Array, tabs: TabContainer) -> void:
 	pd_cancel.pressed.connect(func():
 		if is_instance_valid(status_lbl):
 			status_lbl.text = "Cancelling after current download..."
-		if is_instance_valid(pd_cancel):
-			pd_cancel.disabled = true
-			pd_cancel.text = "Cancelling..."
+		pd_cancel.disabled = true
+		pd_cancel.text = "Cancelling..."
 		_modpack_apply_cancelled = true
 	)
 	pd.popup_centered()
@@ -638,8 +637,6 @@ func _modpacks_row_refresh_button(row: HBoxContainer, entry: Dictionary, tabs: T
 			else "Fetch the pack's current mod list from VostokMods.")
 	var captured_hosted_entry := entry
 	refresh_btn.pressed.connect(func():
-		if not is_instance_valid(refresh_btn):
-			return
 		refresh_btn.disabled = true
 		refresh_btn.text = "Refreshing..."
 		var r: Dictionary = await _hosted_refresh_pack(captured_hosted_entry)
@@ -700,15 +697,14 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 				pd_cancel.pressed.connect(func():
 					if is_instance_valid(pd_status):
 						pd_status.text = "Cancelling after current download..."
-					if is_instance_valid(pd_cancel):
-						pd_cancel.disabled = true
-						pd_cancel.text = "Cancelling..."
+					pd_cancel.disabled = true
+					pd_cancel.text = "Cancelling..."
 					_modpack_apply_cancelled = true
 				)
 				pd.popup_centered()
 
 			var progress_cb := func(p: Dictionary):
-				if pd_status == null or not is_instance_valid(pd_status):
+				if not is_instance_valid(pd_status):
 					return
 				var cur := int(p.get("current", 0))
 				var tot := int(p.get("total", 0))
@@ -737,7 +733,7 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 
 			# Cancelled before any state mutation; say so rather than "Applied with Issues".
 			if was_cancelled:
-				if pd != null and is_instance_valid(pd):
+				if is_instance_valid(pd):
 					pd.queue_free()
 				if is_instance_valid(tabs):
 					_rebuild_modpacks_tab(tabs)
@@ -750,21 +746,21 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 				return
 			# Partial: tear down progress, route to the failure dialog.
 			if dl_failed > 0:
-				if pd != null and is_instance_valid(pd):
+				if is_instance_valid(pd):
 					pd.queue_free()
 				if is_instance_valid(tabs):
 					_rebuild_modpacks_tab(tabs)
 				_show_modpack_failure_dialog(dl, failures, tabs)
 				return
 			if not bool(result.get("ok", false)):
-				if pd != null and is_instance_valid(pd):
+				if is_instance_valid(pd):
 					pd.queue_free()
 				_show_error_dialog("Could not apply modpack", str(result.get("error", "unknown")))
 				return
 			if is_instance_valid(tabs):
 				_rebuild_modpacks_tab(tabs)
 			# Full success: leave the progress dialog in its completion state.
-			if pd != null and is_instance_valid(pd):
+			if is_instance_valid(pd):
 				if is_instance_valid(pd_bar):
 					pd_bar.value = 100
 				if is_instance_valid(pd_status):

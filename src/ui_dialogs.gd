@@ -31,7 +31,7 @@ func _show_info_toast(message: String) -> void:
 # sub-windows, so a larger min_size gets clipped with no way to resize. Sizes
 # are in content-scaled coordinates, hence the divide.
 func _dialog_fit_size(desired: Vector2i) -> Vector2i:
-	if _ui_window == null or not is_instance_valid(_ui_window):
+	if not is_instance_valid(_ui_window):
 		return desired
 	var scale: float = maxf(_ui_window.content_scale_factor, 0.001)
 	var avail := Vector2i(Vector2(_ui_window.size) / scale) - Vector2i(24, 24)

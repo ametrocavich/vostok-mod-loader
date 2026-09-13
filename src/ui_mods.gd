@@ -949,8 +949,6 @@ func _mods_build_updates_section(list: VBoxContainer, tabs: TabContainer) -> voi
 				u_btn.disabled = true
 				u_btn.text = "Updating..."
 			u_btn.pressed.connect(func():
-				if not is_instance_valid(u_btn):
-					return
 				# Refuse a second concurrent download of the same mod.
 				if _mod_update_in_flight.has(captured_pk):
 					return
@@ -1064,8 +1062,6 @@ func _mods_build_missing_section(list: VBoxContainer, tabs: TabContainer) -> voi
 					dl_btn.disabled = true
 					dl_btn.text = "Downloading..."
 				dl_btn.pressed.connect(func():
-					if not is_instance_valid(dl_btn):
-						return
 					if _mod_update_in_flight.has(captured_fn):
 						return
 					_mod_update_in_flight[captured_fn] = true

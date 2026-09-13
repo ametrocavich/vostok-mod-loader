@@ -421,7 +421,7 @@ func _load_ui_cfg_for_write() -> ConfigFile:
 	var err := cfg.load(UI_CONFIG_PATH)
 	if err != OK and err != ERR_FILE_NOT_FOUND:
 		_log_warning("mod_config.cfg exists but could not be read (error %d) -- refusing to overwrite it. This change is not saved." % err)
-		if not _ui_cfg_refusal_notified and _ui_window != null and is_instance_valid(_ui_window):
+		if not _ui_cfg_refusal_notified and is_instance_valid(_ui_window):
 			_ui_cfg_refusal_notified = true
 			_show_error_dialog("Settings cannot be saved",
 					"Your settings file (mod_config.cfg) cannot be read right now, so changes made in this session will not be saved. Your existing profiles are untouched. Restart the game to recover.")
@@ -1451,7 +1451,7 @@ func _set_thumb_failed(rect: TextureRect, failed: bool) -> void:
 	if not is_instance_valid(rect):
 		return
 	var wrap := rect.get_parent() as Control
-	if wrap == null or not is_instance_valid(wrap):
+	if not is_instance_valid(wrap):
 		return
 	# Cells start captioned "no thumbnail"; update the existing label, never skip it.
 	if wrap.has_node("ThumbStateLabel"):
@@ -1474,7 +1474,7 @@ func _set_thumb_ready(rect: TextureRect, tex: Texture2D) -> void:
 	if not is_instance_valid(rect):
 		return
 	var wrap := rect.get_parent() as Control
-	if wrap != null and is_instance_valid(wrap) and wrap.has_node("ThumbStateLabel"):
+	if is_instance_valid(wrap) and wrap.has_node("ThumbStateLabel"):
 		var stale := wrap.get_node("ThumbStateLabel")
 		wrap.remove_child(stale)
 		stale.queue_free()
