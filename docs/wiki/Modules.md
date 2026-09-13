@@ -16,11 +16,11 @@ Shared `const`, `var` and `signal` declarations: anything read by more than one 
 
 - `MODLOADER_VERSION`, bumped by release-please between the `x-release-please-start-version` / `x-release-please-end` markers.
 - The persistent paths: `UI_CONFIG_PATH`, `PASS_STATE_PATH`, `HEARTBEAT_PATH`, `PASS2_DIRTY_PATH`, `CRASH_STREAK_PATH`, the three exe-dir sentinels (`SAFE_MODE_FILE`, `DISABLED_FILE`, `DISABLED_ONCE_FILE`), `HOOK_PACK_DIR` and `VANILLA_CACHE_DIR`. `MAX_RESTART_COUNT` is 2.
-- The network constants: ModWorkshop API base, game id and page limit; `MODLOADER_GITHUB_REPO` plus the releases API and page URL templates that drive the loader's own update check.
+- `API_CHECK_TIMEOUT`, the request timeout shared by the host transport and the loader's own update check.
 - `PACK_FORMAT_V2` / `V3` / `V4` and `GDSC_VERSION_V100` / `V101`, the engine binary formats the parsers accept.
 - The rewriter skip lists: `RTV_SKIP_LIST` (7 scripts), `RTV_RESOURCE_SERIALIZED_SKIP` (11), `RTV_RESOURCE_DATA_SKIP` (25), each entry with its reason inline.
 - `var _filescope_mounted: Dictionary = _mount_previous_session()`. A module-scope var with a call initializer, which is what runs the static-init mount before `_ready`.
-- The hook registry state (`_hooks`, `_hooked_bases`, `_any_mod_hooked`, `_caller`, `_is_ready`), the host-seam caches (`_host_cache`, `_host_cooldown_until_ms`) and the Mods-tab meta memo.
+- The hook registry state (`_hooks`, `_hooked_bases`, `_any_mod_hooked`, `_caller`), the host-seam response cache `_host_cache` and the live Mods-tab row nodes `_mods_meta_nodes`.
 
 ### [logging.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/logging.gd)
 
@@ -106,7 +106,7 @@ Scans `<exe>/mods/`, parses mod.txt into entry Dictionaries, orders them, and ow
 
 ### [modpacks.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/modpacks.gd)
 
-Modpack discovery, apply, unload. A modpack is a `.zip` in `<game>/mods/` with `profile.json` at its root; scan time routes it to the Modpacks tab. Packs are local zips; no site hosts them.
+Modpack discovery, apply, unload. A modpack is a `.zip` in `<game>/mods/` with `profile.json` at its root; scan time routes it to the Modpacks tab. Packs published on VostokMods arrive through `hosted_modpacks.gd` and become the same local zips.
 
 - An applied pack is a regular profile under the `modpack__<sanitized_name>` prefix, so profile switching, saving and MCM snapshots need no special cases. The zip is a template read on first apply or reset.
 - Pre-apply state goes to a `_before_modpack_<sanitized_name>` profile slot plus an MCM snapshot; `[settings] active_modpack` names the single active pack. Write-once restore points land under `user://.modpack_backups` (`_snapshot_state_before_apply`, newest `MODPACK_SNAPSHOT_KEEP` kept).

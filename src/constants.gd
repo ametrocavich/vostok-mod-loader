@@ -46,7 +46,8 @@ const HOOK_PACK_DIR := "user://modloader_hooks"
 # VFS offsets); orphans are swept at static init.
 const HOOK_PACK_PREFIX := "framework_pack"
 const VANILLA_CACHE_DIR := "user://modloader_hooks/vanilla"
-# --- ModWorkshop network API ---
+
+# --- Network ---
 
 const API_CHECK_TIMEOUT := 15.0
 
@@ -57,7 +58,7 @@ const API_CHECK_TIMEOUT := 15.0
 const MCM_SOURCE_DIR := "user://MCM"
 const MCM_SNAPSHOT_BASE := "user://.profile_snapshots"
 
-# --- Mod entry limits + tracked content ---
+# --- Mod entry limits ---
 
 const PRIORITY_MIN := -999
 const PRIORITY_MAX := 999
@@ -144,8 +145,7 @@ var _last_mod_txt_files := {}
 var _boot_complete: bool = false
 var _dirty_since_boot: bool = false
 
-# Mods-tab filter state. _mods_hide_disabled is per-profile; focus_pending
-# lets the search input reclaim focus after the text_changed rebuild.
+# Mods-tab filter state; _mods_hide_disabled is per-profile.
 var _mods_filter_text: String = ""
 var _mods_hide_disabled: bool = false
 
