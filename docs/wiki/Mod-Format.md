@@ -104,7 +104,7 @@ Only `[mod]` is required. `[autoload]`, `[updates]`, `[dependencies]`, `[hooks]`
 
 Compatibility with the older VostokMods injector (Ryhon0's loader, not the vostokmods.net site): if the archive filename matches `^(-?\d+)-(.*)`, the numeric prefix is the fallback priority when `[mod] priority` is not set, and the rest of the stem is the default name and id. `100-BetterAI.vmz` loads with `priority=100`. See [mod_discovery.gd `_entry_from_config`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd).
 
-A mod without `id=` is identified by its filename. The row warns about it: renaming or re-packaging the file loses its enabled state and load order, and two copies cannot be told apart. Declare an id.
+A mod without `id=` is identified by its filename. In developer mode the row notes it: renaming or re-packaging the file loses its enabled state and load order, and two copies cannot be told apart. Declare an id.
 
 ### `[dependencies]` section
 
@@ -188,7 +188,7 @@ Declaring a source also makes the mod auto-downloadable when someone applies a m
 
 A mod downloaded through the Browse tab is remembered by the launcher (in `mod_config.cfg` `[mod_sources]`) even when its `mod.txt` declares nothing, so the update check and modpacks still know where it came from on that machine. Declaring `source=` is what makes that knowledge travel with the mod.
 
-Quote your `[mod] version`. An unquoted `version = 1.10` is read as the number 1.1 and the trailing zero is lost, which corrupts the exact version a modpack pins. The row warns when a sourced mod has an unquoted version.
+Quote your `[mod] version`. An unquoted `version = 1.10` is read as the number 1.1 and the trailing zero is lost, which corrupts the exact version a modpack pins. In developer mode the row notes when a sourced mod has an unquoted version.
 
 Version compare is [mod_discovery.gd `compare_versions`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd): strip a `v`/`V` prefix, split on `.`, pad the shorter side with `0`, compare component by component as ints (a non-numeric component counts as 0).
 

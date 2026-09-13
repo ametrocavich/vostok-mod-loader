@@ -127,6 +127,10 @@ Also behind the dev-mode return in `_activate_rewritten_scripts`. Logs under `[R
 
 Per-hook-base counts accumulate in `_dispatch_counts` (constants.gd). The generated wrappers increment it only when dev mode is on; `_rtv_dispatch_inline_src` in rewriter_rewrite.gd emits the increment inside an `if _lib._developer_mode:` block. The dict is cleared when the 30-second window starts and printed as the DISPATCH-COUNT breakdown from section 7.
 
+### 12. Mod author notes
+
+Mods-tab rows show notes meant for the mod's author only while dev mode is on: an unquoted `[mod] version`, a missing `id=`, a stale export bake beside the sources, an unrecognized `[updates] source=`. Real breakage (an invalid zip, a `mod.txt` that fails to parse or sits in a subfolder, an autoload path that resolves nowhere) shows to everyone regardless. `_build_entry_author_notes` in mod_discovery.gd builds the list.
+
 ## Where the gate sits
 
 - `_log_debug` (logging.gd): full no-op when off.

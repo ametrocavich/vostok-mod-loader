@@ -1332,6 +1332,9 @@ func _mods_row_dependency_lines(name_col: VBoxContainer, name_ctrl: Control, ent
 		name_col.add_child(_make_sub_label(dep_line, COL_TEXT_DIM, "\n".join(tip)))
 	for warn_text: String in entry.get("warnings", []):
 		name_col.add_child(_make_sub_label(warn_text, COL_ACCENT, warn_text))
+	if _developer_mode:
+		for note_text: String in entry.get("author_notes", []):
+			name_col.add_child(_make_sub_label(note_text, COL_TEXT_DIM, note_text))
 	for warn_text: String in entry.get("dependency_warnings", []):
 		name_col.add_child(_make_sub_label(warn_text, COL_ACCENT, warn_text))
 

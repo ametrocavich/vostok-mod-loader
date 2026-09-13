@@ -92,7 +92,7 @@ VostokMods adapter (`_vmp_*`), the default host. Talks to `https://vostokmods.ne
 Scans `<exe>/mods/`, parses mod.txt into entry Dictionaries, orders them, and owns the host-neutral install path. No mounting; that is `mod_loading.gd`.
 
 - `collect_mod_metadata` is the scanner. Accepted extensions are `vmz`, `zip`, `pck`, plus folders in dev mode; a zip with `profile.json` at its root is a modpack and goes to `modpacks.gd`.
-- `_entry_from_config` and `_build_entry_warnings` turn a ConfigFile into an entry and its row warnings (unquoted version, missing `id=`, stale bake, bad autoload path).
+- `_entry_from_config`, `_build_entry_warnings` and `_build_entry_author_notes` turn a ConfigFile into an entry, its row warnings (broken or misplaced mod.txt, bad autoload path) and the author notes developer mode shows (unquoted version, missing `id=`, stale bake, unrecognized source).
 - Dependency handling: `_parse_dependency_list`, `_apply_dependency_ordering`, `_loadable_enabled_entries`, `_refresh_dependency_status`.
 - Identity: `_dedupe_by_mod_id` and `_normalized_mod_stem`, which `check_identity.sh` covers.
 - `compare_versions`, semver-ish with a `v` prefix tolerance and prerelease ordering.

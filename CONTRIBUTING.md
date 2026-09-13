@@ -167,8 +167,10 @@ Function names are stable anchors; line numbers are not.
 
 - `src/mod_discovery.gd: _entry_from_config` parses the key from the
   ConfigFile and stores it on the entry Dictionary.
-- `src/mod_discovery.gd: _build_entry_warnings` derives a row warning from it.
-  The Mods tab renders `entry["warnings"]` generically, so no UI edit.
+- `src/mod_discovery.gd: _build_entry_warnings` derives a row warning from it
+  when the mod will not work; `_build_entry_author_notes` when only the
+  author should hear about it. The Mods tab renders `entry["warnings"]` for
+  everyone and `entry["author_notes"]` in developer mode, so no UI edit.
 - `docs/wiki/Mod-Format.md` documents the section.
 - If the section affects loading and not only scan-time metadata, also
   `src/mod_loading.gd: _process_mod_candidate`, which is where `[hooks]`,

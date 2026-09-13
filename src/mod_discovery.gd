@@ -86,6 +86,7 @@ func _build_archive_entry(mods_dir: String, file_name: String, ext: String) -> D
 	var cfg: ConfigFile = read_mod_config(full_path) if ext != "pck" else null
 	var entry := _entry_from_config(cfg, file_name, full_path, ext)
 	entry["warnings"] = _build_entry_warnings(entry)
+	entry["author_notes"] = _build_entry_author_notes(entry)
 	entry["security_findings"] = scan_mod(full_path, ext)
 	entry["risk_level"] = compute_risk_level(entry["security_findings"])
 	_log_security_findings(entry)
@@ -97,6 +98,7 @@ func _build_folder_entry(mods_dir: String, dir_name: String) -> Dictionary:
 	var cfg: ConfigFile = read_mod_config_folder(folder_path)
 	var entry := _entry_from_config(cfg, dir_name, folder_path, "folder")
 	entry["warnings"] = _build_entry_warnings(entry)
+	entry["author_notes"] = _build_entry_author_notes(entry)
 	entry["security_findings"] = scan_mod(folder_path, "folder")
 	entry["risk_level"] = compute_risk_level(entry["security_findings"])
 	_log_security_findings(entry)
@@ -282,10 +284,19 @@ func _build_entry_warnings(entry: Dictionary) -> Array[String]:
 		warnings.append("Invalid mod -- mod.txt is in a subfolder, not at the zip root. Re-zip so mod.txt is at the root.")
 	elif status == "ok":
 		warnings.append_array(_autoload_path_warnings(entry))
-	warnings.append_array(_stale_bake_warnings(entry))
-	warnings.append_array(_missing_id_warnings(entry))
-	warnings.append_array(_source_declaration_warnings(entry))
 	return warnings
+
+# Notes for the mod's author rather than its user: the mod loads, but its
+# mod.txt could be better. The Mods tab shows them only in developer mode.
+func _build_entry_author_notes(entry: Dictionary) -> Array[String]:
+	var notes: Array[String] = []
+	var ext: String = entry["ext"]
+	if ext == "pck" or ext == "folder":
+		return notes
+	notes.append_array(_stale_bake_warnings(entry))
+	notes.append_array(_missing_id_warnings(entry))
+	notes.append_array(_source_declaration_warnings(entry))
+	return notes
 
 # A wrongly declared source gets no source at all, silently (the parser
 # returns {}). Name the problem on the mod's row.
