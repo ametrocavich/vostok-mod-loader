@@ -3,6 +3,20 @@
 ## bar. Profiles live in UI_CONFIG_PATH under profile.<name>.*; the active one
 ## in [settings] active_profile. Closing the window is the same as Launch.
 
+# GitHub repository that publishes loader releases, for the self-update
+# check; "" disables it. Release tags are "v<MODLOADER_VERSION>" and the
+# latest-release endpoint already excludes drafts and prereleases.
+const MODLOADER_GITHUB_REPO := "ametrocavich/vostok-mod-loader"
+const MODLOADER_RELEASES_API_URL := "https://api.github.com/repos/%s/releases/latest"
+const MODLOADER_RELEASES_PAGE_URL := "https://github.com/%s/releases/latest"
+
+# Self-update check state; both cleared on UI close.
+var _modloader_latest_version: String = ""
+# Page of the release the self-update check found; "" until it runs, in
+# which case the alert falls back to the repository's latest-release page.
+var _modloader_release_url: String = ""
+var _ui_update_alert_btn: LinkButton = null
+
 func _load_developer_mode_setting() -> void:
 	var cfg := ConfigFile.new()
 	if cfg.load(UI_CONFIG_PATH) != OK:

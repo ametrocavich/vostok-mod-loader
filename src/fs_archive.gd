@@ -2,6 +2,8 @@
 ## Disk I/O with no game logic: vmz cache copies, mod.txt parsing, mounting,
 ## folder-mod zipping.
 
+const TRACKED_EXTENSIONS: Array[String] = ["gd", "tscn", "tres", "gdns", "gdnlib", "scn"]
+
 # Copies a .vmz to the cache dir as .zip so ZIPReader can open it. Cache
 # identity is the source's mtime+size in a <zip>.src sidecar; any mismatch
 # (including an older restored/downgraded timestamp) or a missing sidecar

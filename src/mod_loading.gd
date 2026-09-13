@@ -6,6 +6,7 @@
 # res_path -> {mod_name: true}. _hooked_methods cannot carry it, since an
 # empty inner dict is the wildcard sentinel. Diagnostic only.
 var _hook_declared_by: Dictionary = {}
+var _database_replaced_by := ""
 
 # Every mod.txt section this loader reads anywhere. Feeds only the
 # unrecognized-section notice in _process_mod_candidate.

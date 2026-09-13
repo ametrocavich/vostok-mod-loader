@@ -1,6 +1,21 @@
 ## ----- ui_mods.gd -----
 ## The Mods tab: toolbar, mod rows, host meta sidecar, security findings.
 
+var _mods_filter_focus_pending: bool = false
+
+# Mods-tab host meta memo, keyed by host_ref_key. The seam caches only
+# successful responses, so failed refs would refetch on every rebuild; memo
+# successes for the session and gate failures behind a retry window (one
+# attempt per mod per minute).
+var _mods_meta_by_key: Dictionary = {}       # ref_key -> ModSummary or ModDetail (successes only)
+var _mods_meta_retry_at: Dictionary = {}     # ref_key -> ticks_msec before which not to refetch
+
+# Sidecar bookkeeping: ref_key -> unix time of the last real detail fetch.
+# Only keys here reach the on-disk sidecar; a stale stamp triggers the
+# background soft refresh. _mods_meta_sidecar_loaded gates the lazy read.
+var _mods_meta_saved_at: Dictionary = {}
+var _mods_meta_sidecar_loaded: bool = false
+
 # Tear down and rebuild the Mods tab in place. Preserves the current tab so
 # a Browse-row toggle does not yank the user onto the Mods tab.
 func _rebuild_mods_tab(tabs: TabContainer) -> void:

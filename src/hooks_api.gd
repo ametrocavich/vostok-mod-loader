@@ -4,6 +4,13 @@
 ## version accessors, plus the internal dispatch helpers. Also owns
 ## frameworks_ready emission.
 
+var _next_id: int = 1
+var _seq: int = 0
+var _is_ready: bool = false              # public: true once frameworks_ready has emitted
+# Warn-once dedupe for legacy 2-arg post-hook callbacks, keyed by
+# "<hook_name>::<callback object_id>".
+var _post_legacy_warned: Dictionary = {}
+
 # Version accessors, for mods gating features on modloader version.
 static func version() -> String:
 	return MODLOADER_VERSION

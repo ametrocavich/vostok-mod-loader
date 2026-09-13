@@ -38,6 +38,14 @@
 const MODPACK_PROFILE_PREFIX := "modpack__"
 const MODPACK_BACKUP_PREFIX := "_before_modpack_"
 
+# Write-once restore points taken before a modpack apply; newest MODPACK_SNAPSHOT_KEEP kept.
+const MODPACK_SNAPSHOT_DIR := "user://.modpack_backups"
+const MODPACK_SNAPSHOT_KEEP := 5
+
+# Mutex for the modpack apply flow; prevents concurrent applies racing on cfg
+# writes + the backup slot. UI also gates Apply buttons on it.
+var _modpack_apply_in_progress: bool = false
+
 # Zip paths with these prefixes (relative to user://) are dropped during apply:
 # a pack must not touch the loader's state files, snapshot dirs or caches.
 const MODPACK_OVERRIDE_DENY_PREFIXES: Array[String] = [

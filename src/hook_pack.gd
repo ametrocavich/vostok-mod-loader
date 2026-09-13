@@ -5,6 +5,13 @@
 ## script), mounted at res://, and force-activated. Zero declarations means
 ## zero generation; mod sources are never rewritten.
 
+# res:// script path -> scene paths; these are deferred from the eager
+# load+reload in _activate_rewritten_scripts. Their module-scope preload()
+# fires at parse time, so force-loading before mod overrides run would bake
+# scenes against pre-override vanilla; deferring to lazy-compile lets
+# overrides land first, and VFS precedence still serves the rewrite.
+var _scripts_with_scene_preloads: Dictionary = {}
+
 # Scripts with rewriter-injected registry helpers. Force-activated (bypassing
 # the scene-preload deferral) so injected fields are live when mods call
 # lib.register(). Enrolled only when some mod declares [registry].

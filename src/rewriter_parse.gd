@@ -21,6 +21,16 @@
 ## _hook_base_of + a dispatcher, _re_hook_call below, and both emitter
 ## branches of _rtv_dispatch_inline_src.
 
+# Rewriter regex (compiled in _rtv_compile_codegen_regex)
+var _rtv_re_extends: RegEx
+var _rtv_re_class_name: RegEx
+var _rtv_re_func: RegEx
+var _rtv_re_static_func: RegEx
+var _rtv_re_sig_tail: RegEx
+var _rtv_re_param_name: RegEx
+var _rtv_re_var: RegEx
+var _rtv_re_ret_value: RegEx
+
 # A second regex set lives in _rtv_compile_codegen_regex below. They parse
 # the same grammar but are not equivalent (this set: whole-blob, name-only
 # captures; that set: per-line, full-signature, trailing-colon). Do not

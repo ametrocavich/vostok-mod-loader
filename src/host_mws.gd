@@ -10,6 +10,18 @@
 ## shape (data vs bare object) varies by endpoint, so unwrapping is done per
 ## operation below.
 
+const MODWORKSHOP_VERSIONS_URL := "https://api.modworkshop.net/mods/versions"
+const MODWORKSHOP_PAGE_URL_TEMPLATE := "https://modworkshop.net/mod/%s"
+const MODWORKSHOP_BATCH_SIZE := 100
+
+# ModWorkshop API (host_mws.gd): an empty/default User-Agent gets a 403; game 864 = RTV.
+const MWS_API_BASE := "https://api.modworkshop.net"
+const MWS_STORAGE_BASE := "https://storage.modworkshop.net"
+const MWS_RTV_GAME_ID := 864
+const MWS_PAGE_LIMIT := 50
+# The API caps search queries at 150 chars and answers longer ones with a 422.
+const MWS_QUERY_MAX_LEN := 150
+
 # Cache TTLs: listings go stale fast, detail and history rarely, categories
 # barely. The file endpoints get a short TTL so a stale download_url does
 # not outlive a CDN rotation.

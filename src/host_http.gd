@@ -6,6 +6,7 @@
 ## (host_types.gd), never a bare null, so callers can tell offline from 404
 ## from rate-limited.
 
+const MWS_USER_AGENT_TEMPLATE := "vostok-mod-loader/%s (+https://github.com/ametrocavich/vostok-mod-loader)"
 const HOST_USER_AGENT_TEMPLATE := MWS_USER_AGENT_TEMPLATE
 
 const HOST_JSON_BODY_LIMIT := 8 * 1024 * 1024
@@ -16,6 +17,10 @@ const _HOST_COOLDOWN_DEFAULT_MS := 60 * 1000
 # A cooldown with less than this left is waited out inside the call, so a
 # click just before the window opens succeeds; anything longer fails fast.
 const _HOST_RATE_WAIT_MAX_MS := 2000
+
+# Rate-limit cooldowns, provider id -> ticks_msec resume moment.
+# Per-provider: hosts have independent budgets.
+var _host_cooldown_until_ms: Dictionary = {}
 
 
 func _hnet_default_headers() -> PackedStringArray:

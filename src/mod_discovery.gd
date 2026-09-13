@@ -2,6 +2,15 @@
 ## Scans the mods directory, parses mod.txt metadata, builds the ordered list
 ## of mod entries, and owns the host-neutral download and update-check path.
 
+# Dependency ids satisfied by the mod loader itself; always count as present.
+const LOADER_ID_ALIASES: Array[String] = [
+	"metro_mod_loader", "metromodloader", "vostok_mod_loader",
+	"mod_loader", "modloader", "mml", "rtvmodlib",
+]
+
+# HTTPRequest.timeout covers the whole transfer; mod bodies run to ~256MB.
+const API_DOWNLOAD_TIMEOUT := 300.0
+
 func collect_mod_metadata() -> Array[Dictionary]:
 	var entries: Array[Dictionary] = []
 	_mods_dir = OS.get_executable_path().get_base_dir().path_join(MOD_DIR)

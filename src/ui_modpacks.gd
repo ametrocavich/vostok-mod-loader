@@ -1,6 +1,10 @@
 ## ----- ui_modpacks.gd -----
 ## The Modpacks tab: rows, the apply flow and its dialogs, hosted packs, restore points.
 
+# Recursion guard for _rebuild_modpacks_tab: child moves fire tab_changed,
+# whose listener calls _rebuild_modpacks_tab again.
+var _rebuilding_modpacks_tab: bool = false
+
 # Save-as-modpack dialog: name, author and description inputs plus a warning
 # list of enabled mods with no source. One ScrollContainer holds the body.
 func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: TabContainer) -> void:
