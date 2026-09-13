@@ -54,27 +54,13 @@ func _restore_mods_scroll(saved_scroll: int) -> void:
 	if is_instance_valid(_ui_mods_scroll):
 		_ui_mods_scroll.scroll_vertical = saved_scroll
 
-## Whether the scanner could not read part of this mod. Distinct from a risk
-## verdict; both otherwise render identically to the user.
-func _entry_has_unscannable_code(entry: Dictionary) -> bool:
-	var findings: Variant = entry.get("security_findings")
-	if not (findings is Array):
-		return false
-	for f in (findings as Array):
-		if f is Dictionary and str((f as Dictionary).get("rule", "")) == "compiled_script":
-			return true
-	return false
-
-
 func _show_security_findings_dialog(entry: Dictionary) -> void:
 	var findings: Array = entry.get("security_findings", [])
 	if findings.is_empty():
 		return
 	var d := AcceptDialog.new()
 	var mod_name := str(entry.get("mod_name", "?"))
-	# Calling compiled-only mods suspicious would accuse legitimate builds.
-	var accusing := int(entry.get("risk_level", 0)) == 2
-	d.title = ("Suspicious code in " if accusing else "Not fully scanned: ") + mod_name
+	d.title = "Suspicious code in " + mod_name
 	d.ok_button_text = "Close"
 	d.min_size = Vector2(580, 420)
 
@@ -90,16 +76,10 @@ func _show_security_findings_dialog(entry: Dictionary) -> void:
 	scroll.add_child(body)
 
 	var intro := Label.new()
-	if accusing:
-		intro.text = "The scanner found patterns in this mod's code that are commonly used by malware " \
-				+ "(obfuscated string decoding combined with process spawning, anti-debug calls, etc.). " \
-				+ "If you don't trust this mod, do not enable it."
-	else:
-		intro.text = "The scanner did not find anything dangerous, but it could not read part of " \
-				+ "this mod -- compiled scripts are opaque to it. This is not an accusation: " \
-				+ "plenty of legitimate mods ship compiled code. It only means the check below " \
-				+ "is incomplete, so judge this mod by whether you trust its author."
-	intro.add_theme_color_override("font_color", COL_ERR if accusing else COL_TEXT_DIM)
+	intro.text = "The scanner found patterns in this mod's code that are commonly used by malware " \
+			+ "(obfuscated string decoding combined with process spawning, anti-debug calls, etc.). " \
+			+ "If you don't trust this mod, do not enable it."
+	intro.add_theme_color_override("font_color", COL_ERR)
 	intro.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	intro.add_theme_font_size_override("font_size", FS_BODY)
 	body.add_child(intro)
@@ -1460,22 +1440,6 @@ func _mods_row_notes(name_col: VBoxContainer, entry: Dictionary) -> void:
 		name_col.add_child(sec_btn)
 		var captured_entry := entry
 		sec_btn.pressed.connect(func(): _show_security_findings_dialog(captured_entry))
-	elif _entry_has_unscannable_code(entry):
-		# Not a risk verdict: the scanner could not read this mod's compiled
-		# bytecode, and no badge would read as "checked, nothing found". Dim, not
-		# red: shipping compiled code is not an accusation.
-		var unscanned_btn := Button.new()
-		unscanned_btn.text = "not scanned"
-		unscanned_btn.flat = true
-		unscanned_btn.tooltip_text = "This mod ships compiled code the scanner cannot read. Nothing was checked."
-		unscanned_btn.add_theme_color_override("font_color", COL_TEXT_DIM)
-		unscanned_btn.add_theme_color_override("font_hover_color", COL_TEXT_HI)
-		unscanned_btn.add_theme_font_size_override("font_size", FS_BODY)
-		unscanned_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
-		unscanned_btn.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
-		name_col.add_child(unscanned_btn)
-		var captured_unscanned := entry
-		unscanned_btn.pressed.connect(func(): _show_security_findings_dialog(captured_unscanned))
 
 
 # Update check for every installed mod with a downloadable host and a version.

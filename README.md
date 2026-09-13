@@ -34,9 +34,9 @@ Click **Launch modded** (or **Launch**, when no mods are enabled) or close the w
 
 ### Guardrails
 
-The launcher does a static scan of every mod's source for a small set of patterns seen in actual malicious mods (obfuscated string decoding paired with process spawning, anti-debug crashes, ransomware-setup calls). Mods that match get a red `suspicious code` tag in the list, and clicking **Launch modded** with one enabled pops a confirmation dialog before the game starts.
+The launcher does a static scan of every mod's source for a small set of patterns seen in actual malicious mods (obfuscated string decoding paired with process spawning, anti-debug crashes, ransomware-setup calls). Mods that match get a red `suspicious code` tag in the list; click it to see what matched.
 
-This is not a virus scanner. It catches lazy copy-paste attacks; anyone with the loader source can write around the patterns. Loading is never silently blocked, and you can confirm and launch any mod. The scanner exists to slow down the obvious cases. Install mods from sources you trust.
+This is not a virus scanner. It catches lazy copy-paste attacks; anyone with the loader source can write around the patterns. Loading is never blocked; the tag is information, not a gate. The scanner exists to slow down the obvious cases. Install mods from sources you trust.
 
 ## Authoring a Mod
 

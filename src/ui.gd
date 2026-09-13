@@ -888,40 +888,6 @@ func _launch_vanilla_once(win: Window) -> void:
 	# Strip --modloader-restart so the relaunch is a clean Pass 1.
 	_modloader_restart(true)
 
-# Enabled mods the scanner scored red; gates Launch.
-func _enabled_red_mods() -> Array:
-	var out: Array = []
-	for entry in _ui_mod_entries:
-		if entry.get("enabled", false) and int(entry.get("risk_level", 0)) == 2:
-			out.append(entry)
-	return out
-
-# Launch-time confirmation for red-scored mods; true = launch. Plain
-# dialog_text so Godot auto-sizes the window.
-func _confirm_red_launch(red_mods: Array) -> bool:
-	var d := ConfirmationDialog.new()
-	d.title = "Suspicious mods enabled"
-	d.ok_button_text = "Launch anyway"
-	d.cancel_button_text = "Go back"
-	d.dialog_autowrap = true
-	d.min_size = Vector2(560, 120)
-
-	var lines := PackedStringArray()
-	lines.append("The scanner found patterns in the following mod(s) that are commonly used by malware. If you don't trust them, go back and disable them before launching.")
-	lines.append("")
-	for entry: Dictionary in red_mods:
-		lines.append("    " + str(entry.get("mod_name", "?")))
-	d.dialog_text = "\n".join(lines)
-
-	_attach_ui_dialog(d)
-	# Force above the always_on_top launcher or the dialog can land behind it.
-	d.exclusive = true
-	d.always_on_top = true
-	# Red text so "Launch anyway" reads as the risky option.
-	style_dialog_danger_button(d.get_ok_button())
-
-	return await _await_dialog_choice(d)
-
 # The standard 8/8/6/6 outer margin shared by all top-level tab builders.
 func _make_tab_margin() -> MarginContainer:
 	var m := MarginContainer.new()
@@ -979,16 +945,7 @@ func show_mod_ui() -> void:
 	_ui_add_tabs(tabs)
 	refresh_launch_button_label()
 
-	# Launch loop: red-scored enabled mods require an explicit confirm;
-	# cancel returns to the launcher.
-	while true:
-		await launch_btn.pressed
-		var red_mods := _enabled_red_mods()
-		if red_mods.is_empty():
-			break
-		var proceed: bool = await _confirm_red_launch(red_mods)
-		if proceed:
-			break
+	await launch_btn.pressed
 	_ui_window = null
 	_ui_hint_label = null
 	_ui_launch_btn = null

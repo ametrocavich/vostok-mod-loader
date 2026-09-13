@@ -55,7 +55,7 @@ Owns the boot sequence; its header comment is the short form of [Architecture](A
 
 Static scanner. Reads each file inside a candidate mod (`.vmz`/`.zip`, `.pck`, or a dev-mode folder) without mounting it and looks for GDScript pattern combinations that are close to diagnostic of known malware.
 
-Not a virus scanner. It catches copy-paste droppers; someone with the loader source can write around the rules. Loading is never blocked: a red mod gets a "suspicious code" tag in the launcher and a confirm dialog at Launch.
+Not a virus scanner. It catches copy-paste droppers; someone with the loader source can write around the rules. Loading is never blocked: a red mod gets a "suspicious code" tag in the launcher, and clicking it shows what matched.
 
 - `scan_mod` is the entry point, called from `_build_archive_entry` / `_build_folder_entry`, with a per-file cache keyed on path, mtime and size.
 - 13 rules in `_SECURITY_RULES`, grouped into solo red triggers (`os_crash`, `disable_save_safety`), process-spawn, runtime-code-build and obfuscation families.
