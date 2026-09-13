@@ -1,3 +1,5 @@
+## ----- ui_theme.gd -----
+## Launcher palette tokens, the Theme, the style_* voices and the code-drawn glyphs.
 
 # -- Design tokens ------------------------------------------------------------
 # Matches the VostokMods site palette: one accent green, one success green, one red.

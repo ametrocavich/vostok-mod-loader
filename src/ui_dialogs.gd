@@ -1,4 +1,5 @@
-
+## ----- ui_dialogs.gd -----
+## Dialog plumbing shared by every tab, plus the profile dialogs.
 
 # Borderless accept dialog with one dismiss button; backs the two helpers below.
 func _show_accept_dialog(title: String, message: String, ok_text := "OK", min_w := 360) -> void:

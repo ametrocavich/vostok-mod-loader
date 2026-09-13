@@ -1,3 +1,5 @@
+## ----- ui_browse.gd -----
+## The Browse tab: per-host listings, landing snapshots, the mod detail dialog.
 
 # ----- Browse: source-neutral helpers ---------------------------------------
 

@@ -1,3 +1,5 @@
+## ----- ui_modpacks.gd -----
+## The Modpacks tab: rows, the apply flow and its dialogs, hosted packs, restore points.
 
 # Save-as-modpack dialog: name, author and description inputs plus a warning
 # list of enabled mods with no source. One ScrollContainer holds the body.

@@ -1,3 +1,5 @@
+## ----- ui_mods.gd -----
+## The Mods tab: toolbar, mod rows, host meta sidecar, security findings.
 
 # Tear down and rebuild the Mods tab in place. Preserves the current tab so
 # a Browse-row toggle does not yank the user onto the Mods tab.

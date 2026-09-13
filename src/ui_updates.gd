@@ -1,3 +1,5 @@
+## ----- ui_updates.gd -----
+## The Updates tab and the session state it restores on every show.
 
 # Rebuild the Updates tab on show: it snapshots entries at build time, so a
 # mod updated mid-session would leave rows whose Download targets a gone file.
