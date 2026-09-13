@@ -452,7 +452,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			_scripts_with_scene_preloads[script_path] = scene_preloads
 
 		var rewritten := _rtv_rewrite_vanilla_source(source, parsed, path_mask)
-		# GEN-VERIFY: the parser and the rename pass find methods two
+		# Rename check: the parser and the rename pass find methods two
 		# different ways (regex parse vs line-prefix scan); any divergence
 		# silently produces a wrapper-less rewrite. Check every matched
 		# method now exists as `func _rtv_vanilla_<Name>`.
@@ -475,7 +475,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			for rn in rename_lost:
 				mm.append(str(rn) + " (parsed but rename did not land)")
 			rec_v["missing_methods"] = mm
-		# REGISTRY-VERIFY: anchored transforms no-op silently when the game
+		# Registry markers: anchored transforms no-op silently when the game
 		# changes; the marker check records the loss for reconciliation.
 		if _any_mod_declared_registry and _is_registry_target(filename):
 			var marker := str(REGISTRY_EXPECTED_MARKERS.get(filename, ""))
@@ -489,7 +489,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 					mm2.append("registry transform (marker '%s' absent -- registry features on this script will not work)" % marker)
 					rec_v["missing_methods"] = mm2
 				else:
-					# Registry targets are always in the ledger; belt+braces.
+					# Registry targets are always in the ledger, so this is defensive.
 					_log_warning("[RTVCodegen] %s: registry transform marker '%s' missing from rewrite -- registry features on this script will not work (game update changed the vanilla pattern?)" % [filename, marker])
 		# Ship at the original vanilla path: class_name registration in the
 		# PCK's global_script_class_cache.cfg must match, or pre-compiled
@@ -509,7 +509,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		if zp.close_file() != OK:
 			pack_write_failed = true
 		# Self-referencing .gd.remap overrides the PCK's .gd.remap -> .gdc
-		# redirect. Godot's _path_remap reads this BEFORE GDScript loader.
+		# redirect. Godot's _path_remap reads this before the GDScript loader.
 		var remap_entry := gd_entry + ".remap"
 		if zp.start_file(remap_entry) != OK:
 			_log_warning("[RTVCodegen] Failed to start zip entry %s" % remap_entry)
@@ -636,7 +636,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		if defer_activation:
 			# Pass 1 pre-restart: write the zip + persist pass_state so Pass
 			# 2's static-init mount picks it up on a fresh engine. Mounting
-			# and activating here would fire a misleading STABILITY alarm
+			# and activating here would fire a misleading stability alarm
 			# against pre-compiled scripts seconds before the restart.
 			_log_info("[RTVCodegen] Generated %d rewritten vanilla script(s), %d hook points -- activation deferred to Pass 2 fresh engine" \
 					% [script_count, hook_count])
@@ -731,14 +731,6 @@ func _log_hook_reconciliation(reconcile: Dictionary) -> void:
 		_log_info("[RTVCodegen] Hook reconciliation: the other %d declared script target(s) wrapped OK (%d method wrapper(s))" \
 				% [wrapped_scripts, wrapped_methods])
 
-# Force the ResourceCache entry for each rewritten vanilla path to the
-# rewritten source. Pre-mount load()s cache the PCK's .gdc-compiled script;
-# CACHE_MODE_REPLACE keeps the bytecode association; and scene ext_resource
-# and ClassName.new() both resolve through the cache, so stale entries mean
-# the wrappers never fire. Mutating source_code + reload() recompiles the
-# cached script in place -- live references keep working and now dispatch
-# through the wrappers.
-
 ## Names of the mods whose [script_extend] / [script_overrides] replacement
 ## targets script_path, from every place a claim can live: the override
 ## registry (this pass), the applied set (Pass 1) and the pending list
@@ -760,6 +752,13 @@ func _override_claimants(script_path: String) -> PackedStringArray:
 	return names
 
 
+# Force the ResourceCache entry for each rewritten vanilla path to the
+# rewritten source. Pre-mount load()s cache the PCK's .gdc-compiled script;
+# CACHE_MODE_REPLACE keeps the bytecode association; and scene ext_resource
+# and ClassName.new() both resolve through the cache, so stale entries mean
+# the wrappers never fire. Mutating source_code + reload() recompiles the
+# cached script in place -- live references keep working and now dispatch
+# through the wrappers.
 func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) -> void:
 	# Scripts with module-scope PackedScene preloads are deferred from eager
 	# load+reload: loading them now would fire their preload() chain before
@@ -775,7 +774,7 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 	if deferred.size() > 0:
 		_log_info("[RTVCodegen] DEFER %d script(s) with module-scope scene preload -- will lazy-compile via VFS after mod overrides: %s" \
 				% [deferred.size(), ", ".join(Array(deferred))])
-		# DEFER-VERIFY watchdog, one shot at 60s: if VFS precedence
+		# Deferred-script watchdog, one shot at 60s: if VFS precedence
 		# regresses, a deferred script compiles from PCK bytecode without the
 		# rewrite and its hooks die silently. Inspects only scripts game code
 		# already loaded (never force a compile -- that recreates the
@@ -816,7 +815,7 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 				_log_debug("[RTVCodegen] DEFER-VERIFY (60s): all %d deferred rewrite(s) lazy-compiled with hooks live" % live_cnt)
 		)
 
-	# PRE-ACTIVATE classification (dev-mode only; exists purely for the
+	# Pre-activation classification (dev-mode only; exists purely for the
 	# summary log): (a) rewrite live from static-init preload, (b) source
 	# matches but methods don't (GDScriptCache-pinned), (c) empty source
 	# (PCK bytecode), (d) other.
@@ -993,7 +992,7 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 		else:
 			compile_proof_fail.append(fname)
 
-	# Canary A: summarize COMPILE-PROOF and alarm on catastrophic or
+	# Canary A: summarize the compile proof and alarm on catastrophic or
 	# critical-script failure rather than breaking silently.
 	var critical_set: Dictionary = {"Controller.gd": true, "Camera.gd": true,
 			"WeaponRig.gd": true, "Door.gd": true, "Trader.gd": true,
@@ -1002,8 +1001,8 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 	for f in compile_proof_fail:
 		if critical_set.has(String(f).get_file()):
 			critical_failures.append(f)
-	# Deferred scripts skip compile-proof; the DEFER-VERIFY watchdog covers
-	# them at 60s.
+	# Deferred scripts skip the compile proof; the deferred-script watchdog
+	# covers them at 60s.
 	var attempted := filenames.size() - deferred.size()
 	if compile_proof_ok == 0 and attempted > 0:
 		_log_critical("[STABILITY] ALL %d rewrites failed to take effect -- VFS mount, hook pack, or cache eviction is broken. Mods will NOT work this session. Click 'Launch vanilla' in the launcher or create modloader_disabled in the game folder." % attempted)

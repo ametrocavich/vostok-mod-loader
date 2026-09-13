@@ -2,7 +2,7 @@
 ## Test scaffolding gated behind the test_pack_precedence flag in
 ## mod_config.cfg. Exercises the pack-over-bytecode precedence trick and
 ## verifies what took over which vanilla paths after autoloads run.
-## Removable once the rewrite system is proven stable in production.
+## Removable once the rewrite system has been stable in production for a while.
 
 func _test_post_autoload_verify() -> void:
 	const TAG := "[TEST-REMAP-POST]"
@@ -35,7 +35,7 @@ func _test_post_autoload_verify() -> void:
 		var txt := bytes.get_string_from_utf8()
 		_log_info(TAG + "   FileAccess IXP/Controller.gd: " + str(bytes.size()) + " bytes, has marker: " + str("TEST-HOOK-IXP" in txt))
 
-# TEMPORARY: pack-over-bytecode precedence test, gated behind a flag in
+# Temporary: pack-over-bytecode precedence test, gated behind a flag in
 # mod_config.cfg. Remove after verifying whether a mounted .gd + .gd.remap
 # beats the PCK's .gdc + .gd.remap for a given resource path.
 
@@ -56,7 +56,7 @@ func _test_pack_precedence() -> void:
 	const TEST_ZIP := "user://test_pack_precedence.zip"
 	_log_info(TAG + " starting pack-over-bytecode test for " + TARGET_PATH)
 
-	# --- PRE-MOUNT DIAGNOSTICS ---
+	# --- pre-mount diagnostics ---
 	_log_info(TAG + " === PRE-MOUNT VFS state ===")
 	_log_info(TAG + "   FileAccess.file_exists(.gd):       " + str(FileAccess.file_exists(TARGET_PATH)))
 	_log_info(TAG + "   FileAccess.file_exists(.gdc):      " + str(FileAccess.file_exists(GDC_PATH)))
@@ -67,7 +67,7 @@ func _test_pack_precedence() -> void:
 		var pre_remap := FileAccess.get_file_as_string(REMAP_PATH)
 		_log_info(TAG + "   PCK's .remap content: " + pre_remap.replace("\n", "|"))
 
-	# --- BUILD TEST PACK ---
+	# --- build the test pack ---
 	# No load(TARGET_PATH) here: that caches the bytecode version and stops
 	# the mounted .gd winning later. Detokenize the .gdc path explicitly so a
 	# stale test pack mounted at static init can't feed back its own
@@ -150,7 +150,7 @@ func _test_pack_precedence() -> void:
 			zp.write_file("[remap]\npath=\"res://Scripts/Controller.gdc\"\n".to_utf8_buffer())
 			zp.close_file()
 
-	# === TEST 4B: also pre-wrap ImmersiveXP's Controller.gd ===
+	# Test 4B: also pre-wrap ImmersiveXP's Controller.gd.
 	# IXP's autoload take_over_path's its own Controller.gd onto the vanilla
 	# path; pre-wrapping it makes hooks fire through the mod's chain. Uses
 	# captured_ixp_source from above -- reading IXP_PATH here fails once the
@@ -211,13 +211,13 @@ func _test_pack_precedence() -> void:
 	zp.close()
 	_log_info(TAG + " wrote test pack")
 
-	# --- MOUNT ---
+	# --- mount ---
 	if not ProjectSettings.load_resource_pack(TEST_ZIP, true):
 		_log_critical(TAG + " FAIL: load_resource_pack returned false")
 		return
 	_log_info(TAG + " mounted test pack OK (replace_files=true)")
 
-	# --- POST-MOUNT DIAGNOSTICS ---
+	# --- post-mount diagnostics ---
 	_log_info(TAG + " === POST-MOUNT VFS state ===")
 	_log_info(TAG + "   FileAccess.file_exists(.gd):       " + str(FileAccess.file_exists(TARGET_PATH)))
 	_log_info(TAG + "   FileAccess.file_exists(.gdc):      " + str(FileAccess.file_exists(GDC_PATH)))
@@ -240,7 +240,7 @@ func _test_pack_precedence() -> void:
 		if not has_our_hook and ixp_content.length() > 0:
 			_log_info(TAG + "   IXP/Controller.gd first 80: " + ixp_content.substr(0, 80).replace("\n", "|"))
 
-	# --- LOAD TESTS ---
+	# --- load tests ---
 	_log_info(TAG + " === LOAD ATTEMPTS (cache should be cold -- we never pre-loaded) ===")
 
 	# Attempt 1: default load(), same as any game code; if this carries the
@@ -279,7 +279,7 @@ func _test_pack_precedence() -> void:
 		_log_info(TAG + "   method list count: " + str(method_names.size()) \
 				+ "  marker_in_list: " + str(marker_in_method_list))
 
-	# Attempt 5: DEFINITIVE test -- instantiate the script and call the marker method
+	# Attempt 5, the definitive test: instantiate the script and call the marker method.
 	var instantiate_ok := false
 	var call_returned: Variant = null
 	var call_err := ""
