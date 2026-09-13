@@ -1159,8 +1159,6 @@ func _ui_create_window() -> Window:
 	_apply_ui_scale(win, _ui_scale_setting())
 	win.wrap_controls = false
 	win.always_on_top = true
-	win.transparent = true
-	win.transparent_bg = true
 	get_tree().root.add_child(win)
 	win.popup_centered()
 	# Stash for dialogs triggered by profile-bar controls. Cleared on close.
@@ -1172,11 +1170,11 @@ func _ui_create_window() -> Window:
 	win.add_theme_stylebox_override("embedded_border",          win_style.duplicate())
 	win.add_theme_stylebox_override("embedded_unfocused_border", win_style.duplicate())
 
-	# Near-opaque scrim: 0.92 keeps a hint of the game behind while staying readable.
+	# Opaque backdrop: the game behind the launcher only made the text harder to read.
 	var bg := Panel.new()
 	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	var bg_s := StyleBoxFlat.new()
-	bg_s.bg_color = Color(0.0, 0.0, 0.0, 0.92)
+	bg_s.bg_color = COL_BG
 	bg_s.border_color = COL_BORDER
 	_sb_border(bg_s)
 	bg.add_theme_stylebox_override("panel", bg_s)
