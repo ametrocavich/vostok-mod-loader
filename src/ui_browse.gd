@@ -1101,43 +1101,10 @@ func _show_browse_mod_detail_dialog(summary: Dictionary, on_get: Callable) -> vo
 	var caps: Dictionary = host_caps(provider)
 	var ref_key := host_ref_key(ref)
 
-	var d := AcceptDialog.new()
-	d.title = str(summary["name"])
-	d.ok_button_text = "Close"
-	d.min_size = _dialog_fit_size(Vector2i(660, 540))
-
-	# Scroll on top, a download status line pinned below so feedback stays visible.
-	var outer := VBoxContainer.new()
-	outer.add_theme_constant_override("separation", SP_S)
-	d.add_child(outer)
-
-	var scroll := ScrollContainer.new()
-	scroll.custom_minimum_size = Vector2(d.min_size - Vector2i(20, 60))
-	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	outer.add_child(scroll)
-
-	# In-dialog download status: the modal covers the tab's status label;
-	# set_dl_status finds this through the Download button's meta.
-	var dl_status := Label.new()
-	dl_status.visible = false
-	dl_status.add_theme_font_size_override("font_size", FS_BODY)
-	dl_status.add_theme_color_override("font_color", COL_TEXT_DIM)
-	dl_status.clip_text = true
-	dl_status.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	dl_status.mouse_filter = Control.MOUSE_FILTER_PASS
-	outer.add_child(dl_status)
-
-	var inner_wrap := MarginContainer.new()
-	inner_wrap.add_theme_constant_override("margin_right", SP_XL)
-	inner_wrap.add_theme_constant_override("margin_left", SP_S)
-	inner_wrap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(inner_wrap)
-
-	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", SP_L)
-	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	inner_wrap.add_child(box)
+	var shell := _browse_detail_shell(str(summary["name"]))
+	var d: AcceptDialog = shell["d"]
+	var box: VBoxContainer = shell["box"]
+	var dl_status: Label = shell["dl_status"]
 
 	# Image band from the thumbnail now; the detail fetch repaints it with the
 	# banner. Built only when there is an image.
@@ -1149,26 +1116,7 @@ func _show_browse_mod_detail_dialog(summary: Dictionary, on_get: Callable) -> vo
 
 	var metrics: PackedStringArray = caps["metrics"]
 	var meta := Label.new()
-	var parts := PackedStringArray()
-	if str(summary["author_name"]) != "":
-		parts.append("by " + str(summary["author_name"]))
-	if str(summary["version"]) != "":
-		parts.append("v" + str(summary["version"]))
-	var downloads := _browse_metric(summary, "downloads")
-	if metrics.has("downloads") and downloads >= 0:
-		parts.append(str(downloads) + " downloads")
-	var likes := _browse_metric(summary, "likes")
-	if metrics.has("likes") and likes >= 0:
-		parts.append(str(likes) + " likes")
-	var views := _browse_metric(summary, "views")
-	if metrics.has("views") and views >= 0:
-		parts.append(str(views) + " views")
-	if str(summary["category_name"]) != "":
-		parts.append(str(summary["category_name"]))
-	var updated_short := _format_iso_datetime(str(summary["updated_at"]))
-	if updated_short != "":
-		parts.append("updated " + updated_short)
-	meta.text = " - ".join(parts)
+	meta.text = _browse_detail_meta_text(summary, metrics)
 	meta.add_theme_font_size_override("font_size", FS_META)
 	meta.add_theme_color_override("font_color", COL_TEXT_DIM)
 	meta.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -1277,56 +1225,131 @@ func _show_browse_mod_detail_dialog(summary: Dictionary, on_get: Callable) -> vo
 			add_download_button.call(detail)
 	load_detail.call()
 
-	var load_files := func():
-		if files_status == null:
-			return
-		var res := await host_list_files(ref)
-		if not is_instance_valid(files_status):
-			return
-		if not res["ok"]:
-			files_status.text = host_error_message(provider, res)
-			files_status.add_theme_color_override("font_color", COL_ERR)
-			return
-		var files: Array = res["data"]
-		if files.is_empty():
-			files_status.text = "No downloadable files yet."
-			return
-		files_status.queue_free()
-		var primary_id := str(summary["default_file_id"])
-		for file_v in files:
-			var fd: Dictionary = file_v
-			var f_row := HBoxContainer.new()
-			f_row.add_theme_constant_override("separation", SP_L)
-			files_list.add_child(f_row)
-
-			var v_lbl := Label.new()
-			var v_str: String = "v" + str(fd["version"])
-			if primary_id != "" and str(fd["id"]) == primary_id:
-				v_str += " (primary)"
-			v_lbl.text = v_str
-			v_lbl.custom_minimum_size.x = 140
-			v_lbl.clip_text = true
-			v_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-			v_lbl.tooltip_text = v_lbl.text
-			v_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
-			f_row.add_child(v_lbl)
-
-			var size_lbl := Label.new()
-			var size := _browse_metric(fd, "size")
-			size_lbl.text = _format_size(size) if size >= 0 else ""
-			size_lbl.custom_minimum_size.x = 80
-			size_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
-			f_row.add_child(size_lbl)
-
-			var date_str := str(fd["created_at"])
-			if date_str.contains("T"):
-				date_str = date_str.split("T")[0]
-			var date_lbl := Label.new()
-			date_lbl.text = date_str
-			date_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
-			f_row.add_child(date_lbl)
-	load_files.call()
+	_browse_detail_load_files(ref, provider, summary, files_status, files_list)
 
 	_attach_ui_dialog(d)
 	_wire_accept_dismiss(d)
 	d.popup_centered()
+
+
+# The detail dialog frame: scroll on top, a download status line pinned below
+# so feedback stays visible at any scroll. Returns {d, box, dl_status}.
+func _browse_detail_shell(title: String) -> Dictionary:
+	var d := AcceptDialog.new()
+	d.title = title
+	d.ok_button_text = "Close"
+	d.min_size = _dialog_fit_size(Vector2i(660, 540))
+
+	var outer := VBoxContainer.new()
+	outer.add_theme_constant_override("separation", SP_S)
+	d.add_child(outer)
+
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(d.min_size - Vector2i(20, 60))
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	outer.add_child(scroll)
+
+	# In-dialog download status: the modal covers the tab's status label;
+	# _browse_set_dl_status finds this through the Download button's meta.
+	var dl_status := Label.new()
+	dl_status.visible = false
+	dl_status.add_theme_font_size_override("font_size", FS_BODY)
+	dl_status.add_theme_color_override("font_color", COL_TEXT_DIM)
+	dl_status.clip_text = true
+	dl_status.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	dl_status.mouse_filter = Control.MOUSE_FILTER_PASS
+	outer.add_child(dl_status)
+
+	var inner_wrap := MarginContainer.new()
+	inner_wrap.add_theme_constant_override("margin_right", SP_XL)
+	inner_wrap.add_theme_constant_override("margin_left", SP_S)
+	inner_wrap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(inner_wrap)
+
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", SP_L)
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	inner_wrap.add_child(box)
+	return {"d": d, "box": box, "dl_status": dl_status}
+
+
+# Author, version, the metrics the host reports, category and update date.
+func _browse_detail_meta_text(summary: Dictionary, metrics: PackedStringArray) -> String:
+	var parts := PackedStringArray()
+	if str(summary["author_name"]) != "":
+		parts.append("by " + str(summary["author_name"]))
+	if str(summary["version"]) != "":
+		parts.append("v" + str(summary["version"]))
+	var downloads := _browse_metric(summary, "downloads")
+	if metrics.has("downloads") and downloads >= 0:
+		parts.append(str(downloads) + " downloads")
+	var likes := _browse_metric(summary, "likes")
+	if metrics.has("likes") and likes >= 0:
+		parts.append(str(likes) + " likes")
+	var views := _browse_metric(summary, "views")
+	if metrics.has("views") and views >= 0:
+		parts.append(str(views) + " views")
+	if str(summary["category_name"]) != "":
+		parts.append(str(summary["category_name"]))
+	var updated_short := _format_iso_datetime(str(summary["updated_at"]))
+	if updated_short != "":
+		parts.append("updated " + updated_short)
+	return " - ".join(parts)
+
+
+# Fill the Files section once the host answers; files_status is null for
+# hosts without version history.
+func _browse_detail_load_files(ref: Dictionary, provider: String, summary: Dictionary, files_status: Label, files_list: VBoxContainer) -> void:
+	if files_status == null:
+		return
+	var res := await host_list_files(ref)
+	if not is_instance_valid(files_status):
+		return
+	if not res["ok"]:
+		files_status.text = host_error_message(provider, res)
+		files_status.add_theme_color_override("font_color", COL_ERR)
+		return
+	var files: Array = res["data"]
+	if files.is_empty():
+		files_status.text = "No downloadable files yet."
+		return
+	files_status.queue_free()
+	var primary_id := str(summary["default_file_id"])
+	for file_v in files:
+		_browse_detail_file_row(files_list, file_v, primary_id)
+
+
+# One row of the Files section: version, size, date.
+func _browse_detail_file_row(files_list: VBoxContainer, file_v: Variant, primary_id: String) -> void:
+	var fd: Dictionary = file_v
+	var f_row := HBoxContainer.new()
+	f_row.add_theme_constant_override("separation", SP_L)
+	files_list.add_child(f_row)
+
+	var v_lbl := Label.new()
+	var v_str: String = "v" + str(fd["version"])
+	if primary_id != "" and str(fd["id"]) == primary_id:
+		v_str += " (primary)"
+	v_lbl.text = v_str
+	v_lbl.custom_minimum_size.x = 140
+	v_lbl.clip_text = true
+	v_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	v_lbl.tooltip_text = v_lbl.text
+	v_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
+	f_row.add_child(v_lbl)
+
+	var size_lbl := Label.new()
+	var size := _browse_metric(fd, "size")
+	size_lbl.text = _format_size(size) if size >= 0 else ""
+	size_lbl.custom_minimum_size.x = 80
+	size_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
+	f_row.add_child(size_lbl)
+
+	var date_str := str(fd["created_at"])
+	if date_str.contains("T"):
+		date_str = date_str.split("T")[0]
+	var date_lbl := Label.new()
+	date_lbl.text = date_str
+	date_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
+	f_row.add_child(date_lbl)
