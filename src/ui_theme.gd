@@ -22,7 +22,6 @@ const COL_ACCENT_DIM := Color("008b07")  # accent borders/washes, banner edges -
 const COL_OK         := Color("00e604")  # enabled, success -- brand green 500
 const COL_OK_DIM     := Color("0b5c12")  # brand green 900
 const COL_ERR        := Color("ef4444")  # errors, blocked, danger
-const COL_ERR_DIM    := Color("7f1d1d")
 
 # Type scale
 const FS_META  := 11   # timestamps, counts, fine print
@@ -408,7 +407,7 @@ func _style_accent_button(b: Button, accent: Color) -> void:
 	b.add_theme_stylebox_override("hover", _make_button_stylebox(COL_SURFACE_2, accent))
 
 # Badge chip stylebox (update counts, dependency state). Defaults to the
-# accent notice look; pass COL_ERR/COL_ERR_DIM for error badges.
+# accent notice look; the active-pack badge passes COL_OK and COL_OK_DIM.
 func _make_badge_stylebox(border: Color = COL_ACCENT, bg: Color = COL_ACCENT_DIM) -> StyleBoxFlat:
 	var s := StyleBoxFlat.new()
 	s.bg_color = bg

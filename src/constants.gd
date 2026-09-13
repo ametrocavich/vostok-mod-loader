@@ -50,12 +50,10 @@ const HOOK_PACK_DIR := "user://modloader_hooks"
 # load_resource_pack's path-dedup (a same-path re-mount is a no-op with stale
 # VFS offsets); orphans are swept at static init.
 const HOOK_PACK_PREFIX := "framework_pack"
-const HOOK_PACK_MOUNT_BASE := "res://modloader_hooks"
 const VANILLA_CACHE_DIR := "user://modloader_hooks/vanilla"
 # --- ModWorkshop network API ---
 
 const MODWORKSHOP_VERSIONS_URL := "https://api.modworkshop.net/mods/versions"
-const MODWORKSHOP_DOWNLOAD_URL_TEMPLATE := "https://api.modworkshop.net/mods/%s/download"
 const MODWORKSHOP_PAGE_URL_TEMPLATE := "https://modworkshop.net/mod/%s"
 # GitHub repository that publishes loader releases, for the self-update
 # check; "" disables it. Release tags are "v<MODLOADER_VERSION>" and the
