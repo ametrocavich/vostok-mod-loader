@@ -140,7 +140,7 @@ The launcher window shown before the game starts. Four tabs (Mods, Browse, Modpa
 
 | File | Owns |
 |---|---|
-| `ui.gd` | `show_mod_ui` and the window chrome, `refresh_launch_button_label`, `_launch_vanilla_once`, profiles and `mod_config.cfg` I/O (`_load_ui_config`, `_save_ui_config`, `_apply_profile_to_entries`, `_switch_profile`, the MCM snapshot mechanic), `_profile_to_json_string` and `_export_profile_to_zip`, the shared thumbnail cell and image loader, `_markdown_to_bbcode`, `_json_int` / `_json_truthy`, and the loader's own update check |
+| `ui.gd` | `show_mod_ui` and the window chrome, `refresh_launch_button_label`, `_launch_vanilla_once`, profiles and `mod_config.cfg` I/O (`_load_ui_config`, `_save_ui_config`, `_apply_profile_to_entries`, `_switch_profile`, the MCM snapshot mechanic), `_profile_to_json_string` and `_export_profile_to_zip`, the shared thumbnail cell and image loader, `_markdown_to_bbcode`, `_json_truthy`, and the loader's own update check |
 | `ui_theme.gd` | The `COL_*` / `FS_*` / `SP_*` tokens (the VostokMods site palette: dark grey surfaces, one accent green, one success green, one red), `make_dark_theme`, the `style_*` voices, the badge and banner builders, the code-drawn glyphs |
 | `ui_dialogs.gd` | `_attach_ui_dialog` and the dialog plumbing, `_await_dialog_choice`, the content-mod disable confirm, the New / Rename / Delete profile dialogs |
 | `ui_mods.gd` | `build_mods_tab` and `_rebuild_mods_tab`, the host meta sidecar (`mods_meta_v2.json`), the security findings dialog, the row Remove confirm |

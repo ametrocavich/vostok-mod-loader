@@ -16,12 +16,7 @@ func _browse_install_map() -> Dictionary:
 
 # Counter off a ModSummary that may have been through a JSON round trip (ints come back as floats).
 func _browse_metric(row: Dictionary, key: String) -> int:
-	var v: Variant = row.get(key, -1)
-	if v is int:
-		return v
-	if v is float:
-		return int(v)
-	return -1
+	return _host_count(row.get(key, -1))
 
 
 # Offline grace for the Browse landing, per host: the last fully populated
@@ -621,8 +616,6 @@ func _browse_render_rows(state: Dictionary, rows: Array, append: bool) -> void:
 		list.add_child(HSeparator.new())
 	var install_map: Dictionary = _browse_install_map()
 	for row_v in rows:
-		if not (row_v is Dictionary):
-			continue
 		var row: Dictionary = row_v
 		list.add_child(_browse_render_mod_row(row, install_map.get(host_ref_key(row["ref"])), state["on_get"], state["on_toggle"]))
 		list.add_child(HSeparator.new())
@@ -712,14 +705,12 @@ func _browse_discover_fetch(state: Dictionary) -> void:
 		list.add_child(hdr)
 		list.add_child(HSeparator.new())
 		for row_v in rows:
-			if not (row_v is Dictionary):
-				continue
 			var row: Dictionary = row_v
 			list.add_child(_browse_render_mod_row(row, install_map.get(host_ref_key(row["ref"])), state["on_get"], state["on_toggle"]))
 			list.add_child(HSeparator.new())
 			total += 1
 	if cached_at > 0:
-		_browse_show_banner(state, "Showing cached results. " + str(_browse_fail_reason(state)), cached_at, COL_ACCENT)
+		_browse_show_banner(state, "Showing cached results. " + _browse_fail_reason(state), cached_at, COL_ACCENT)
 	else:
 		_browse_clear_banner(state)
 		# A live fetch proves connectivity: recover a category menu that failed to populate.

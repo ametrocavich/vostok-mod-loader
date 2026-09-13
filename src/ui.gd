@@ -599,26 +599,30 @@ func _has_mcm_snapshot(profile_name: String) -> bool:
 	return DirAccess.dir_exists_absolute(_mcm_snapshot_dir(profile_name))
 
 # Recursively copy src/ -> dst/, replacing dst/. Returns true when the source
-# had at least one entry; false if it didn't exist or was empty.
-func _copy_dir_recursive(src: String, dst: String) -> bool:
+# had at least one entry; false if it didn't exist or was empty. Dot-prefixed
+# entries are skipped unless include_hidden is set; the profile and MCM swaps
+# rely on the skip, the modpack restore points need the hidden files back.
+func _copy_dir_recursive(src: String, dst: String, include_hidden: bool = false) -> bool:
 	if not DirAccess.dir_exists_absolute(src):
 		return false
 	DirAccess.make_dir_recursive_absolute(dst)
 	var dir := DirAccess.open(src)
 	if dir == null:
 		return false
+	# On Linux/macOS dot entries are hidden and omitted by default.
+	dir.include_hidden = include_hidden
 	var any := false
 	dir.list_dir_begin()
 	while true:
 		var name := dir.get_next()
 		if name == "":
 			break
-		if name.begins_with("."):
+		if name.begins_with(".") and not include_hidden:
 			continue
 		var src_full := src.path_join(name)
 		var dst_full := dst.path_join(name)
 		if dir.current_is_dir():
-			_copy_dir_recursive(src_full, dst_full)
+			_copy_dir_recursive(src_full, dst_full, include_hidden)
 			any = true
 		else:
 			var src_f := FileAccess.open(src_full, FileAccess.READ)
@@ -743,42 +747,6 @@ func _enabled_mods_without_source() -> Array:
 			})
 	return out
 
-# Walk the source tree and write every file into the zip under zip_prefix.
-# Hidden entries are skipped; DirAccess never follows symlinks in Godot 4.
-func _add_dir_to_zip(packer: ZIPPacker, fs_path: String, zip_prefix: String) -> bool:
-	var dir := DirAccess.open(fs_path)
-	if dir == null:
-		# Unopenable directory: fail rather than ship a silently incomplete snapshot.
-		return false
-	dir.list_dir_begin()
-	var ok := true
-	while true:
-		var name := dir.get_next()
-		if name == "":
-			break
-		if name.begins_with("."):
-			continue
-		var src_full := fs_path.path_join(name)
-		var zip_path := zip_prefix + "/" + name
-		if dir.current_is_dir():
-			if not _add_dir_to_zip(packer, src_full, zip_path):
-				ok = false
-		else:
-			var f := FileAccess.open(src_full, FileAccess.READ)
-			if f == null:
-				ok = false
-				continue
-			var bytes := f.get_buffer(f.get_length())
-			f.close()
-			if packer.start_file(zip_path) == OK:
-				if packer.write_file(bytes) != OK:
-					ok = false
-				packer.close_file()
-			else:
-				ok = false
-	dir.list_dir_end()
-	return ok
-
 # Build a profile zip at output_path: profile.json plus the MCM snapshot.
 # Returns {"ok": true, "mod_count": int} or {"error": "..."}; cleans up partial output.
 func _export_profile_to_zip(profile_name: String, output_path: String, description: String = "", author: String = "", display_name: String = "") -> Dictionary:
@@ -805,7 +773,7 @@ func _export_profile_to_zip(profile_name: String, output_path: String, descripti
 
 	var mcm_ok := true
 	if DirAccess.dir_exists_absolute(MCM_SOURCE_DIR):
-		mcm_ok = _add_dir_to_zip(packer, MCM_SOURCE_DIR, "MCM")
+		mcm_ok = _zip_folder_recursive(packer, MCM_SOURCE_DIR, "MCM")
 
 	# close() writes the central directory; a failure here or an incomplete
 	# MCM snapshot means a corrupt pack, so do not report success.
@@ -1407,13 +1375,6 @@ func _format_age(saved_at_unix: int) -> String:
 	if delta < 24 * 60 * 60:
 		return "%dh ago" % int(delta / 3600.0)
 	return "%dd ago" % int(delta / 86400.0)
-
-
-# Guarded int() for API JSON fields: .get()'s default only covers an absent
-# key, int(null) is a runtime error, and JSON numbers parse as float.
-func _json_int(d: Dictionary, key: String, fallback: int = 0) -> int:
-	var v: Variant = d.get(key)
-	return int(v) if (v is int or v is float) else fallback
 
 
 # Guarded truthiness for one untrusted JSON value (bool(null) is a runtime

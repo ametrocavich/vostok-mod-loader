@@ -202,8 +202,6 @@ func _show_modpack_failure_dialog(downloaded: int, failures: Array, tabs: TabCon
 	list_wrap.add_child(list)
 
 	for f_v in failures:
-		if not (f_v is Dictionary):
-			continue
 		var f: Dictionary = f_v
 		var row := HBoxContainer.new()
 		row.add_theme_constant_override("separation", SP_M)
@@ -227,7 +225,7 @@ func _show_modpack_failure_dialog(downloaded: int, failures: Array, tabs: TabCon
 		err_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		info_col.add_child(err_lbl)
 
-		var f_ref: Dictionary = f.get("ref", {}) if f.get("ref") is Dictionary else {}
+		var f_ref: Dictionary = f["ref"]
 		var page_url := host_mod_page_url(f_ref)
 		if page_url != "":
 			var open_btn := Button.new()
@@ -242,8 +240,7 @@ func _show_modpack_failure_dialog(downloaded: int, failures: Array, tabs: TabCon
 	var retry_btn: Button = null
 	var any_retryable := false
 	for f_v in failures:
-		if f_v is Dictionary and (f_v as Dictionary).get("ref") is Dictionary \
-				and _modpack_ref_downloadable((f_v as Dictionary)["ref"]):
+		if _modpack_ref_downloadable((f_v as Dictionary)["ref"]):
 			any_retryable = true
 			break
 	if any_retryable:

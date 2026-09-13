@@ -920,7 +920,7 @@ func _compare_dedup_priority(a: Dictionary, b: Dictionary) -> bool:
 func fetch_latest_versions(refs: Array) -> Dictionary:
 	var ids_by_provider: Dictionary = {}
 	for ref_v in refs:
-		if not (ref_v is Dictionary) or not host_ref_valid(ref_v):
+		if not host_ref_valid(ref_v):
 			continue
 		var provider := str(ref_v["provider"])
 		var ids: PackedStringArray = ids_by_provider.get(provider, PackedStringArray())

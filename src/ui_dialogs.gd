@@ -53,10 +53,10 @@ func _attach_ui_dialog(d: Window) -> void:
 
 	# AcceptDialog's dialog_text label is absolutely positioned, so sibling
 	# Labels would overlap it; clear title and dialog_text and re-emit them.
-	var title_text := str(d.title)
+	var title_text := d.title
 	var body_text := ""
 	if d is AcceptDialog:
-		body_text = str((d as AcceptDialog).dialog_text)
+		body_text = (d as AcceptDialog).dialog_text
 		(d as AcceptDialog).dialog_text = ""
 	d.title = ""
 

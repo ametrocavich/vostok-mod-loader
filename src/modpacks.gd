@@ -64,8 +64,7 @@ func _is_modpack_managed_profile(profile_name: String) -> bool:
 func _count_truthy(d: Dictionary) -> int:
 	var count := 0
 	for k in d.keys():
-		var v = d[k]
-		if (v is bool and v) or ((v is int or v is float) and v != 0):
+		if _json_truthy(d[k]):
 			count += 1
 	return count
 
@@ -529,38 +528,6 @@ func _read_snapshot_meta(snap_path: String) -> Dictionary:
 		return parsed_v as Dictionary
 	return {}
 
-# Restore-only recursive copy that includes dot-prefixed entries (a captured
-# ".rtvcfg"). Profile and MCM swaps rely on _copy_dir_recursive's dot-skip.
-func _copy_snapshot_tree_incl_hidden(src: String, dst: String) -> void:
-	if not DirAccess.dir_exists_absolute(src):
-		return
-	DirAccess.make_dir_recursive_absolute(dst)
-	var dir := DirAccess.open(src)
-	if dir == null:
-		return
-	# On Linux/macOS dot entries are hidden and omitted by default.
-	dir.include_hidden = true
-	dir.list_dir_begin()
-	while true:
-		var name := dir.get_next()
-		if name == "":
-			break
-		var src_full := src.path_join(name)
-		var dst_full := dst.path_join(name)
-		if dir.current_is_dir():
-			_copy_snapshot_tree_incl_hidden(src_full, dst_full)
-		else:
-			var src_f := FileAccess.open(src_full, FileAccess.READ)
-			if src_f == null:
-				continue
-			var bytes := src_f.get_buffer(src_f.get_length())
-			src_f.close()
-			var dst_f := FileAccess.open(dst_full, FileAccess.WRITE)
-			if dst_f != null:
-				dst_f.store_buffer(bytes)
-				dst_f.close()
-	dir.list_dir_end()
-
 # Restore a pre-apply snapshot over live user:// state; keeps a .bak of the cfg. {ok, error}.
 func _restore_apply_snapshot(snap_path: String) -> Dictionary:
 	if not DirAccess.dir_exists_absolute(snap_path):
@@ -588,7 +555,7 @@ func _restore_apply_snapshot(snap_path: String) -> Dictionary:
 	# 3. Override files back to user://, via the dot-inclusive walker.
 	var ov_root := snap_path.path_join("overrides")
 	if DirAccess.dir_exists_absolute(ov_root):
-		_copy_snapshot_tree_incl_hidden(ov_root, "user://")
+		_copy_dir_recursive(ov_root, "user://", true)
 
 	# 4. Delete files the pack added (recorded in snapshot.json).
 	var meta_path := snap_path.path_join("snapshot.json")
@@ -833,7 +800,7 @@ func _source_host_ref(rec: Dictionary) -> Dictionary:
 
 ## Fetchable only from a host this build can download from.
 func _modpack_ref_downloadable(ref: Dictionary) -> bool:
-	if ref.is_empty() or not host_ref_valid(ref):
+	if not host_ref_valid(ref):
 		return false
 	return bool(host_caps(str(ref["provider"]))["resolve_file"])
 
@@ -1221,9 +1188,7 @@ func retry_failed_downloads(failures: Array, progress: Callable = Callable()) ->
 	var still_failed: Array = []
 	var newly_downloaded: int = 0
 	for i in range(failures.size()):
-		var item = failures[i]
-		if not (item is Dictionary):
-			continue
+		var item: Dictionary = failures[i]
 		if _modpack_apply_cancelled:
 			still_failed.append(item)
 			continue
