@@ -114,7 +114,17 @@ func make_dark_theme() -> Theme:
 	# Pin the default font size; the engine's 16px default would flatten the type scale.
 	t.default_font_size = FS_BODY
 
-	# -- Button ----------------------------------------------------------------
+	_theme_buttons(t)
+	_theme_checkboxes_and_menus(t)
+	_theme_panels_and_tabs(t)
+	_theme_inputs(t)
+	_theme_scrollbars(t)
+	_theme_progress_tooltips_dialogs(t)
+	return t
+
+
+# Button and OptionButton (a separate theme type that reuses the same boxes).
+func _theme_buttons(t: Theme) -> void:
 	var bn := _make_button_stylebox(COL_SURFACE, COL_BORDER)
 	var bh := _make_button_stylebox(COL_SURFACE_2, COL_TEXT_HI)
 	var bp := _make_button_stylebox(COL_BG, COL_BORDER)
@@ -130,7 +140,19 @@ func make_dark_theme() -> Theme:
 	t.set_color("font_focus_color",    "Button", COL_TEXT)
 	t.set_color("font_disabled_color", "Button", COL_TEXT_FAINT)
 
-	# -- CheckBox (code-drawn glyphs; the stock ones are light-theme) -----------
+	# -- OptionButton (separate theme type from Button, so re-set styles) ------
+	t.set_stylebox("normal",   "OptionButton", bn.duplicate())
+	t.set_stylebox("hover",    "OptionButton", bh.duplicate())
+	t.set_stylebox("pressed",  "OptionButton", bp.duplicate())
+	t.set_stylebox("disabled", "OptionButton", bd.duplicate())
+	t.set_stylebox("focus",    "OptionButton", _make_focus_stylebox())
+	t.set_color("font_color",         "OptionButton", COL_TEXT)
+	t.set_color("font_hover_color",   "OptionButton", COL_TEXT_HI)
+	t.set_color("font_pressed_color", "OptionButton", COL_TEXT)
+
+
+# CheckBox and its radio variants, plus PopupMenu, which reuses the same glyphs.
+func _theme_checkboxes_and_menus(t: Theme) -> void:
 	t.set_color("font_color",       "CheckBox", COL_TEXT)
 	t.set_color("font_hover_color", "CheckBox", COL_TEXT_HI)
 	t.set_stylebox("focus", "CheckBox", _make_focus_stylebox())
@@ -148,6 +170,36 @@ func make_dark_theme() -> Theme:
 	t.set_icon("radio_checked_disabled",   "CheckBox", _make_radio_icon(true, COL_BORDER_DIM, COL_TEXT_FAINT))
 	t.set_icon("radio_unchecked_disabled", "CheckBox", _make_radio_icon(false, COL_BORDER_DIM, COL_TEXT_FAINT))
 
+	# -- PopupMenu (OptionButton dropdown) -------------------------------------
+	var pm_panel := StyleBoxFlat.new()
+	pm_panel.bg_color = COL_SURFACE
+	pm_panel.border_color = COL_BORDER
+	_sb_border(pm_panel)
+	pm_panel.content_margin_left = SP_S
+	pm_panel.content_margin_right = SP_S
+	pm_panel.content_margin_top = SP_S
+	pm_panel.content_margin_bottom = SP_S
+	t.set_stylebox("panel", "PopupMenu", pm_panel)
+	var pm_hover := StyleBoxFlat.new()
+	pm_hover.bg_color = COL_SURFACE_2
+	t.set_stylebox("hover", "PopupMenu", pm_hover)
+	var pm_sep := StyleBoxFlat.new()
+	pm_sep.bg_color = COL_BORDER_DIM
+	pm_sep.content_margin_top = 1; pm_sep.content_margin_bottom = 1
+	t.set_stylebox("separator", "PopupMenu", pm_sep)
+	t.set_color("font_color",           "PopupMenu", COL_TEXT)
+	t.set_color("font_hover_color",     "PopupMenu", COL_TEXT_HI)
+	t.set_color("font_disabled_color",  "PopupMenu", COL_TEXT_FAINT)
+	t.set_color("font_separator_color", "PopupMenu", COL_TEXT_DIM)
+	# Checked menu items reuse the checkbox glyphs (stock marks are light).
+	t.set_icon("checked",         "PopupMenu", cb_checked)
+	t.set_icon("unchecked",       "PopupMenu", cb_unchecked)
+	t.set_icon("radio_checked",   "PopupMenu", rb_checked)
+	t.set_icon("radio_unchecked", "PopupMenu", rb_unchecked)
+
+
+# Label, Panel, TabContainer and HSeparator.
+func _theme_panels_and_tabs(t: Theme) -> void:
 	# -- Label -----------------------------------------------------------------
 	t.set_color("font_color", "Label", COL_TEXT)
 
@@ -189,6 +241,9 @@ func make_dark_theme() -> Theme:
 	t.set_stylebox("separator", "HSeparator", sep)
 	t.set_constant("separation", "HSeparator", 1)
 
+
+# LineEdit, TextEdit and the SpinBox arrows.
+func _theme_inputs(t: Theme) -> void:
 	# -- LineEdit (SpinBox uses this internally) --------------------------------
 	var le := StyleBoxFlat.new()
 	le.bg_color = COL_SURFACE
@@ -212,6 +267,9 @@ func make_dark_theme() -> Theme:
 	# -- SpinBox arrows (stock glyph is light-theme) -----------------------------
 	t.set_icon("updown", "SpinBox", _make_updown_icon(COL_TEXT_DIM))
 
+
+# ScrollContainer and both scrollbars.
+func _theme_scrollbars(t: Theme) -> void:
 	# -- ScrollContainer (transparent, scrollbars inherit) ---------------------
 	t.set_stylebox("panel", "ScrollContainer", StyleBoxEmpty.new())
 
@@ -254,6 +312,9 @@ func make_dark_theme() -> Theme:
 	t.set_stylebox("grabber_highlight", "HScrollBar", grab_h_hi)
 	t.set_stylebox("grabber_pressed",   "HScrollBar", grab_h_hi.duplicate())
 
+
+# ProgressBar, tooltips, and the dialog and embedded-window borders.
+func _theme_progress_tooltips_dialogs(t: Theme) -> void:
 	# -- ProgressBar (modpack apply / download progress) -------------------------
 	var pb_bg := StyleBoxFlat.new()
 	pb_bg.bg_color = COL_SURFACE
@@ -267,43 +328,6 @@ func make_dark_theme() -> Theme:
 	t.set_stylebox("fill",       "ProgressBar", pb_fill)
 	t.set_font_size("font_size", "ProgressBar", FS_META)
 	t.set_color("font_color",    "ProgressBar", COL_TEXT)
-
-	# -- PopupMenu (OptionButton dropdown) -------------------------------------
-	var pm_panel := StyleBoxFlat.new()
-	pm_panel.bg_color = COL_SURFACE
-	pm_panel.border_color = COL_BORDER
-	_sb_border(pm_panel)
-	pm_panel.content_margin_left = SP_S
-	pm_panel.content_margin_right = SP_S
-	pm_panel.content_margin_top = SP_S
-	pm_panel.content_margin_bottom = SP_S
-	t.set_stylebox("panel", "PopupMenu", pm_panel)
-	var pm_hover := StyleBoxFlat.new()
-	pm_hover.bg_color = COL_SURFACE_2
-	t.set_stylebox("hover", "PopupMenu", pm_hover)
-	var pm_sep := StyleBoxFlat.new()
-	pm_sep.bg_color = COL_BORDER_DIM
-	pm_sep.content_margin_top = 1; pm_sep.content_margin_bottom = 1
-	t.set_stylebox("separator", "PopupMenu", pm_sep)
-	t.set_color("font_color",           "PopupMenu", COL_TEXT)
-	t.set_color("font_hover_color",     "PopupMenu", COL_TEXT_HI)
-	t.set_color("font_disabled_color",  "PopupMenu", COL_TEXT_FAINT)
-	t.set_color("font_separator_color", "PopupMenu", COL_TEXT_DIM)
-	# Checked menu items reuse the checkbox glyphs (stock marks are light).
-	t.set_icon("checked",         "PopupMenu", cb_checked)
-	t.set_icon("unchecked",       "PopupMenu", cb_unchecked)
-	t.set_icon("radio_checked",   "PopupMenu", rb_checked)
-	t.set_icon("radio_unchecked", "PopupMenu", rb_unchecked)
-
-	# -- OptionButton (separate theme type from Button, so re-set styles) ------
-	t.set_stylebox("normal",   "OptionButton", bn.duplicate())
-	t.set_stylebox("hover",    "OptionButton", bh.duplicate())
-	t.set_stylebox("pressed",  "OptionButton", bp.duplicate())
-	t.set_stylebox("disabled", "OptionButton", bd.duplicate())
-	t.set_stylebox("focus",    "OptionButton", _make_focus_stylebox())
-	t.set_color("font_color",         "OptionButton", COL_TEXT)
-	t.set_color("font_hover_color",   "OptionButton", COL_TEXT_HI)
-	t.set_color("font_pressed_color", "OptionButton", COL_TEXT)
 
 	# -- Tooltip -- without these, tooltips render in the default light theme.
 	var tt_panel := StyleBoxFlat.new()
@@ -333,8 +357,6 @@ func make_dark_theme() -> Theme:
 	t.set_stylebox("embedded_border",           "Window", dlg_panel.duplicate())
 	t.set_stylebox("embedded_unfocused_border", "Window", dlg_panel.duplicate())
 	t.set_color("title_color", "Window", COL_TEXT_HI)
-
-	return t
 
 # -- Theme building blocks + component voices ---------------------------------
 # Call sites opt into a voice via the style_* helpers; default buttons take the theme.
