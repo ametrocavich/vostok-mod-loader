@@ -7,7 +7,7 @@ What the loader gives you in-game:
 - A **Mods** tab to turn installed mods on and off, set load order, and see why a mod is blocked
 - A **Browse** tab to find and download mods from VostokMods or ModWorkshop
 - A **Modpacks** tab to share your whole mod list as one small file; applying it downloads the mods for you
-- An **Updates** tab that tells you when installed mods have newer versions on their site
+- A **Check for updates** button on the Mods tab that tells you when installed mods have newer versions on their site
 
 Players: start at [Setup](Setup), then [Browse](Browse) and [Modpacks](Modpacks). Known engine limits are in [Limitations](Limitations).
 

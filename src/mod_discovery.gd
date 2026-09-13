@@ -1028,12 +1028,11 @@ func _derive_updated_filename(old_file_name: String, headers: PackedStringArray,
 	return new_stem if ext.is_empty() else new_stem + "." + ext
 
 # --- Download surfaces ------------------------------------------------------
-# Five UI surfaces reach the two entry points below; keep this map current:
+# Four UI surfaces reach the two entry points below; keep this map current:
 #   1. Mods tab "Update" badge (build_mods_tab) -> replace_mod_from_ref
-#   2. Updates tab "Update" (_updates_arm_row_update) -> replace_mod_from_ref
-#   3. Browse "Download" and its serial queue (build_browse_tab) -> download_mod_from_ref(ref)
-#   4. Missing-mod stub "Download" (build_mods_tab) -> download_mod_from_ref(ref, version, true)
-#   5. Modpack apply and retry (modpacks.gd) -> download_mod_from_ref(ref, version, true);
+#   2. Browse "Download" and its serial queue (build_browse_tab) -> download_mod_from_ref(ref)
+#   3. Missing-mod stub "Download" (build_mods_tab) -> download_mod_from_ref(ref, version, true)
+#   4. Modpack apply and retry (modpacks.gd) -> download_mod_from_ref(ref, version, true);
 #      the apply loop counts the "Already have" prefix as installed, not failed.
 # Each surface has its own busy state and error handling; only Browse
 # serializes, so two surfaces can race on the same file (hence the

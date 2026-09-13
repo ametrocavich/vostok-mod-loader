@@ -99,7 +99,7 @@ func host_list_categories(provider: String) -> Dictionary:
 	return _host_check_result(provider, "host_list_categories", out)
 
 
-## Current version string for many mods at once, for the Updates tab.
+## Current version string for many mods at once, for the update check.
 ## on_progress is called with {done, total, partial} as answers arrive,
 ## partial holding only the newly resolved {ref_key -> version} pairs; hosts
 ## without a batch endpoint resolve one mod per request, so streaming keeps

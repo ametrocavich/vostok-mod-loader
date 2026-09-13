@@ -1476,3 +1476,66 @@ func _mods_row_notes(name_col: VBoxContainer, entry: Dictionary) -> void:
 		name_col.add_child(unscanned_btn)
 		var captured_unscanned := entry
 		unscanned_btn.pressed.connect(func(): _show_security_findings_dialog(captured_unscanned))
+
+
+# Update check for every installed mod with a downloadable host and a version.
+# Populates _mod_updates_state. Returns {checked, with_updates, errors}.
+func _run_updates_check_for_mods() -> Dictionary:
+	if _mod_updates_check_in_progress:
+		return {"checked": 0, "with_updates": 0, "errors": 0}
+	_mod_updates_check_in_progress = true
+	var summary := {"checked": 0, "with_updates": 0, "errors": 0}
+	var pending: Array = []
+	var persisted_sources := _get_persisted_mod_sources()
+	for entry in _ui_mod_entries:
+		var cfg: ConfigFile = entry.get("cfg")
+		if cfg == null:
+			continue
+		# Dev folders cannot take a downloaded archive; never flag them.
+		if str(entry.get("ext", "")) == "folder":
+			continue
+		var ref := _entry_host_ref(entry, persisted_sources)
+		if ref.is_empty() or not bool(host_caps(str(ref["provider"]))["resolve_file"]):
+			continue
+		var version := str(cfg.get_value("mod", "version", "")).strip_edges()
+		if version == "":
+			continue
+		pending.append({
+			"profile_key": str(entry.get("profile_key", "")),
+			"ref": ref,
+			"version": version,
+			"full_path": str(entry.get("full_path", "")),
+			"mod_name": str(entry.get("mod_name", "?")),
+		})
+	if pending.is_empty():
+		_mod_updates_check_in_progress = false
+		return summary
+	var refs: Array = []
+	for p in pending:
+		refs.append((p as Dictionary)["ref"])
+	var latest := await fetch_latest_versions(refs)
+	for p in pending:
+		summary["checked"] += 1
+		var info: Dictionary = p
+		var raw = latest.get(host_ref_key(info["ref"]), null)
+		if raw == null:
+			summary["errors"] += 1
+			continue
+		var latest_v := str(raw)
+		if latest_v.is_empty():
+			continue
+		var cmp := compare_versions(str(info["version"]), latest_v)
+		if cmp >= 0:
+			# Up to date -- drop any stale entry from a prior check.
+			_mod_updates_state.erase(info["profile_key"])
+			continue
+		summary["with_updates"] += 1
+		_mod_updates_state[info["profile_key"]] = {
+			"latest_version": latest_v,
+			"current_version": info["version"],
+			"ref": info["ref"],
+			"full_path": info["full_path"],
+			"mod_name": info["mod_name"],
+		}
+	_mod_updates_check_in_progress = false
+	return summary

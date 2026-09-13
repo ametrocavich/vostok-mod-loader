@@ -29,7 +29,6 @@ src/
   ui_mods.gd               # Mods tab
   ui_browse.gd             # Browse tab
   ui_modpacks.gd           # Modpacks tab + apply flow dialogs
-  ui_updates.gd            # Updates tab
   hooks_api.gd             # public hook + version + mod-info API
   registry.gd              # registry verb dispatchers + Registry const
   registry/                # shared.gd + 15 per-section handlers (16 files)
@@ -48,7 +47,7 @@ src/
   debug.gd                 # test scaffolding (gated behind a config flag)
 ```
 
-54 files, in `build.sh`'s `FILES` order (the concat order).
+53 files, in `build.sh`'s `FILES` order (the concat order).
 `docs/wiki/Modules.md` has the per-file tour.
 
 ### Building and checking locally
@@ -210,7 +209,7 @@ tail is shared (next section).
 ### Adding a download surface
 
 Existing surfaces: Browse "Download" (ui.gd -> `download_mod_from_ref`), the
-Mods-tab update badges and the Updates tab (`replace_mod_from_ref`), the
+Mods-tab update badges (`replace_mod_from_ref`), the
 missing-mod stub Download (ui.gd -> `download_mod_from_ref(ref, version,
 true)`), and modpack missing-mod fetch and retry (modpacks.gd, the same call).
 The authoritative map sits above the download entry points in

@@ -355,7 +355,7 @@ func _mwsp_latest_versions(ids: PackedStringArray, on_progress: Callable) -> Dic
 			# Neither a rate limit nor a dead connection clears inside this
 			# loop; stop rather than spend the rest of the list on certain
 			# failures. Nothing resolved reports the failure, not an empty
-			# success the Updates tab would render as "everything is up to date".
+			# success the update check would report as "everything is up to date".
 			var code := str(res["code"])
 			if code == HOST_ERR_RATE_LIMITED or code == HOST_ERR_OFFLINE:
 				return res if versions.is_empty() else host_ok(versions)

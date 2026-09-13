@@ -43,7 +43,6 @@ FILES=(
     "$SRC/ui_mods.gd"
     "$SRC/ui_browse.gd"
     "$SRC/ui_modpacks.gd"
-    "$SRC/ui_updates.gd"
     # Public API (hooks + registry)
     "$SRC/hooks_api.gd"
     # Registry dispatcher + per-section handlers. shared.gd holds helpers

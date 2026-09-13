@@ -2,8 +2,8 @@
 ## Modpacks published on vostokmods.net. The site serves a manifest (format
 ## 2: the ordered mod list, each with slug, version and download details,
 ## plus the pack's MCM settings). The loader turns that manifest into an
-## ordinary local modpack zip in mods/, so Apply, Unload, Restore backup and
-## the failure dialog all work unchanged. Packs are a VostokMods feature by
+## ordinary local modpack zip in mods/, so Apply, Unload and the failure
+## dialog all work unchanged. Packs are a VostokMods feature by
 ## the site's decision, so this file talks to the _vmp_* adapter directly
 ## instead of going through the host seam.
 ##

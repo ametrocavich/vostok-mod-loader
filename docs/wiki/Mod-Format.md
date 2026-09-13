@@ -97,7 +97,7 @@ Only `[mod]` is required. `[autoload]`, `[updates]`, `[dependencies]`, `[hooks]`
 |---|---|---|---|
 | `name` | string | filename | Display name in the UI |
 | `id` | string | filename | Unique id (case-insensitive). If two installed archives declare the same id, only one loads: highest `version` wins, then newer file mtime, then the alphabetically lower filename. The others are hidden with a logged warning and an `older version hidden:` line on the winner's row. Mods with no `id` are grouped by filename stem instead (`CoolMod_v1.2.zip` and `CoolMod-1.3.zip` count as one mod) |
-| `version` | string | `""` | Used by the Updates tab to compare against the mod's site, and as the version a modpack pins |
+| `version` | string | `""` | Used by the update check to compare against the mod's site, and as the version a modpack pins |
 | `priority` | int | 0 (or parsed from filename prefix) | Higher loads later, wins file conflicts. Clamped to `-999..999` |
 | `author` | string | `""` | Shown as `by <author>` on the mod's row and in its detail view |
 | `provides` | string array | `[]` | Rename aliases: old ids this mod still satisfies for other mods' dependencies (added 3.3.0). See below |
@@ -162,7 +162,7 @@ Duplicate autoload names are logged and skipped (first wins). A path that exists
 
 | Key | Type | Meaning |
 |---|---|---|
-| `source` | String | Where this mod is hosted, as `"<provider>:<id>"`. Enables the Updates tab and modpack auto-download. Preferred over `modworkshop`. |
+| `source` | String | Where this mod is hosted, as `"<provider>:<id>"`. Enables the update check and modpack auto-download. Preferred over `modworkshop`. |
 | `modworkshop` | int | Legacy ModWorkshop mod id. Still read, no sunset planned; equivalent to `source="modworkshop:<id>"`. |
 
 `source` is the provider-qualified form. The provider is a known host token: `vostokmods` (the id is the mod's slug, the last part of its page URL) or `modworkshop` (the numeric mod id). The provider is matched case-insensitively. A value with no colon is rejected, not guessed, so `source="12345"` is an error rather than a ModWorkshop id; the row says so (`mod.txt has an unrecognized [updates] source=...`). A malformed `source=` falls through to `modworkshop=` when both are present.
@@ -186,7 +186,7 @@ The `modworkshop=` line keeps older loaders working; the `source=` line is what 
 
 Declaring a source also makes the mod auto-downloadable when someone applies a modpack that includes it. The loader records the source plus `[mod] version` and fetches it on the recipient's machine. Mods with no source must be installed by hand by modpack recipients.
 
-A mod downloaded through the Browse tab is remembered by the launcher (in `mod_config.cfg` `[mod_sources]`) even when its `mod.txt` declares nothing, so the Updates tab and modpacks still know where it came from on that machine. Declaring `source=` is what makes that knowledge travel with the mod.
+A mod downloaded through the Browse tab is remembered by the launcher (in `mod_config.cfg` `[mod_sources]`) even when its `mod.txt` declares nothing, so the update check and modpacks still know where it came from on that machine. Declaring `source=` is what makes that knowledge travel with the mod.
 
 Quote your `[mod] version`. An unquoted `version = 1.10` is read as the number 1.1 and the trailing zero is lost, which corrupts the exact version a modpack pins. The row warns when a sourced mod has an unquoted version.
 

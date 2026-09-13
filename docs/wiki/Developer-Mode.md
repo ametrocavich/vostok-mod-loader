@@ -18,7 +18,7 @@ The temp zip is rebuilt only when the folder's contents changed. A folder-state 
 
 Folder entries show a red `[dev folder]` label in the Mods tab.
 
-Dev folders never get update downloads. The Updates tab skips them during the check and shows a "Dev folder" status instead of an Update button, since a downloaded archive would land as a duplicate beside your folder. Your working copy on disk is always what loads.
+Dev folders never get update downloads. The update check skips them, since a downloaded archive would land as a duplicate beside your folder. Your working copy on disk is always what loads.
 
 This is for mods you have not packaged yet.
 

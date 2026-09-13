@@ -17,7 +17,6 @@ const MOD_DIR := "mods"
 const UI_TAB_MODS := "Mods"
 const UI_TAB_BROWSE := "Browse"
 const UI_TAB_MODPACKS := "Modpacks"
-const UI_TAB_UPDATES := "Updates"
 
 # --- Persistent files: caches, config, boot sentinels, pass state ---
 
@@ -230,10 +229,6 @@ var _modpack_apply_cancelled: bool = false
 # close. Entries with no host ref are not stored.
 var _mod_updates_state: Dictionary = {}
 var _mod_updates_check_in_progress: bool = false
-
-# Set when a check changes _mod_updates_state while the Mods tab is
-# off-screen; the tab_changed listener rebuilds it on next show.
-var _mods_badges_dirty: bool = false
 
 # profile_keys with an update download in flight. A mid-download rebuild
 # re-creates the Update button enabled, so without this a second click would

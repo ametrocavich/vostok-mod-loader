@@ -71,7 +71,7 @@ Godot's `ConfigFile` writes a blank line after every section header, quotes Stri
 | `[profile.<name>.priority]` | `profile_key -> int` in `[-999, 999]`. A higher number loads later and wins file conflicts. |
 | `[profile.<name>.dep_ignore]` | `profile_key -> true`. The "Load anyway" dependency overrides for that profile. Sparse: only mods you told to load past a missing or disabled requirement appear, always as `=true`. New in 3.3. |
 | `[profile.<name>.settings]` | Per-profile launcher view settings. Currently `hide_disabled`, the Mods tab's hide-disabled-mods filter. |
-| `[mod_sources]` | `profile_key -> JSON record` of where each mod is hosted: `{provider, id, modworkshop_id?, version?}`. Filled from each mod's `mod.txt` at scan time and from every download made through Browse, Updates or a modpack. This is how the Updates tab and the missing-mod rows know a mod's host when its `mod.txt` says nothing, and how a modpack can offer Download for a mod that failed to install. New in 3.3. |
+| `[mod_sources]` | `profile_key -> JSON record` of where each mod is hosted: `{provider, id, modworkshop_id?, version?}`. Filled from each mod's `mod.txt` at scan time and from every download made through Browse, an update or a modpack. This is how the update check and the missing-mod rows know a mod's host when its `mod.txt` says nothing, and how a modpack can offer Download for a mod that failed to install. New in 3.3. |
 | `[modloader_update]` | `last_seen_version`: the newest loader release the update dialog has already shown you, so it only pops once per release. |
 
 ### Profile keys

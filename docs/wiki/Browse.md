@@ -46,7 +46,7 @@ Neither site's dependency data appears in the detail dialog. Dependencies surfac
 2. Click **Download** on the row or in the detail dialog.
 3. The button changes to **Downloading...** and the status line reports progress. On success the button becomes **Installed**, the status line reads `Installed <file name>`, and the Mods tab is rebuilt so the new mod appears there, enabled in your active profile.
 
-The file is saved into your `mods/` folder, and the launcher records which site it came from in `mod_config.cfg` so the Updates tab can check it later even if the author's `mod.txt` says nothing.
+The file is saved into your `mods/` folder, and the launcher records which site it came from in `mod_config.cfg` so the update check can find it later even if the author's `mod.txt` says nothing.
 
 A Browse download never overwrites an existing file. If `mods/` already holds a file of the same name, the download fails with `Already have a file named <name>`. Modpack apply takes a different path and renames on collision; see [Modpacks](Modpacks).
 

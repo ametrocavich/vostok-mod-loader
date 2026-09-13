@@ -22,12 +22,11 @@ Docs live on the [Wiki](https://github.com/ametrocavich/vostok-mod-loader/wiki):
 
 ## Launcher UI
 
-Four tabs:
+Three tabs:
 
-- **Mods**: detected mods with checkboxes and a priority spinbox. Higher priority loads later and wins file conflicts. The load-order preview on the right updates as you edit. Profiles, the Developer Mode toggle, dependency handling and per-row update badges live here too.
+- **Mods**: detected mods with checkboxes and a priority spinbox. Higher priority loads later and wins file conflicts. The load-order preview on the right updates as you edit. Profiles, the Developer Mode toggle, dependency handling and **Check for updates** live here too; a mod with a newer version on its site gets an Update button on its row.
 - **Browse**: search and install mods from [VostokMods](https://vostokmods.net), or switch the source menu to [ModWorkshop](https://modworkshop.net). Each site has a landing view plus search, sort and category filters. **Download** installs into your `mods/` folder; downloads queue and run one at a time. See the [Browse wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Browse).
 - **Modpacks**: apply a setup published on [VostokMods](https://vostokmods.net). A modpack is a small `.zip` listing which mods to enable (plus their settings), not the mod files themselves. Apply downloads any missing mods and switches you to the author's setup; Unload restores your prior state. Only one modpack can be active at a time. See the [Modpacks wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Modpacks).
-- **Updates**: for mods that say where they came from (`[updates] source=` in `mod.txt`, or a download made from Browse), check for and download newer versions from that site.
 
 Dependencies are handled inline on the Mods tab. A mod with `[dependencies] required=[...]` in `mod.txt` shows an orange `won't load -- needs ...` line when a requirement is missing or disabled, with **Enable dependency** and **Load anyway** buttons beside it, and the loader skips mods whose required dependencies are not loadable.
 
@@ -75,7 +74,7 @@ optional=["some_soft_integration"]
 |---|---|
 | `name` | Display name in the UI |
 | `id` | Unique ID. A second mod with the same id is skipped |
-| `version` | Used by the Updates tab to compare against the mod's site |
+| `version` | Used by the update check to compare against the mod's site |
 | `priority` | Higher loads later, wins file conflicts. Default 0 |
 | `[autoload]` | `Name="res://path.gd"` (or `.tscn`). Prefix the value with `!` to load before the game's own autoloads |
 | `[updates] source` | Where the mod is hosted: `"vostokmods:<slug>"` or `"modworkshop:<id>"`. The older `modworkshop=<id>` form still works |

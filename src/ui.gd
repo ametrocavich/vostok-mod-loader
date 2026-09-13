@@ -1,5 +1,5 @@
 ## ----- ui.gd -----
-## The launcher window: Mods, Browse, Modpacks and Updates tabs plus the Launch
+## The launcher window: Mods, Browse and Modpacks tabs plus the Launch
 ## bar. Profiles live in UI_CONFIG_PATH under profile.<name>.*; the active one
 ## in [settings] active_profile. Closing the window is the same as Launch.
 
@@ -995,8 +995,6 @@ func show_mod_ui() -> void:
 	_ui_update_alert_btn = null
 	_ui_mods_scroll = null
 	_ui_modpacks_scroll = null
-	_ui_updates_scroll = null
-	_ui_updates_check_btn = null
 	# Drop the host API response cache (session-only). Disk-cached thumbnails
 	# stay: immutable storage keys are valid indefinitely.
 	_host_cache.clear()
@@ -1197,10 +1195,6 @@ func _ui_add_tabs(tabs: TabContainer) -> void:
 	modpacks_tab.name = UI_TAB_MODPACKS
 	tabs.add_child(modpacks_tab)
 
-	var updates_tab := build_updates_tab()
-	updates_tab.name = UI_TAB_UPDATES
-	tabs.add_child(updates_tab)
-
 	# Refresh tabs on show: state can change behind a tab's back.
 	tabs.tab_changed.connect(func(idx: int):
 		# Re-entrant tab_changed fired mid-rebuild; another rebuild here corrupts the tree.
@@ -1212,13 +1206,6 @@ func _ui_add_tabs(tabs: TabContainer) -> void:
 		# Browse rows bake profile state at render time and never rebuild; sync in place.
 		elif ctrl != null and ctrl.name == UI_TAB_BROWSE:
 			_refresh_browse_installed_rows(ctrl)
-		# The Updates tab is a build-time snapshot; rebuild on show.
-		elif ctrl != null and ctrl.name == UI_TAB_UPDATES:
-			_rebuild_updates_tab(tabs)
-		# An Updates-tab check may have changed badge state off-screen.
-		elif ctrl != null and ctrl.name == UI_TAB_MODS and _mods_badges_dirty:
-			_mods_badges_dirty = false
-			_rebuild_mods_tab(tabs)
 	)
 
 # Launch button label reflects whether anything will load.
