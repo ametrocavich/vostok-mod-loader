@@ -46,7 +46,7 @@ func _setup_run_entry(entry: Variant) -> Dictionary:
 	if not (arr[0] is String or arr[0] is StringName):
 		return {"verb": "<malformed>", "ok": false, "error": "verb (1st element) must be a String"}
 	var verb: String = String(arr[0])
-	# SEAM: new verbs = one match arm here + a schema line in the header. A
+	# New verbs: one match arm here plus a schema line in the header. A
 	# forgotten arm is not a compile error; it falls through to `_:`, which
 	# warns and returns ok=false without aborting the rest of the plan.
 	match verb:

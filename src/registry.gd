@@ -138,7 +138,7 @@ func _register_aggregator_batch(kind: String, entries: Dictionary) -> Dictionary
 
 # ---- Public verbs ----
 
-## Register a NEW entry. Fails if the id already exists (in vanilla or prior
+## Register a new entry. Fails if the id already exists (in vanilla or prior
 ## mod registrations). Returns true on success.
 func register(registry: String, id: String, data: Variant) -> bool:
 	if id == "":
@@ -590,7 +590,7 @@ func patch_many(registry: String, entries: Dictionary) -> Dictionary:
 
 ## Batched form of append(). `entries` is `{id: values, ...}` where values is
 ## a single value or Array. Same field across all entries (most common case);
-## use individual append() calls if you need different fields per id.
+## use individual append() calls when entries need different fields.
 func append_many(registry: String, field: String, entries: Dictionary, allow_duplicates: bool = false) -> Dictionary:
 	var results: Dictionary = {}
 	var all_ok := true

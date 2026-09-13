@@ -52,7 +52,7 @@ static func _hook_base_of(hook_name: String) -> String:
 
 ## Register a hook callback. Name grammar: "<script stem lowercase>-<method
 ## lowercase>" plus optional "-pre" / "-post" / "-callback"; the bare name is
-## the single-owner REPLACE slot. Returns a hook id for unhook(), or -1 when
+## the single-owner replace slot. Returns a hook id for unhook(), or -1 when
 ## the replace slot is already owned. Callbacks run in ascending `priority`
 ## order; ties are not stable (sort_custom), so use distinct priorities when
 ## order matters.
@@ -68,8 +68,8 @@ func hook(hook_name: String, callback: Callable, priority: int = 100) -> int:
 			or hook_name.ends_with("-callback"))
 	# Unknown-suffix trap: the grammar allows exactly one hyphen for a
 	# replace hook, so two-plus hyphens with no recognized suffix is a typo
-	# ("-per") or a new hook variant not added everywhere (see ADDING A NEW
-	# HOOK VARIANT in rewriter_parse.gd). Either way the registration would
+	# ("-per") or a new hook variant not added everywhere (see the hook
+	# variant recipe in rewriter_parse.gd). Either way the registration would
 	# be silently misfiled as a replace hook that never fires.
 	if is_replace and hook_name.count("-") >= 2:
 		push_warning("[RTVModLib] hook('%s'): unrecognized suffix '-%s' -- registering as a REPLACE hook, which will never fire under that name. Did you mean -pre, -post, or -callback?" \
