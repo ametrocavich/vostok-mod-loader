@@ -190,7 +190,62 @@ func build_updates_tab() -> Control:
 	var container := VBoxContainer.new()
 	container.add_theme_constant_override("separation", SP_M)
 	margin.add_child(container)
+	var check_btn := _updates_build_header(container)
 
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	container.add_child(scroll)
+	_ui_updates_scroll = scroll
+
+	var list := VBoxContainer.new()
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(list)
+
+	# file_name -> {label, ver_lbl, version, ref, dl_btn, full_path, mod_name, entry}
+	# for every row that can be checked.
+	var status_info: Dictionary = {}
+	var persisted_sources := _get_persisted_mod_sources()
+	for entry in _ui_mod_entries:
+		var info := _updates_build_row(list, entry, persisted_sources)
+		if not info.is_empty():
+			status_info[entry["file_name"]] = info
+
+	if list.get_child_count() == 0:
+		var lbl := Label.new()
+		lbl.text = "No mods to check yet.\nGet mods from the Browse tab, then check for updates here."
+		lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
+		lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		list.add_child(lbl)
+
+	var add_log := _updates_build_log(container)
+	_updates_restore_rows(status_info, add_log)
+
+	check_btn.pressed.connect(func():
+		check_btn.disabled = true
+		check_btn.text = "Checking for updates..."
+		for fn in status_info:
+			var info: Dictionary = status_info[fn]
+			(info["label"] as Label).text = "Checking..."
+			(info["label"] as Label).tooltip_text = "Checking..."
+			(info["label"] as Label).add_theme_color_override("font_color", COL_TEXT_DIM)
+			var btn: Button = info["dl_btn"]
+			btn.modulate.a = 0.0
+			btn.disabled = true
+			btn.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			btn.text = "Update"
+		await check_updates_for_ui(status_info, add_log, check_btn)
+		# The launcher can close while the check is in flight; the button dies with it.
+		if not is_instance_valid(check_btn):
+			return
+		check_btn.disabled = false
+		check_btn.text = "Check for updates"
+	)
+
+	return margin
+
+
+# Toolbar with the Check button, then the column headers. Returns the button.
+func _updates_build_header(container: VBoxContainer) -> Button:
 	var toolbar := HBoxContainer.new()
 	toolbar.add_theme_constant_override("separation", SP_M)
 	container.add_child(toolbar)
@@ -242,117 +297,105 @@ func build_updates_tab() -> Control:
 	header_row.add_child(h_action)
 
 	container.add_child(HSeparator.new())
+	return check_btn
 
-	var scroll := ScrollContainer.new()
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	container.add_child(scroll)
-	_ui_updates_scroll = scroll
 
-	var list := VBoxContainer.new()
-	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(list)
+# One row: name and modified date, version, status, and a hidden Update
+# button that _updates_arm_row_update reveals. Returns the status_info record
+# for rows that can be checked, {} otherwise.
+func _updates_build_row(list: VBoxContainer, entry: Dictionary, persisted_sources: Dictionary) -> Dictionary:
+	var cfg: ConfigFile = entry["cfg"]
+	if cfg == null:
+		return {}
+	var version := str(cfg.get_value("mod", "version", ""))
+	var ref := _entry_host_ref(entry, persisted_sources)
+	# Checkable means a host that can hand back a file.
+	var checkable := not ref.is_empty() and bool(host_caps(str(ref["provider"]))["resolve_file"])
 
-	# { label, version, ref, dl_btn, full_path, mod_name }
-	var status_info: Dictionary = {}
+	var row := HBoxContainer.new()
+	list.add_child(row)
 
-	var persisted_sources := _get_persisted_mod_sources()
-	for entry in _ui_mod_entries:
-		var cfg: ConfigFile = entry["cfg"]
-		if cfg == null:
-			continue
-		var version := str(cfg.get_value("mod", "version", ""))
-		var ref := _entry_host_ref(entry, persisted_sources)
-		# Checkable means a host that can hand back a file.
-		var checkable := not ref.is_empty() and bool(host_caps(str(ref["provider"]))["resolve_file"])
+	var name_col := VBoxContainer.new()
+	name_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(name_col)
 
-		var row := HBoxContainer.new()
-		list.add_child(row)
+	var name_lbl := Label.new()
+	name_lbl.text = entry["mod_name"]
+	name_lbl.clip_text = true
+	name_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	name_lbl.tooltip_text = str(entry["mod_name"])
+	# Labels default to MOUSE_FILTER_IGNORE, which suppresses tooltips.
+	name_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
+	name_col.add_child(name_lbl)
 
-		var name_col := VBoxContainer.new()
-		name_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		row.add_child(name_col)
+	var mtime := FileAccess.get_modified_time(entry["full_path"])
+	if mtime > 0:
+		var dt := Time.get_datetime_dict_from_unix_time(mtime)
+		var date_str := "%04d-%02d-%02d" % [dt["year"], dt["month"], dt["day"]]
+		var mod_lbl := Label.new()
+		mod_lbl.text = "modified " + date_str
+		mod_lbl.add_theme_font_size_override("font_size", FS_META)
+		mod_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
+		name_col.add_child(mod_lbl)
 
-		var name_lbl := Label.new()
-		name_lbl.text = entry["mod_name"]
-		name_lbl.clip_text = true
-		name_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-		name_lbl.tooltip_text = str(entry["mod_name"])
-		# Labels default to MOUSE_FILTER_IGNORE, which suppresses tooltips.
-		name_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
-		name_col.add_child(name_lbl)
+	var ver_lbl := Label.new()
+	ver_lbl.text = "v" + version if version != "" else "--"
+	# A long prerelease string must not push the columns out of alignment.
+	ver_lbl.clip_text = true
+	ver_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	ver_lbl.tooltip_text = ver_lbl.text
+	ver_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
+	ver_lbl.custom_minimum_size.x = 90
+	row.add_child(ver_lbl)
 
-		var mtime := FileAccess.get_modified_time(entry["full_path"])
-		if mtime > 0:
-			var dt := Time.get_datetime_dict_from_unix_time(mtime)
-			var date_str := "%04d-%02d-%02d" % [dt["year"], dt["month"], dt["day"]]
-			var mod_lbl := Label.new()
-			mod_lbl.text = "modified " + date_str
-			mod_lbl.add_theme_font_size_override("font_size", FS_META)
-			mod_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
-			name_col.add_child(mod_lbl)
+	var status_lbl := Label.new()
+	status_lbl.custom_minimum_size.x = 160
+	# Status text can outgrow the column; trim it.
+	status_lbl.clip_text = true
+	status_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	status_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
+	# PASS so the ellipsized status text gets a full-text tooltip.
+	status_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
+	if entry["ext"] == "folder":
+		# Dev folders cannot take a downloaded archive; say so instead of offering one.
+		status_lbl.text = "Dev folder"
+		status_lbl.tooltip_text = "Dev folders load straight from your mods folder, so there is nothing to download. Update downloads only apply to mods installed as archives."
+	elif not ref.is_empty() and not checkable:
+		status_lbl.text = "No update info"
+		status_lbl.tooltip_text = host_display_name(str(ref["provider"])) + " does not provide downloads through the loader, so this mod cannot be checked."
+	elif not checkable or version == "":
+		# Say why this row cannot be checked.
+		status_lbl.text = "No update info"
+		status_lbl.tooltip_text = "This mod's mod.txt does not say where it came from ([updates] source= plus [mod] version=), so it cannot be checked. Add both fields to enable update checks."
+	else:
+		status_lbl.text = "--"
+	row.add_child(status_lbl)
 
-		var ver_lbl := Label.new()
-		ver_lbl.text = "v" + version if version != "" else "--"
-		# A long prerelease string must not push the columns out of alignment.
-		ver_lbl.clip_text = true
-		ver_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-		ver_lbl.tooltip_text = ver_lbl.text
-		ver_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
-		ver_lbl.custom_minimum_size.x = 90
-		row.add_child(ver_lbl)
+	# Always add dl_btn to preserve column width; modulate.a hides it.
+	var dl_btn := Button.new()
+	dl_btn.text = "Update"
+	dl_btn.custom_minimum_size.x = 90
+	dl_btn.modulate.a = 0.0
+	dl_btn.disabled = true
+	dl_btn.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(dl_btn)
 
-		var status_lbl := Label.new()
-		status_lbl.custom_minimum_size.x = 160
-		# Status text can outgrow the column; trim it.
-		status_lbl.clip_text = true
-		status_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-		status_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
-		# PASS so the ellipsized status text gets a full-text tooltip.
-		status_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
-		if entry["ext"] == "folder":
-			# Dev folders cannot take a downloaded archive; say so instead of offering one.
-			status_lbl.text = "Dev folder"
-			status_lbl.tooltip_text = "Dev folders load straight from your mods folder, so there is nothing to download. Update downloads only apply to mods installed as archives."
-		elif not ref.is_empty() and not checkable:
-			status_lbl.text = "No update info"
-			status_lbl.tooltip_text = host_display_name(str(ref["provider"])) + " does not provide downloads through the loader, so this mod cannot be checked."
-		elif not checkable or version == "":
-			# Say why this row cannot be checked.
-			status_lbl.text = "No update info"
-			status_lbl.tooltip_text = "This mod's mod.txt does not say where it came from ([updates] source= plus [mod] version=), so it cannot be checked. Add both fields to enable update checks."
-		else:
-			status_lbl.text = "--"
-		row.add_child(status_lbl)
+	list.add_child(HSeparator.new())
 
-		# Always add dl_btn to preserve column width; modulate.a hides it.
-		var dl_btn := Button.new()
-		dl_btn.text = "Update"
-		dl_btn.custom_minimum_size.x = 90
-		dl_btn.modulate.a = 0.0
-		dl_btn.disabled = true
-		dl_btn.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		row.add_child(dl_btn)
+	if checkable and version != "" and entry["ext"] != "folder":
+		# Hold the underlying entry dict so the download callback can update
+		# full_path and file_name in place when an update lands under a new name.
+		return {
+			"label": status_lbl, "ver_lbl": ver_lbl, "version": version, "ref": ref,
+			"dl_btn": dl_btn, "full_path": entry["full_path"],
+			"mod_name": entry["mod_name"], "entry": entry,
+		}
+	return {}
 
-		list.add_child(HSeparator.new())
 
-		if checkable and version != "" and entry["ext"] != "folder":
-			# Hold the underlying entry dict so the download callback can update
-			# full_path and file_name in place when an update lands under a new name.
-			status_info[entry["file_name"]] = {
-				"label": status_lbl, "ver_lbl": ver_lbl, "version": version, "ref": ref,
-				"dl_btn": dl_btn, "full_path": entry["full_path"],
-				"mod_name": entry["mod_name"], "entry": entry,
-			}
-
-	if list.get_child_count() == 0:
-		var lbl := Label.new()
-		lbl.text = "No mods to check yet.\nGet mods from the Browse tab, then check for updates here."
-		lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
-		lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		list.add_child(lbl)
-
-	# -- Activity log ----------------------------------------------------------
-
+# The Activity log under the list, with earlier lines restored. Returns the
+# add_log Callable the check and the row downloads report through.
+func _updates_build_log(container: VBoxContainer) -> Callable:
 	container.add_child(HSeparator.new())
 
 	var log_hdr := Label.new()
@@ -407,11 +450,14 @@ func build_updates_tab() -> Control:
 		log_list.add_child(log_label.call(line))
 	if not _updates_tab_log.is_empty():
 		_updates_scroll_log_to_bottom(log_scroll)
+	return add_log
 
-	# Restore per-row results from earlier checks this session. Precedence: a
-	# download in flight renders the row inert (a live Update button would
-	# allow a second concurrent download); then an available update re-arms
-	# from _mod_updates_state; then any stored terminal status.
+
+# Restore per-row results from earlier checks this session. Precedence: a
+# download in flight renders the row inert (a live Update button would
+# allow a second concurrent download); then an available update re-arms
+# from _mod_updates_state; then any stored terminal status.
+func _updates_restore_rows(status_info: Dictionary, add_log: Callable) -> void:
 	for fn in status_info:
 		var info: Dictionary = status_info[fn]
 		var entry_d: Dictionary = info.get("entry", {})
@@ -442,29 +488,6 @@ func build_updates_tab() -> Control:
 			row_lbl.tooltip_text = str(st.get("tooltip", row_lbl.text))
 			var col_v: Variant = st.get("color")
 			row_lbl.add_theme_color_override("font_color", col_v if col_v is Color else COL_TEXT_DIM)
-
-	check_btn.pressed.connect(func():
-		check_btn.disabled = true
-		check_btn.text = "Checking for updates..."
-		for fn in status_info:
-			var info: Dictionary = status_info[fn]
-			(info["label"] as Label).text = "Checking..."
-			(info["label"] as Label).tooltip_text = "Checking..."
-			(info["label"] as Label).add_theme_color_override("font_color", COL_TEXT_DIM)
-			var btn: Button = info["dl_btn"]
-			btn.modulate.a = 0.0
-			btn.disabled = true
-			btn.mouse_filter = Control.MOUSE_FILTER_IGNORE
-			btn.text = "Update"
-		await check_updates_for_ui(status_info, add_log, check_btn)
-		# The launcher can close while the check is in flight; the button dies with it.
-		if not is_instance_valid(check_btn):
-			return
-		check_btn.disabled = false
-		check_btn.text = "Check for updates"
-	)
-
-	return margin
 
 # Update check for every installed mod with a downloadable host and a version.
 # Populates _mod_updates_state. Returns {checked, with_updates, errors}.
