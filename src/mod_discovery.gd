@@ -89,7 +89,6 @@ func _build_archive_entry(mods_dir: String, file_name: String, ext: String) -> D
 	return entry
 
 func _build_folder_entry(mods_dir: String, dir_name: String) -> Dictionary:
-	# See _build_archive_entry for rationale.
 	_log_debug("[ModScan] inspecting " + dir_name + " [folder]")
 	var folder_path := mods_dir.path_join(dir_name)
 	var cfg: ConfigFile = read_mod_config_folder(folder_path)
@@ -238,8 +237,8 @@ func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, e
 	var optional_dependencies: Array[String] = []
 	var provides: Array[String] = []
 
-	# VostokMods compat: parse "100-ModName.vmz" filename priority prefix.
-	# The prefix is stripped from mod_name/mod_id defaults and used as fallback priority.
+	# A VostokMods-style "100-ModName.vmz" prefix is stripped from the name and
+	# id defaults and used as the fallback priority.
 	var base_name := file_name.get_basename()  # strip extension
 	var filename_priority := 0
 	var has_filename_priority := false
@@ -275,8 +274,8 @@ func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, e
 	# Profile key identifies the mod across ZIP renames: "<id>@<version>" when
 	# mod.txt declares an id (empty version allowed), else "zip:<file_name>"
 	# (renames still orphan those entries).
-	# CONTRACT -- parsers live far from here; keep in sync when changing:
-	#   - "<id>@<version>" is split on the FIRST "@" by ui.gd
+	# Parsers live far from here; keep in sync when changing:
+	#   - "<id>@<version>" is split on the first "@" by ui.gd
 	#     _version_from_profile_key and _missing_mods_in_active_profile, and
 	#     by modpacks.gd _get_missing_mods_for_modpack; ui.gd
 	#     _apply_profile_to_entries and _find_stored_key_for_mod_id
@@ -393,14 +392,6 @@ func _stale_bake_warnings(entry: Dictionary) -> Array[String]:
 				% [baked, "" if baked == 1 else "s"])
 	return warnings
 
-# _autoload_path_warnings below catches autoload paths that point nowhere
-# inside the mod -- such a mod mounts, reports success, and does nothing.
-# It reads the _last_mod_txt_files side channel, so it must stay immediately
-# downstream of the entry's own read_mod_config (see constants.gd).
-# Conservative: warns only when the same filename exists at a different path
-# in the archive; a path with no counterpart may legitimately point at a
-# vanilla script or another mod's file.
-#
 # An autoload value may carry two leading markers: "!" (load in Pass 1,
 # ahead of the game's own autoloads) and "*" (Godot's "instantiate as a
 # node"). Either order, either optional. Returns [path, is_early]. Every
@@ -419,6 +410,12 @@ static func _split_autoload_marker(raw: String) -> Array:
 			break
 	return [path.strip_edges(), is_early]
 
+# Catches autoload paths that point nowhere inside the mod; such a mod
+# mounts, reports success, and does nothing. Reads the _last_mod_txt_files
+# side channel, so it must stay immediately downstream of the entry's own
+# read_mod_config. Conservative: warns only when the same filename exists
+# at a different path in the archive; a path with no counterpart may point
+# at a vanilla script or another mod's file.
 func _autoload_path_warnings(entry: Dictionary) -> Array[String]:
 	var warnings: Array[String] = []
 	var cfg: ConfigFile = entry.get("cfg")
@@ -583,7 +580,7 @@ func _filter_dependency_ready_candidates(candidates: Array,
 				# _refresh_dependency_status, never blocked.
 				if dep_key == entry_key:
 					continue
-				# "Requires Metro Mod Loader": we are the loader; satisfied.
+				# "Requires Metro Mod Loader": the loader itself satisfies it.
 				if LOADER_ID_ALIASES.has(dep_key):
 					continue
 				# Canonicalize a provides= alias to the provider's real id:
@@ -708,8 +705,8 @@ func _apply_dependency_ordering(candidates: Array) -> Dictionary:
 			progress = true
 			break
 	# Leftovers are in a cycle or merely downstream of one. Emit them at the
-	# end in original order, but report only nodes genuinely in a cycle -- a
-	# node merely downstream would be mislabeled when its real problem is an
+	# end in original order, but report only nodes that are in a cycle: a node
+	# merely downstream would be mislabeled when its real problem is an
 	# unresolvable required dep the per-row blocker already explains.
 	var cycle_keys: Array[String] = []
 	if remaining > 0:
@@ -731,7 +728,7 @@ func _apply_dependency_ordering(candidates: Array) -> Dictionary:
 	return {"ordered": ordered, "adjusted": adjusted, "cycle_keys": cycle_keys}
 
 # True iff `start` can reach itself through dependency edges within the
-# still-unemitted subgraph -- genuinely in a cycle, not merely stuck behind
+# still-unemitted subgraph, so it is in a cycle rather than stuck behind
 # one. `dependents[x]` lists nodes that depend on x.
 func _node_reaches_self(start: int, dependents: Dictionary, emitted: Dictionary) -> bool:
 	var seen: Dictionary = {}
@@ -1003,7 +1000,7 @@ func _normalized_mod_stem(file_name: String) -> String:
 	# Version-token shapes: [_-.] separator with optional v (CoolMod_v1.2,
 	# CoolMod_2), space + explicit v (Ammo Pack v2), space + dotted number
 	# (Ammo Pack 1.2), or v attached to the name (CoolModv2). A space plus a
-	# bare integer is NOT a version: "Ammo Pack 1" and "Ammo Pack 2" are
+	# bare integer is not a version: "Ammo Pack 1" and "Ammo Pack 2" are
 	# different mods, and collapsing them hides one with the survivor decided
 	# by mtime.
 	re.compile("^(.*?)(?:[_\\-.]+v?[0-9]+(?:[._][0-9]+)*| +v[0-9]+(?:[._][0-9]+)*| +[0-9]+(?:[._][0-9]+)+|v[0-9]+(?:[._][0-9]+)*)$")
@@ -1193,7 +1190,6 @@ func replace_mod_from_ref(target_path: String, ref: Dictionary) -> Dictionary:
 	# request_completed -> [result, http_code, headers, body]
 	var res: Array = await req.request_completed
 	req.queue_free()
-	# Note rate headers so a 429 here arms the shared cooldown.
 	host_note_rate_headers(provider, int(res[1]), res[2])
 
 	if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] < 200 or res[1] >= 300:
@@ -1240,7 +1236,6 @@ func replace_mod_from_ref(target_path: String, ref: Dictionary) -> Dictionary:
 		failure["error"] = "Could not open the mods folder"
 		return failure
 
-	# Decide where the validated download should land.
 	var old_file_name := target_path.get_file()
 	var new_version := str(new_cfg.get_value("mod", "version", ""))
 	var new_file_name := _derive_updated_filename(old_file_name, headers, new_version)
@@ -1517,7 +1512,7 @@ func _looks_like_pck(path: String) -> bool:
 #   mod_config.cfg           [mod_sources] <profile_key> = <json>
 #   modpack profile.json     "sources": {<profile_key>: <record>}
 # The JSON record is {provider, id, modworkshop_id?, version?}.
-# modworkshop_id is a compat mirror emitted IFF provider == "modworkshop":
+# modworkshop_id is a compat mirror emitted only when provider == "modworkshop":
 # profile.json travels between users, and a pre-source loader reading a
 # mirrored id on a non-ModWorkshop record would download whatever mod owns
 # that number on ModWorkshop.

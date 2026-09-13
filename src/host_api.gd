@@ -6,7 +6,7 @@
 ## table: with the concrete callee visible, the synchronous operations stay
 ## statically synchronous. A Callable table would make each one `await`, and
 ## host_mod_page_url is called from code that must return a Control, not a
-## coroutine (the 3.3.0 unconditional-await regression, re-committed by hand).
+## coroutine.
 ##
 ## Adapter naming: _<tag>p_<operation> (modworkshop -> _mwsp_*, vostokmods ->
 ## _vmp_*). Every arm returns a HostResult (host_types.gd). The `_:` fallback

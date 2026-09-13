@@ -49,8 +49,8 @@ func _mwsp_scalars() -> Dictionary:
 		{"key": "views", "label": "Most viewed", "row_field": "views"},
 		{"key": "published_at", "label": "Newest", "row_field": "published_at"},
 	]
-	# The popular-and-latest route is dead upstream (see mws_api.gd), so the
-	# landing is two ordinary list queries.
+	# The popular-and-latest route is dead upstream, so the landing is two
+	# ordinary list queries.
 	s["landing_sections"] = [
 		{"key": "popular", "title": "Popular this week", "sort_key": "weekly_score", "limit": 10},
 		{"key": "latest", "title": "Latest", "sort_key": "bumped_at", "limit": 10},
@@ -274,7 +274,7 @@ func _mwsp_resolve_file(ref: Dictionary, version: String) -> Dictionary:
 		var pinned := await _hnet_get_json(HOST_MODWORKSHOP, base + "/" + version.uri_encode(), _MWS_TTL_PRIMARY_MS)
 		if not pinned["ok"]:
 			if str(pinned["code"]) == HOST_ERR_NOT_FOUND:
-				# Genuinely absent: the author deleted the upload or never made it.
+				# Absent upstream: the author deleted the upload or never made it.
 				return host_err(HOST_ERR_VERSION_NOT_FOUND, 404,
 						"version %s is not available" % version)
 			return pinned
@@ -324,9 +324,9 @@ func _mwsp_list_categories() -> Dictionary:
 
 ## The versions endpoint answers up to MODWORKSHOP_BATCH_SIZE ids per call
 ## as {"<id>": "<version>"}. Ids go as repeated ?mod_ids[]= query params; a
-## JSON GET body is ignored and answered with 422 (verified against the live
-## API). Chunks stream through on_progress so a rate limit part-way through
-## still leaves the answers already collected.
+## JSON GET body is ignored and answered with 422. Chunks stream through
+## on_progress so a rate limit part-way through still leaves the answers
+## already collected.
 func _mwsp_latest_versions(ids: PackedStringArray, on_progress: Callable) -> Dictionary:
 	var versions := {}
 	var done := 0

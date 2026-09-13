@@ -394,11 +394,9 @@ func _security_scan_binary(file: String, bytes: PackedByteArray, findings: Array
 		return
 
 	# Compiled GDScript defeats every rule: .gdc is tokenized bytecode, so
-	# identifiers live in a string table and punctuation is token bytes --
-	# source-level patterns cannot match, and a .gdc dropper would scan
-	# clean. Disclose that instead of staying silent. (The real fix is to
-	# detokenize via gdsc_detokenizer.gd and run the text rules, which needs
-	# a bytes-level entry point; _detokenize_script reads from a path.)
+	# identifiers live in a string table and source-level patterns cannot
+	# match. Disclose that instead of scanning clean. Running the text rules
+	# over detokenized output would need a bytes-level detokenizer entry point.
 	if _security_is_gdsc(bytes):
 		# One notice per mod, not per file: every walker stops at
 		# _MAX_FINDINGS_PER_MOD, so per-file notices would let .gdc decoys

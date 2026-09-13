@@ -81,7 +81,7 @@ The seam. `host_list_mods`, `host_get_mod`, `host_list_files`, `host_resolve_fil
 
 ### [host_mws.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/host_mws.gd)
 
-ModWorkshop adapter (`_mwsp_*`). Declares the capabilities (browse, search, categories, file history, version pin, batch version check, and `sort_ignored_with_query`, since the API ignores `sort` when `query` is set and Browse re-sorts client-side), the sort menu, and the two landing sections. Normalizes `mws_api.gd` payloads into `host_types.gd` records and reads `x-ratelimit-remaining` into the cooldown table.
+ModWorkshop adapter (`_mwsp_*`). Declares the capabilities (browse, search, categories, file history, version pin, batch version check, and `sort_ignored_with_query`, since the API ignores `sort` when `query` is set and Browse re-sorts client-side), the sort menu, and the two landing sections. Normalizes the api.modworkshop.net payloads into `host_types.gd` records and reads `x-ratelimit-remaining` into the cooldown table.
 
 ### [host_vostokmods.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/host_vostokmods.gd)
 

@@ -1,6 +1,5 @@
 ## ----- host_vostokmods.gd -----
-## VostokMods adapter (vostokmods.net). Endpoint contracts are in
-## .research/VOSTOKMODS_API.md.
+## VostokMods adapter (vostokmods.net/api).
 ##
 ## A mod's identity here is its slug, not its numeric id: every route is
 ## slug-keyed and the id addresses nothing, so a ref is
@@ -496,7 +495,7 @@ func _vmp_validate_manifest(m: Variant) -> String:
 
 ## GET a manifest by its (already normalized) URL. Data is the manifest with
 ## manifest_url filled in. Not cached: the site caps its own cache at 60s and
-## the whole point of a refresh is to see the current list.
+## a refresh has to show the current list.
 func _vmp_fetch_modpack_manifest(url: String) -> Dictionary:
 	if not url.begins_with(VM_API_BASE + "/modpacks/"):
 		return host_err(HOST_ERR_NOT_FOUND, 0, "not a VostokMods modpack link")
