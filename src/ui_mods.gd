@@ -396,7 +396,87 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	_mods_meta_nodes.clear()
 	var outer := VBoxContainer.new()
 	outer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var active_modpack := get_active_modpack()
+	_mods_build_banners(outer, tabs, active_modpack)
+	_mods_build_toolbar(outer, tabs, active_modpack)
 
+	outer.add_child(HSeparator.new())
+
+	var split := HSplitContainer.new()
+	split.split_offset = 560
+	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	outer.add_child(split)
+
+	# -- Left: sticky filter bar + mod list -----------------------------------
+	var left_col := VBoxContainer.new()
+	left_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left_col.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.add_child(left_col)
+	var filter_edit := _mods_build_filter_bar(left_col, tabs)
+	var list := _mods_build_list(left_col)
+	var refresh_order := _mods_build_order_panel(split)
+	_mods_build_updates_section(list, tabs)
+	_mods_build_missing_section(list, tabs)
+	_mods_build_header_row(list)
+
+	# -- One row per mod -------------------------------------------------------
+
+	if _ui_mod_entries.is_empty():
+		var empty := Label.new()
+		empty.text = "No mods found.\n\nPlace .vmz or .pck files in:\n" \
+				+ ProjectSettings.globalize_path(_mods_dir)
+		# No autowrap inside the ScrollContainer (oscillation bug); newlines still break.
+		empty.clip_text = true
+		empty.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		empty.tooltip_text = empty.text
+		empty.mouse_filter = Control.MOUSE_FILTER_PASS
+		empty.add_theme_color_override("font_color", COL_TEXT_DIM)
+		empty.add_theme_font_size_override("font_size", FS_EMPH)
+		list.add_child(empty)
+
+
+	var rendered_any := false
+	# Per-build state every row reads; lambdas capture by value, so it travels
+	# as one record. dep_names_by_id is hoisted once per build because the
+	# display-name fallback rebuilds the map per call.
+	var row_ctx := {
+		"dep_names_by_id": _entries_by_mod_id(_ui_mod_entries),
+		"persisted_sources": _get_persisted_mod_sources(),
+		"profile_editable": _active_profile != VANILLA_PROFILE and active_modpack == "",
+		"refresh_order": refresh_order,
+	}
+	for entry in _ui_mod_entries:
+		if not _mods_entry_visible(entry):
+			continue
+		rendered_any = true
+		_mods_build_row(list, entry, row_ctx, tabs)
+
+	# The filter narrowed every row out; say so, distinct from no mods installed.
+	if not _ui_mod_entries.is_empty() and not rendered_any:
+		var no_match := Label.new()
+		no_match.text = "No mods match. Try a shorter search or turn off Hide disabled."
+		no_match.add_theme_color_override("font_color", COL_TEXT_DIM)
+		no_match.add_theme_font_size_override("font_size", FS_EMPH)
+		list.add_child(no_match)
+
+	# Restore focus to the search input after a filter-driven rebuild, deferred
+	# so the new tab is in the tree. Cleared on consume so other rebuilds do not steal focus.
+	if _mods_filter_focus_pending:
+		_mods_filter_focus_pending = false
+		filter_edit.call_deferred("grab_focus")
+		# Setting LineEdit.text resets the caret to column 0 and FOCUS_ENTER does
+		# not move it; restore the caret to end-of-text after focus lands.
+		filter_edit.call_deferred("set_caret_column", filter_edit.text.length())
+
+	refresh_order.call()
+	# Wrap in the shared tab margin so the view does not shift between tabs.
+	var margin := _make_tab_margin()
+	margin.add_child(outer)
+	return margin
+
+
+# The hook-health and active-modpack banners at the top of the Mods tab.
+func _mods_build_banners(outer: VBoxContainer, tabs: TabContainer, active_modpack: String) -> void:
 	# Hook health from the previous session: generation runs after this window
 	# closes, so this is where a player learns a game update broke the rewriter.
 	var hook_problem := _hook_status_problem()
@@ -414,7 +494,6 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		outer.add_child(hook_banner["panel"])
 
 	# Active-modpack banner with a one-click Unload.
-	var active_modpack := get_active_modpack()
 	if active_modpack != "":
 		var banner := _make_banner(
 				"Modpack \"" + active_modpack + "\" is active. Changes here save to the modpack, not your profiles.",
@@ -427,8 +506,9 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		unload_btn.pressed.connect(func(): _unload_modpack_with_feedback(tabs))
 		outer.add_child(banner["panel"])
 
-	# -- Toolbar: mods folder, profile controls, UI scale, Developer Mode --
 
+# Mods folder, profile controls, UI scale and Developer Mode.
+func _mods_build_toolbar(outer: VBoxContainer, tabs: TabContainer, active_modpack: String) -> void:
 	var toolbar := HBoxContainer.new()
 	toolbar.add_theme_constant_override("separation", SP_M)
 	outer.add_child(toolbar)
@@ -485,10 +565,6 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 
 	# All profile mutations are disabled while a modpack is active.
 	var modpack_locked := active_modpack != ""
-	# On Vanilla or a modpack-locked slot the per-row dependency actions would
-	# mutate state _save_ui_config will not persist, so they are hidden.
-	var profile_editable := _active_profile != VANILLA_PROFILE and not modpack_locked
-
 	var new_profile_btn := Button.new()
 	new_profile_btn.text = "+"
 	new_profile_btn.tooltip_text = "Create a new profile" if not modpack_locked else "Unload the active modpack first"
@@ -574,19 +650,10 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		_rebuild_mods_tab(tabs)
 	)
 
-	outer.add_child(HSeparator.new())
 
-	var split := HSplitContainer.new()
-	split.split_offset = 560
-	split.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	outer.add_child(split)
-
-	# -- Left: sticky filter bar + mod list -----------------------------------
-	var left_col := VBoxContainer.new()
-	left_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	left_col.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	split.add_child(left_col)
-
+# Filter text, Enable all / Disable all, Hide disabled and Check for updates.
+# Returns the filter LineEdit so the caller can restore focus to it.
+func _mods_build_filter_bar(left_col: VBoxContainer, tabs: TabContainer) -> LineEdit:
 	# Filter bar. All/None respect the active filter, toggling only the visible subset.
 	var filter_bar := HBoxContainer.new()
 	filter_bar.add_theme_constant_override("separation", SP_M)
@@ -713,7 +780,11 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 		_save_per_profile_setting("hide_disabled", on)
 		_rebuild_mods_tab(tabs)
 	)
+	return filter_edit
 
+
+# The scrolling mod list under the filter bar.
+func _mods_build_list(left_col: VBoxContainer) -> VBoxContainer:
 	var left_scroll := ScrollContainer.new()
 	left_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	left_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -729,9 +800,12 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 	var list := VBoxContainer.new()
 	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	list_pad.add_child(list)
+	return list
 
-	# -- Right: live load order preview ----------------------------------------
 
+# The live load-order preview on the right. Returns the Callable that
+# re-renders it; rows call it when a priority changes.
+func _mods_build_order_panel(split: HSplitContainer) -> Callable:
 	var right := VBoxContainer.new()
 	right.custom_minimum_size.x = 220
 	split.add_child(right)
@@ -809,8 +883,11 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			var blocked_lbl := _make_sub_label("%d blocked by dependencies" % blocked_count, COL_ACCENT)
 			order_list.add_child(blocked_lbl)
 			_wire_hint(blocked_lbl, "Blocked mods stay checked but don't load. See the orange row warnings for fixes.")
+	return refresh_order
 
-	# -- Updates available: mods with newer versions, from _mod_updates_state --
+
+# Mods with a newer version known from the last update check.
+func _mods_build_updates_section(list: VBoxContainer, tabs: TabContainer) -> void:
 	var update_keys: Array = []
 	for entry_v in _ui_mod_entries:
 		var pk_check: String = str(entry_v.get("profile_key", ""))
@@ -907,8 +984,10 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			)
 			list.add_child(HSeparator.new())
 
-	# -- Missing from this profile: rows with Remove, and Download when a
-	# source is known --
+
+# Profile entries whose mod is not on disk: Remove, and Download when a
+# source is known.
+func _mods_build_missing_section(list: VBoxContainer, tabs: TabContainer) -> void:
 	var missing_files := _missing_mods_in_active_profile()
 	if not missing_files.is_empty():
 		var missing_hdr_row := HBoxContainer.new()
@@ -1032,8 +1111,9 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 			)
 			list.add_child(HSeparator.new())
 
-	# -- Column headers --------------------------------------------------------
 
+# Column headers over the mod rows.
+func _mods_build_header_row(list: VBoxContainer) -> void:
 	var header_row := HBoxContainer.new()
 	list.add_child(header_row)
 
@@ -1071,337 +1151,317 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 
 	list.add_child(HSeparator.new())
 
-	# -- One row per mod -------------------------------------------------------
 
-	if _ui_mod_entries.is_empty():
-		var empty := Label.new()
-		empty.text = "No mods found.\n\nPlace .vmz or .pck files in:\n" \
-				+ ProjectSettings.globalize_path(_mods_dir)
-		# No autowrap inside the ScrollContainer (oscillation bug); newlines still break.
-		empty.clip_text = true
-		empty.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-		empty.tooltip_text = empty.text
-		empty.mouse_filter = Control.MOUSE_FILTER_PASS
-		empty.add_theme_color_override("font_color", COL_TEXT_DIM)
-		empty.add_theme_font_size_override("font_size", FS_EMPH)
-		list.add_child(empty)
+# One mod row: checkbox, thumbnail and name column, load-order spinner,
+# Remove button, and the handlers that write through to the live entry.
+func _mods_build_row(list: VBoxContainer, entry: Dictionary, row_ctx: Dictionary, tabs: TabContainer) -> void:
+	var refresh_order: Callable = row_ctx["refresh_order"]
+	var row := HBoxContainer.new()
+	list.add_child(row)
 
-	var rendered_any := false
-	# Hoisted once per build; the fallback rebuilds this map per call.
-	var dep_names_by_id := _entries_by_mod_id(_ui_mod_entries)
-	var persisted_sources := _get_persisted_mod_sources()
-	for entry in _ui_mod_entries:
-		if not _mods_entry_visible(entry):
-			continue
-		rendered_any = true
-		var row := HBoxContainer.new()
-		list.add_child(row)
+	var check := CheckBox.new()
+	check.button_pressed = entry["enabled"]
+	check.custom_minimum_size.x = 30
+	row.add_child(check)
 
-		var check := CheckBox.new()
-		check.button_pressed = entry["enabled"]
-		check.custom_minimum_size.x = 30
-		row.add_child(check)
+	var name_parts := _mods_row_name_column(row, entry, row_ctx["persisted_sources"])
+	var name_col: VBoxContainer = name_parts["name_col"]
+	var name_ctrl: Control = name_parts["name_ctrl"]
+	_mods_row_dependency_lines(name_col, name_ctrl, entry, row_ctx, tabs)
+	_mods_row_notes(name_col, entry)
 
-		# Host info column: async thumbnail, author line and name click-through to
-		# the detail dialog. A link-out host opens the mod page instead. Mods with
-		# no host keep the same-width cell so the name column stays aligned.
-		var row_ref := _entry_host_ref(entry, persisted_sources)
-		var row_key := host_ref_key(row_ref)
-		var row_browsable := row_key != "" and bool(host_caps(str(row_ref["provider"]))["browse"])
-		var row_page_url := host_mod_page_url(row_ref) if row_key != "" else ""
-		var meta_holder: Dictionary = {}
-		var thumb_ref: TextureRect = null
-		# Every row gets a thumbnail cell captioned "no thumbnail"; a texture clears it.
-		var thumb_rect := _make_thumb_cell(row, Vector2(96, 54), true, true)
+	var spin := SpinBox.new()
+	spin.min_value = PRIORITY_MIN
+	spin.max_value = PRIORITY_MAX
+	spin.value = entry["priority"]
+	spin.custom_minimum_size.x = 100
+	spin.custom_minimum_size.y = CTRL_H
+	row.add_child(spin)
+
+	# Per-row Remove. Folder mods skip the file delete: recursive deletion of a
+	# working directory is too risky to do casually.
+	var remove_btn := Button.new()
+	remove_btn.icon = _make_trashcan_icon()
+	remove_btn.flat = true
+	remove_btn.custom_minimum_size.x = 28
+	remove_btn.disabled = entry["ext"] == "folder"
+	if entry["ext"] == "folder":
+		remove_btn.tooltip_text = "Use Open mods folder to remove dev folders"
+	else:
+		remove_btn.tooltip_text = "Permanently delete this mod"
+	row.add_child(remove_btn)
+	var captured_remove_entry := entry
+	remove_btn.pressed.connect(func():
+		_show_remove_mod_confirm(captured_remove_entry, tabs)
+	)
+
+	list.add_child(HSeparator.new())
+
+	# Capture entry by reference (Dictionaries are reference types in GDScript)
+	var e := entry
+	check.toggled.connect(func(on: bool):
+		# Disabling a mod that registers game content can stop an existing save
+		# from loading; confirm first, and revert the checkbox on cancel.
+		if not on and bool(e.get("has_registry", false)):
+			var ok: bool = await _confirm_disable_content_mod(str(e.get("mod_name", "this mod")))
+			if not ok:
+				# An async rebuild may have freed this checkbox while the dialog was open.
+				if is_instance_valid(check):
+					check.set_pressed_no_signal(true)
+				return
+		# Write to the live entry: a mid-dialog rescan replaces _ui_mod_entries
+		# with fresh dicts, and a confirmed disable must not be dropped.
+		var live := _live_entry_for_profile_key(str(e.get("profile_key", "")), e)
+		live["enabled"] = on
+		# Full rebuild: dependency state on other rows changes with the enabled set.
+		_after_dep_action(tabs)
+	)
+	spin.value_changed.connect(func(val: float):
+		# Write through the live entry: a mid-drag rescan orphans the captured `e`.
+		var live_spin := _live_entry_for_profile_key(str(e.get("profile_key", "")), e)
+		live_spin["priority"] = int(val)
+		# No rebuild here: value_changed fires per step while the arrows are held
+		# and a rebuild would destroy the SpinBox under the cursor.
+		refresh_order.call()
+		# Debounce the disk save: a held arrow fires value_changed per step and
+		# each _save_ui_config is a full ConfigFile load and rewrite.
+		_schedule_priority_save()
+	)
+
+
+# Thumbnail cell plus the name column: a clickable name for hosted mods, a
+# plain label otherwise, and the dev-folder marker. Returns {name_col, name_ctrl}.
+func _mods_row_name_column(row: HBoxContainer, entry: Dictionary, persisted_sources: Dictionary) -> Dictionary:
+	# Host info column: async thumbnail, author line and name click-through to
+	# the detail dialog. A link-out host opens the mod page instead. Mods with
+	# no host keep the same-width cell so the name column stays aligned.
+	var row_ref := _entry_host_ref(entry, persisted_sources)
+	var row_key := host_ref_key(row_ref)
+	var row_browsable := row_key != "" and bool(host_caps(str(row_ref["provider"]))["browse"])
+	var row_page_url := host_mod_page_url(row_ref) if row_key != "" else ""
+	var meta_holder: Dictionary = {}
+	var thumb_ref: TextureRect = null
+	# Every row gets a thumbnail cell captioned "no thumbnail"; a texture clears it.
+	var thumb_rect := _make_thumb_cell(row, Vector2(96, 54), true, true)
+	if row_browsable:
+		thumb_ref = thumb_rect
+
+	var name_col := VBoxContainer.new()
+	name_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	name_col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(name_col)
+
+	# name_ctrl: clickable for hosted mods, plain Label otherwise.
+	var name_ctrl: Control
+	if row_browsable or row_page_url != "":
+		# Flat Button, not LinkButton, so clip_text keeps a long name from widening the row.
+		var name_lnk := Button.new()
+		name_lnk.flat = true
+		name_lnk.text = entry["mod_name"]
+		name_lnk.clip_text = true
+		name_lnk.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		name_lnk.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		name_lnk.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var row_host := host_display_name(str(row_ref["provider"]))
+		name_lnk.tooltip_text = str(entry["mod_name"]) + ("  --  click for " + row_host + " details" if row_browsable \
+				else "  --  click to open the " + row_host + " page in your browser")
+		name_lnk.add_theme_color_override("font_color", COL_OK if entry["enabled"] else COL_TEXT_DIM)
+		name_lnk.add_theme_color_override("font_hover_color", COL_TEXT_HI)
+		name_col.add_child(name_lnk)
 		if row_browsable:
-			thumb_ref = thumb_rect
+			name_lnk.pressed.connect(_open_mods_host_detail.bind(meta_holder, row_ref))
+			# Register the row's live nodes before the meta load so paints resolve to
+			# current nodes. Appended: several rows can share one host mod.
+			var meta_rows: Array = _mods_meta_nodes.get(row_key, [])
+			meta_rows.append({
+				"thumb": thumb_ref,
+				"name_col": name_col,
+				"holder": meta_holder,
+			})
+			_mods_meta_nodes[row_key] = meta_rows
+			_mods_load_host_meta(row_ref)
+		else:
+			var captured_page := row_page_url
+			name_lnk.pressed.connect(func():
+				OS.shell_open(captured_page)
+			)
+		name_ctrl = name_lnk
+	else:
+		var name_lbl := Label.new()
+		name_lbl.text = entry["mod_name"]
+		name_lbl.clip_text = true
+		name_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		name_lbl.tooltip_text = str(entry["mod_name"])
+		name_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
+		name_lbl.add_theme_color_override("font_color", COL_OK if entry["enabled"] else COL_TEXT_DIM)
+		name_col.add_child(name_lbl)
+		name_ctrl = name_lbl
 
-		var name_col := VBoxContainer.new()
-		name_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		name_col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		row.add_child(name_col)
+	if entry["ext"] == "folder":
+		var dev_lbl := Label.new()
+		dev_lbl.text = "[dev folder]"
+		dev_lbl.add_theme_color_override("font_color", COL_ERR)
+		dev_lbl.add_theme_font_size_override("font_size", FS_BODY)
+		name_col.add_child(dev_lbl)
+	return {"name_col": name_col, "name_ctrl": name_ctrl}
 
-		# name_ctrl: clickable for hosted mods, plain Label otherwise.
-		var name_ctrl: Control
-		if row_browsable or row_page_url != "":
-			# Flat Button, not LinkButton, so clip_text keeps a long name from widening the row.
-			var name_lnk := Button.new()
-			name_lnk.flat = true
-			name_lnk.text = entry["mod_name"]
-			name_lnk.clip_text = true
-			name_lnk.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-			name_lnk.alignment = HORIZONTAL_ALIGNMENT_LEFT
-			name_lnk.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			var row_host := host_display_name(str(row_ref["provider"]))
-			name_lnk.tooltip_text = str(entry["mod_name"]) + ("  --  click for " + row_host + " details" if row_browsable \
-					else "  --  click to open the " + row_host + " page in your browser")
-			name_lnk.add_theme_color_override("font_color", COL_OK if entry["enabled"] else COL_TEXT_DIM)
-			name_lnk.add_theme_color_override("font_hover_color", COL_TEXT_HI)
-			name_col.add_child(name_lnk)
-			if row_browsable:
-				name_lnk.pressed.connect(_open_mods_host_detail.bind(meta_holder, row_ref))
-				# Register the row's live nodes before the meta load so paints resolve to
-				# current nodes. Appended: several rows can share one host mod.
-				var meta_rows: Array = _mods_meta_nodes.get(row_key, [])
-				meta_rows.append({
-					"thumb": thumb_ref,
-					"name_col": name_col,
-					"holder": meta_holder,
-				})
-				_mods_meta_nodes[row_key] = meta_rows
-				_mods_load_host_meta(row_ref)
+
+# The dependency summary line, row warnings, and the blocked or
+# check-disabled row with its quick actions.
+func _mods_row_dependency_lines(name_col: VBoxContainer, name_ctrl: Control, entry: Dictionary, row_ctx: Dictionary, tabs: TabContainer) -> void:
+	var dep_names_by_id: Dictionary = row_ctx["dep_names_by_id"]
+	var profile_editable: bool = row_ctx["profile_editable"]
+	# Dependencies: one clipped line; the actionable blocked row renders below.
+	var required_deps: Array = entry.get("required_dependencies", [])
+	var optional_deps: Array = entry.get("optional_dependencies", [])
+	var blockers_info: Array = entry.get("dependency_blockers_info", [])
+	var dep_ignored := bool(entry.get("dependency_ignored", false))
+	var dep_blocked: bool = entry["enabled"] \
+			and not (entry.get("dependency_blockers", []) as Array).is_empty()
+	if dep_blocked:
+		# The green "enabled" tint would lie. This mod won't load.
+		name_ctrl.add_theme_color_override("font_color", COL_ACCENT)
+	if required_deps.size() > 0 or optional_deps.size() > 0:
+		var named := PackedStringArray()
+		for d in required_deps:
+			named.append(_dependency_display_for_id(str(d), dep_names_by_id))
+		var dep_line := ""
+		if named.size() > 0:
+			dep_line = "needs: " + ", ".join(named)
+		if optional_deps.size() > 0:
+			if dep_line != "":
+				dep_line += "  (+%d optional)" % optional_deps.size()
 			else:
-				var captured_page := row_page_url
-				name_lnk.pressed.connect(func():
-					OS.shell_open(captured_page)
-				)
-			name_ctrl = name_lnk
-		else:
-			var name_lbl := Label.new()
-			name_lbl.text = entry["mod_name"]
-			name_lbl.clip_text = true
-			name_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-			name_lbl.tooltip_text = str(entry["mod_name"])
-			name_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
-			name_lbl.add_theme_color_override("font_color", COL_OK if entry["enabled"] else COL_TEXT_DIM)
-			name_col.add_child(name_lbl)
-			name_ctrl = name_lbl
+				dep_line = "%d optional integration(s)" % optional_deps.size()
+		var tip := PackedStringArray()
+		for d in required_deps:
+			tip.append("requires %s (%s)" % [_dependency_display_for_id(str(d), dep_names_by_id), str(d)])
+		for d in optional_deps:
+			tip.append("optional: %s (%s)" % [_dependency_display_for_id(str(d), dep_names_by_id), str(d)])
+		name_col.add_child(_make_sub_label(dep_line, COL_TEXT_DIM, "\n".join(tip)))
+	for warn_text: String in entry.get("warnings", []):
+		name_col.add_child(_make_sub_label(warn_text, COL_ACCENT, warn_text))
+	for warn_text: String in entry.get("dependency_warnings", []):
+		name_col.add_child(_make_sub_label(warn_text, COL_ACCENT, warn_text))
 
-		if entry["ext"] == "folder":
-			var dev_lbl := Label.new()
-			dev_lbl.text = "[dev folder]"
-			dev_lbl.add_theme_color_override("font_color", COL_ERR)
-			dev_lbl.add_theme_font_size_override("font_size", FS_BODY)
-			name_col.add_child(dev_lbl)
-		# Dependencies: one clipped line; the actionable blocked row renders below.
-		var required_deps: Array = entry.get("required_dependencies", [])
-		var optional_deps: Array = entry.get("optional_dependencies", [])
-		var blockers_info: Array = entry.get("dependency_blockers_info", [])
-		var dep_ignored := bool(entry.get("dependency_ignored", false))
-		var dep_blocked: bool = entry["enabled"] \
-				and not (entry.get("dependency_blockers", []) as Array).is_empty()
-		if dep_blocked:
-			# The green "enabled" tint would lie. This mod won't load.
-			name_ctrl.add_theme_color_override("font_color", COL_ACCENT)
-		if required_deps.size() > 0 or optional_deps.size() > 0:
-			var named := PackedStringArray()
-			for d in required_deps:
-				named.append(_dependency_display_for_id(str(d), dep_names_by_id))
-			var dep_line := ""
-			if named.size() > 0:
-				dep_line = "needs: " + ", ".join(named)
-			if optional_deps.size() > 0:
-				if dep_line != "":
-					dep_line += "  (+%d optional)" % optional_deps.size()
-				else:
-					dep_line = "%d optional integration(s)" % optional_deps.size()
-			var tip := PackedStringArray()
-			for d in required_deps:
-				tip.append("requires %s (%s)" % [_dependency_display_for_id(str(d), dep_names_by_id), str(d)])
-			for d in optional_deps:
-				tip.append("optional: %s (%s)" % [_dependency_display_for_id(str(d), dep_names_by_id), str(d)])
-			name_col.add_child(_make_sub_label(dep_line, COL_TEXT_DIM, "\n".join(tip)))
-		for warn_text: String in entry.get("warnings", []):
-			name_col.add_child(_make_sub_label(warn_text, COL_ACCENT, warn_text))
-		for warn_text: String in entry.get("dependency_warnings", []):
-			name_col.add_child(_make_sub_label(warn_text, COL_ACCENT, warn_text))
+	# Blocked: one orange line naming the cause plus buttons that fix it.
+	if dep_blocked and not blockers_info.is_empty():
+		var block_row := HBoxContainer.new()
+		block_row.add_theme_constant_override("separation", SP_M)
+		name_col.add_child(block_row)
+		var first: Dictionary = blockers_info[0]
+		# display already reads "Name (id)"; a dash avoids a second paren.
+		var why := "%s -- %s" % [str(first.get("display", "")),
+				_dependency_status_label(str(first.get("status", "")))]
+		if blockers_info.size() > 1:
+			why += "  +%d more" % (blockers_info.size() - 1)
+		var btip := PackedStringArray()
+		for b in blockers_info:
+			btip.append("%s -- %s" % [str(b.get("display", "")),
+					_dependency_status_label(str(b.get("status", "")))])
+			if str(b.get("status", "")) == "hidden_folder":
+				btip.append("  (turn on Developer mode to load folder mods)")
+		var bl := _make_sub_label("won't load -- needs " + why, COL_ACCENT, "\n".join(btip))
+		bl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		block_row.add_child(bl)
+		var fixable_count := 0
+		for b in blockers_info:
+			if bool(b.get("fixable", false)):
+				fixable_count += 1
+		var e_dep := entry
+		if fixable_count > 0 and profile_editable:
+			var fix_btn := _make_row_action(
+					"Enable " + ("%d dependencies" % fixable_count \
+							if fixable_count > 1 else "dependency"),
+					COL_OK,
+					"Turn on the required mod(s) -- installed, just disabled.")
+			block_row.add_child(fix_btn)
+			fix_btn.pressed.connect(func():
+				_enable_required_deps(e_dep)
+				_after_dep_action(tabs)
+			)
+		if profile_editable:
+			var anyway_btn := _make_row_action("Load anyway", COL_TEXT_DIM,
+					"Skip the dependency check for this mod in this profile.\nFor when a requirement is declared wrong or you know better.")
+			block_row.add_child(anyway_btn)
+			anyway_btn.pressed.connect(func():
+				e_dep["dependency_ignored"] = true
+				_after_dep_action(tabs)
+			)
+	elif dep_ignored and not blockers_info.is_empty():
+		# Override active while requirements are unmet: show what is ignored and the way back.
+		var ov_row := HBoxContainer.new()
+		ov_row.add_theme_constant_override("separation", SP_M)
+		name_col.add_child(ov_row)
+		var missing_names := PackedStringArray()
+		for b in blockers_info:
+			missing_names.append(str(b.get("display", "")))
+		var ov := _make_sub_label("dependency check off -- missing: " + ", ".join(missing_names),
+				COL_TEXT_DIM,
+				"This mod loads even though requirements are unmet\n(per-profile override). Re-check restores the normal rule.")
+		ov.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		ov_row.add_child(ov)
+		if profile_editable:
+			var e_dep2 := entry
+			var recheck_btn := _make_row_action("Re-check", COL_TEXT_DIM)
+			ov_row.add_child(recheck_btn)
+			recheck_btn.pressed.connect(func():
+				e_dep2["dependency_ignored"] = false
+				_after_dep_action(tabs)
+			)
 
-		# Blocked: one orange line naming the cause plus buttons that fix it.
-		if dep_blocked and not blockers_info.is_empty():
-			var block_row := HBoxContainer.new()
-			block_row.add_theme_constant_override("separation", SP_M)
-			name_col.add_child(block_row)
-			var first: Dictionary = blockers_info[0]
-			# display already reads "Name (id)"; a dash avoids a second paren.
-			var why := "%s -- %s" % [str(first.get("display", "")),
-					_dependency_status_label(str(first.get("status", "")))]
-			if blockers_info.size() > 1:
-				why += "  +%d more" % (blockers_info.size() - 1)
-			var btip := PackedStringArray()
-			for b in blockers_info:
-				btip.append("%s -- %s" % [str(b.get("display", "")),
-						_dependency_status_label(str(b.get("status", "")))])
-				if str(b.get("status", "")) == "hidden_folder":
-					btip.append("  (turn on Developer mode to load folder mods)")
-			var bl := _make_sub_label("won't load -- needs " + why, COL_ACCENT, "\n".join(btip))
-			bl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			block_row.add_child(bl)
-			var fixable_count := 0
-			for b in blockers_info:
-				if bool(b.get("fixable", false)):
-					fixable_count += 1
-			var e_dep := entry
-			if fixable_count > 0 and profile_editable:
-				var fix_btn := _make_row_action(
-						"Enable " + ("%d dependencies" % fixable_count \
-								if fixable_count > 1 else "dependency"),
-						COL_OK,
-						"Turn on the required mod(s) -- installed, just disabled.")
-				block_row.add_child(fix_btn)
-				fix_btn.pressed.connect(func():
-					_enable_required_deps(e_dep)
-					_after_dep_action(tabs)
-				)
-			if profile_editable:
-				var anyway_btn := _make_row_action("Load anyway", COL_TEXT_DIM,
-						"Skip the dependency check for this mod in this profile.\nFor when a requirement is declared wrong or you know better.")
-				block_row.add_child(anyway_btn)
-				anyway_btn.pressed.connect(func():
-					e_dep["dependency_ignored"] = true
-					_after_dep_action(tabs)
-				)
-		elif dep_ignored and not blockers_info.is_empty():
-			# Override active while requirements are unmet: show what is ignored and the way back.
-			var ov_row := HBoxContainer.new()
-			ov_row.add_theme_constant_override("separation", SP_M)
-			name_col.add_child(ov_row)
-			var missing_names := PackedStringArray()
-			for b in blockers_info:
-				missing_names.append(str(b.get("display", "")))
-			var ov := _make_sub_label("dependency check off -- missing: " + ", ".join(missing_names),
-					COL_TEXT_DIM,
-					"This mod loads even though requirements are unmet\n(per-profile override). Re-check restores the normal rule.")
-			ov.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			ov_row.add_child(ov)
-			if profile_editable:
-				var e_dep2 := entry
-				var recheck_btn := _make_row_action("Re-check", COL_TEXT_DIM)
-				ov_row.add_child(recheck_btn)
-				recheck_btn.pressed.connect(func():
-					e_dep2["dependency_ignored"] = false
-					_after_dep_action(tabs)
-				)
 
-		# Older same-id archives the dedup pass hid; name the file to delete.
-		for dup: Dictionary in entry.get("duplicates_hidden", []):
-			var dup_v_raw: String = str(dup.get("version", ""))
-			var dup_v: String = ("v" + dup_v_raw) if dup_v_raw != "" else "(unversioned)"
-			var hide_text := "older version hidden: " + str(dup["file_name"]) + " (" + dup_v + ")"
-			name_col.add_child(_make_sub_label(hide_text, COL_ACCENT, hide_text))
+# Hidden-duplicate and version-change notes, and the scanner badge.
+func _mods_row_notes(name_col: VBoxContainer, entry: Dictionary) -> void:
+	# Older same-id archives the dedup pass hid; name the file to delete.
+	for dup: Dictionary in entry.get("duplicates_hidden", []):
+		var dup_v_raw: String = str(dup.get("version", ""))
+		var dup_v: String = ("v" + dup_v_raw) if dup_v_raw != "" else "(unversioned)"
+		var hide_text := "older version hidden: " + str(dup["file_name"]) + " (" + dup_v + ")"
+		name_col.add_child(_make_sub_label(hide_text, COL_ACCENT, hide_text))
 
-		# The profile was saved with another version of this mod; show that the
-		# enabled/priority state was carried over rather than re-defaulted.
-		var vm: Dictionary = entry.get("profile_version_mismatch", {})
-		if not vm.is_empty():
-			var stored_v: String = str(vm.get("stored", ""))
-			var current_v: String = str(vm.get("current", ""))
-			var stored_disp := stored_v if stored_v != "" else "(unset)"
-			var current_disp := current_v if current_v != "" else "(unset)"
-			var vm_text := "version changed: " + stored_disp + " -> " + current_disp
-			name_col.add_child(_make_sub_label(vm_text, COL_ACCENT, vm_text))
+	# The profile was saved with another version of this mod; show that the
+	# enabled/priority state was carried over rather than re-defaulted.
+	var vm: Dictionary = entry.get("profile_version_mismatch", {})
+	if not vm.is_empty():
+		var stored_v: String = str(vm.get("stored", ""))
+		var current_v: String = str(vm.get("current", ""))
+		var stored_disp := stored_v if stored_v != "" else "(unset)"
+		var current_disp := current_v if current_v != "" else "(unset)"
+		var vm_text := "version changed: " + stored_disp + " -> " + current_disp
+		name_col.add_child(_make_sub_label(vm_text, COL_ACCENT, vm_text))
 
-		# Scanner indicator, red risk only: pattern combinations that are close
-		# to diagnostic of malware. Elevated-API findings are logged but not
-		# shown; most legitimate mods have one. Loading is never blocked.
-		var risk: int = int(entry.get("risk_level", 0))
-		if risk == 2:
-			var sec_btn := Button.new()
-			sec_btn.text = "suspicious code"
-			sec_btn.flat = true
-			sec_btn.tooltip_text = "Show what the scanner flagged in this mod"
-			sec_btn.add_theme_color_override("font_color", COL_ERR)
-			# Flat buttons have no hover stylebox; the font shift is the hover cue.
-			sec_btn.add_theme_color_override("font_hover_color", COL_ERR.lerp(COL_TEXT_HI, 0.35))
-			sec_btn.add_theme_font_size_override("font_size", FS_BODY)
-			sec_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
-			sec_btn.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
-			name_col.add_child(sec_btn)
-			var captured_entry := entry
-			sec_btn.pressed.connect(func(): _show_security_findings_dialog(captured_entry))
-		elif _entry_has_unscannable_code(entry):
-			# Not a risk verdict: the scanner could not read this mod's compiled
-			# bytecode, and no badge would read as "checked, nothing found". Dim, not
-			# red: shipping compiled code is not an accusation.
-			var unscanned_btn := Button.new()
-			unscanned_btn.text = "not scanned"
-			unscanned_btn.flat = true
-			unscanned_btn.tooltip_text = "This mod ships compiled code the scanner cannot read. Nothing was checked."
-			unscanned_btn.add_theme_color_override("font_color", COL_TEXT_DIM)
-			unscanned_btn.add_theme_color_override("font_hover_color", COL_TEXT_HI)
-			unscanned_btn.add_theme_font_size_override("font_size", FS_BODY)
-			unscanned_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
-			unscanned_btn.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
-			name_col.add_child(unscanned_btn)
-			var captured_unscanned := entry
-			unscanned_btn.pressed.connect(func(): _show_security_findings_dialog(captured_unscanned))
-
-		var spin := SpinBox.new()
-		spin.min_value = PRIORITY_MIN
-		spin.max_value = PRIORITY_MAX
-		spin.value = entry["priority"]
-		spin.custom_minimum_size.x = 100
-		spin.custom_minimum_size.y = CTRL_H
-		row.add_child(spin)
-
-		# Per-row Remove. Folder mods skip the file delete: recursive deletion of a
-		# working directory is too risky to do casually.
-		var remove_btn := Button.new()
-		remove_btn.icon = _make_trashcan_icon()
-		remove_btn.flat = true
-		remove_btn.custom_minimum_size.x = 28
-		remove_btn.disabled = entry["ext"] == "folder"
-		if entry["ext"] == "folder":
-			remove_btn.tooltip_text = "Use Open mods folder to remove dev folders"
-		else:
-			remove_btn.tooltip_text = "Permanently delete this mod"
-		row.add_child(remove_btn)
-		var captured_remove_entry := entry
-		remove_btn.pressed.connect(func():
-			_show_remove_mod_confirm(captured_remove_entry, tabs)
-		)
-
-		list.add_child(HSeparator.new())
-
-		# Capture entry by reference (Dictionaries are reference types in GDScript)
-		var e := entry
-		check.toggled.connect(func(on: bool):
-			# Disabling a mod that registers game content can stop an existing save
-			# from loading; confirm first, and revert the checkbox on cancel.
-			if not on and bool(e.get("has_registry", false)):
-				var ok: bool = await _confirm_disable_content_mod(str(e.get("mod_name", "this mod")))
-				if not ok:
-					# An async rebuild may have freed this checkbox while the dialog was open.
-					if is_instance_valid(check):
-						check.set_pressed_no_signal(true)
-					return
-			# Write to the live entry: a mid-dialog rescan replaces _ui_mod_entries
-			# with fresh dicts, and a confirmed disable must not be dropped.
-			var live := _live_entry_for_profile_key(str(e.get("profile_key", "")), e)
-			live["enabled"] = on
-			# Full rebuild: dependency state on other rows changes with the enabled set.
-			_after_dep_action(tabs)
-		)
-		spin.value_changed.connect(func(val: float):
-			# Write through the live entry: a mid-drag rescan orphans the captured `e`.
-			var live_spin := _live_entry_for_profile_key(str(e.get("profile_key", "")), e)
-			live_spin["priority"] = int(val)
-			# No rebuild here: value_changed fires per step while the arrows are held
-			# and a rebuild would destroy the SpinBox under the cursor.
-			refresh_order.call()
-			# Debounce the disk save: a held arrow fires value_changed per step and
-			# each _save_ui_config is a full ConfigFile load and rewrite.
-			_schedule_priority_save()
-		)
-
-	# The filter narrowed every row out; say so, distinct from no mods installed.
-	if not _ui_mod_entries.is_empty() and not rendered_any:
-		var no_match := Label.new()
-		no_match.text = "No mods match. Try a shorter search or turn off Hide disabled."
-		no_match.add_theme_color_override("font_color", COL_TEXT_DIM)
-		no_match.add_theme_font_size_override("font_size", FS_EMPH)
-		list.add_child(no_match)
-
-	# Restore focus to the search input after a filter-driven rebuild, deferred
-	# so the new tab is in the tree. Cleared on consume so other rebuilds do not steal focus.
-	if _mods_filter_focus_pending:
-		_mods_filter_focus_pending = false
-		filter_edit.call_deferred("grab_focus")
-		# Setting LineEdit.text resets the caret to column 0 and FOCUS_ENTER does
-		# not move it; restore the caret to end-of-text after focus lands.
-		filter_edit.call_deferred("set_caret_column", filter_edit.text.length())
-
-	refresh_order.call()
-	# Wrap in the shared tab margin so the view does not shift between tabs.
-	var margin := _make_tab_margin()
-	margin.add_child(outer)
-	return margin
+	# Scanner indicator, red risk only: pattern combinations that are close
+	# to diagnostic of malware. Elevated-API findings are logged but not
+	# shown; most legitimate mods have one. Loading is never blocked.
+	var risk: int = int(entry.get("risk_level", 0))
+	if risk == 2:
+		var sec_btn := Button.new()
+		sec_btn.text = "suspicious code"
+		sec_btn.flat = true
+		sec_btn.tooltip_text = "Show what the scanner flagged in this mod"
+		sec_btn.add_theme_color_override("font_color", COL_ERR)
+		# Flat buttons have no hover stylebox; the font shift is the hover cue.
+		sec_btn.add_theme_color_override("font_hover_color", COL_ERR.lerp(COL_TEXT_HI, 0.35))
+		sec_btn.add_theme_font_size_override("font_size", FS_BODY)
+		sec_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		sec_btn.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+		name_col.add_child(sec_btn)
+		var captured_entry := entry
+		sec_btn.pressed.connect(func(): _show_security_findings_dialog(captured_entry))
+	elif _entry_has_unscannable_code(entry):
+		# Not a risk verdict: the scanner could not read this mod's compiled
+		# bytecode, and no badge would read as "checked, nothing found". Dim, not
+		# red: shipping compiled code is not an accusation.
+		var unscanned_btn := Button.new()
+		unscanned_btn.text = "not scanned"
+		unscanned_btn.flat = true
+		unscanned_btn.tooltip_text = "This mod ships compiled code the scanner cannot read. Nothing was checked."
+		unscanned_btn.add_theme_color_override("font_color", COL_TEXT_DIM)
+		unscanned_btn.add_theme_color_override("font_hover_color", COL_TEXT_HI)
+		unscanned_btn.add_theme_font_size_override("font_size", FS_BODY)
+		unscanned_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		unscanned_btn.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+		name_col.add_child(unscanned_btn)
+		var captured_unscanned := entry
+		unscanned_btn.pressed.connect(func(): _show_security_findings_dialog(captured_unscanned))
