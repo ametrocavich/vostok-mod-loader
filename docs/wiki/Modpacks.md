@@ -1,10 +1,10 @@
 # Modpacks
 
-A modpack is a mod list shipped as one small `.zip`: which mods are on, their load order, the author's in-game mod settings, and where to download each mod from. It does not contain the mods themselves. Drop the zip into your mods folder, click **Apply**, and the launcher downloads anything you are missing and switches you to the author's setup. New in 3.3.0.
+A modpack is a mod list published on vostokmods.net: which mods are on, their load order, the author's in-game mod settings, and where to download each mod from. It does not contain the mods themselves. Get one from the Modpacks tab, click **Apply**, and the launcher downloads anything you are missing and switches you to the author's setup.
 
 The **Modpacks** tab is the third tab in the pre-launch window.
 
-Applying a pack downloads each mod from the site it came from, VostokMods or ModWorkshop. A mod can only be downloaded automatically if the pack knows where it is hosted; the rest you install by hand. A pack is a local zip you can share however you like, and VostokMods also publishes packs you can pull straight into the launcher (see [Packs from VostokMods](#packs-from-vostokmods)). Curious what is inside the zip? See [Profile-Format](Profile-Format).
+Applying a pack downloads each mod from VostokMods at the version the pack names. A mod the site cannot serve right now is listed with the reason, and you install it by hand. Curious what is inside a pack? See [Profile-Format](Profile-Format).
 
 ## Packs from VostokMods
 
@@ -19,14 +19,6 @@ A pack from the site lists VostokMods mods only. Each mod is downloaded by its s
 Packs published on the site carry their MCM settings, and applying one restores them the same way a local pack's `MCM/` folder is restored.
 
 A pack you got from the site shows `from VostokMods` in its row and a **Refresh** button. Refresh asks the site whether the pack changed (its mod list, pinned versions or settings); if it did, the local zip is rewritten and you apply it again to pick up the changes. An active pack cannot be refreshed; unload it first. The pack's details dialog has an **Open page on VostokMods** button.
-
-## Creating a modpack
-
-The **Save current profile as modpack** button on the Modpacks tab saves your active profile as `<name>.zip` in your mods folder. If a zip of that name already exists the save is refused (`A file named <name>.zip already exists in your mods folder -- pick a different modpack name`). The save dialog takes an optional author handle, remembered for next time, and a description shown on the pack's row.
-
-If any enabled mod has no known download source (nothing in its `mod.txt`, and it was not installed through Browse), the dialog warns you first. Those mods are still listed in the pack, but whoever applies it will have to install them by hand.
-
-While a modpack is active you cannot save a new one. The button is disabled with the hint `Unload the active modpack first`.
 
 ## Apply
 
@@ -43,7 +35,7 @@ Only one modpack can be active at a time. To apply a different pack, **Unload** 
 
 ## Unload
 
-Click **Unload** to go back to the setup you had before applying. Your profile, your MCM settings, and any files the pack replaced are restored.
+Click **Unload** to go back to the setup you had before applying. Your profile and your MCM settings are restored.
 
 Your edits to the pack are kept, so re-applying the same pack resumes where you left off instead of resetting to the author's defaults.
 
@@ -52,12 +44,6 @@ If the backup is missing (a corrupt or hand-edited launcher config), unload refu
 ## Re-apply
 
 Clicking **Apply** on the already-active pack re-runs only the download step, to pick up mods that failed the first time. It never overwrites your backup and never discards edits you made while the pack was active. The **Retry failed** button in the apply summary re-attempts only the downloads that failed.
-
-## Restore backup
-
-A restore point is saved automatically right before every apply. The **Restore backup** button on the Modpacks tab rolls your profiles, MCM settings, and overwritten files back to one of them. The five newest restore points are kept.
-
-Restoring is refused while a pack is active; Unload first. Unload reverts the pack's files, and restoring on top of an active pack would leave those files behind.
 
 ## While a pack is active, profile editing is limited
 
@@ -74,7 +60,7 @@ Everything below is internals. You do not need any of it to use modpacks.
 
 ### Zip layout
 
-A pack written by **Get from VostokMods** has the same layout; its `profile.json` carries three extra optional fields (`hosted`, `unavailable`, `checksums`) described in [Profile-Format](Profile-Format), and its mods are keyed `vostokmods:<slug>` until apply rewrites them to the installed mods' own keys.
+**Get from VostokMods** writes the pack as `mods/vostokmods-<slug>.zip`. Its `profile.json` carries three optional fields (`hosted`, `unavailable`, `checksums`) described in [Profile-Format](Profile-Format), and its mods are keyed `vostokmods:<slug>` until apply rewrites them to the installed mods' own keys. The launcher applies any zip in the mods folder that has `profile.json` at its root, so a pack made by hand in this layout works too.
 
 A modpack zip is:
 
@@ -88,7 +74,7 @@ MyPack.zip
 
 This is what distinguishes a modpack from a regular mod at scan time: a regular mod has `mod.txt` at the root, a modpack has `profile.json` at the root. The launcher sniffs the zip contents and routes modpacks into the Modpacks tab instead of the Mods tab.
 
-Anything else inside the zip is treated as a `user://` override file and copied into place on apply, with these exceptions, which are silently dropped so a modpack cannot tamper with launcher state: `mod_config.cfg`, `mod_pass_state.cfg`, `.profile_snapshots/`, `.modpack_backups/`, `mws_cache/`, `vmz_mount_cache/`, anything starting with `modloader_`, and any `.pck` or `.vmz` file. Paths containing `..` or starting with `/` are rejected too. `MCM/` is handled by the per-profile MCM snapshot mechanism, not the generic override copy.
+Anything else inside the zip is ignored.
 
 ### `profile.json`
 
@@ -135,7 +121,7 @@ Required fields are validated before apply touches any state: `metroprofile` mus
 
 A record with neither a resolvable `provider` + `id` nor a positive `modworkshop_id` cannot be auto-installed and appears as a missing-mod row with a reason.
 
-`sources` is built from each installed mod's `[updates] source=` (or the legacy `modworkshop=`) plus `[mod] version=`. For a mod whose `mod.txt` declares neither, the launcher uses the record it wrote when it downloaded the mod through Browse. A mod with neither gets no entry and must be installed manually on the other side. The launcher's own exports always include `version`; hand-written packs may carry only the id, in which case the current file is fetched.
+A pack from VostokMods pins every mod to the version its manifest names. A hand-written pack may carry only the id, in which case the current file is fetched.
 
 At apply time, only an exact `profile_key` match (or a case-insensitive `mod_id@version` match) counts as already installed. A different version of the same mod is treated as missing and the pinned version is fetched, landing beside the copy already there with a `-v<version>` suffix. After the downloads land, the pack's `enabled` / `priority` / `dep_ignore` keys are rewritten to the keys those mods actually have on the recipient's machine (matched by `mod_id@version`, or by the pack's source record against the installed mod's source), so a mod the author keyed by filename still enables when the host serves it under another name.
 
@@ -143,12 +129,11 @@ At apply time, only an exact `profile_key` match (or a case-insensitive `mod_id@
 
 | Path | What |
 |---|---|
-| `mods/<name>.zip` | the modpack itself (you put it there, or **Get from VostokMods** wrote it as `vostokmods-<slug>.zip`) |
+| `mods/vostokmods-<slug>.zip` | the modpack itself, written by **Get from VostokMods** |
 | `mod_config.cfg` -> `profile.modpack__<name>.*` | live state of the applied pack |
 | `mod_config.cfg` -> `profile._before_modpack_<name>.*` | pre-apply backup of your profile |
 | `user://.profile_snapshots/modpack__<name>/` | the pack's MCM |
-| `user://.profile_snapshots/_before_modpack_<name>/` | your pre-apply MCM + override snapshots + `overrides_manifest.json` |
-| `user://.modpack_backups/` | independent pre-apply restore points (five newest kept), what **Restore backup** restores |
+| `user://.profile_snapshots/_before_modpack_<name>/` | your pre-apply MCM |
 
 See [Config-Files](Config-Files) for the full key reference.
 

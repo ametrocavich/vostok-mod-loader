@@ -66,7 +66,7 @@ Godot's `ConfigFile` writes a blank line after every section header, quotes Stri
 
 | Section | Meaning |
 |---|---|
-| `[settings]` | `active_profile`: the selected profile. `developer_mode`: enables dev-only UI (folder mods, conflict report, extra diagnostics). `ui_scale`: launcher zoom, 1.0 to 2.0. `preferred_author`: remembered author handle for the save-as-modpack dialog. `active_modpack`, `modpack_backup_profile`, `modpack_backup_valid`: modpack state, see below. `test_pack_precedence`: developer test flag for the static-init mount canary; leave it unset. |
+| `[settings]` | `active_profile`: the selected profile. `developer_mode`: enables dev-only UI (folder mods, conflict report, extra diagnostics). `ui_scale`: launcher zoom, 1.0 to 2.0. `active_modpack`, `modpack_backup_profile`, `modpack_backup_valid`: modpack state, see below. `test_pack_precedence`: developer test flag for the static-init mount canary; leave it unset. |
 | `[profile.<name>.enabled]` | `profile_key -> true\|false`. The list you see checked in the UI under that profile. One section per named profile. |
 | `[profile.<name>.priority]` | `profile_key -> int` in `[-999, 999]`. A higher number loads later and wins file conflicts. |
 | `[profile.<name>.dep_ignore]` | `profile_key -> true`. The "Load anyway" dependency overrides for that profile. Sparse: only mods you told to load past a missing or disabled requirement appear, always as `=true`. New in 3.3. |
@@ -127,7 +127,7 @@ Copy `mod_config.cfg` somewhere safe. That one file holds every profile and sett
 **Copy your setup to another install**
 Two ways:
 1. Copy `mod_config.cfg` into the same path on the other machine. That carries every profile and setting.
-2. Save a modpack: in the launcher's Modpacks tab, save your current profile as a modpack (a small `.zip` listing your enabled mods), send that zip to the other machine, drop it in the mods folder and click **Apply**. Mods with a known download source are downloaded; mods without one must be installed manually. See [Modpacks](Modpacks).
+2. If your setup came from a VostokMods modpack, get and apply the same pack on the other machine. See [Modpacks](Modpacks).
 
 **Reset one profile to empty**
 Delete all of its sections: `[profile.<name>.enabled]`, `[profile.<name>.priority]`, and, if present, `[profile.<name>.dep_ignore]` and `[profile.<name>.settings]`. Keep your other profiles.
@@ -234,8 +234,7 @@ Two more `user://` directories are deliberately not in that table:
 
 | Path | Contents |
 |---|---|
-| `user://.profile_snapshots/<profile>/` | Per-profile MCM snapshot (`MCM/` tree), restored when you switch into that profile. While a modpack is active, the backup slot also stores the replaced files (`overrides/` + `overrides_manifest.json`) that **Unload** restores from (see [Modpacks](Modpacks)). Not regenerable: deleting it discards saved per-profile MCM settings and, if a modpack is active, breaks Unload's file restore. New in 3.3. |
-| `user://.modpack_backups/` | Restore points taken right before each modpack apply; the Modpacks tab's **Restore backup** button reads these. Only the 5 newest are kept. Deleting them is harmless to the game but removes your restore points. New in 3.3. |
+| `user://.profile_snapshots/<profile>/` | Per-profile MCM snapshot (`MCM/` tree), restored when you switch into that profile. Not regenerable: deleting it discards saved per-profile MCM settings. New in 3.3. |
 
 When to delete things:
 - Mod updates aren't taking effect: delete the `framework_pack_*.zip`. (The 3.0.0 stale-pack bug is fixed in 3.0.1, but manual deletion is a safe workaround.)

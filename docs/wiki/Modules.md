@@ -105,10 +105,9 @@ Scans `<exe>/mods/`, parses mod.txt into entry Dictionaries, orders them, and ow
 Modpack discovery, apply, unload. A modpack is a `.zip` in `<game>/mods/` with `profile.json` at its root; scan time routes it to the Modpacks tab. Packs published on VostokMods arrive through `hosted_modpacks.gd` and become the same local zips.
 
 - An applied pack is a regular profile under the `modpack__<sanitized_name>` prefix, so profile switching, saving and MCM snapshots need no special cases. The zip is a template read on first apply or reset.
-- Pre-apply state goes to a `_before_modpack_<sanitized_name>` profile slot plus an MCM snapshot; `[settings] active_modpack` names the single active pack. Write-once restore points land under `user://.modpack_backups` (`_snapshot_state_before_apply`, newest `MODPACK_SNAPSHOT_KEEP` kept).
-- `apply_modpack` / `_apply_modpack_inner` download missing mods through the seam (`_get_missing_mods_for_modpack`, `retry_failed_downloads`), then `_modpack_reconcile_profile_keys` rewrites the pack's `.enabled` / `.priority` / `.dep_ignore` keys to the profile keys of the mods that actually landed. `unload_modpack` restores the backup slot; `_restore_apply_snapshot` is the Restore backup button, refused while a pack is active.
-- `_materialize_modpack_profile` is the live parser of `profile.json`. Its sole writer is `_profile_to_json_string` in `ui.gd`.
-- Packs may ship file overrides; `_apply_modpack_overrides` copies them under `user://` with a deny list (`MODPACK_OVERRIDE_DENY_PREFIXES`, which includes `mws_cache/`, and no `.pck` / `.vmz`).
+- Pre-apply state goes to a `_before_modpack_<sanitized_name>` profile slot plus an MCM snapshot; `[settings] active_modpack` names the single active pack.
+- `apply_modpack` / `_apply_modpack_inner` download missing mods through the seam (`_get_missing_mods_for_modpack`, `retry_failed_downloads`), then `_modpack_reconcile_profile_keys` rewrites the pack's `.enabled` / `.priority` / `.dep_ignore` keys to the profile keys of the mods that actually landed. `unload_modpack` restores the backup slot.
+- `_materialize_modpack_profile` is the live parser of `profile.json`. Its writer is `_hosted_manifest_to_profile` in `hosted_modpacks.gd`.
 
 
 ### [hosted_modpacks.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hosted_modpacks.gd)
@@ -136,18 +135,17 @@ The launcher window shown before the game starts. Four tabs (Mods, Browse, Modpa
 
 | File | Owns |
 |---|---|
-| `ui.gd` | `show_mod_ui` and the window chrome, `refresh_launch_button_label`, `_launch_vanilla_once`, profiles and `mod_config.cfg` I/O (`_load_ui_config`, `_save_ui_config`, `_apply_profile_to_entries`, `_switch_profile`, the MCM snapshot mechanic), `_profile_to_json_string` and `_export_profile_to_zip`, the shared thumbnail cell and image loader, `_markdown_to_bbcode`, `_json_truthy`, and the loader's own update check |
+| `ui.gd` | `show_mod_ui` and the window chrome, `refresh_launch_button_label`, `_launch_vanilla_once`, profiles and `mod_config.cfg` I/O (`_load_ui_config`, `_save_ui_config`, `_apply_profile_to_entries`, `_switch_profile`, the MCM snapshot mechanic), the shared thumbnail cell and image loader, `_markdown_to_bbcode`, `_json_truthy`, and the loader's own update check |
 | `ui_theme.gd` | The `COL_*` / `FS_*` / `SP_*` tokens (the VostokMods site palette: dark grey surfaces, one accent green, one success green, one red), `make_dark_theme`, the `style_*` voices, the badge and banner builders, the code-drawn glyphs |
 | `ui_dialogs.gd` | `_attach_ui_dialog` and the dialog plumbing, `_await_dialog_choice`, the content-mod disable confirm, the New / Rename / Delete profile dialogs |
 | `ui_mods.gd` | `build_mods_tab` and `_rebuild_mods_tab`, the host meta sidecar (`mods_meta_v2.json`), the security findings dialog, the row Remove confirm |
 | `ui_browse.gd` | `build_browse_tab`, the per-host landing snapshots (`landing_<host>.json`), `_browse_render_mod_row`, the Browse detail dialog |
-| `ui_modpacks.gd` | `build_modpacks_tab`, row rendering, the apply flow and progress dialog, the failure and retry dialogs, the pack detail dialog, the VostokMods pack picker, the restore-point picker, the save-as-modpack dialog |
+| `ui_modpacks.gd` | `build_modpacks_tab`, row rendering, the apply flow and progress dialog, the failure and retry dialogs, the pack detail dialog, the VostokMods pack picker |
 | `ui_updates.gd` | `build_updates_tab`, the module-scope session state it restores on every show, `_updates_arm_row_update`, `check_updates_for_ui` |
 
 - `refresh_launch_button_label` counts what will actually load, not what is checked, so a dependency-blocked mod does not promise a modded session: `"Launch modded"` when at least one enabled mod is loadable, `"Launch unmodded (%d blocked)"` when everything enabled is blocked, `"Launch"` when nothing is enabled.
 - `_launch_vanilla_once` writes the `DISABLED_ONCE_FILE` sentinel, calls `_static_force_vanilla_state`, and restarts into a clean Pass 1 with `--modloader-restart` stripped. Mod checkboxes stay as they were.
 - Profiles: `_load_ui_config`, `_save_ui_config`, `_apply_profile_to_entries`, `_delete_active_profile`, `_rename_profile`, with `PROFILE_SUBSECTIONS` naming the four per-profile sections (`.enabled`, `.priority`, `.settings`, `.dep_ignore`). `_load_developer_mode_setting` lives here too.
-- `_profile_to_json_string` writes `profile.json`; `_export_profile_to_zip` / `save_profile_as_modpack` (modpacks.gd) package it.
 - Caches under `user://mws_cache/`: `thumbs/` for host images, `landing_<host>.json` for each host's Browse landing snapshot (`_browse_landing_snapshot_store`), `mods_meta_v2.json` for the Mods-tab detail sidecar.
 - The self-update check reads the GitHub releases API for `MODLOADER_GITHUB_REPO` and shows a link to the release page.
 - `_mark_mod_set_changed` flips `_dirty_since_boot` after a post-boot download, update or modpack fetch, so closing the reopened launcher restarts into the new mod set.

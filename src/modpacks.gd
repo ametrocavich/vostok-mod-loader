@@ -13,55 +13,32 @@
 ##   [settings] modpack_backup_profile profile to restore on unload
 ##   [settings] modpack_backup_valid   apply wrote a (possibly empty) backup
 ##
-## States (owners: apply_modpack, unload_modpack, the boot reconciler in ui.gd
-## _load_ui_config, and _restore_apply_snapshot, refused while a pack is active):
+## States (owners: apply_modpack, unload_modpack and the boot reconciler in
+## ui.gd _load_ui_config):
 ##   no pack      active_modpack is ""; stale backup sections are erased by the next apply.
 ##   downloading  awaiting missing-mod downloads; no state touched yet. Serialized
 ##                by _modpack_apply_in_progress; Cancel sets _modpack_apply_cancelled.
 ##   mutating     _apply_modpack_inner's numbered steps, fresh apply only:
-##                0. independent restore point, 1. copy the active profile into the
-##                backup slot and set active_modpack early (the crash trigger the
-##                reconciler keys off), 2. materialize the modpack__ profile from the
-##                zip if absent, 3. apply overrides, 4. _switch_profile into the slot,
-##                5. re-assert active_modpack. A failure after step 1 leaves the flag
-##                set; the next boot's reconciler clears it.
+##                1. copy the active profile into the backup slot and set
+##                active_modpack early (the crash trigger the reconciler keys off),
+##                2. materialize the modpack__ profile from the zip if absent,
+##                3. _switch_profile into the slot, 4. re-assert active_modpack.
+##                A failure after step 1 leaves the flag set; the next boot's
+##                reconciler clears it.
 ##   active       active_profile is the slot. Re-apply is downloads-only.
 ##   unloading    aborts untouched when the backup is gone; else restore backup
-##                sections, clear flags, restore overrides from the manifest,
-##                _switch_profile back, restore the pre-pack MCM, wipe the slot dir.
+##                sections, clear flags, _switch_profile back, restore the
+##                pre-pack MCM, wipe the slot dir.
 ##
-## Invariants: downloads strictly precede state mutation; the independent
-## restore point (user://.modpack_backups/) is never consumed by the state
-## machine, only pruned; reconciler recovery never deletes the backup slot; at
-## most one pack is active at a time.
+## Invariants: downloads strictly precede state mutation; reconciler recovery
+## never deletes the backup slot; at most one pack is active at a time.
 
 const MODPACK_PROFILE_PREFIX := "modpack__"
 const MODPACK_BACKUP_PREFIX := "_before_modpack_"
 
-# Write-once restore points taken before a modpack apply; newest MODPACK_SNAPSHOT_KEEP kept.
-const MODPACK_SNAPSHOT_DIR := "user://.modpack_backups"
-const MODPACK_SNAPSHOT_KEEP := 5
-
 # Mutex for the modpack apply flow; prevents concurrent applies racing on cfg
 # writes + the backup slot. UI also gates Apply buttons on it.
 var _modpack_apply_in_progress: bool = false
-
-# Zip paths with these prefixes (relative to user://) are dropped during apply:
-# a pack must not touch the loader's state files, snapshot dirs or caches.
-const MODPACK_OVERRIDE_DENY_PREFIXES: Array[String] = [
-	"mod_config.cfg",          # the launcher's config -- modpack profile is its own slot
-	".profile_snapshots/",     # backup snapshots
-	".modpack_backups/",       # pre-apply restore points -- packs must not poison them
-	"mws_cache/",              # Browse-tab thumbnail / API cache
-	"vmz_mount_cache/",        # archive mount tmpdir
-	"modloader_",              # heartbeat, safe-mode, conflicts, hooks, etc.
-	# The one loader state file without the modloader_ prefix; boot.gd mounts the
-	# paths in it before the scanner runs. Keep in sync with PASS_STATE_PATH.
-	"mod_pass_state.cfg",
-]
-
-# Mountable resource-pack formats; boot.gd hands exactly these to load_resource_pack().
-const MODPACK_OVERRIDE_DENY_EXTENSIONS: Array[String] = ["pck", "vmz"]
 
 # Profiles the modpack system manages internally; hidden from the dropdown.
 func _is_modpack_managed_profile(profile_name: String) -> bool:
@@ -76,8 +53,8 @@ func _count_truthy(d: Dictionary) -> int:
 			count += 1
 	return count
 
-# profile.json carries the metroprofile v1 schema; sole writer is
-# _profile_to_json_string (ui.gd). See docs/wiki/Profile-Format.md.
+# profile.json carries the metroprofile v1 schema; the writer is
+# _hosted_manifest_to_profile (hosted_modpacks.gd). See docs/wiki/Profile-Format.md.
 
 # Pre-apply validation of the zip and schema. Returns {ok, error, enabled_count, total_count}.
 func _validate_modpack(entry: Dictionary) -> Dictionary:
@@ -228,361 +205,6 @@ func get_active_modpack() -> String:
 	if cfg.load(UI_CONFIG_PATH) != OK:
 		return ""
 	return str(cfg.get_value("settings", "active_modpack", ""))
-
-# Vet a path inside the modpack zip and return the normalized form callers
-# must write, or "" when denied (traversal, loader state, resource packs).
-# It returns the path, not a bool: the OS resolves "./x" and "x" to the same
-# file, so the gate and the write must use the same string.
-func _modpack_override_rel(rel: String) -> String:
-	# Lowercase only for matching (Windows is case-insensitive).
-	var norm := rel.replace("\\", "/").simplify_path()
-	var probe := norm.to_lower()
-	if norm.is_empty():
-		return ""
-	# simplify_path turns a bare "./" into "." -- a directory, not a file.
-	if probe == "." or probe.ends_with("/"):
-		return ""
-	# A leading ".." survives simplify_path, so check after normalizing.
-	if probe.contains(".."):
-		return ""
-	# Drive letters / NTFS alternate data streams; legit entries have no ":".
-	if probe.contains(":"):
-		return ""
-	if probe.begins_with("/"):
-		return ""
-	# MCM/ goes through the per-profile MCM snapshot mechanic, not overrides.
-	if probe.begins_with("mcm/"):
-		return ""
-	# profile.json is the schema, not an override.
-	if probe == "profile.json":
-		return ""
-	if probe.get_extension() in MODPACK_OVERRIDE_DENY_EXTENSIONS:
-		return ""
-	for prefix in MODPACK_OVERRIDE_DENY_PREFIXES:
-		if probe.begins_with(prefix):
-			return ""
-	return norm
-
-# Apply the pack's non-MCM, non-profile.json files as user:// overrides,
-# snapshotting originals and a manifest into the backup slot. Returns the count applied.
-func _apply_modpack_overrides(entry: Dictionary, backup_profile: String) -> int:
-	var file_path: String = str(entry.get("file_path", ""))
-	if file_path.is_empty():
-		return 0
-	var reader := ZIPReader.new()
-	if reader.open(file_path) != OK:
-		return 0
-
-	var backup_root := MCM_SNAPSHOT_BASE.path_join(backup_profile)
-	var overrides_root := backup_root.path_join("overrides")
-	var manifest := {"replaced": [] as Array, "added": [] as Array}
-	var applied := 0
-
-	for raw_f in reader.get_files():
-		if raw_f.ends_with("/"):
-			continue
-		# Write and record the vetted spelling, never raw_f: unload replays the manifest.
-		var f := _modpack_override_rel(raw_f)
-		if f.is_empty():
-			continue
-		var bytes := reader.read_file(raw_f)
-		var user_path := "user://" + f
-		var existed := FileAccess.file_exists(user_path)
-		if existed:
-			var bk_path := overrides_root.path_join(f)
-			DirAccess.make_dir_recursive_absolute(bk_path.get_base_dir())
-			var backed_up := false
-			var orig := FileAccess.open(user_path, FileAccess.READ)
-			if orig != null:
-				var orig_bytes := orig.get_buffer(orig.get_length())
-				orig.close()
-				var bk_f := FileAccess.open(bk_path, FileAccess.WRITE)
-				if bk_f != null:
-					backed_up = bk_f.store_buffer(orig_bytes)
-					bk_f.close()
-			if not backed_up:
-				_log_warning("[Modpack] could not snapshot original '" + f
-						+ "' to the backup slot -- skipping this override (user file left untouched)")
-				continue
-			(manifest["replaced"] as Array).append(f)
-		else:
-			(manifest["added"] as Array).append(f)
-		DirAccess.make_dir_recursive_absolute(user_path.get_base_dir())
-		var dst := FileAccess.open(user_path, FileAccess.WRITE)
-		if dst != null:
-			dst.store_buffer(bytes)
-			dst.close()
-			applied += 1
-
-	reader.close()
-
-	# A failed manifest write is loud: unload would restore per a stale manifest.
-	# The pre-apply restore point still covers recovery, so warn, don't abort.
-	DirAccess.make_dir_recursive_absolute(backup_root)
-	var manifest_path := backup_root.path_join("overrides_manifest.json")
-	var mf := FileAccess.open(manifest_path, FileAccess.WRITE)
-	if mf != null:
-		if not mf.store_string(JSON.stringify(manifest, "  ")):
-			_log_warning("[Modpack] FAILED writing overrides manifest " + manifest_path
-					+ " (disk full?) -- Unload may not restore overridden files; use the Restore button if needed")
-		mf.close()
-	else:
-		_log_warning("[Modpack] could NOT write overrides manifest " + manifest_path
-				+ " -- Unload will not restore the " + str(applied)
-				+ " override file(s) just applied; use the Restore button if needed")
-
-	return applied
-
-# Reverse _apply_modpack_overrides via the manifest. No-op without one.
-func _restore_modpack_overrides(backup_profile: String) -> bool:
-	var backup_root := MCM_SNAPSHOT_BASE.path_join(backup_profile)
-	var manifest_path := backup_root.path_join("overrides_manifest.json")
-	if not FileAccess.file_exists(manifest_path):
-		return true
-	var mf := FileAccess.open(manifest_path, FileAccess.READ)
-	if mf == null:
-		# Originals may sit in overrides/ unlocatable; the slot must survive.
-		return false
-	var content := mf.get_as_text()
-	mf.close()
-	var parsed_v: Variant = JSON.parse_string(content)
-	if not (parsed_v is Dictionary):
-		return false
-	var manifest: Dictionary = parsed_v
-
-	var overrides_root := backup_root.path_join("overrides")
-
-	var all_ok := true
-	var replaced: Array = manifest.get("replaced", []) if manifest.get("replaced") is Array else []
-	for path_v in replaced:
-		var rel: String = str(path_v)
-		var bk_path := overrides_root.path_join(rel)
-		var user_path := "user://" + rel
-		if not FileAccess.file_exists(bk_path):
-			# The apply-time snapshot never captured it; nothing recoverable.
-			continue
-		var src := FileAccess.open(bk_path, FileAccess.READ)
-		if src == null:
-			all_ok = false
-			continue
-		var bytes := src.get_buffer(src.get_length())
-		src.close()
-		DirAccess.make_dir_recursive_absolute(user_path.get_base_dir())
-		var dst := FileAccess.open(user_path, FileAccess.WRITE)
-		if dst != null:
-			# A partial write is a failure, or unload wipes the slot with the original half-restored.
-			if not dst.store_buffer(bytes):
-				all_ok = false
-			dst.close()
-		else:
-			all_ok = false
-
-	var added: Array = manifest.get("added", []) if manifest.get("added") is Array else []
-	for path_v in added:
-		var rel: String = str(path_v)
-		var user_path := "user://" + rel
-		if FileAccess.file_exists(user_path):
-			DirAccess.remove_absolute(user_path)
-
-	return all_ok
-
-# --- Independent pre-apply restore points: a write-once snapshot the state
-# machine never touches, the Restore button's safety net.
-
-# Capture mod_config.cfg, live user://MCM/ and the files this pack will
-# overwrite into user://.modpack_backups/<pack>_<timestamp>/. Never blocks the apply.
-func _snapshot_state_before_apply(entry: Dictionary) -> String:
-	var sanitized: String = str(entry.get("sanitized_name", "pack"))
-	# Filesystem-safe sortable timestamp: 2026-06-30T14-22-08
-	var stamp := Time.get_datetime_string_from_system().replace(":", "-")
-	var snap_root := MODPACK_SNAPSHOT_DIR.path_join(sanitized + "_" + stamp)
-	if DirAccess.make_dir_recursive_absolute(snap_root) != OK:
-		_log_warning("[Modpack] could NOT create restore point dir " + snap_root
-				+ " -- apply will proceed WITHOUT a restore point")
-		return ""
-
-	var captured := 0
-
-	# 1. Profiles + settings.
-	var cfg_copy_failed := false
-	if FileAccess.file_exists(UI_CONFIG_PATH):
-		if DirAccess.copy_absolute(UI_CONFIG_PATH, snap_root.path_join("mod_config.cfg")) == OK:
-			captured += 1
-		else:
-			cfg_copy_failed = true
-			_log_warning("[Modpack] restore point: failed to copy mod_config.cfg into " + snap_root)
-
-	# 2. Live MCM tree. If it did not exist, restore must wipe rather than skip (mcm_absent).
-	var mcm_existed := DirAccess.dir_exists_absolute(MCM_SOURCE_DIR)
-	if _copy_dir_recursive(MCM_SOURCE_DIR, snap_root.path_join("MCM")):
-		captured += 1
-
-	# 3. Files the pack will overwrite (for revert) and add (so restore can delete them).
-	var added: Array = []
-	var file_path: String = str(entry.get("file_path", ""))
-	if not file_path.is_empty():
-		var reader := ZIPReader.new()
-		if reader.open(file_path) == OK:
-			var ov_root := snap_root.path_join("overrides")
-			for raw_f in reader.get_files():
-				if raw_f.ends_with("/"):
-					continue
-				# Same normalization as _apply_modpack_overrides.
-				var f := _modpack_override_rel(raw_f)
-				if f.is_empty():
-					continue
-				var user_path := "user://" + f
-				if FileAccess.file_exists(user_path):
-					var dst := ov_root.path_join(f)
-					DirAccess.make_dir_recursive_absolute(dst.get_base_dir())
-					if DirAccess.copy_absolute(user_path, dst) == OK:
-						captured += 1
-				else:
-					added.append(f)
-			reader.close()
-
-	# Marker for the restore UI; "added" lets restore delete pack-added files.
-	var meta := {
-		"pack": sanitized,
-		"created": Time.get_datetime_string_from_system(),
-		"added": added,
-		"mcm_absent": not mcm_existed,
-	}
-	var mf := FileAccess.open(snap_root.path_join("snapshot.json"), FileAccess.WRITE)
-	if mf != null:
-		mf.store_string(JSON.stringify(meta, "  "))
-		mf.close()
-	else:
-		_log_warning("[Modpack] restore point: failed to write snapshot.json in " + snap_root)
-
-	# Don't leave an empty dir masquerading as a restore point in the picker.
-	if captured == 0 and FileAccess.file_exists(UI_CONFIG_PATH):
-		_log_warning("[Modpack] restore point captured NOTHING -- removing " + snap_root
-				+ "; apply will proceed WITHOUT a restore point")
-		_remove_dir_recursive(snap_root)
-		return ""
-
-	# Without mod_config.cfg the snapshot cannot restore profiles; delete it.
-	if cfg_copy_failed:
-		_log_warning("[Modpack] restore point is missing mod_config.cfg -- removing " + snap_root
-				+ "; apply will proceed WITHOUT a restore point")
-		_remove_dir_recursive(snap_root)
-		return ""
-
-	_log_info("[Modpack] pre-apply restore point saved: " + snap_root + " (" + str(captured) + " item(s))")
-	_prune_apply_snapshots()
-	return snap_root
-
-# Saved pre-apply restore points, newest first: {name, path, pack, created, sort_key}.
-func _list_apply_snapshots() -> Array:
-	var out: Array = []
-	if not DirAccess.dir_exists_absolute(MODPACK_SNAPSHOT_DIR):
-		return out
-	var dir := DirAccess.open(MODPACK_SNAPSHOT_DIR)
-	if dir == null:
-		return out
-	dir.list_dir_begin()
-	while true:
-		var name := dir.get_next()
-		if name == "":
-			break
-		if not dir.current_is_dir():
-			continue
-		var path := MODPACK_SNAPSHOT_DIR.path_join(name)
-		var pack := name
-		var created := ""
-		var meta_path := path.path_join("snapshot.json")
-		if FileAccess.file_exists(meta_path):
-			var mfr := FileAccess.open(meta_path, FileAccess.READ)
-			if mfr != null:
-				var parsed_v: Variant = JSON.parse_string(mfr.get_as_text())
-				mfr.close()
-				if parsed_v is Dictionary:
-					pack = str((parsed_v as Dictionary).get("pack", name))
-					created = str((parsed_v as Dictionary).get("created", ""))
-		out.append({"name": name, "path": path, "pack": pack, "created": created})
-	dir.list_dir_end()
-	# Sort by timestamp, not folder name, or prune could delete a newer snapshot.
-	# Falls back to the folder name's stamp when snapshot.json is missing.
-	for s_v in out:
-		var s: Dictionary = s_v
-		var key := str(s["created"]).replace(":", "-")
-		if key == "":
-			var nm := str(s["name"])
-			key = nm.substr(maxi(0, nm.length() - 19))
-		s["sort_key"] = key
-	out.sort_custom(func(a, b):
-		return str(a["sort_key"]) > str(b["sort_key"]))
-	return out
-
-# Keep the most recent MODPACK_SNAPSHOT_KEEP restore points; delete older ones.
-func _prune_apply_snapshots() -> void:
-	var snaps := _list_apply_snapshots()
-	for i in range(snaps.size()):
-		if i >= MODPACK_SNAPSHOT_KEEP:
-			_remove_dir_recursive(str(snaps[i]["path"]))
-
-# A restore point's snapshot.json, or {} when missing or malformed.
-func _read_snapshot_meta(snap_path: String) -> Dictionary:
-	var meta_path := snap_path.path_join("snapshot.json")
-	if not FileAccess.file_exists(meta_path):
-		return {}
-	var mfr := FileAccess.open(meta_path, FileAccess.READ)
-	if mfr == null:
-		return {}
-	var parsed_v: Variant = JSON.parse_string(mfr.get_as_text())
-	mfr.close()
-	if parsed_v is Dictionary:
-		return parsed_v as Dictionary
-	return {}
-
-# Restore a pre-apply snapshot over live user:// state; keeps a .bak of the cfg. {ok, error}.
-func _restore_apply_snapshot(snap_path: String) -> Dictionary:
-	if not DirAccess.dir_exists_absolute(snap_path):
-		return {"ok": false, "error": "Snapshot folder no longer exists"}
-
-	# 1. mod_config.cfg. If absent the capture failed; restoring the rest would
-	# be a mixed state reported as a clean revert. Refuse before mutating.
-	var cfg_snap := snap_path.path_join("mod_config.cfg")
-	if not FileAccess.file_exists(cfg_snap):
-		return {"ok": false, "error": "This restore point is incomplete and cannot restore your profiles and settings. Nothing was changed -- pick a different restore point."}
-	if FileAccess.file_exists(UI_CONFIG_PATH):
-		DirAccess.copy_absolute(UI_CONFIG_PATH, UI_CONFIG_PATH + ".bak")
-	if DirAccess.copy_absolute(cfg_snap, UI_CONFIG_PATH) != OK:
-		return {"ok": false, "error": "Failed to restore mod_config.cfg"}
-
-	# 2. Live MCM tree (wholesale replace so deleted-since files don't linger).
-	var mcm_snap := snap_path.path_join("MCM")
-	if DirAccess.dir_exists_absolute(mcm_snap):
-		_remove_dir_recursive(MCM_SOURCE_DIR)
-		_copy_dir_recursive(mcm_snap, MCM_SOURCE_DIR)
-	elif bool(_read_snapshot_meta(snap_path).get("mcm_absent", false)):
-		# user://MCM/ did not exist at snapshot time; whatever is there came from the pack.
-		_remove_dir_recursive(MCM_SOURCE_DIR)
-
-	# 3. Override files back to user://, via the dot-inclusive walker.
-	var ov_root := snap_path.path_join("overrides")
-	if DirAccess.dir_exists_absolute(ov_root):
-		_copy_dir_recursive(ov_root, "user://", true)
-
-	# 4. Delete files the pack added (recorded in snapshot.json).
-	var meta_path := snap_path.path_join("snapshot.json")
-	if FileAccess.file_exists(meta_path):
-		var mfr := FileAccess.open(meta_path, FileAccess.READ)
-		if mfr != null:
-			var parsed_v: Variant = JSON.parse_string(mfr.get_as_text())
-			mfr.close()
-			if parsed_v is Dictionary:
-				var added_v: Variant = (parsed_v as Dictionary).get("added", [])
-				if added_v is Array:
-					for rel_v in (added_v as Array):
-						var ap := "user://" + str(rel_v)
-						if FileAccess.file_exists(ap):
-							DirAccess.remove_absolute(ap)
-
-	_log_info("[Modpack] restored pre-apply snapshot: " + snap_path)
-	return {"ok": true, "error": ""}
-
 
 # Mods the pack declares that are not installed at the pinned version.
 # Returns [{profile_key, ref, version, source}]; ref is {} when no host is named.
@@ -957,8 +579,6 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 		}
 
 	if not is_reapply:
-		# Independent restore point before any mutation.
-		_snapshot_state_before_apply(entry)
 		# 1. Back up the current profile's sections to the backup slot.
 		var pre_active := _active_profile
 		var cfg := ConfigFile.new()
@@ -1010,13 +630,10 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 				_persist_ui_cfg(cfg)
 				return mat_result
 
-		# 3. Apply override files, snapshotting originals into the backup slot.
-		_apply_modpack_overrides(entry, backup_profile)
-
-		# 4. Switch to the modpack profile (handles the MCM swap).
+		# 3. Switch to the modpack profile (handles the MCM swap).
 		_switch_profile(modpack_profile)
 
-		# 5. Re-assert active_modpack (the switch rewrote cfg), but only when the
+		# 4. Re-assert active_modpack (the switch rewrote cfg), but only when the
 		# reload succeeded; the flag is already on disk from step 1.
 		var cfg5_err := cfg.load(UI_CONFIG_PATH)
 		if cfg5_err == OK:
@@ -1163,24 +780,21 @@ func unload_modpack(tabs: TabContainer) -> Dictionary:
 	cfg.set_value("settings", "active_modpack", "")
 	_persist_ui_cfg(cfg)
 
-	# 3. Restore override files from the manifest (MCM/ never appears in it).
-	var overrides_ok := _restore_modpack_overrides(backup_profile)
-
-	# 4. Switch to the pre-active profile; step 5 overwrites its MCM.
+	# 3. Switch to the pre-active profile; step 4 overwrites its MCM.
 	_switch_profile(pre_active)
 
-	# 5. Restore the pre-modpack MCM from the backup snapshot, the authoritative copy.
+	# 4. Restore the pre-modpack MCM from the backup snapshot, the authoritative copy.
 	var mcm_ok := true
 	if _has_mcm_snapshot(backup_profile):
 		mcm_ok = _restore_mcm_from(backup_profile)
 
-	# 6. Wipe the backup slot, only once both restores consumed it.
-	if overrides_ok and mcm_ok:
+	# 5. Wipe the backup slot, only once the MCM restore consumed it.
+	if mcm_ok:
 		_remove_dir_recursive(MCM_SNAPSHOT_BASE.path_join(backup_profile))
 	else:
-		_log_warning("[Modpack] unload: backup-slot restore incomplete (overrides_ok=" + str(overrides_ok) + ", mcm_ok=" + str(mcm_ok) + ") -- leaving " + MCM_SNAPSHOT_BASE.path_join(backup_profile) + " in place; it will be cleaned up by the next apply/unload")
+		_log_warning("[Modpack] unload: MCM restore incomplete -- leaving " + MCM_SNAPSHOT_BASE.path_join(backup_profile) + " in place; it will be cleaned up by the next apply/unload")
 
-	# 7. Refresh the Mods tab.
+	# 6. Refresh the Mods tab.
 	if is_instance_valid(tabs):
 		_rebuild_mods_tab(tabs)
 
@@ -1245,22 +859,3 @@ func retry_failed_downloads(failures: Array, progress: Callable = Callable()) ->
 		_mark_mod_set_changed()
 	_modpack_apply_in_progress = false
 	return {"downloaded": newly_downloaded, "failures": still_failed, "cancelled": _modpack_apply_cancelled}
-
-
-# Save the named profile as a modpack zip in <game>/mods/; refuses to overwrite.
-func save_profile_as_modpack(profile_name: String, modpack_name: String = "", description: String = "", author: String = "") -> Dictionary:
-	if _mods_dir.is_empty():
-		_mods_dir = OS.get_executable_path().get_base_dir().path_join(MOD_DIR)
-	# The pack name drives the zip filename and profile.json "name"; defaults to the profile name.
-	var pack_name := modpack_name.strip_edges() if modpack_name.strip_edges() != "" else profile_name
-	var safe := _sanitize_profile_name(pack_name)
-	if safe.is_empty():
-		return {"ok": false, "error": "Invalid modpack name"}
-	var output := _mods_dir.path_join(safe + ".zip")
-	if FileAccess.file_exists(output):
-		return {"ok": false, "error": "A file named " + safe + ".zip already exists in your mods folder -- pick a different modpack name"}
-	var res := _export_profile_to_zip(profile_name, output, description, author, pack_name)
-	if bool(res.get("ok", false)):
-		res["path"] = output
-		res["display_name"] = pack_name
-	return res

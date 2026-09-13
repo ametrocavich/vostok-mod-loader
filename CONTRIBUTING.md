@@ -19,7 +19,7 @@ src/
   host_mws.gd              # ModWorkshop adapter
   host_vostokmods.gd       # VostokMods adapter (the default host)
   mod_discovery.gd         # scan mods, parse metadata, ordering, downloads
-  modpacks.gd              # modpack scan/apply/unload + restore points
+  modpacks.gd              # modpack scan/apply/unload
   hosted_modpacks.gd       # packs published on VostokMods, turned into local pack zips
   mod_loading.gd           # mount + apply mods at runtime
   conflict_report.gd       # developer-mode diagnostics
@@ -256,8 +256,8 @@ so nothing else changes.
 
 The metroprofile v1 payload has one writer and one live reader:
 
-- writer: `src/ui.gd: _profile_to_json_string`, reached through
-  `_export_profile_to_zip` from `save_profile_as_modpack` (modpacks.gd).
+- writer: `src/hosted_modpacks.gd: _hosted_manifest_to_profile`, packed by
+  `_hosted_write_pack_zip`.
 - reader: `src/modpacks.gd: _materialize_modpack_profile` (modpack apply).
   `_validate_modpack` checks the schema before apply touches any state, and
   `_modpack_sources` reads the `sources` map for the download loop and the

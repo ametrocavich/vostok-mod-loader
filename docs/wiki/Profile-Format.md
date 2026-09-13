@@ -6,7 +6,7 @@ Changing the shape of v1 would break every modpack zip already shared. A breakin
 
 ## Container
 
-The JSON is plain UTF-8 `profile.json` at the root of a modpack zip, next to an optional `MCM/` tree mirroring `user://MCM/`. The writer is `_export_profile_to_zip` (ui.gd). Pre-apply validation is `_validate_modpack` (modpacks.gd), which rejects a zip with a missing, empty or non-object `profile.json`, a wrong `metroprofile` version, or a missing `name` / `enabled`.
+The JSON is plain UTF-8 `profile.json` at the root of a modpack zip, next to an optional `MCM/` tree mirroring `user://MCM/`. The writer is `_hosted_write_pack_zip` (hosted_modpacks.gd), fed by `_hosted_manifest_to_profile`. Pre-apply validation is `_validate_modpack` (modpacks.gd), which rejects a zip with a missing, empty or non-object `profile.json`, a wrong `metroprofile` version, or a missing `name` / `enabled`.
 
 ## JSON schema
 
@@ -43,9 +43,7 @@ The JSON is plain UTF-8 `profile.json` at the root of a modpack zip, next to an 
 | `unavailable` | no | Dictionary | `profile_key -> reason` for mods the site listed but could not serve when the pack was fetched (`scanning`, `no_files`, `removed`). Apply reports these instead of downloading. |
 | `checksums` | no | Dictionary | `profile_key -> sha256 hex` for mods whose file checksum the site published. The download is refused if the bytes do not match. |
 
-Like `sources`, the `priority` and `dep_ignore` dictionaries are filtered to the enabled set on export.
-
-This JSON has one writer (`_profile_to_json_string` in ui.gd) and several readers in modpacks.gd and ui.gd. Profile-state fields (`enabled` / `priority` / `dep_ignore`) must be read by the single state consumer `_materialize_modpack_profile` (modpacks.gd) or they silently drop on apply. Metadata fields (`name`, `description`, `author`, `sources`) have their own readers (`_build_modpack_entry`, `_get_missing_mods_for_modpack`, the modpack detail dialog). `_validate_modpack` checks schema, `name` and `enabled` before apply.
+This JSON has one writer (`_hosted_manifest_to_profile` in hosted_modpacks.gd) and several readers in modpacks.gd and ui.gd. Profile-state fields (`enabled` / `priority` / `dep_ignore`) must be read by the single state consumer `_materialize_modpack_profile` (modpacks.gd) or they silently drop on apply. Metadata fields (`name`, `description`, `author`, `sources`) have their own readers (`_build_modpack_entry`, `_get_missing_mods_for_modpack`, the modpack detail dialog). `_validate_modpack` checks schema, `name` and `enabled` before apply.
 
 ## Profile key format
 
@@ -78,11 +76,11 @@ Parsers written against v1 will exist in the wild indefinitely. To keep them par
 
 - `_validate_modpack` rejects malformed zips, missing or damaged `profile.json`, a wrong schema version, and a missing `name` / `enabled` before any state is touched.
 - `priority` values are clamped to `[-999, 999]` (`PRIORITY_MIN` / `PRIORITY_MAX`) in `_materialize_modpack_profile`, so a crafted payload cannot break load-order sort stability. The UI spinbox already enforces this range on save.
-- The pack `name` is re-sanitized on the reader side: `_build_modpack_entry` derives the profile slot with `_sanitize_profile_name`, and both `save_profile_as_modpack` and apply reject an empty sanitized name with `Invalid modpack name`.
+- The pack `name` is re-sanitized on the reader side: `_build_modpack_entry` derives the profile slot with `_sanitize_profile_name`, and apply rejects an empty sanitized name with `Invalid modpack name`.
 
 ## See also
 
 - [Mod-Format](Mod-Format): the `mod.txt` schema that generates `profile_key` identities.
-- [Modpacks](Modpacks): the user-facing save / share / apply flow.
-- `_profile_to_json_string` + `_export_profile_to_zip` (src/ui.gd): the write path.
+- [Modpacks](Modpacks): the user-facing get / apply flow.
+- `_hosted_manifest_to_profile` + `_hosted_write_pack_zip` (src/hosted_modpacks.gd): the write path.
 - `_validate_modpack` + `_materialize_modpack_profile` (src/modpacks.gd): the read / apply path.

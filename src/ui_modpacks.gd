@@ -1,177 +1,9 @@
 ## ----- ui_modpacks.gd -----
-## The Modpacks tab: rows, the apply flow and its dialogs, hosted packs, restore points.
+## The Modpacks tab: rows, the apply flow and its dialogs, hosted packs.
 
 # Recursion guard for _rebuild_modpacks_tab: child moves fire tab_changed,
 # whose listener calls _rebuild_modpacks_tab again.
 var _rebuilding_modpacks_tab: bool = false
-
-# Save-as-modpack dialog: name, author and description inputs plus a warning
-# list of enabled mods with no source. One ScrollContainer holds the body.
-func _show_save_modpack_dialog(profile_to_save: String, orphans: Array, tabs: TabContainer) -> void:
-	var has_orphans := not orphans.is_empty()
-	var d := ConfirmationDialog.new()
-	d.title = "Save partial modpack?" if has_orphans else "Save as modpack"
-	# Sized so name, author and description fit; clamped to the launcher.
-	d.min_size = _dialog_fit_size(Vector2i(600, 520 if has_orphans else 420))
-	d.max_size = Vector2i(780, 600)
-
-	var outer_scroll := ScrollContainer.new()
-	outer_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	outer_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	d.add_child(outer_scroll)
-
-	var box := VBoxContainer.new()
-	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	box.add_theme_constant_override("separation", SP_M)
-	outer_scroll.add_child(box)
-
-	# A modpack is a shareable list of mods, not a bundle of the files.
-	var intro := Label.new()
-	intro.text = "A modpack is a shareable list of your enabled mods -- not the mod files themselves. Send the saved file to anyone: when they apply it they get this exact setup, and the mods download automatically from the site each one came from."
-	intro.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	intro.add_theme_color_override("font_color", COL_TEXT)
-	intro.add_theme_font_size_override("font_size", FS_BODY)
-	box.add_child(intro)
-	box.add_child(HSeparator.new())
-
-	var name_hdr := Label.new()
-	name_hdr.text = "Modpack name:"
-	name_hdr.add_theme_font_size_override("font_size", FS_BODY)
-	name_hdr.add_theme_color_override("font_color", COL_TEXT_DIM)
-	box.add_child(name_hdr)
-
-	var name_input := LineEdit.new()
-	name_input.placeholder_text = "Name for this modpack"
-	name_input.text = profile_to_save
-	name_input.custom_minimum_size.y = CTRL_H
-	name_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	box.add_child(name_input)
-
-	var from_lbl := Label.new()
-	from_lbl.text = "Mods taken from profile: " + profile_to_save
-	from_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
-	from_lbl.add_theme_font_size_override("font_size", FS_META)
-	box.add_child(from_lbl)
-
-	var author_hdr := Label.new()
-	author_hdr.text = "Author (optional):"
-	author_hdr.add_theme_font_size_override("font_size", FS_BODY)
-	author_hdr.add_theme_color_override("font_color", COL_TEXT_DIM)
-	box.add_child(author_hdr)
-
-	var author_input := LineEdit.new()
-	author_input.placeholder_text = "Your modder name or handle"
-	author_input.text = _load_preferred_author()
-	author_input.custom_minimum_size.y = CTRL_H
-	author_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	box.add_child(author_input)
-
-	var desc_hdr := Label.new()
-	desc_hdr.text = "Description (optional, shown in the Modpacks tab):"
-	desc_hdr.add_theme_font_size_override("font_size", FS_BODY)
-	desc_hdr.add_theme_color_override("font_color", COL_TEXT_DIM)
-	box.add_child(desc_hdr)
-
-	var desc_input := TextEdit.new()
-	desc_input.placeholder_text = "e.g. \"Tarkov-style loot economy + harder AI\""
-	desc_input.custom_minimum_size = Vector2(520, 100)
-	desc_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	desc_input.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
-	desc_input.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
-	box.add_child(desc_input)
-
-	if has_orphans:
-		box.add_child(HSeparator.new())
-		var warn_hdr := Label.new()
-		warn_hdr.text = "%d enabled mod(s) have no download source:" % orphans.size()
-		warn_hdr.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		warn_hdr.add_theme_color_override("font_color", COL_ACCENT)
-		box.add_child(warn_hdr)
-
-		var footer := Label.new()
-		footer.text = "Without a download source, these mods can't auto-download when someone applies the modpack -- recipients install them manually."
-		footer.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		footer.add_theme_color_override("font_color", COL_TEXT_DIM)
-		footer.add_theme_font_size_override("font_size", FS_BODY)
-		box.add_child(footer)
-
-		var list := VBoxContainer.new()
-		list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		list.add_theme_constant_override("separation", SP_XS)
-		box.add_child(list)
-
-		for o_v in orphans:
-			if not (o_v is Dictionary):
-				continue
-			var o: Dictionary = o_v
-			var lbl := Label.new()
-			lbl.text = "  - %s  (%s)" % [str(o.get("mod_name", "?")), str(o.get("profile_key", "?"))]
-			lbl.add_theme_font_size_override("font_size", FS_BODY)
-			lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-			lbl.tooltip_text = lbl.text.strip_edges()
-			lbl.mouse_filter = Control.MOUSE_FILTER_PASS
-			list.add_child(lbl)
-
-	d.ok_button_text = "Save anyway" if has_orphans else "Save modpack"
-	# Keep the dialog open until the save succeeds so a name collision does not destroy the form.
-	d.dialog_hide_on_ok = false
-	var err_lbl := Label.new()
-	err_lbl.add_theme_color_override("font_color", COL_ERR)
-	err_lbl.add_theme_font_size_override("font_size", FS_BODY)
-	err_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	err_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	d.add_child(err_lbl)
-	_attach_ui_dialog(d)
-	if has_orphans:
-		style_dialog_danger_button(d.get_ok_button())
-	else:
-		style_dialog_primary_button(d.get_ok_button())
-	_connect_dialog_exits(d,
-		func():
-			var pack_name := name_input.text.strip_edges()
-			var desc := desc_input.text
-			var author := author_input.text.strip_edges()
-			if pack_name == "":
-				pack_name = profile_to_save
-			_save_preferred_author(author)
-			# Save before freeing the dialog: on failure the form survives.
-			var result := save_profile_as_modpack(profile_to_save, pack_name, desc, author)
-			if not bool(result.get("ok", false)):
-				err_lbl.text = str(result.get("error", "unknown"))
-				return
-			d.queue_free()
-			_rebuild_modpacks_tab(tabs)
-			_show_modpack_saved_dialog(
-				str(result.get("display_name", pack_name)),
-				int(result.get("mod_count", 0)),
-				str(result.get("path", ""))),
-		func(): d.queue_free())
-	d.popup_centered()
-
-# Post-save confirmation for "Save as modpack": what was saved, where, and
-# how to share it. OK opens the mods folder; Close dismisses.
-func _show_modpack_saved_dialog(display_name: String, mod_count: int, path: String) -> void:
-	var d := ConfirmationDialog.new()
-	d.title = "Modpack saved"
-	var count_phrase := ""
-	if mod_count == 1:
-		count_phrase = " with 1 mod"
-	elif mod_count > 1:
-		count_phrase = " with %d mods" % mod_count
-	var where := "\n\n" + path if path != "" else ""
-	d.dialog_text = "Saved \"%s\"%s to your mods folder.%s\n\nTo share it, send that file to anyone. When they drop it in their mods folder and open the Modpacks tab, they apply it in one click -- the mods download automatically." \
-			% [display_name, count_phrase, where]
-	d.ok_button_text = "Open mods folder"
-	d.get_cancel_button().text = "Close"
-	_attach_ui_dialog(d)
-	style_dialog_primary_button(d.get_ok_button())
-	_connect_dialog_exits(d,
-		func():
-			if not _mods_dir.is_empty():
-				OS.shell_open(ProjectSettings.globalize_path(_mods_dir))
-			d.queue_free(),
-		func(): d.queue_free())
-	d.popup_centered()
 
 # Modpack-apply failure summary: per-failure rows with an open-page button
 # when the host has one, and "Retry failed" for the failed downloads.
@@ -317,76 +149,6 @@ func _run_modpack_retry(failures: Array, tabs: TabContainer) -> void:
 	else:
 		_show_modpack_failure_dialog(dl, still_failed, tabs)
 
-# Restore-point picker: lists the pre-apply snapshots newest first and
-# restores the chosen one (mod_config.cfg, MCM and saved override files).
-func _show_restore_snapshot_dialog(tabs: TabContainer) -> void:
-	# Snapshots are captured with no pack active; restoring over an active pack
-	# would leave its override files live and untracked. Unload first.
-	var active_pack := get_active_modpack()
-	if active_pack != "":
-		_show_error_dialog("Modpack active",
-				"Unload the active modpack (\"" + active_pack + "\") before restoring a backup. Unload reverts the pack's files first; restoring on top of an active pack would leave its files behind.")
-		return
-	var snaps := _list_apply_snapshots()
-	if snaps.is_empty():
-		_show_error_dialog("No restore points",
-				"No automatic restore points have been saved yet. One is created before each modpack apply.")
-		return
-
-	var d := ConfirmationDialog.new()
-	d.title = "Restore backup"
-	d.ok_button_text = "Restore backup"
-	d.dialog_hide_on_ok = false
-
-	var form := VBoxContainer.new()
-	form.custom_minimum_size = Vector2(440, 0)
-	form.add_theme_constant_override("separation", SP_M)
-	d.add_child(form)
-
-	var prompt := Label.new()
-	prompt.text = "Restore your mod state to a point saved automatically before a modpack was applied. This overwrites your current profiles, mod settings (MCM), and any files a modpack replaced."
-	prompt.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	form.add_child(prompt)
-
-	var picker := OptionButton.new()
-	for s: Dictionary in snaps:
-		var created: String = str(s.get("created", ""))
-		var label: String = str(s.get("pack", "modpack"))
-		if created != "":
-			label += "   (" + created + ")"
-		picker.add_item(label)
-	if picker.item_count > 0:
-		picker.select(0)
-	form.add_child(picker)
-
-	_attach_ui_dialog(d)
-	style_dialog_primary_button(d.get_ok_button())
-	_connect_dialog_exits(d,
-		func():
-			var idx := picker.selected
-			if idx < 0 or idx >= snaps.size():
-				d.queue_free()
-				return
-			var chosen: Dictionary = snaps[idx]
-			var result := _restore_apply_snapshot(str(chosen["path"]))
-			d.queue_free()
-			if not bool(result.get("ok", false)):
-				_show_error_dialog("Could not restore backup", str(result.get("error", "unknown")))
-				return
-			var rcfg := ConfigFile.new()
-			rcfg.load(UI_CONFIG_PATH)
-			_active_profile = str(rcfg.get_value("settings", "active_profile", _active_profile))
-			_reload_entries_for_active_profile()
-			_rebuild_mods_tab(tabs)
-			_rebuild_modpacks_tab(tabs)
-			# The restore rewrote cfg and MCM on disk; a post-boot session restarts into it.
-			if _boot_complete:
-				_dirty_since_boot = true
-			_show_accept_dialog("Backup restored", "Your mod state was restored from the selected backup."),
-		func():
-			d.queue_free())
-	d.popup_centered()
-
 func build_modpacks_tab(tabs: TabContainer) -> Control:
 	var margin := _make_tab_margin()
 
@@ -402,28 +164,11 @@ func build_modpacks_tab(tabs: TabContainer) -> Control:
 	container.add_child(hdr_row)
 
 	var hdr := Label.new()
-	hdr.text = "Modpacks in your mods folder"
+	hdr.text = "Modpacks"
 	hdr.add_theme_font_size_override("font_size", FS_HEAD)
 	hdr.add_theme_color_override("font_color", COL_TEXT_HI)
 	hdr.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hdr_row.add_child(hdr)
-
-	# Export the current profile as a modpack zip; disabled while a pack is active.
-	var save_modpack_btn := Button.new()
-	save_modpack_btn.text = "Save current profile as modpack"
-	save_modpack_btn.tooltip_text = "Save your currently-enabled mods as one shareable modpack file. Anyone you send it to gets this exact setup in one click."
-	var save_disabled_reason := ""
-	if active_modpack != "":
-		save_disabled_reason = "Unload the active modpack first"
-	save_modpack_btn.disabled = save_disabled_reason != ""
-	if save_disabled_reason != "":
-		save_modpack_btn.tooltip_text = save_disabled_reason
-	hdr_row.add_child(save_modpack_btn)
-	save_modpack_btn.pressed.connect(func():
-		var profile_to_save := _active_profile
-		var orphans := _enabled_mods_without_source()
-		_show_save_modpack_dialog(profile_to_save, orphans, tabs)
-	)
 
 	var hosted_btn := Button.new()
 	hosted_btn.text = "Get from VostokMods"
@@ -431,27 +176,6 @@ func build_modpacks_tab(tabs: TabContainer) -> Control:
 	hdr_row.add_child(hosted_btn)
 	hosted_btn.pressed.connect(func():
 		_show_hosted_packs_dialog(tabs)
-	)
-
-	var open_folder_btn := Button.new()
-	open_folder_btn.text = "Open mods folder"
-	open_folder_btn.tooltip_text = "Drop modpack zips into this folder -- they appear in the list next time you open this tab."
-	hdr_row.add_child(open_folder_btn)
-	open_folder_btn.pressed.connect(func():
-		OS.shell_open(ProjectSettings.globalize_path(_mods_dir))
-	)
-
-	# Restore from an automatic pre-apply snapshot; disabled until one exists.
-	var restore_btn := Button.new()
-	restore_btn.text = "Restore backup"
-	var apply_snaps := _list_apply_snapshots()
-	restore_btn.disabled = apply_snaps.is_empty()
-	restore_btn.tooltip_text = ("No restore points yet -- one is saved automatically before each modpack apply" \
-			if apply_snaps.is_empty() \
-			else "Roll back profiles, mod settings, and overwritten files to a point saved before a modpack was applied")
-	hdr_row.add_child(restore_btn)
-	restore_btn.pressed.connect(func():
-		_show_restore_snapshot_dialog(tabs)
 	)
 
 	container.add_child(HSeparator.new())
@@ -673,7 +397,6 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 	if dl_count > 0:
 		msg += "\nWill download %d mod(s)." % dl_count
 	msg += "\n\nYour current state is backed up -- click Unload to restore."
-	msg += "\nA restore point is also saved automatically (Restore backup) in case anything goes wrong."
 	var cd := ConfirmationDialog.new()
 	cd.title = "Apply modpack"
 	cd.dialog_text = msg

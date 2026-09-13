@@ -124,12 +124,11 @@ func _load_ui_config() -> void:
 	var mp_dirty := false
 	if _is_modpack_managed_profile(_active_profile) \
 			and _active_profile != MODPACK_PROFILE_PREFIX + active_mp:
-		# Restore override files and roll live MCM back to the pre-apply
-		# snapshot, keyed off the slot name since active_mp may be blank; without
-		# the rollback the next profile switch would capture the pack's MCM.
+		# Roll live MCM back to the pre-apply snapshot, keyed off the slot name
+		# since active_mp may be blank; without the rollback the next profile
+		# switch would capture the pack's MCM.
 		if _active_profile.begins_with(MODPACK_PROFILE_PREFIX):
 			var bslot := MODPACK_BACKUP_PREFIX + _active_profile.trim_prefix(MODPACK_PROFILE_PREFIX)
-			_restore_modpack_overrides(bslot)
 			if _has_mcm_snapshot(bslot):
 				_restore_mcm_from(bslot)
 		var users := _list_user_profiles_in_cfg(cfg)
@@ -140,8 +139,7 @@ func _load_ui_config() -> void:
 		_log_warning("[Modpack] Recovered from a stranded managed slot -> profile '%s'" % _active_profile)
 	elif active_mp != "" and _active_profile != MODPACK_PROFILE_PREFIX + active_mp:
 		# active_modpack set but its slot never reached (crash between apply and
-		# _switch_profile): best-effort restore via the manifest, then clear the flag.
-		_restore_modpack_overrides(MODPACK_BACKUP_PREFIX + active_mp)
+		# _switch_profile): clear the flag.
 		active_mp = ""
 		mp_dirty = true
 	if mp_dirty:
@@ -614,29 +612,26 @@ func _has_mcm_snapshot(profile_name: String) -> bool:
 
 # Recursively copy src/ -> dst/, replacing dst/. Returns true when the source
 # had at least one entry; false if it didn't exist or was empty. Dot-prefixed
-# entries are skipped unless include_hidden is set; the profile and MCM swaps
-# rely on the skip, the modpack restore points need the hidden files back.
-func _copy_dir_recursive(src: String, dst: String, include_hidden: bool = false) -> bool:
+# entries are skipped; the profile and MCM swaps rely on that.
+func _copy_dir_recursive(src: String, dst: String) -> bool:
 	if not DirAccess.dir_exists_absolute(src):
 		return false
 	DirAccess.make_dir_recursive_absolute(dst)
 	var dir := DirAccess.open(src)
 	if dir == null:
 		return false
-	# On Linux/macOS dot entries are hidden and omitted by default.
-	dir.include_hidden = include_hidden
 	var any := false
 	dir.list_dir_begin()
 	while true:
 		var name := dir.get_next()
 		if name == "":
 			break
-		if name.begins_with(".") and not include_hidden:
+		if name.begins_with("."):
 			continue
 		var src_full := src.path_join(name)
 		var dst_full := dst.path_join(name)
 		if dir.current_is_dir():
-			_copy_dir_recursive(src_full, dst_full, include_hidden)
+			_copy_dir_recursive(src_full, dst_full)
 			any = true
 		else:
 			var src_f := FileAccess.open(src_full, FileAccess.READ)
@@ -737,72 +732,6 @@ func _build_profile_sources() -> Dictionary:
 		sources[str(entry["profile_key"])] = _mod_source_payload(rec)
 	return sources
 
-# Persisted author name auto-filling the save-as-modpack dialog; "" if unset.
-func _load_preferred_author() -> String:
-	return str(_get_ui_cfg_value("settings", "preferred_author", ""))
-
-# Persist the preferred author for future modpack saves; empty clears it.
-func _save_preferred_author(author: String) -> void:
-	_set_ui_cfg_value("settings", "preferred_author", author)
-
-
-# Enabled mods with no known host. They export without download info, so
-# the save-as-modpack confirm warns about them. Each is {mod_name, profile_key}.
-func _enabled_mods_without_source() -> Array:
-	var out: Array = []
-	var persisted := _get_persisted_mod_sources()
-	for entry in _ui_mod_entries:
-		if not bool(entry.get("enabled", false)):
-			continue
-		if _entry_host_ref(entry, persisted).is_empty():
-			out.append({
-				"mod_name": str(entry.get("mod_name", "?")),
-				"profile_key": str(entry.get("profile_key", "?")),
-			})
-	return out
-
-# Build a profile zip at output_path: profile.json plus the MCM snapshot.
-# Returns {"ok": true, "mod_count": int} or {"error": "..."}; cleans up partial output.
-func _export_profile_to_zip(profile_name: String, output_path: String, description: String = "", author: String = "", display_name: String = "") -> Dictionary:
-	var json_str := _profile_to_json_string(profile_name, description, author, display_name)
-	if json_str == "":
-		return {"error": "Active profile has no data to save."}
-
-	var packer := ZIPPacker.new()
-	if packer.open(output_path) != OK:
-		return {"error": "Cannot write to that location."}
-
-	if packer.start_file("profile.json") != OK:
-		packer.close()
-		if FileAccess.file_exists(output_path):
-			DirAccess.remove_absolute(output_path)
-		return {"error": "Failed to write profile.json."}
-	var wrote_json := packer.write_file(json_str.to_utf8_buffer())
-	packer.close_file()
-	if wrote_json != OK:
-		packer.close()
-		if FileAccess.file_exists(output_path):
-			DirAccess.remove_absolute(output_path)
-		return {"error": "Failed while writing the modpack (out of disk space?)."}
-
-	var mcm_ok := true
-	if DirAccess.dir_exists_absolute(MCM_SOURCE_DIR):
-		mcm_ok = _zip_folder_recursive(packer, MCM_SOURCE_DIR, "MCM")
-
-	# close() writes the central directory; a failure here or an incomplete
-	# MCM snapshot means a corrupt pack, so do not report success.
-	var close_err := packer.close()
-	if close_err != OK or not mcm_ok:
-		if FileAccess.file_exists(output_path):
-			DirAccess.remove_absolute(output_path)
-		return {"error": "The modpack could not be written completely. Check disk space and try again."}
-	# Count enabled mods from the payload just written; a parse failure reads as 0.
-	var mod_count := 0
-	var parsed_v: Variant = JSON.parse_string(json_str)
-	if parsed_v is Dictionary and (parsed_v as Dictionary).get("enabled") is Dictionary:
-		mod_count = ((parsed_v as Dictionary)["enabled"] as Dictionary).size()
-	return {"ok": true, "mod_count": mod_count}
-
 # Write an MCM data map (relative_path -> bytes) into a profile's snapshot
 # slot. Creates the dir even when mcm_data is empty, or _has_mcm_snapshot
 # would be false and _switch_profile would seed from the previous profile.
@@ -823,75 +752,6 @@ func _write_mcm_snapshot_from_data(profile_name: String, mcm_data: Dictionary) -
 		if not f.store_buffer(bytes):
 			_log_warning("[MCM] Failed writing " + dst + " (disk full?) -- snapshot incomplete")
 		f.close()
-
-# The metroprofile v1 schema is fixed; docs/wiki/Profile-Format.md has the
-# full spec. Changes to the export/import shape require a schema version
-# bump so old parsers reject cleanly.
-
-# Serialize the named profile to a JSON string; "" if it has no stored
-# sections. Sole writer of the metroprofile v1 payload: profile-state fields
-# must be read by _materialize_modpack_profile (modpacks.gd) or they drop.
-# New fields stay optional per docs/wiki/Profile-Format.md.
-func _profile_to_json_string(profile_name: String, description: String = "", author: String = "", display_name: String = "") -> String:
-	# display_name is the payload "name"; profile_name selects the sections read.
-	var src := ConfigFile.new()
-	if src.load(UI_CONFIG_PATH) != OK:
-		return ""
-	var en_sec := _profile_sec(profile_name, ".enabled")
-	var pr_sec := _profile_sec(profile_name, ".priority")
-	if not src.has_section(en_sec):
-		return ""
-	# Only enabled mods go in; the pack never tracks mods the author was not using.
-	var enabled: Dictionary = {}
-	for key: String in src.get_section_keys(en_sec):
-		if bool(src.get_value(en_sec, key)):
-			enabled[key] = true
-	var priority: Dictionary = {}
-	if src.has_section(pr_sec):
-		for key: String in src.get_section_keys(pr_sec):
-			if enabled.has(key):
-				priority[key] = int(str(src.get_value(pr_sec, key)))
-	# dep_ignore overrides, sparse; optional v1 field.
-	var dep_ignore: Dictionary = {}
-	var ig_sec := _profile_sec(profile_name, ".dep_ignore")
-	if src.has_section(ig_sec):
-		for key: String in src.get_section_keys(ig_sec):
-			if bool(src.get_value(ig_sec, key)) and enabled.has(key):
-				dep_ignore[key] = true
-	var payload := {
-		"metroprofile":      1,
-		"name":              display_name.strip_edges() if display_name.strip_edges() != "" else profile_name,
-		"modloader_version": MODLOADER_VERSION,
-		"exported_at":       Time.get_datetime_string_from_system(),
-		"enabled":           enabled,
-		"priority":          priority,
-	}
-	var desc_clean := description.strip_edges()
-	if not desc_clean.is_empty():
-		payload["description"] = desc_clean
-	var author_clean := author.strip_edges()
-	if not author_clean.is_empty():
-		payload["author"] = author_clean
-	# Sources for enabled mods only. `enabled` keys come from disk and source
-	# keys are live profile_keys; the two can disagree on version or id casing,
-	# so also match on a lowercased id-prefix.
-	var sources := _build_profile_sources()
-	var enabled_ids: Dictionary = {}
-	for k: String in enabled:
-		var at := k.find("@")
-		if at > 0:
-			enabled_ids[k.substr(0, at).to_lower()] = true
-	var enabled_sources: Dictionary = {}
-	for src_key: String in sources:
-		var s_at := src_key.find("@")
-		if enabled.has(src_key) \
-				or (s_at > 0 and enabled_ids.has(src_key.substr(0, s_at).to_lower())):
-			enabled_sources[src_key] = sources[src_key]
-	if not enabled_sources.is_empty():
-		payload["sources"] = enabled_sources
-	if not dep_ignore.is_empty():
-		payload["dep_ignore"] = dep_ignore
-	return JSON.stringify(payload, "  ")
 
 # Profile keys the active profile references whose mod is not in
 # _ui_mod_entries. Keys whose id prefix matches an installed mod at another
