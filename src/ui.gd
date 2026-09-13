@@ -1114,6 +1114,57 @@ func _delete_mod_file_and_cleanup(entry: Dictionary) -> bool:
 
 
 func show_mod_ui() -> void:
+	var win := _ui_create_window()
+	var root := _ui_window_root(win)
+	var close_btn := _ui_build_header(root, win)
+
+	var tabs := TabContainer.new()
+	tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	root.add_child(tabs)
+
+	root.add_child(HSeparator.new())
+	var launch_btn := _ui_build_bottom_bar(root, win)
+
+	# Closing the window with X should behave the same as clicking Launch.
+	win.close_requested.connect(func(): launch_btn.pressed.emit())
+	close_btn.pressed.connect(func(): launch_btn.pressed.emit())
+	# _wire_hint needs _ui_hint_label, which the bottom bar set above.
+	_wire_hint(close_btn, "Close the launcher and launch the game (same as Launch).")
+
+	# Fire-and-forget self-update check; guards on is_instance_valid after the await.
+	_check_modloader_update_async()
+
+	_ui_add_tabs(tabs)
+	refresh_launch_button_label()
+
+	# Launch loop: red-scored enabled mods require an explicit confirm;
+	# cancel returns to the launcher.
+	while true:
+		await launch_btn.pressed
+		var red_mods := _enabled_red_mods()
+		if red_mods.is_empty():
+			break
+		var proceed: bool = await _confirm_red_launch(red_mods)
+		if proceed:
+			break
+	_ui_window = null
+	_ui_hint_label = null
+	_ui_launch_btn = null
+	_ui_update_alert_btn = null
+	_ui_mods_scroll = null
+	_ui_modpacks_scroll = null
+	_ui_updates_scroll = null
+	_ui_updates_check_btn = null
+	# Drop the host API response cache (session-only). Disk-cached thumbnails
+	# stay: immutable storage keys are valid indefinitely.
+	_host_cache.clear()
+	# Row nodes die with the window; a meta fetch resolving after close paints nothing.
+	_mods_meta_nodes.clear()
+	win.queue_free()
+
+
+# The borderless, always-on-top launcher Window with its scrim and theme.
+func _ui_create_window() -> Window:
 	var win := Window.new()
 	win.title = "Road to Vostok -- Mod Loader"
 	# Borderless: the header plate carries the title, close X and drag. Title kept for alt-tab.
@@ -1152,20 +1203,29 @@ func show_mod_ui() -> void:
 	# Theme on the Window itself so child Windows (popups, dialogs) inherit it.
 	var dark_theme := make_dark_theme()
 	win.theme = dark_theme
+	return win
 
+
+# The padded root VBox every launcher section hangs off.
+func _ui_window_root(win: Window) -> VBoxContainer:
 	var margin := MarginContainer.new()
 	margin.add_theme_constant_override("margin_left", SP_L)
 	margin.add_theme_constant_override("margin_right", SP_L)
 	margin.add_theme_constant_override("margin_top", SP_M)
 	margin.add_theme_constant_override("margin_bottom", SP_L)
 	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	margin.theme = dark_theme
+	margin.theme = win.theme
 	win.add_child(margin)
 
 	var root := VBoxContainer.new()
 	root.add_theme_constant_override("separation", SP_M)
 	margin.add_child(root)
+	return root
 
+
+# Header plate: title, version link, close button and window drag. Returns
+# the close button so the caller can wire it to Launch.
+func _ui_build_header(root: VBoxContainer, win: Window) -> Button:
 	# Equipment plate header; the one FS_TITLE use in the UI.
 	var header := PanelContainer.new()
 	var header_s := StyleBoxFlat.new()
@@ -1229,13 +1289,12 @@ func show_mod_ui() -> void:
 		elif ev is InputEventMouseMotion and drag["on"]:
 			win.position = DisplayServer.mouse_get_position() - drag["grab"]
 	)
+	return close_btn
 
-	var tabs := TabContainer.new()
-	tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	root.add_child(tabs)
 
-	root.add_child(HSeparator.new())
-
+# Hint line, Launch vanilla and Launch. Returns the Launch button, which the
+# caller awaits.
+func _ui_build_bottom_bar(root: VBoxContainer, win: Window) -> Button:
 	var bottom := HBoxContainer.new()
 	bottom.add_theme_constant_override("separation", SP_M)
 	root.add_child(bottom)
@@ -1273,15 +1332,8 @@ func show_mod_ui() -> void:
 	bottom.add_child(launch_btn)
 	_ui_launch_btn = launch_btn
 	_wire_hint(launch_btn, "Launch the game with the active profile's mods. Restarts the game.")
+	return launch_btn
 
-	# Closing the window with X should behave the same as clicking Launch.
-	win.close_requested.connect(func(): launch_btn.pressed.emit())
-	close_btn.pressed.connect(func(): launch_btn.pressed.emit())
-	# _wire_hint needs _ui_hint_label, which the bottom bar set above.
-	_wire_hint(close_btn, "Close the launcher and launch the game (same as Launch).")
-
-	# Fire-and-forget self-update check; guards on is_instance_valid after the await.
-	_check_modloader_update_async()
 
 	# --- Tab contract ---
 	# Each tab is built by a build_*_tab(tabs) -> Control function and added
@@ -1292,7 +1344,7 @@ func show_mod_ui() -> void:
 	# add and name it below, and add a rebuild or on-show refresh if other
 	# surfaces can change its state. A name mismatch fails silently: the
 	# rebuild helpers skip and the tab goes stale.
-
+func _ui_add_tabs(tabs: TabContainer) -> void:
 	var mods_tab := build_mods_tab(tabs)
 	mods_tab.name = UI_TAB_MODS
 	tabs.add_child(mods_tab)
@@ -1328,33 +1380,6 @@ func show_mod_ui() -> void:
 			_mods_badges_dirty = false
 			_rebuild_mods_tab(tabs)
 	)
-
-	refresh_launch_button_label()
-
-	# Launch loop: red-scored enabled mods require an explicit confirm;
-	# cancel returns to the launcher.
-	while true:
-		await launch_btn.pressed
-		var red_mods := _enabled_red_mods()
-		if red_mods.is_empty():
-			break
-		var proceed: bool = await _confirm_red_launch(red_mods)
-		if proceed:
-			break
-	_ui_window = null
-	_ui_hint_label = null
-	_ui_launch_btn = null
-	_ui_update_alert_btn = null
-	_ui_mods_scroll = null
-	_ui_modpacks_scroll = null
-	_ui_updates_scroll = null
-	_ui_updates_check_btn = null
-	# Drop the host API response cache (session-only). Disk-cached thumbnails
-	# stay: immutable storage keys are valid indefinitely.
-	_host_cache.clear()
-	# Row nodes die with the window; a meta fetch resolving after close paints nothing.
-	_mods_meta_nodes.clear()
-	win.queue_free()
 
 # Launch button label reflects whether anything will load.
 func refresh_launch_button_label() -> void:
