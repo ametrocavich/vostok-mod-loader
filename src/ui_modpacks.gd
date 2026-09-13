@@ -500,6 +500,62 @@ func _modpacks_render_row(entry: Dictionary, active_modpack: String, tabs: TabCo
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", SP_L)
 
+	var hosted: Dictionary = entry.get("hosted", {}) if entry.get("hosted") is Dictionary else {}
+	var is_hosted := str(hosted.get("slug", "")) != ""
+	_modpacks_row_info(row, entry, is_hosted)
+
+	var sanitized: String = str(entry.get("sanitized_name", ""))
+	var is_active: bool = active_modpack != "" and active_modpack == sanitized
+	var another_active: bool = active_modpack != "" and active_modpack != sanitized
+
+	var details_btn := Button.new()
+	details_btn.text = "Details"
+	details_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(details_btn)
+	var captured_entry_for_detail := entry
+	var captured_active := active_modpack
+	details_btn.pressed.connect(func():
+		_show_modpack_detail_dialog(captured_entry_for_detail, captured_active, tabs)
+	)
+	_wire_hint(details_btn, "Open the modpack's full mod list and description.")
+
+	if is_hosted:
+		_modpacks_row_refresh_button(row, entry, tabs, is_active)
+
+	if is_active:
+		var active_lbl := Label.new()
+		active_lbl.text = "Active"
+		active_lbl.add_theme_font_size_override("font_size", FS_META)
+		active_lbl.add_theme_color_override("font_color", COL_TEXT_HI)
+		active_lbl.add_theme_stylebox_override("normal", _make_badge_stylebox(COL_OK, COL_OK_DIM))
+		active_lbl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(active_lbl)
+
+		var unload_btn := Button.new()
+		unload_btn.text = "Unload"
+		style_danger_button(unload_btn)
+		unload_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(unload_btn)
+		unload_btn.pressed.connect(func(): _unload_modpack_with_feedback(tabs))
+	else:
+		var apply_btn := Button.new()
+		apply_btn.text = "Apply"
+		# Primary styling is reserved for the detail dialog's Apply and the confirm OK.
+		apply_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		apply_btn.disabled = another_active
+		if another_active:
+			apply_btn.tooltip_text = "Unload \"" + active_modpack + "\" before applying another modpack"
+		row.add_child(apply_btn)
+		var captured_entry := entry
+		apply_btn.pressed.connect(func():
+			_apply_modpack_with_ui_flow(captured_entry, tabs)
+		)
+
+	return row
+
+
+# Name, author, description, hidden-duplicate note and the meta line.
+func _modpacks_row_info(row: HBoxContainer, entry: Dictionary, is_hosted: bool) -> void:
 	var info_col := VBoxContainer.new()
 	info_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	info_col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
@@ -555,8 +611,6 @@ func _modpacks_render_row(entry: Dictionary, active_modpack: String, tabs: TabCo
 
 	var enabled_count: int = int(entry.get("enabled_count", 0))
 	var total_count: int = int(entry.get("total_count", 0))
-	var hosted: Dictionary = entry.get("hosted", {}) if entry.get("hosted") is Dictionary else {}
-	var is_hosted := str(hosted.get("slug", "")) != ""
 	var meta_lbl := Label.new()
 	if total_count > 0:
 		meta_lbl.text = "%d of %d mods enabled - %s" % [enabled_count, total_count, str(entry.get("file_name", ""))]
@@ -572,81 +626,37 @@ func _modpacks_render_row(entry: Dictionary, active_modpack: String, tabs: TabCo
 	meta_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
 	info_col.add_child(meta_lbl)
 
-	var sanitized: String = str(entry.get("sanitized_name", ""))
-	var is_active: bool = active_modpack != "" and active_modpack == sanitized
-	var another_active: bool = active_modpack != "" and active_modpack != sanitized
 
-	var details_btn := Button.new()
-	details_btn.text = "Details"
-	details_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	row.add_child(details_btn)
-	var captured_entry_for_detail := entry
-	var captured_active := active_modpack
-	details_btn.pressed.connect(func():
-		_show_modpack_detail_dialog(captured_entry_for_detail, captured_active, tabs)
+# Refresh for a pack that came from VostokMods; disabled while the pack is active.
+func _modpacks_row_refresh_button(row: HBoxContainer, entry: Dictionary, tabs: TabContainer, is_active: bool) -> void:
+	var refresh_btn := Button.new()
+	refresh_btn.text = "Refresh"
+	refresh_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	refresh_btn.disabled = is_active
+	row.add_child(refresh_btn)
+	_wire_hint(refresh_btn, "Unload this pack before refreshing it from VostokMods." if is_active \
+			else "Fetch the pack's current mod list from VostokMods.")
+	var captured_hosted_entry := entry
+	refresh_btn.pressed.connect(func():
+		if not is_instance_valid(refresh_btn):
+			return
+		refresh_btn.disabled = true
+		refresh_btn.text = "Refreshing..."
+		var r: Dictionary = await _hosted_refresh_pack(captured_hosted_entry)
+		if is_instance_valid(refresh_btn):
+			refresh_btn.disabled = false
+			refresh_btn.text = "Refresh"
+		if not is_instance_valid(_ui_window):
+			return
+		if not bool(r.get("ok", false)):
+			_show_error_dialog("Could not refresh modpack", str(r.get("error", "unknown")))
+		elif bool(r.get("changed", false)):
+			if is_instance_valid(tabs):
+				_rebuild_modpacks_tab(tabs)
+			_show_accept_dialog("Modpack updated", "\"" + str(r.get("name", "")) + "\" was updated from VostokMods. Apply it to get the changes.")
+		else:
+			_show_info_toast("\"" + str(r.get("name", "")) + "\" is up to date with VostokMods.")
 	)
-	_wire_hint(details_btn, "Open the modpack's full mod list and description.")
-
-	if is_hosted:
-		var refresh_btn := Button.new()
-		refresh_btn.text = "Refresh"
-		refresh_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		refresh_btn.disabled = is_active
-		row.add_child(refresh_btn)
-		_wire_hint(refresh_btn, "Unload this pack before refreshing it from VostokMods." if is_active \
-				else "Fetch the pack's current mod list from VostokMods.")
-		var captured_hosted_entry := entry
-		refresh_btn.pressed.connect(func():
-			if not is_instance_valid(refresh_btn):
-				return
-			refresh_btn.disabled = true
-			refresh_btn.text = "Refreshing..."
-			var r: Dictionary = await _hosted_refresh_pack(captured_hosted_entry)
-			if is_instance_valid(refresh_btn):
-				refresh_btn.disabled = false
-				refresh_btn.text = "Refresh"
-			if not is_instance_valid(_ui_window):
-				return
-			if not bool(r.get("ok", false)):
-				_show_error_dialog("Could not refresh modpack", str(r.get("error", "unknown")))
-			elif bool(r.get("changed", false)):
-				if is_instance_valid(tabs):
-					_rebuild_modpacks_tab(tabs)
-				_show_accept_dialog("Modpack updated", "\"" + str(r.get("name", "")) + "\" was updated from VostokMods. Apply it to get the changes.")
-			else:
-				_show_info_toast("\"" + str(r.get("name", "")) + "\" is up to date with VostokMods.")
-		)
-
-	if is_active:
-		var active_lbl := Label.new()
-		active_lbl.text = "Active"
-		active_lbl.add_theme_font_size_override("font_size", FS_META)
-		active_lbl.add_theme_color_override("font_color", COL_TEXT_HI)
-		active_lbl.add_theme_stylebox_override("normal", _make_badge_stylebox(COL_OK, COL_OK_DIM))
-		active_lbl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		row.add_child(active_lbl)
-
-		var unload_btn := Button.new()
-		unload_btn.text = "Unload"
-		style_danger_button(unload_btn)
-		unload_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		row.add_child(unload_btn)
-		unload_btn.pressed.connect(func(): _unload_modpack_with_feedback(tabs))
-	else:
-		var apply_btn := Button.new()
-		apply_btn.text = "Apply"
-		# Primary styling is reserved for the detail dialog's Apply and the confirm OK.
-		apply_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		apply_btn.disabled = another_active
-		if another_active:
-			apply_btn.tooltip_text = "Unload \"" + active_modpack + "\" before applying another modpack"
-		row.add_child(apply_btn)
-		var captured_entry := entry
-		apply_btn.pressed.connect(func():
-			_apply_modpack_with_ui_flow(captured_entry, tabs)
-		)
-
-	return row
 
 
 # Full modpack-apply flow: validate, confirm, progress, apply, rebuild, failure dialog.
