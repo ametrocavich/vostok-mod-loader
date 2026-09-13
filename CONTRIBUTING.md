@@ -20,7 +20,8 @@ src/
   host_vostokmods.gd       # VostokMods adapter (the default host)
   host_nexus.gd            # Nexus adapter, link-out only
   mod_discovery.gd         # scan mods, parse metadata, ordering, downloads
-  modpacks.gd, hosted_modpacks.gd              # modpack scan/apply/unload + restore points
+  modpacks.gd              # modpack scan/apply/unload + restore points
+  hosted_modpacks.gd       # packs published on VostokMods, turned into local pack zips
   mod_loading.gd           # mount + apply mods at runtime
   conflict_report.gd       # developer-mode diagnostics
   ui.gd                    # launcher window, profiles, shared UI helpers
@@ -41,7 +42,8 @@ src/
   rewriter_rewrite.gd      # rename + wrap orchestrator, wrapper emitter
   rewriter_registry_inject.gd  # per-script transforms, preludes, appendices
   rewriter_autofix.gd      # legacy-GDScript autofix, base()/reload strippers
-  hook_pack.gd, hook_status.gd             # hook pack generator + activator
+  hook_pack.gd             # hook pack generator + activator
+  hook_status.gd           # hook health record the launcher reads at boot
   lifecycle.gd             # _ready + pass orchestration
   main_menu_hook.gd        # in-game Mods button on the RTV main menu
   debug.gd                 # test scaffolding (gated behind a config flag)
