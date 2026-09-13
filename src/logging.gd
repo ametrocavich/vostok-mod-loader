@@ -1,18 +1,12 @@
 ## ----- logging.gd -----
-## Logging helpers. Each _log_* both emits via print/push_* and appends to
-## _report_lines for the conflict report; _log_debug only in developer mode.
-## Direct push_warning calls (most of the registry layer) reach the console
-## only, never the report. _write_filescope_log is static-init only: prints +
-## writes user://modloader_filescope.log.
-##
-## The conflict report is written only in developer mode, at the end of each
-## finish path. load_all_mods() clears _report_lines at its start, and lines
-## appended after the report is written are never flushed -- _report_append
-## caps the buffer for that reason. Convention: boot/discovery/loading events
-## -> _log_*; author-facing complaints from mod-called verbs -> push_warning.
+## _log_info/_log_warning/_log_critical/_log_debug print (or push_*) and append
+## to _report_lines for the developer-mode conflict report; _log_debug is a
+## no-op outside developer mode. Registry verbs called by mods use push_warning
+## directly, which reaches the console but never the report. load_all_mods
+## clears _report_lines; _report_append caps it so a per-frame logger cannot
+## grow it forever.
 
-# Report buffer cap; boot fills a few hundred lines, so hitting it means a
-# runaway caller.
+# Boot fills a few hundred lines; hitting the cap means a runaway caller.
 const REPORT_LINES_MAX := 5000
 
 func _report_append(line: String) -> void:

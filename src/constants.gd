@@ -73,7 +73,6 @@ const MWS_API_BASE := "https://api.modworkshop.net"
 const MWS_STORAGE_BASE := "https://storage.modworkshop.net"
 const MWS_RTV_GAME_ID := 864
 const MWS_PAGE_LIMIT := 50
-# Buffer cap for JSON API responses (list pages run ~100KB at limit=50).
 # The API caps search queries at 150 chars and answers longer ones with a 422.
 const MWS_QUERY_MAX_LEN := 150
 const MWS_USER_AGENT_TEMPLATE := "vostok-mod-loader/%s (+https://github.com/ametrocavich/vostok-mod-loader)"
@@ -149,7 +148,7 @@ const RTV_ENGINE_VOID_METHODS: Array[String] = [
 	"_enter_tree", "_exit_tree", "_notification",
 ]
 
-# ===== Module-scope state (mutable vars + signals) below this line =====
+# Module-scope state
 
 var _mods_dir: String = ""
 var _developer_mode := false
@@ -243,7 +242,6 @@ var _pck_zero_byte_paths: Dictionary = {}
 # overrides land first, and VFS precedence still serves the rewrite.
 var _scripts_with_scene_preloads: Dictionary = {}
 
-# Script overrides
 var _pending_script_overrides: Array[Dictionary] = []  # {vanilla_path, mod_script_path, mod_name, priority, seq}
 var _applied_script_overrides: Dictionary = {}         # vanilla_path -> true
 

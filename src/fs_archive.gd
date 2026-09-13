@@ -1,7 +1,6 @@
 ## ----- fs_archive.gd -----
-## File and archive helpers. No game-specific logic; just disk I/O, zip
-## packing/unpacking, mod.txt parsing, and path normalization. Used by most
-## other domains.
+## Disk I/O with no game logic: vmz cache copies, mod.txt parsing, mounting,
+## folder-mod zipping.
 
 # Copies a .vmz to the cache dir as .zip so ZIPReader can open it. Cache
 # identity is the source's mtime+size in a <zip>.src sidecar; any mismatch
@@ -66,8 +65,7 @@ static func _static_vmz_to_zip(vmz_path: String) -> String:
 	# A failed sidecar write just means the next launch re-copies -- safe.
 	return zip_path
 
-# Prints all log lines and dumps them to user://modloader_filescope.log.
-# Called from _mount_previous_session before normal logging is wired up.
+# Prints the static-init log lines and writes them to user://modloader_filescope.log.
 static func _write_filescope_log(lines: PackedStringArray) -> void:
 	for line in lines:
 		print(line)
@@ -320,8 +318,6 @@ func _diagnose_parse_failure(text: String) -> String:
 		if probe.parse(header + line + "\n") != OK:
 			var section_label := ("[%s]" % current_section) if current_section != "" else "(no section)"
 			return "line %d %s: %s" % [line_num, section_label, _truncate_for_log(stripped)]
-	# Per-line probes passed but the full parse failed (e.g. a multi-line
-	# value interaction this walk does not model).
 	return "could not pin line (full parse failed but per-line probes passed)"
 
 func _truncate_for_log(s: String) -> String:
@@ -329,12 +325,9 @@ func _truncate_for_log(s: String) -> String:
 		return s
 	return s.substr(0, 77) + "..."
 
-# Folder -> temp zip (developer mode): a mod's source folder is zipped into
-# the cache dir so it mounts like any other archive.
-
-# Cache path for a folder mod's temp zip. zip_folder_to_temp,
-# _collect_enabled_archive_paths and the re-mount guard in
-# _process_mod_candidate must all agree on this mount identity.
+# Folder mods (developer mode) are zipped into the cache dir so they mount
+# like any other archive. zip_folder_to_temp, _collect_enabled_archive_paths
+# and the re-mount guard in _process_mod_candidate must agree on this path.
 func _folder_dev_zip_path(folder_path: String) -> String:
 	return ProjectSettings.globalize_path(TMP_DIR).path_join(
 			folder_path.get_file() + "_dev.zip")
@@ -366,8 +359,7 @@ func zip_folder_to_temp(folder_path: String) -> String:
 	# mid-zip mismatches on the next launch, instead of vouching for content
 	# the zip never captured.
 	var pre_zip_stamp := _folder_dev_zip_stamp(tmp_zip_path)
-	# Drop the old sidecar first so an interrupted build can never leave a
-	# stamp vouching for mismatched content (same guard as _static_vmz_to_zip).
+	# Drop the old sidecar first (same guard as _static_vmz_to_zip).
 	var sidecar := tmp_zip_path + ".src"
 	if FileAccess.file_exists(sidecar):
 		DirAccess.remove_absolute(sidecar)
@@ -381,9 +373,8 @@ func zip_folder_to_temp(folder_path: String) -> String:
 	# must drop the prefix, or add a real subfolder if it wants a namespace.
 	var zip_ok := _zip_folder_recursive(zp, folder_path, "")
 	zip_ok = zp.close() == OK and zip_ok
-	# Never stamp a zip that didn't fully write: a mid-zip failure can still
-	# close a structurally valid but incomplete zip, and _folder_dev_zip_current
-	# only compares folder state, never zip integrity.
+	# Never stamp a zip that didn't fully write: _folder_dev_zip_current compares
+	# folder state only, never zip integrity.
 	if not zip_ok:
 		DirAccess.remove_absolute(tmp_zip_path)
 		_log_critical("Failed writing temp zip: " + tmp_zip_path)
@@ -401,8 +392,7 @@ func zip_folder_to_temp(folder_path: String) -> String:
 func _zip_folder_recursive(zp: ZIPPacker, disk_path: String, archive_prefix: String) -> bool:
 	var dir := DirAccess.open(disk_path)
 	if dir == null:
-		# An unreadable (sub)folder means content is missing from the zip;
-		# returning true would let the caller stamp a partial archive as complete.
+		# Unreadable subfolder: refuse, or the caller would stamp a partial archive.
 		return false
 	var ok := true
 	dir.list_dir_begin()

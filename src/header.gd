@@ -5,6 +5,6 @@
 ## Two-pass architecture: mounts archives at file-scope, optionally restarts to
 ## prepend mod autoloads before the game's own autoloads via [autoload_prepend].
 ##
-## This file is BUILT from src/*.gd via build.sh -- do not edit modloader.gd
-## directly; edit the source fragments and rebuild.
+## This file is built from src/*.gd by build.sh. Edit the sources and rebuild;
+## never edit modloader.gd directly.
 extends Node

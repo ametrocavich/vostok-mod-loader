@@ -5,7 +5,7 @@ The mod loader runs in two stages:
 1. Static init, before `_ready`: mounts the archives from the previous session, preempts the `class_name` scripts Godot would otherwise pin to PCK bytecode, and checks the sentinel files.
 2. `_ready`: dispatches to Pass 1 (show the launcher, optionally restart) or Pass 2 (post-restart finalization), based on a command-line argument.
 
-The header comment of [src/boot.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd) carries the same sequence with the sentinel table and the crash-at-each-stage notes; this page is the longer form. Function names are the anchors here, not line numbers.
+The header comment of [src/boot.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd) carries the short form of this sequence and the sentinel table; this page is the longer form. Function names are the anchors here, not line numbers.
 
 ## Entry points
 
