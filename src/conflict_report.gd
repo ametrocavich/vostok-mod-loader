@@ -31,9 +31,9 @@ func _verify_script_overrides() -> void:
 		if targets.is_empty():
 			continue
 		if not printed_header:
-			# Debug, not info: a player can act on none of this (the FAIL
-			# branch stays a warning). Only the logging is gated -- the load()
-			# below always runs; it populates the ResourceCache as autoloads
+			# Debug, not info: a player can act on none of this (the failure
+			# branch stays a warning). Only the logging is gated; the load()
+			# below always runs and populates the ResourceCache as autoloads
 			# finish, which may matter to the override mechanism itself.
 			_log_debug("[OverrideVerify] === Post-autoload cache check ===")
 			printed_header = true

@@ -17,30 +17,30 @@
 ##
 ## States (transition owners: apply_modpack/_apply_modpack_inner, unload_
 ## modpack, the boot reconciler in ui.gd _load_ui_config, and
-## _restore_apply_snapshot -- the UI refuses it while a pack is active):
-##   NO-PACK      active_modpack is "". Stale _before_modpack_ sections may
+## _restore_apply_snapshot, which the UI refuses while a pack is active):
+##   no pack      active_modpack is "". Stale _before_modpack_ sections may
 ##                linger after crash recovery; the next apply's step 1 erase
 ##                cleans them up.
-##   DOWNLOADING  awaiting missing-mod downloads; no state touched yet.
+##   downloading  awaiting missing-mod downloads; no state touched yet.
 ##                Serialized by _modpack_apply_in_progress; Cancel sets
-##                _modpack_apply_cancelled (checked per download + after
+##                _modpack_apply_cancelled (checked per download and after
 ##                the loop).
-##   MUTATING     _apply_modpack_inner's numbered steps, fresh apply only:
+##   mutating     _apply_modpack_inner's numbered steps, fresh apply only:
 ##                0. independent restore point (failure never blocks),
 ##                1. copy the active profile into the backup slot, set
 ##                   active_modpack early (the crash trigger the reconciler
 ##                   keys off), snapshot the pre-pack MCM,
 ##                2. materialize the modpack__ profile from the zip if
-##                   absent, 3. apply overrides (originals + manifest into
+##                   absent, 3. apply overrides (originals and manifest into
 ##                   the backup slot), 4. _switch_profile into the slot,
 ##                5. re-assert active_modpack (the switch rewrote cfg).
 ##                A failure after step 1 leaves the flag set; the next
 ##                boot's reconciler clears it.
-##   Active       active_modpack set, active_profile=modpack__<name>.
+##   active       active_modpack set, active_profile=modpack__<name>.
 ##                Re-apply in this state is downloads-only.
-##   UNLOADING    aborts untouched when the backup is gone; else 1. restore
+##   unloading    aborts untouched when the backup is gone; else 1. restore
 ##                backup sections into the pre-apply profile slot, 2. erase
-##                them + clear flags, 3. restore overrides from the
+##                them and clear flags, 3. restore overrides from the
 ##                manifest, 4. _switch_profile back, 5. restore the
 ##                pre-pack MCM (authoritative over step 4), 6. wipe the
 ##                backup slot dir.
@@ -376,7 +376,6 @@ func _restore_modpack_overrides(backup_profile: String) -> bool:
 	var backup_root := MCM_SNAPSHOT_BASE.path_join(backup_profile)
 	var manifest_path := backup_root.path_join("overrides_manifest.json")
 	if not FileAccess.file_exists(manifest_path):
-		# Nothing was overridden, nothing to lose.
 		return true
 	var mf := FileAccess.open(manifest_path, FileAccess.READ)
 	if mf == null:
@@ -704,7 +703,7 @@ func _get_missing_mods_for_modpack(entry: Dictionary) -> Array:
 	var installed_id_ver: Dictionary = index["id_ver"]
 	var installed_refs: Dictionary = index["refs"]
 
-	# Lowercased ids that have a usable source under SOME key. An exporter can
+	# Lowercased ids that have a usable source under some key. An exporter can
 	# pair a stale enabled key ("foo@1.0") with the live sources key
 	# ("foo@2.0") when the author updated a mod right before saving; the stale
 	# key is the same mod, not a second one to report as unreachable.
@@ -1218,8 +1217,8 @@ func _materialize_modpack_profile(entry: Dictionary, profile_name: String) -> Di
 	if cfg.has_section(pr_sec):
 		cfg.erase_section(pr_sec)
 
-	# Third-party values: type-check before bool()/int() -- a crash here is
-	# mid-MUTATING. Junk degrades to disabled / default priority.
+	# Third-party values: type-check before bool()/int(); a crash here is
+	# mid-apply. Junk degrades to disabled / default priority.
 	var enabled_dict: Dictionary = pd.get("enabled", {}) if pd.get("enabled") is Dictionary else {}
 	for k in enabled_dict.keys():
 		var ev = enabled_dict[k]
@@ -1360,7 +1359,6 @@ func retry_failed_downloads(failures: Array, progress: Callable = Callable()) ->
 		var item = failures[i]
 		if not (item is Dictionary):
 			continue
-		# Cancelled: keep remaining items as still-failed.
 		if _modpack_apply_cancelled:
 			still_failed.append(item)
 			continue
@@ -1426,7 +1424,6 @@ func save_profile_as_modpack(profile_name: String, modpack_name: String = "", de
 	if FileAccess.file_exists(output):
 		return {"ok": false, "error": "A file named " + safe + ".zip already exists in your mods folder -- pick a different modpack name"}
 	var res := _export_profile_to_zip(profile_name, output, description, author, pack_name)
-	# Return the path so the UI can show where it landed.
 	if bool(res.get("ok", false)):
 		res["path"] = output
 		res["display_name"] = pack_name

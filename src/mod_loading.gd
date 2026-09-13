@@ -153,7 +153,7 @@ func _merge_hook_calls_into_wrap_mask() -> void:
 # One mod, one call: mount its archive, scan + register file claims, then
 # apply its mod.txt sections via the inline handler blocks below ([hooks],
 # [registry] incl. the implicit B_Loader form, [script_extend]/
-# [script_overrides], [autoload]). SEAM -- adding a section:
+# [script_overrides], [autoload]). Adding a section:
 #   1. Add a handler block (must be idempotent: load_all_mods re-runs in
 #      pass 2 after the state clears at its top).
 #   2. List the name in MOD_TXT_KNOWN_SECTIONS or every user gets the
@@ -184,15 +184,11 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 	var mount_path := full_path
 	var skip_remount := _filescope_mounted.has(full_path)
 	if ext == "folder":
-		# A folder mod's mount identity is its temp _dev.zip. That is the
-		# path pass state records and static init file-scope-mounts, so the
-		# re-mount guard must key on it (the folder path itself never appears
-		# in _filescope_mounted; keying on full_path made the guard dead for
-		# folder mods). Decided before re-zipping: overwriting a VFS-mounted
-		# zip in place invalidates the mount's file handles (see the hook-pack
-		# regen note on file_access_zip), so only rebuild the zip when the
-		# folder's content actually changed -- in that case the state hash
-		# moves too and a clean restart follows.
+		# A folder mod's mount identity is its temp _dev.zip: that is the path
+		# pass state records and static init mounts, so the re-mount guard keys
+		# on it. Decided before re-zipping: overwriting a VFS-mounted zip in
+		# place invalidates the mount's file handles, so the zip is rebuilt only
+		# when the folder content changed, and then the state hash moves too.
 		mount_path = _folder_dev_zip_path(full_path)
 		skip_remount = _filescope_mounted.has(mount_path) \
 				and _folder_dev_zip_current(mount_path)
@@ -202,11 +198,9 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 				_log_critical("Failed to zip folder: " + file_name)
 				return
 
-	# If this archive was already file-scope-mounted at static init, skip the
-	# redundant re-mount. ProjectSettings.load_resource_pack with
-	# replace_files=true (default in _try_mount_pack) would otherwise clobber
-	# any overlay pack mounted after this archive, e.g. an inline-hooks
-	# overlay whose entries overlap with this mod's archive paths.
+	# Already file-scope-mounted at static init: skip the re-mount, which
+	# (replace_files=true) would clobber any pack mounted after this archive,
+	# such as the hook pack.
 	if skip_remount:
 		_log_debug("  File-scope mount active -- skipping re-mount")
 		_log_debug("  Mount path: " + mount_path)
@@ -248,8 +242,8 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 		"optional_dependencies": (c.get("optional_dependencies", []) as Array).duplicate(),
 	}
 
-	# Unrecognized-section notice (see the SEAM comment above). One INFO
-	# line per mod; never blocks loading.
+	# Unrecognized-section notice (see the list above). One info line per
+	# mod; never blocks loading.
 	var _unknown_sections: PackedStringArray = []
 	for _sect in cfg.get_sections():
 		if not (_sect in MOD_TXT_KNOWN_SECTIONS):
@@ -677,7 +671,6 @@ func _scan_gd_source(text: String, analysis: Dictionary) -> void:
 		if not already:
 			(analysis["hook_calls"] as Array).append({"prefix": prefix, "method": method})
 
-	# Method declarations, for mod collision detection.
 	var func_matches := _re_func.search_all(text)
 
 	var ext_target := ""
