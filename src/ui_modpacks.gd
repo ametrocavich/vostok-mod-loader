@@ -960,47 +960,60 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 			var src_rec := _normalize_source_record(sources_map.get(k_v))
 			var has_source: bool = str(src_rec["provider"]) != ""
 			var unavailable_reason: String = str(unavailable_map.get(k_v, ""))
+			_modpack_detail_mod_row(box, k, en, installed, has_source, unavailable_reason)
 
-			var mod_row := HBoxContainer.new()
-			mod_row.add_theme_constant_override("separation", SP_M)
-			box.add_child(mod_row)
+	_modpack_detail_buttons(d, entry, tabs, active_modpack, is_active, another_active)
 
-			var en_lbl := Label.new()
-			en_lbl.text = "[on]" if en else "[off]"
-			en_lbl.add_theme_font_size_override("font_size", FS_BODY)
-			en_lbl.add_theme_color_override("font_color", COL_OK if en else COL_TEXT_DIM)
-			en_lbl.custom_minimum_size.x = 40
-			mod_row.add_child(en_lbl)
+	_attach_ui_dialog(d)
+	_wire_accept_dismiss(d)
+	d.popup_centered()
 
-			var key_lbl := Label.new()
-			# A hosted pack keys mods by slug; show the slug, not the prefix.
-			key_lbl.text = k.trim_prefix(HOSTED_KEY_PREFIX)
-			key_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			key_lbl.clip_text = true
-			key_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-			key_lbl.tooltip_text = k
-			key_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
-			mod_row.add_child(key_lbl)
 
-			var status_lbl := Label.new()
-			if installed:
-				status_lbl.text = "Installed"
-				status_lbl.add_theme_color_override("font_color", COL_OK)
-			elif has_source:
-				status_lbl.text = "Will download"
-				status_lbl.add_theme_color_override("font_color", COL_ACCENT)
-			elif unavailable_reason != "":
-				status_lbl.text = "Not available"
-				status_lbl.tooltip_text = _hosted_unavailable_copy(unavailable_reason)
-				status_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
-				status_lbl.add_theme_color_override("font_color", COL_ERR)
-			else:
-				status_lbl.text = "Manual install"
-				status_lbl.add_theme_color_override("font_color", COL_ERR)
-			status_lbl.add_theme_font_size_override("font_size", FS_BODY)
-			status_lbl.custom_minimum_size.x = 110
-			mod_row.add_child(status_lbl)
+# One line of the pack's mod list: on/off, key, and install status.
+func _modpack_detail_mod_row(box: VBoxContainer, k: String, en: bool, installed: bool, has_source: bool, unavailable_reason: String) -> void:
+	var mod_row := HBoxContainer.new()
+	mod_row.add_theme_constant_override("separation", SP_M)
+	box.add_child(mod_row)
 
+	var en_lbl := Label.new()
+	en_lbl.text = "[on]" if en else "[off]"
+	en_lbl.add_theme_font_size_override("font_size", FS_BODY)
+	en_lbl.add_theme_color_override("font_color", COL_OK if en else COL_TEXT_DIM)
+	en_lbl.custom_minimum_size.x = 40
+	mod_row.add_child(en_lbl)
+
+	var key_lbl := Label.new()
+	# A hosted pack keys mods by slug; show the slug, not the prefix.
+	key_lbl.text = k.trim_prefix(HOSTED_KEY_PREFIX)
+	key_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	key_lbl.clip_text = true
+	key_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	key_lbl.tooltip_text = k
+	key_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
+	mod_row.add_child(key_lbl)
+
+	var status_lbl := Label.new()
+	if installed:
+		status_lbl.text = "Installed"
+		status_lbl.add_theme_color_override("font_color", COL_OK)
+	elif has_source:
+		status_lbl.text = "Will download"
+		status_lbl.add_theme_color_override("font_color", COL_ACCENT)
+	elif unavailable_reason != "":
+		status_lbl.text = "Not available"
+		status_lbl.tooltip_text = _hosted_unavailable_copy(unavailable_reason)
+		status_lbl.mouse_filter = Control.MOUSE_FILTER_PASS
+		status_lbl.add_theme_color_override("font_color", COL_ERR)
+	else:
+		status_lbl.text = "Manual install"
+		status_lbl.add_theme_color_override("font_color", COL_ERR)
+	status_lbl.add_theme_font_size_override("font_size", FS_BODY)
+	status_lbl.custom_minimum_size.x = 110
+	mod_row.add_child(status_lbl)
+
+
+# Page, Unload or Apply on the dialog's button bar.
+func _modpack_detail_buttons(d: AcceptDialog, entry: Dictionary, tabs: TabContainer, active_modpack: String, is_active: bool, another_active: bool) -> void:
 	var hosted_d: Dictionary = entry.get("hosted", {}) if entry.get("hosted") is Dictionary else {}
 	var page_url := str(hosted_d.get("url", ""))
 	if page_url.begins_with("https://vostokmods.net/"):
@@ -1026,10 +1039,6 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 			d.queue_free()
 			_apply_modpack_with_ui_flow(captured_entry, tabs)
 		)
-
-	_attach_ui_dialog(d)
-	_wire_accept_dismiss(d)
-	d.popup_centered()
 
 
 # Modpacks published on VostokMods: paste a pack link or search the list.
