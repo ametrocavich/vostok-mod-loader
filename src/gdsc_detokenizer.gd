@@ -177,27 +177,7 @@ func _detokenize_script(script_path: String) -> String:
 	# Zero-byte PCK entries have nothing to decode; not an IO failure.
 	if _pck_zero_byte_paths.has(script_path):
 		return ""
-	var raw := _vanilla_bytes_from_pck(script_path)
-	if not raw.is_empty():
-		_last_detokenize_from_pck = true
-	else:
-		# No PCK: fall back to the VFS. FileAccess on res:// can fail for
-		# PCK-embedded files; try res://, then globalized, then .gdc.
-		var f := FileAccess.open(script_path, FileAccess.READ)
-		if f:
-			raw = f.get_buffer(f.get_length())
-		f.close()
-
-		if raw.is_empty():
-			var glob_path := ProjectSettings.globalize_path(script_path)
-			f = FileAccess.open(glob_path, FileAccess.READ)
-			if f:
-				raw = f.get_buffer(f.get_length())
-				f.close()
-		if raw.is_empty():
-			var gdc_path := script_path.replace(".gd", ".gdc")
-			raw = FileAccess.get_file_as_bytes(gdc_path)
-
+	var raw := _gdsc_read_script_bytes(script_path)
 	if raw.is_empty():
 		_log_warning("[Detokenize] Cannot read bytes from: %s (tried the game PCK, res://, globalized, .gdc)" % script_path)
 		return ""
@@ -230,10 +210,53 @@ func _detokenize_script(script_path: String) -> String:
 			_log_critical("[Detokenize] ZSTD decompression failed for: " + script_path)
 			return ""
 
+	var sections := _gdsc_decode_sections(buf, version, script_path)
+	if sections.is_empty():
+		return ""
+	var tokens: Array = sections["tokens"]
+	var result := _gdsc_reconstruct(tokens, sections["identifiers"], sections["constants"],
+			sections["line_map"], sections["col_map"])
+	if result.is_empty():
+		return ""
+	_log_info("[Detokenize] Reconstructed: %s (%d tokens, %d lines) -- parse OK" \
+			% [script_path, tokens.size(), result.count("\n") + 1])
+	return result
+
+
+# The raw bytes of a vanilla script: the game PCK first (and then
+# _last_detokenize_from_pck is set), else the VFS. Empty when nothing readable.
+func _gdsc_read_script_bytes(script_path: String) -> PackedByteArray:
+	var raw := _vanilla_bytes_from_pck(script_path)
+	if not raw.is_empty():
+		_last_detokenize_from_pck = true
+		return raw
+	# No PCK: fall back to the VFS. FileAccess on res:// can fail for
+	# PCK-embedded files; try res://, then globalized, then .gdc.
+	var f := FileAccess.open(script_path, FileAccess.READ)
+	if f:
+		raw = f.get_buffer(f.get_length())
+	f.close()
+
+	if raw.is_empty():
+		var glob_path := ProjectSettings.globalize_path(script_path)
+		f = FileAccess.open(glob_path, FileAccess.READ)
+		if f:
+			raw = f.get_buffer(f.get_length())
+			f.close()
+	if raw.is_empty():
+		var gdc_path := script_path.replace(".gd", ".gdc")
+		raw = FileAccess.get_file_as_bytes(gdc_path)
+	return raw
+
+
+# Decode the identifier, constant, line/column and token sections of a
+# decompressed GDSC body. Returns {identifiers, constants, line_map, col_map,
+# tokens}, or {} when the sections do not match the header counts.
+func _gdsc_decode_sections(buf: PackedByteArray, version: int, script_path: String) -> Dictionary:
 	# -- Metadata --
 	var meta_size := 20 if version == GDSC_VERSION_V100 else 16  # v100 has 4-byte padding
 	if buf.size() < meta_size:
-		return ""
+		return {}
 	var ident_count: int = buf.decode_u32(0)
 	var const_count: int = buf.decode_u32(4)
 	var line_count: int  = buf.decode_u32(8)
@@ -319,14 +342,9 @@ func _detokenize_script(script_path: String) -> String:
 	if identifiers.size() != ident_count or constants.size() != const_count or tokens.size() != token_count:
 		_log_critical("[Detokenize] Section truncation/desync in %s: idents %d/%d consts %d/%d tokens %d/%d -- refusing partial reconstruction" \
 				% [script_path, identifiers.size(), ident_count, constants.size(), const_count, tokens.size(), token_count])
-		return ""
-
-	var result := _gdsc_reconstruct(tokens, identifiers, constants, line_map, col_map)
-	if result.is_empty():
-		return ""
-	_log_info("[Detokenize] Reconstructed: %s (%d tokens, %d lines) -- parse OK" \
-			% [script_path, tokens.size(), result.count("\n") + 1])
-	return result
+		return {}
+	return {"identifiers": identifiers, "constants": constants, "line_map": line_map,
+			"col_map": col_map, "tokens": tokens}
 
 func _gdsc_reconstruct(tokens: Array, identifiers: Array[String], constants: Array,
 		line_map: Dictionary, col_map: Dictionary) -> String:
