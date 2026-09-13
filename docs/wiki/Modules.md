@@ -1,6 +1,6 @@
 # Modules
 
-A tour of the `src/` tree. The order follows the `FILES` array in `build.sh`, which is the order the files are concatenated into `modloader.gd`. Dependencies flow top-down: a const referenced by another const's initializer must come earlier, and everything shares one namespace. Function bodies can call anything anywhere. 49 files as of 3.3.1.
+A tour of the `src/` tree. The order follows the `FILES` array in `build.sh`, which is the order the files are concatenated into `modloader.gd`. Dependencies flow top-down: a const referenced by another const's initializer must come earlier, and everything shares one namespace. Function bodies can call anything anywhere. 55 files as of 3.4.0.
 
 Links point at the file; function names are the anchors. Line numbers drift.
 
@@ -134,17 +134,25 @@ Developer-mode diagnostics. `_print_conflict_summary` and `_write_conflict_repor
 
 ## UI
 
-### [ui.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd)
+### [ui.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd) and the `ui_*.gd` files
 
-The launcher window shown before the game starts. Four tabs (Mods, Browse, Modpacks, Updates) plus the bottom bar with Launch and "Launch vanilla". Closing the window is the same as clicking Launch.
+The launcher window shown before the game starts. Four tabs (Mods, Browse, Modpacks, Updates) plus the bottom bar with Launch and "Launch vanilla". Closing the window is the same as clicking Launch. Seven files share the work; `build.sh` concatenates them, so every helper is reachable from every tab.
 
-- `show_mod_ui` builds the window; `build_mods_tab`, `build_browse_tab`, `build_modpacks_tab`, `build_updates_tab` and their `_rebuild_*` counterparts own the tab content.
-- `make_dark_theme` builds the Theme from the `COL_*` tokens at the top of the file, which match the VostokMods site palette: dark grey surfaces, one accent green, one success green, one red.
+| File | Owns |
+|---|---|
+| `ui.gd` | `show_mod_ui` and the window chrome, `refresh_launch_button_label`, `_launch_vanilla_once`, profiles and `mod_config.cfg` I/O (`_load_ui_config`, `_save_ui_config`, `_apply_profile_to_entries`, `_switch_profile`, the MCM snapshot mechanic), `_profile_to_json_string` and `_export_profile_to_zip`, the shared thumbnail cell and image loader, `_markdown_to_bbcode`, `_json_int` / `_json_truthy`, and the loader's own update check |
+| `ui_theme.gd` | The `COL_*` / `FS_*` / `SP_*` tokens (the VostokMods site palette: dark grey surfaces, one accent green, one success green, one red), `make_dark_theme`, the `style_*` voices, the badge and banner builders, the code-drawn glyphs |
+| `ui_dialogs.gd` | `_attach_ui_dialog` and the dialog plumbing, `_await_dialog_choice`, the content-mod disable confirm, the New / Rename / Delete profile dialogs |
+| `ui_mods.gd` | `build_mods_tab` and `_rebuild_mods_tab`, the host meta sidecar (`mods_meta_v2.json`), the security findings dialog, the row Remove confirm |
+| `ui_browse.gd` | `build_browse_tab`, the per-host landing snapshots (`landing_<host>.json`), `_browse_render_mod_row`, the Browse detail dialog |
+| `ui_modpacks.gd` | `build_modpacks_tab`, row rendering, the apply flow and progress dialog, the failure and retry dialogs, the pack detail dialog, the VostokMods pack picker, the restore-point picker, the save-as-modpack dialog |
+| `ui_updates.gd` | `build_updates_tab`, the module-scope session state it restores on every show, `_updates_arm_row_update`, `check_updates_for_ui` |
+
 - `refresh_launch_button_label` counts what will actually load, not what is checked, so a dependency-blocked mod does not promise a modded session: `"Launch modded"` when at least one enabled mod is loadable, `"Launch unmodded (%d blocked)"` when everything enabled is blocked, `"Launch"` when nothing is enabled.
 - `_launch_vanilla_once` writes the `DISABLED_ONCE_FILE` sentinel, calls `_static_force_vanilla_state`, and restarts into a clean Pass 1 with `--modloader-restart` stripped. Mod checkboxes stay as they were.
 - Profiles: `_load_ui_config`, `_save_ui_config`, `_apply_profile_to_entries`, `_delete_active_profile`, `_rename_profile`, with `PROFILE_SUBSECTIONS` naming the four per-profile sections (`.enabled`, `.priority`, `.settings`, `.dep_ignore`). `_load_developer_mode_setting` lives here too.
 - `_profile_to_json_string` writes `profile.json`; `_export_profile_to_zip` / `save_profile_as_modpack` (modpacks.gd) package it.
-- Caches under `user://mws_cache/`: `thumbs/` for ModWorkshop images, `landing_<host>.json` for each host's Browse landing snapshot (`_browse_landing_snapshot_store`), `mods_meta_v2.json` for the Mods-tab detail sidecar.
+- Caches under `user://mws_cache/`: `thumbs/` for host images, `landing_<host>.json` for each host's Browse landing snapshot (`_browse_landing_snapshot_store`), `mods_meta_v2.json` for the Mods-tab detail sidecar.
 - The self-update check reads the GitHub releases API for `MODLOADER_GITHUB_REPO` and shows a link to the release page.
 - `_mark_mod_set_changed` flips `_dirty_since_boot` after a post-boot download, update or modpack fetch, so closing the reopened launcher restarts into the new mod set.
 

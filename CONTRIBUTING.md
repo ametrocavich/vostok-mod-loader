@@ -23,7 +23,13 @@ src/
   modpacks.gd, hosted_modpacks.gd              # modpack scan/apply/unload + restore points
   mod_loading.gd           # mount + apply mods at runtime
   conflict_report.gd       # developer-mode diagnostics
-  ui.gd                    # launcher window + tabs
+  ui.gd                    # launcher window, profiles, shared UI helpers
+  ui_theme.gd              # palette tokens, theme, styling voices, glyphs
+  ui_dialogs.gd            # dialog plumbing + profile dialogs
+  ui_mods.gd               # Mods tab
+  ui_browse.gd             # Browse tab
+  ui_modpacks.gd           # Modpacks tab + apply flow dialogs
+  ui_updates.gd            # Updates tab
   hooks_api.gd             # public hook + version + mod-info API
   registry.gd              # registry verb dispatchers + Registry const
   registry/                # shared.gd + 15 per-section handlers (16 files)
@@ -41,7 +47,7 @@ src/
   debug.gd                 # test scaffolding (gated behind a config flag)
 ```
 
-49 files, in `build.sh`'s `FILES` order (the concat order).
+55 files, in `build.sh`'s `FILES` order (the concat order).
 `docs/wiki/Modules.md` has the per-file tour.
 
 ### Building and checking locally

@@ -1,6 +1,6 @@
 # Build
 
-The installable file, `modloader.gd`, is built from the `src/` tree (`src/*.gd` plus `src/registry/*.gd`, 49 files) and is not edited directly. Edit under `src/`, run `./build.sh`, then `./check.sh`.
+The installable file, `modloader.gd`, is built from the `src/` tree (`src/*.gd` plus `src/registry/*.gd`, 55 files) and is not edited directly. Edit under `src/`, run `./build.sh`, then `./check.sh`.
 
 ## build.sh
 
@@ -34,6 +34,12 @@ FILES=(
     "$SRC/conflict_report.gd"
     # UI
     "$SRC/ui.gd"
+    "$SRC/ui_theme.gd"
+    "$SRC/ui_dialogs.gd"
+    "$SRC/ui_mods.gd"
+    "$SRC/ui_browse.gd"
+    "$SRC/ui_modpacks.gd"
+    "$SRC/ui_updates.gd"
     # Public API (hooks + registry)
     "$SRC/hooks_api.gd"
     # Registry dispatcher + per-section handlers
