@@ -985,11 +985,12 @@ func _ui_create_window() -> Window:
 	win.add_theme_stylebox_override("embedded_border",          win_style.duplicate())
 	win.add_theme_stylebox_override("embedded_unfocused_border", win_style.duplicate())
 
-	# Opaque backdrop: the game behind the launcher only made the text harder to read.
+	# Black floor under the panels, fully opaque: the game showing through only
+	# made the text harder to read.
 	var bg := Panel.new()
 	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	var bg_s := StyleBoxFlat.new()
-	bg_s.bg_color = COL_BG
+	bg_s.bg_color = Color(0.0, 0.0, 0.0, 1.0)
 	bg_s.border_color = COL_BORDER
 	_sb_border(bg_s)
 	bg.add_theme_stylebox_override("panel", bg_s)
