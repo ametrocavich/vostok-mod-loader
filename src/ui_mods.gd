@@ -282,7 +282,7 @@ func _mods_apply_host_meta(key: String, data: Dictionary) -> void:
 				# The caption stays until _set_thumb_ready clears it.
 				_browse_load_thumbnail_async(thumb_rect, image_v)
 			else:
-				_set_thumb_failed(thumb_rect, false)
+				_set_thumb_state(thumb_rect, "none")
 		var col_v: Variant = nodes.get("name_col")
 		if is_instance_valid(col_v) and col_v is VBoxContainer:
 			var name_col: VBoxContainer = col_v
@@ -305,7 +305,7 @@ func _mods_paint_meta_failed(key: String) -> void:
 			continue
 		var thumb_v: Variant = (nodes_v as Dictionary).get("thumb")
 		if is_instance_valid(thumb_v) and thumb_v is TextureRect:
-			_set_thumb_failed(thumb_v as TextureRect, true)
+			_set_thumb_state(thumb_v as TextureRect, "failed")
 
 # Serialized background meta fetches: parallel per-row detail calls could
 # drain a host's rate budget. One drain loop; a host in cooldown is skipped.
@@ -1232,10 +1232,13 @@ func _mods_row_name_column(row: HBoxContainer, entry: Dictionary, persisted_sour
 	var row_page_url := host_mod_page_url(row_ref) if row_key != "" else ""
 	var meta_holder: Dictionary = {}
 	var thumb_ref: TextureRect = null
-	# Every row gets a thumbnail cell captioned "no thumbnail"; a texture clears it.
+	# Every row gets a thumbnail cell. A hosted row reads "loading..." until
+	# the meta fetch paints it or fails; a row with no host has nothing to fetch.
 	var thumb_rect := _make_thumb_cell(row, Vector2(96, 54), true, true)
 	if row_browsable:
 		thumb_ref = thumb_rect
+	else:
+		_set_thumb_state(thumb_rect, "none")
 
 	var name_col := VBoxContainer.new()
 	name_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL

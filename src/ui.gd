@@ -1239,26 +1239,27 @@ func _decode_image_buffer(bytes: PackedByteArray) -> Image:
 		return img if img.load_webp_from_buffer(bytes) == OK else null
 	return null
 
-# Visible terminal state for a thumbnail cell: overlays a centered dim label
-# ("load failed" when a fetch or decode broke, "no image" when there is
-# nothing to fetch) into the cell's parent PanelContainer, so those states
-# do not look like "still loading". Safe to call after awaits and idempotent
-# per cell.
-func _set_thumb_failed(rect: TextureRect, failed: bool) -> void:
+# Caption for a thumbnail cell with no texture yet, centered in the cell's
+# parent PanelContainer. Three states, so a fetch in flight, a host that
+# has no image, and a broken download do not look alike. Safe to call after
+# awaits and idempotent per cell.
+const _THUMB_STATE_TEXT := {"loading": "loading...", "none": "no thumbnail", "failed": "load failed"}
+
+func _set_thumb_state(rect: TextureRect, state: String) -> void:
 	if not is_instance_valid(rect):
 		return
 	var wrap := rect.get_parent() as Control
 	if not is_instance_valid(wrap):
 		return
-	# Cells start captioned "no thumbnail"; update the existing label, never skip it.
+	var caption: String = _THUMB_STATE_TEXT.get(state, state)
 	if wrap.has_node("ThumbStateLabel"):
 		var existing := wrap.get_node("ThumbStateLabel") as Label
 		if existing != null:
-			existing.text = "load failed" if failed else "no thumbnail"
+			existing.text = caption
 		return
 	var lbl := Label.new()
 	lbl.name = "ThumbStateLabel"
-	lbl.text = "load failed" if failed else "no thumbnail"
+	lbl.text = caption
 	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
@@ -1278,7 +1279,8 @@ func _set_thumb_ready(rect: TextureRect, tex: Texture2D) -> void:
 	rect.texture = tex
 
 # Build an image cell: a surface-coloured PanelContainer holding a TextureRect,
-# captioned "no thumbnail" until an image lands. Every image cell in the
+# captioned "loading..." until an image lands or the loader reports that
+# there is none or the fetch failed. Every image cell in the
 # launcher (Mods rows, Browse rows, the detail banner) comes from here.
 # cover=true crops to fill, for small row tiles; cover=false letterboxes so
 # the whole image stays visible (the detail banner). shrink_center keeps the
@@ -1300,7 +1302,7 @@ func _make_thumb_cell(parent: Control, min_size: Vector2, cover: bool = true,
 	rect.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	rect.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	wrap.add_child(rect)
-	_set_thumb_failed(rect, false)
+	_set_thumb_state(rect, "loading")
 	return rect
 
 
@@ -1322,7 +1324,7 @@ func _thumb_texture_cache_store(fn: String, tex: Texture2D) -> void:
 func _browse_load_thumbnail_async(rect: TextureRect, image: Dictionary) -> void:
 	var url := str(image.get("url", ""))
 	if url.is_empty():
-		_set_thumb_failed(rect, false)
+		_set_thumb_state(rect, "none")
 		return
 	# Host-provided key headed into a path: accept only a bare basename.
 	var cache_key := str(image.get("cache_key", ""))
@@ -1354,6 +1356,7 @@ func _browse_load_thumbnail_async(rect: TextureRect, image: Dictionary) -> void:
 						_set_thumb_ready(rect, disk_tex)
 						return
 
+	_set_thumb_state(rect, "loading")
 	# 1MB cap defends against a malformed response; real covers run 100-300KB.
 	var req := HTTPRequest.new()
 	req.timeout = API_CHECK_TIMEOUT
@@ -1362,22 +1365,22 @@ func _browse_load_thumbnail_async(rect: TextureRect, image: Dictionary) -> void:
 	var err := req.request(url, PackedStringArray(["User-Agent: " + (HOST_USER_AGENT_TEMPLATE % MODLOADER_VERSION)]))
 	if err != OK:
 		req.queue_free()
-		_set_thumb_failed(rect, true)
+		_set_thumb_state(rect, "failed")
 		return
 
 	var res: Array = await req.request_completed
 	req.queue_free()
 	if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] < 200 or res[1] >= 300:
-		_set_thumb_failed(rect, true)
+		_set_thumb_state(rect, "failed")
 		return
 	var body: PackedByteArray = res[3]
 	if body.is_empty():
-		_set_thumb_failed(rect, true)
+		_set_thumb_state(rect, "failed")
 		return
 
 	var img := _decode_image_buffer(body)
 	if img == null:
-		_set_thumb_failed(rect, true)
+		_set_thumb_state(rect, "failed")
 		return
 
 	# The CDN serves full-size images while row cells render at 96x54, so
