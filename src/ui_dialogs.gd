@@ -124,14 +124,13 @@ func _wire_hint(c: Control, text: String) -> void:
 	# default), so establish PASS here rather than at every caller.
 	if c.mouse_filter == Control.MOUSE_FILTER_IGNORE:
 		c.mouse_filter = Control.MOUSE_FILTER_PASS
-	var default_text := _ui_hint_label.text
 	c.mouse_entered.connect(func():
 		if is_instance_valid(_ui_hint_label):
 			_ui_hint_label.text = text
 	)
 	c.mouse_exited.connect(func():
 		if is_instance_valid(_ui_hint_label):
-			_ui_hint_label.text = default_text
+			_ui_hint_label.text = _ui_hint_default
 	)
 
 # Show an attached ConfirmationDialog and await the choice; true on confirm.

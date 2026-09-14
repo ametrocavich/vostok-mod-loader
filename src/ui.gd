@@ -3,6 +3,14 @@
 ## bar. Profiles live in UI_CONFIG_PATH under profile.<name>.*; the active one
 ## in [settings] active_profile. Closing the window is the same as Launch.
 
+# Bottom-bar hint for each tab; _wire_hint swaps it out while a control is hovered.
+const UI_HINT_MODS := "Higher number loads later and wins when mods share files.\n" \
+		+ "Required dependencies must be enabled or the mod won't load."
+const UI_HINT_BROWSE := "Download saves a mod into your mods folder. Tick its box to enable it in the active profile.\n" \
+		+ "Use the source menu to switch between VostokMods and ModWorkshop."
+const UI_HINT_MODPACKS := "Apply switches you to the pack's mods and settings and downloads what is missing.\n" \
+		+ "Unload brings your previous setup back."
+
 # GitHub repository that publishes loader releases, for the self-update
 # check; "" disables it. Release tags are "v<MODLOADER_VERSION>" and the
 # latest-release endpoint already excludes drafts and prereleases.
@@ -948,6 +956,7 @@ func show_mod_ui() -> void:
 	await launch_btn.pressed
 	_ui_window = null
 	_ui_hint_label = null
+	_ui_hint_default = ""
 	_ui_launch_btn = null
 	_ui_update_alert_btn = null
 	_ui_mods_scroll = null
@@ -1096,8 +1105,7 @@ func _ui_build_bottom_bar(root: VBoxContainer, win: Window) -> Button:
 	root.add_child(bottom)
 
 	var hint := Label.new()
-	hint.text = "Higher number loads later and wins when mods share files.\n" \
-			+ "Required dependencies must be enabled or the mod won't load."
+	hint.text = UI_HINT_MODS
 	hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.add_theme_font_size_override("font_size", FS_BODY)
@@ -1105,6 +1113,7 @@ func _ui_build_bottom_bar(root: VBoxContainer, win: Window) -> Button:
 	bottom.add_child(hint)
 	# Exposed for _wire_hint's hover-hint mechanic.
 	_ui_hint_label = hint
+	_ui_hint_default = UI_HINT_MODS
 
 	var launch_btn := Button.new()
 	# Text set by refresh_launch_button_label after the tabs build; empty avoids a flash.
@@ -1159,10 +1168,20 @@ func _ui_add_tabs(tabs: TabContainer) -> void:
 		if _rebuilding_tab_in_place:
 			return
 		var ctrl := tabs.get_tab_control(idx)
-		if ctrl != null and ctrl.name == UI_TAB_MODPACKS:
+		if ctrl == null:
+			return
+		# The bottom-bar hint describes the tab on screen.
+		_ui_hint_default = UI_HINT_MODS
+		if ctrl.name == UI_TAB_BROWSE:
+			_ui_hint_default = UI_HINT_BROWSE
+		elif ctrl.name == UI_TAB_MODPACKS:
+			_ui_hint_default = UI_HINT_MODPACKS
+		if is_instance_valid(_ui_hint_label):
+			_ui_hint_label.text = _ui_hint_default
+		if ctrl.name == UI_TAB_MODPACKS:
 			_rebuild_modpacks_tab(tabs)
 		# Browse rows bake profile state at render time and never rebuild; sync in place.
-		elif ctrl != null and ctrl.name == UI_TAB_BROWSE:
+		elif ctrl.name == UI_TAB_BROWSE:
 			_refresh_browse_installed_rows(ctrl)
 	)
 

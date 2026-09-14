@@ -124,6 +124,8 @@ var _active_profile := "Default"
 var _ui_window: Window = null
 # Status-hint label; native tooltips layer behind the always_on_top launcher.
 var _ui_hint_label: Label = null
+# What the hint label shows when nothing is hovered; the tab listener sets it.
+var _ui_hint_default: String = ""
 var _ui_launch_btn: Button = null
 # Kept on self so _rebuild_mods_tab can carry scroll position across teardown.
 var _ui_mods_scroll: ScrollContainer = null
