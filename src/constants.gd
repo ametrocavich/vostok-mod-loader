@@ -200,6 +200,16 @@ var _re_filename_priority: RegEx
 var _re_hook_call: RegEx
 var _re_mod_stem_version: RegEx
 var _re_mod_stem_named: RegEx
+# Markdown constructs _markdown_to_bbcode converts, in the order it runs them.
+var _re_md_image: RegEx
+var _re_md_link: RegEx
+var _re_md_color: RegEx
+var _re_md_heading: RegEx
+var _re_md_list_item: RegEx
+var _re_md_bold: RegEx
+var _re_md_bold_underscore: RegEx
+var _re_md_strike: RegEx
+var _re_md_italic: RegEx
 
 # Host-transport response cache, keyed by full URL (absolute, so providers
 # cannot collide). Entry: {data: Variant, expires_at: int (msec)}; evicted

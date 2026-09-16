@@ -145,9 +145,8 @@ func _run_pass_1() -> void:
 		_register_rtv_modlib_meta()
 		_generate_hook_pack(true)
 		_write_heartbeat()
-		var err := _write_override_cfg(sections.prepend)
-		if err != OK:
-			_log_critical("Failed to write override.cfg (error %d) -- single-pass fallback" % err)
+		if _write_override_cfg(sections.prepend) != OK:
+			_log_critical("Failed to write override.cfg -- single-pass fallback")
 			await _finish_single_pass()
 			return
 		if _write_pass_state(archive_paths, new_hash) != OK:

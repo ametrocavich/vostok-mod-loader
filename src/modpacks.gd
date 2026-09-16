@@ -803,7 +803,7 @@ func unload_modpack(tabs: TabContainer) -> Dictionary:
 
 	# 5. Wipe the backup slot, only once the MCM restore consumed it.
 	if mcm_ok:
-		_remove_dir_recursive(MCM_SNAPSHOT_BASE.path_join(backup_profile))
+		_remove_tree(MCM_SNAPSHOT_BASE.path_join(backup_profile), false)
 	else:
 		_log_warning("[Modpack] unload: MCM restore incomplete -- leaving " + MCM_SNAPSHOT_BASE.path_join(backup_profile) + " in place; it will be cleaned up by the next apply/unload")
 

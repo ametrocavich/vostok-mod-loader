@@ -64,6 +64,25 @@ func _compile_regex() -> void:
 	_re_mod_stem_version.compile("^(.*?)(?:[_\\-.]+v?[0-9]+(?:[._][0-9]+)*| +v[0-9]+(?:[._][0-9]+)*| +[0-9]+(?:[._][0-9]+)+|v[0-9]+(?:[._][0-9]+)*)$")
 	_re_mod_stem_named = RegEx.new()
 	_re_mod_stem_named.compile("[a-z]")
+	# Markdown for the Browse descriptions (_markdown_to_bbcode).
+	_re_md_image = RegEx.new()
+	_re_md_image.compile("!\\[([^\\]]*)\\]\\([^)]*\\)")
+	_re_md_link = RegEx.new()
+	_re_md_link.compile("\\[([^\\]]*)\\]\\(([^)\\s]+)\\)")
+	_re_md_color = RegEx.new()
+	_re_md_color.compile("\\{#([0-9a-fA-F]{3,8})\\}\\(([^)]*)\\)")
+	_re_md_heading = RegEx.new()
+	_re_md_heading.compile("^(#{1,6})\\s+(.*)$")
+	_re_md_list_item = RegEx.new()
+	_re_md_list_item.compile("^\\s*[-*+]\\s+(.*)$")
+	_re_md_bold = RegEx.new()
+	_re_md_bold.compile("\\*\\*([^*]+)\\*\\*")
+	_re_md_bold_underscore = RegEx.new()
+	_re_md_bold_underscore.compile("__([^_]+)__")
+	_re_md_strike = RegEx.new()
+	_re_md_strike.compile("~~([^~]+)~~")
+	_re_md_italic = RegEx.new()
+	_re_md_italic.compile("(?<![\\w*])\\*([^*\\n]+)\\*(?![\\w*])")
 
 # --- Codegen source parsing (regex compile + script-structure extraction) ---
 

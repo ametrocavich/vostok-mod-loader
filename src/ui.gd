@@ -162,6 +162,20 @@ func _load_ui_config() -> void:
 	if _active_profile == "Default" and not has_any_profile:
 		_save_ui_config()
 
+# The stored profile key an entry's state lives under: its own key when the
+# profile has it; else the id-prefix match ("<mod_id>@*") so a version bump
+# carries the stored state; else, for a mod with no declared id, the filename
+# stem match so a re-package does not orphan the settings. "" when the
+# profile holds nothing for the mod.
+func _resolve_stored_key(cfg: ConfigFile, profile: String, entry: Dictionary) -> String:
+	var pk: String = entry["profile_key"]
+	if cfg.has_section_key(_profile_sec(profile, ".enabled"), pk) \
+			or cfg.has_section_key(_profile_sec(profile, ".priority"), pk):
+		return pk
+	if not pk.begins_with("zip:"):
+		return _find_stored_key_for_mod_id(cfg, profile, entry["mod_id"])
+	return _find_stored_key_for_zip_stem(cfg, profile, entry["file_name"])
+
 func _apply_profile_to_entries(cfg: ConfigFile, profile: String) -> void:
 	# VANILLA_PROFILE has no stored sections and reads as all mods off.
 	var is_vanilla := profile == VANILLA_PROFILE
@@ -172,22 +186,13 @@ func _apply_profile_to_entries(cfg: ConfigFile, profile: String) -> void:
 	for entry in _ui_mod_entries:
 		var pk: String = entry["profile_key"]
 		entry.erase("profile_version_mismatch")
-		# Exact profile_key match first; else id-prefix match ("<mod_id>@*")
-		# so a version bump carries the stored state, flagged for the UI.
-		var resolved_key := ""
-		if cfg.has_section_key(en_sec, pk) or cfg.has_section_key(pr_sec, pk):
-			resolved_key = pk
-		elif not pk.begins_with("zip:"):
-			resolved_key = _find_stored_key_for_mod_id(cfg, profile, entry["mod_id"])
-			if resolved_key != "" and resolved_key != pk:
-				entry["profile_version_mismatch"] = {
-					"stored":  _version_from_profile_key(resolved_key),
-					"current": entry["version"],
-				}
-		else:
-			# No declared id, so the stored key is the old filename; match on stem
-			# so a re-package does not orphan the settings.
-			resolved_key = _find_stored_key_for_zip_stem(cfg, profile, entry["file_name"])
+		var resolved_key := _resolve_stored_key(cfg, profile, entry)
+		# The state came from another version of the same id; the row says so.
+		if resolved_key != "" and resolved_key != pk and not pk.begins_with("zip:"):
+			entry["profile_version_mismatch"] = {
+				"stored":  _version_from_profile_key(resolved_key),
+				"current": entry["version"],
+			}
 		if is_vanilla:
 			entry["enabled"] = false
 		elif resolved_key != "" and cfg.has_section_key(en_sec, resolved_key):
@@ -367,49 +372,40 @@ func _save_ui_config() -> void:
 		var en_sec := _profile_sec(_active_profile, ".enabled")
 		var pr_sec := _profile_sec(_active_profile, ".priority")
 		var ig_sec := _profile_sec(_active_profile, ".dep_ignore")
-		# Keep stored keys with no live entry (see _preserve_stored_profile_key).
 		var key_maps := _collect_live_profile_key_maps()
-		var live_keys: Dictionary = key_maps["live"]
-		var installed_ids: Dictionary = key_maps["ids"]
-		var preserved_enabled: Dictionary = {}
-		var preserved_priority: Dictionary = {}
-		if cfg.has_section(en_sec):
-			for key: String in cfg.get_section_keys(en_sec):
-				if _preserve_stored_profile_key(key, live_keys, installed_ids):
-					preserved_enabled[key] = cfg.get_value(en_sec, key)
-		if cfg.has_section(pr_sec):
-			for key: String in cfg.get_section_keys(pr_sec):
-				if _preserve_stored_profile_key(key, live_keys, installed_ids):
-					preserved_priority[key] = cfg.get_value(pr_sec, key)
-		var preserved_ignored: Dictionary = {}
-		if cfg.has_section(ig_sec):
-			for key: String in cfg.get_section_keys(ig_sec):
-				if _preserve_stored_profile_key(key, live_keys, installed_ids):
-					preserved_ignored[key] = cfg.get_value(ig_sec, key)
-		if cfg.has_section(en_sec):
-			cfg.erase_section(en_sec)
-		if cfg.has_section(pr_sec):
-			cfg.erase_section(pr_sec)
-		if cfg.has_section(ig_sec):
-			cfg.erase_section(ig_sec)
+		var live_enabled: Dictionary = {}
+		var live_priority: Dictionary = {}
+		var live_ignored: Dictionary = {}
 		for entry in _ui_mod_entries:
 			var pk: String = entry["profile_key"]
-			cfg.set_value(en_sec, pk, entry["enabled"])
-			cfg.set_value(pr_sec, pk, entry["priority"])
+			live_enabled[pk] = entry["enabled"]
+			live_priority[pk] = entry["priority"]
 			if bool(entry.get("dependency_ignored", false)):
-				cfg.set_value(ig_sec, pk, true)
-		for k in preserved_enabled.keys():
-			cfg.set_value(en_sec, k, preserved_enabled[k])
-		for k in preserved_priority.keys():
-			cfg.set_value(pr_sec, k, preserved_priority[k])
-		for k in preserved_ignored.keys():
-			cfg.set_value(ig_sec, k, preserved_ignored[k])
+				live_ignored[pk] = true
+		_rewrite_profile_section(cfg, en_sec, live_enabled, key_maps)
+		_rewrite_profile_section(cfg, pr_sec, live_priority, key_maps)
+		_rewrite_profile_section(cfg, ig_sec, live_ignored, key_maps)
 
 	cfg.set_value("settings", "developer_mode", _developer_mode)
 	cfg.set_value("settings", "active_profile", _active_profile)
 	_persist_ui_cfg(cfg)
 	if _boot_complete:
 		_dirty_since_boot = true
+
+# Rebuild one per-profile section: erase it, write the live entries' values,
+# and put back the stored keys that have no live entry (see
+# _preserve_stored_profile_key). key_maps is _collect_live_profile_key_maps().
+func _rewrite_profile_section(cfg: ConfigFile, section: String, live: Dictionary, key_maps: Dictionary) -> void:
+	var preserved: Dictionary = {}
+	if cfg.has_section(section):
+		for key: String in cfg.get_section_keys(section):
+			if _preserve_stored_profile_key(key, key_maps["live"], key_maps["ids"]):
+				preserved[key] = cfg.get_value(section, key)
+		cfg.erase_section(section)
+	for k in live:
+		cfg.set_value(section, k, live[k])
+	for k in preserved:
+		cfg.set_value(section, k, preserved[k])
 
 # Persist the UI config with a rolling backup: ConfigFile.save truncates
 # then writes and there is no Windows-safe atomic rename, so copy the good
@@ -662,42 +658,22 @@ func _copy_dir_recursive(src: String, dst: String) -> bool:
 	dir.list_dir_end()
 	return any
 
-# Recursively delete a directory and its contents.
-func _remove_dir_recursive(path: String) -> void:
-	if not DirAccess.dir_exists_absolute(path):
-		return
-	var dir := DirAccess.open(path)
-	if dir == null:
-		return
-	dir.list_dir_begin()
-	while true:
-		var name := dir.get_next()
-		if name == "":
-			break
-		var full := path.path_join(name)
-		if dir.current_is_dir():
-			_remove_dir_recursive(full)
-		else:
-			DirAccess.remove_absolute(full)
-	dir.list_dir_end()
-	DirAccess.remove_absolute(path)
-
 func _snapshot_mcm_to(profile_name: String) -> bool:
 	var dst := _mcm_snapshot_dir(profile_name)
 	# Wipe stale snapshot first so deleted-from-MCM files don't survive.
-	_remove_dir_recursive(dst)
+	_remove_tree(dst, false)
 	return _copy_dir_recursive(MCM_SOURCE_DIR, dst)
 
 func _restore_mcm_from(profile_name: String) -> bool:
 	var src := _mcm_snapshot_dir(profile_name)
 	# Replace user://MCM/ wholesale; a partial overlay would leak old files.
-	_remove_dir_recursive(MCM_SOURCE_DIR)
+	_remove_tree(MCM_SOURCE_DIR, false)
 	return _copy_dir_recursive(src, MCM_SOURCE_DIR)
 
 # Remove a profile's whole snapshot slot. A slot can hold files beside the
 # MCM/ tree, so the directory goes as a tree.
 func _delete_mcm_snapshot(profile_name: String) -> void:
-	_remove_dir_recursive(MCM_SNAPSHOT_BASE.path_join(profile_name))
+	_remove_tree(MCM_SNAPSHOT_BASE.path_join(profile_name), false)
 
 func _rename_mcm_snapshot(old_name: String, new_name: String) -> void:
 	var old_parent := MCM_SNAPSHOT_BASE.path_join(old_name)
@@ -714,7 +690,7 @@ func _rename_mcm_snapshot(old_name: String, new_name: String) -> void:
 # would be false and _switch_profile would seed from the previous profile.
 func _write_mcm_snapshot_from_data(profile_name: String, mcm_data: Dictionary) -> void:
 	var dst_base := _mcm_snapshot_dir(profile_name)
-	_remove_dir_recursive(dst_base)
+	_remove_tree(dst_base, false)
 	DirAccess.make_dir_recursive_absolute(dst_base)
 	if mcm_data.is_empty():
 		return
@@ -1437,33 +1413,23 @@ func _markdown_to_bbcode(md: String) -> String:
 
 	# Bracket/paren constructs, converted before escaping literal '['. Images
 	# first (a link with a leading '!').
-	var re_img := RegEx.new()
-	re_img.compile("!\\[([^\\]]*)\\]\\([^)]*\\)")
-	s = _re_replace(re_img, s, func(m): return m.get_string(1))
-	var re_link := RegEx.new()
-	re_link.compile("\\[([^\\]]*)\\]\\(([^)\\s]+)\\)")
+	s = _re_replace(_re_md_image, s, func(m): return m.get_string(1))
 	# Percent-encode BBCode-sensitive chars in the URL so the later passes cannot
 	# corrupt url= (a literal ']' ends the tag). Never encode '%'.
-	s = _re_replace(re_link, s, func(m): return LB + "url=" + m.get_string(2).replace("[", "%5B").replace("]", "%5D").replace("_", "%5F").replace("*", "%2A").replace("~", "%7E") + RB + m.get_string(1) + LB + "/url" + RB)
-	var re_color := RegEx.new()
-	re_color.compile("\\{#([0-9a-fA-F]{3,8})\\}\\(([^)]*)\\)")
-	s = _re_replace(re_color, s, func(m): return LB + "color=#" + m.get_string(1) + RB + m.get_string(2) + LB + "/color" + RB)
+	s = _re_replace(_re_md_link, s, func(m): return LB + "url=" + m.get_string(2).replace("[", "%5B").replace("]", "%5D").replace("_", "%5F").replace("*", "%2A").replace("~", "%7E") + RB + m.get_string(1) + LB + "/url" + RB)
+	s = _re_replace(_re_md_color, s, func(m): return LB + "color=#" + m.get_string(1) + RB + m.get_string(2) + LB + "/color" + RB)
 
 	# Escape remaining literal '['; a lone ']' renders literally.
 	s = s.replace("[", "[lb]")
 
 	# Block level first, so a bullet's '*' is gone before the italic rule runs.
-	var re_h := RegEx.new()
-	re_h.compile("^(#{1,6})\\s+(.*)$")
-	var re_li := RegEx.new()
-	re_li.compile("^\\s*[-*+]\\s+(.*)$")
 	var lines := PackedStringArray()
 	for line in s.split("\n"):
 		var t := line.strip_edges()
 		if t == "---" or t == "***" or t == "___":
 			lines.append(LB + "color=#555555" + RB + "--------------------" + LB + "/color" + RB)
 			continue
-		var mh := re_h.search(line)
+		var mh := _re_md_heading.search(line)
 		if mh != null:
 			var lvl := mh.get_string(1).length()
 			var sz := 22 if lvl == 1 else (19 if lvl == 2 else 17)
@@ -1472,7 +1438,7 @@ func _markdown_to_bbcode(md: String) -> String:
 		if line.begins_with(">"):
 			lines.append(LB + "indent" + RB + LB + "color=#a0a0a0" + RB + line.substr(1).strip_edges() + LB + "/color" + RB + LB + "/indent" + RB)
 			continue
-		var ml := re_li.search(line)
+		var ml := _re_md_list_item.search(line)
 		if ml != null:
 			lines.append(LB + "indent" + RB + "- " + ml.get_string(1) + LB + "/indent" + RB)
 			continue
@@ -1480,18 +1446,10 @@ func _markdown_to_bbcode(md: String) -> String:
 	s = "\n".join(lines)
 
 	# Inline emphasis, whole string. Bold before italic so '**' isn't eaten by '*'.
-	var re_bold := RegEx.new()
-	re_bold.compile("\\*\\*([^*]+)\\*\\*")
-	s = _re_replace(re_bold, s, func(m): return LB + "b" + RB + m.get_string(1) + LB + "/b" + RB)
-	var re_bold2 := RegEx.new()
-	re_bold2.compile("__([^_]+)__")
-	s = _re_replace(re_bold2, s, func(m): return LB + "b" + RB + m.get_string(1) + LB + "/b" + RB)
-	var re_strike := RegEx.new()
-	re_strike.compile("~~([^~]+)~~")
-	s = _re_replace(re_strike, s, func(m): return LB + "s" + RB + m.get_string(1) + LB + "/s" + RB)
-	var re_ital := RegEx.new()
-	re_ital.compile("(?<![\\w*])\\*([^*\\n]+)\\*(?![\\w*])")
-	s = _re_replace(re_ital, s, func(m): return LB + "i" + RB + m.get_string(1) + LB + "/i" + RB)
+	s = _re_replace(_re_md_bold, s, func(m): return LB + "b" + RB + m.get_string(1) + LB + "/b" + RB)
+	s = _re_replace(_re_md_bold_underscore, s, func(m): return LB + "b" + RB + m.get_string(1) + LB + "/b" + RB)
+	s = _re_replace(_re_md_strike, s, func(m): return LB + "s" + RB + m.get_string(1) + LB + "/s" + RB)
+	s = _re_replace(_re_md_italic, s, func(m): return LB + "i" + RB + m.get_string(1) + LB + "/i" + RB)
 
 	# Restore generated tags to real brackets last, so escaping never touched them.
 	s = s.replace(LB, "[").replace(RB, "]")

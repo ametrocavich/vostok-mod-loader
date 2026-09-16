@@ -513,7 +513,7 @@ func _ensure_vanilla_cache_format() -> void:
 		return
 	if DirAccess.dir_exists_absolute(dir):
 		_log_info("[Detokenize] vanilla cache is format '%s', want %d -- rebuilding it" % [have, _VANILLA_CACHE_FORMAT])
-		_wipe_shallow_tree(dir)
+		_remove_tree(dir, true)
 	DirAccess.make_dir_recursive_absolute(dir)
 	var f := FileAccess.open(stamp_file, FileAccess.WRITE)
 	if f != null:

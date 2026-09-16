@@ -261,8 +261,7 @@ func _reset_detok_state(ml: Object) -> void:
 	ml.set("_vanilla_cache_checked", false)
 	var dir := ProjectSettings.globalize_path(CACHE_DIR)
 	if DirAccess.dir_exists_absolute(dir):
-		ml._wipe_shallow_tree(dir)
-		DirAccess.remove_absolute(dir)
+		ml._remove_tree(dir, false)
 
 func _t6_vfs_read_is_not_cached(ml: Object) -> void:
 	_reset_detok_state(ml)

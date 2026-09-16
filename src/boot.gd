@@ -101,9 +101,10 @@ static func _static_force_vanilla_state(reason: String, log_lines: PackedStringA
 static func _clean_override_cfg_content(preserved: String) -> String:
 	return "[autoload_prepend]\nModLoader=\"*" + MODLOADER_RES_PATH + "\"\n\n[autoload]\n\n" + preserved
 
-# Atomic override.cfg writer for the reset paths: tmp, park .old, promote,
-# restore on failure. Losing override.cfg means the ModLoader autoload never
-# loads again, so the live file is never opened for write.
+# The one override.cfg writer: tmp, park .old, promote, restore on failure.
+# Losing override.cfg means the ModLoader autoload never loads again, so the
+# live file is never opened for write. Static so the reset paths at static
+# init can use it.
 static func _static_write_cfg_atomic(cfg_path: String, content: String) -> bool:
 	var tmp := cfg_path + ".tmp"
 	var f := FileAccess.open(tmp, FileAccess.WRITE)
@@ -423,11 +424,19 @@ static func _static_cleanup_orphan_hook_packs(keep_path: String, log_lines: Pack
 	if removed > 0:
 		log_lines.append("[FileScope] Cleaned %d orphan hook pack(s) from prior session(s)" % removed)
 
-# Delete the contents of a one-level-deep directory; deeper trees use _wipe_early_autoload_tree.
-static func _wipe_shallow_tree(dir_path: String) -> void:
-	if not DirAccess.dir_exists_absolute(dir_path):
+# Recursive delete, refused for anything outside user:// and for user://
+# itself: a bad path join must never reach the saves or the game folder.
+# Keeps the root directory when keep_root is set. Static so static init can
+# use it.
+static func _remove_tree(dir_path: String, keep_root: bool) -> void:
+	var target := ProjectSettings.globalize_path(dir_path).simplify_path()
+	var user_root := ProjectSettings.globalize_path("user://").simplify_path()
+	if target == user_root or not target.begins_with(user_root + "/"):
+		push_warning("[ModLoader] Refusing to delete outside user://: " + dir_path)
 		return
-	var dir := DirAccess.open(dir_path)
+	if not DirAccess.dir_exists_absolute(target):
+		return
+	var dir := DirAccess.open(target)
 	if dir == null:
 		return
 	dir.list_dir_begin()
@@ -435,20 +444,16 @@ static func _wipe_shallow_tree(dir_path: String) -> void:
 		var entry := dir.get_next()
 		if entry == "":
 			break
-		var full: String = dir_path.path_join(entry)
+		if entry == "." or entry == "..":
+			continue
+		var full: String = target.path_join(entry)
 		if dir.current_is_dir():
-			var sub := DirAccess.open(full)
-			if sub:
-				sub.list_dir_begin()
-				var sub_file := sub.get_next()
-				while sub_file != "":
-					DirAccess.remove_absolute(full.path_join(sub_file))
-					sub_file = sub.get_next()
-				sub.list_dir_end()
-			DirAccess.remove_absolute(full)
+			_remove_tree(full, false)
 		else:
 			DirAccess.remove_absolute(full)
 	dir.list_dir_end()
+	if not keep_root:
+		DirAccess.remove_absolute(target)
 
 static func _static_wipe_hook_cache() -> void:
 	# A zip mounted by the VFS may refuse deletion on Windows; the static-init
@@ -467,9 +472,7 @@ static func _static_wipe_hook_cache() -> void:
 				elif pname.begins_with(HOOK_PACK_PREFIX) and pname.ends_with(".zip"):
 					DirAccess.remove_absolute(pack_dir.path_join(pname))
 			pdir.list_dir_end()
-	var cache_dir := ProjectSettings.globalize_path(VANILLA_CACHE_DIR)
-	_wipe_shallow_tree(cache_dir)
-	DirAccess.remove_absolute(cache_dir)
+	_remove_tree(ProjectSettings.globalize_path(VANILLA_CACHE_DIR), false)
 
 func _build_autoload_sections() -> Dictionary:
 	_clean_early_autoload_dir()
@@ -487,31 +490,7 @@ func _build_autoload_sections() -> Dictionary:
 const EARLY_AUTOLOAD_DIR := "user://modloader_early"
 
 func _clean_early_autoload_dir() -> void:
-	_wipe_early_autoload_tree(ProjectSettings.globalize_path(EARLY_AUTOLOAD_DIR))
-
-# Recursive delete, refused outside EARLY_AUTOLOAD_DIR. Leaves the root dir itself.
-func _wipe_early_autoload_tree(dir_path: String) -> void:
-	var root := ProjectSettings.globalize_path(EARLY_AUTOLOAD_DIR)
-	if dir_path != root and not dir_path.begins_with(root + "/"):
-		_log_warning("Refusing to wipe outside the early-autoload dir: " + dir_path)
-		return
-	if not DirAccess.dir_exists_absolute(dir_path):
-		return
-	var dir := DirAccess.open(dir_path)
-	if dir == null:
-		return
-	dir.list_dir_begin()
-	while true:
-		var entry := dir.get_next()
-		if entry == "":
-			break
-		if entry == "." or entry == "..":
-			continue
-		var full: String = dir_path.path_join(entry)
-		if dir.current_is_dir():
-			_wipe_early_autoload_tree(full)
-		DirAccess.remove_absolute(full)
-	dir.list_dir_end()
+	_remove_tree(ProjectSettings.globalize_path(EARLY_AUTOLOAD_DIR), true)
 
 # Extract an archive-only early autoload .gd to disk: Godot opens
 # [autoload_prepend] scripts before any archive is mounted. Scenes return as-is.
@@ -580,7 +559,6 @@ func _autoload_entry_writable(entry_name: String, entry_path: String) -> bool:
 func _write_override_cfg(prepend_autoloads: Array[Dictionary]) -> Error:
 	var exe_dir := OS.get_executable_path().get_base_dir()
 	var path := exe_dir.path_join("override.cfg")
-	var tmp := path + ".tmp"
 	var preserved := _read_preserved_cfg_sections(path)
 	var lines := PackedStringArray()
 	# ModLoader always goes in [autoload_prepend] (reverse insertion, so last is
@@ -597,44 +575,9 @@ func _write_override_cfg(prepend_autoloads: Array[Dictionary]) -> Error:
 	lines.append("")
 	lines.append("[autoload]")
 	lines.append("")
-	var f := FileAccess.open(tmp, FileAccess.WRITE)
-	if f == null:
-		return FileAccess.get_open_error()
-	# store_string returns false on a failed write; never promote a truncated tmp.
-	var wrote_ok := f.store_string("\n".join(lines) + "\n" + preserved)
-	var write_err := f.get_error()
-	f.close()
-	if not wrote_ok or write_err != OK:
-		DirAccess.remove_absolute(tmp)
+	if not _static_write_cfg_atomic(path, "\n".join(lines) + "\n" + preserved):
 		return ERR_FILE_CANT_WRITE
-	var dir := DirAccess.open(exe_dir)
-	if dir == null:
-		DirAccess.remove_absolute(tmp)
-		return ERR_CANT_OPEN
-	# Never destroy the live cfg before the replacement is in place (see
-	# _static_write_cfg_atomic). Windows DirAccess.rename() won't overwrite:
-	# park as .old, promote the .tmp, drop the .old.
-	var bak := path + ".old"
-	var had_existing := FileAccess.file_exists(path)
-	if had_existing:
-		if FileAccess.file_exists(bak):
-			DirAccess.remove_absolute(bak)
-		var park_err := dir.rename(path.get_file(), bak.get_file())
-		if park_err != OK:
-			# Could not park the live cfg (AV lock?); caller falls back to single-pass.
-			DirAccess.remove_absolute(tmp)
-			return park_err
-	var err := dir.rename(tmp.get_file(), path.get_file())
-	if err != OK:
-		DirAccess.remove_absolute(tmp)
-		if had_existing:
-			# Restore the previous cfg; if that rename fails too, byte-copy.
-			if dir.rename(bak.get_file(), path.get_file()) != OK:
-				DirAccess.copy_absolute(bak, path)
-		return err
-	if had_existing and FileAccess.file_exists(bak):
-		DirAccess.remove_absolute(bak)
-	return err
+	return OK
 
 func _persist_hook_pack_state(pack_path: String, wrapped_paths: PackedStringArray = PackedStringArray()) -> void:
 	# Record the hook pack in pass_state for next session's static init. Loads first so other keys survive.
@@ -816,7 +759,7 @@ func _clean_stale_cache() -> void:
 func _remove_retired_state() -> void:
 	var backups := ProjectSettings.globalize_path("user://.modpack_backups")
 	if DirAccess.dir_exists_absolute(backups):
-		_remove_dir_recursive(backups)
+		_remove_tree(backups, false)
 		_log_info("Removed the unused directory user://.modpack_backups")
 
 func _restore_clean_override_cfg() -> void:
