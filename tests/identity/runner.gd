@@ -83,6 +83,7 @@ func _run() -> void:
 	_t4_distinct_mods_stay_distinct(ml)
 	_t5_declared_id_still_wins(ml)
 	_t6_pck_never_collapses(ml)
+	_t7_mod_txt_read_record(ml)
 
 	_finish()
 
@@ -170,7 +171,77 @@ func _t6_pck_never_collapses(ml: Object) -> void:
 	var out: Array = ml._dedupe_by_mod_id([a, b] as Array[Dictionary])
 	_assert(out.size() == 2, "T6: a .pck must never be collapsed into another entry, got %d" % out.size())
 
+# read_mod_config returns everything the scanner needs from one archive's
+# mod.txt as one record, {cfg, status, error, files}, so nothing from one read
+# can leak into the next mod's warnings. The fixture zips are written into the
+# throwaway project's user://.
+func _t7_mod_txt_read_record(ml: Object) -> void:
+	var ok_zip := _write_zip("user://identity_ok.zip",
+			{"mod.txt": "[mod]\nname=\"Ok\"\nid=\"ok\"\n", "Ok/Main.gd": "extends Node\n"})
+	var nested_zip := _write_zip("user://identity_nested.zip", {"Sub/mod.txt": "[mod]\nname=\"Nested\"\n"})
+	var broken_zip := _write_zip("user://identity_broken.zip", {"mod.txt": "[mod\nname=\n"})
+	var bare_zip := _write_zip("user://identity_bare.zip", {"Plain/thing.txt": "x"})
+	var want_keys := ["cfg", "error", "files", "status"]
+
+	var r: Variant = ml.read_mod_config(ok_zip)
+	_assert(r is Dictionary, "T7: read_mod_config returns a record, not a bare ConfigFile")
+	if not (r is Dictionary):
+		return
+	var keys: Array = (r as Dictionary).keys()
+	keys.sort()
+	_assert(keys == want_keys, "T7: the record has exactly cfg/error/files/status (got %s)" % str(keys))
+	_assert(str(r["status"]) == "ok" and r["cfg"] is ConfigFile and str((r["cfg"] as ConfigFile).get_value("mod", "id", "")) == "ok",
+			"T7: a root mod.txt reads as ok with its ConfigFile (got status %s)" % str(r["status"]))
+	var files: Dictionary = r["files"]
+	_assert(files.has("res://mod.txt") and files.has("res://Ok/Main.gd"),
+			"T7: the archive's entries are captured as res:// paths (got %s)" % str(files.keys()))
+
+	var nested: Dictionary = ml.read_mod_config(nested_zip)
+	_assert(str(nested["status"]) == "nested:Sub/mod.txt" and nested["cfg"] == null,
+			"T7: a mod.txt below the root reads as nested:<path> (got %s)" % str(nested["status"]))
+
+	var broken: Dictionary = ml.read_mod_config(broken_zip)
+	_assert(str(broken["status"]) == "parse_error" and broken["cfg"] == null and str(broken["error"]) != "",
+			"T7: unparseable mod.txt reads as parse_error with a diagnostic (got %s / '%s')" % [str(broken["status"]), str(broken["error"])])
+
+	var bare: Dictionary = ml.read_mod_config(bare_zip)
+	_assert(str(bare["status"]) == "none" and bare["cfg"] == null and str(bare["error"]) == "",
+			"T7: no mod.txt reads as none with no diagnostic left over (got %s / '%s')" % [str(bare["status"]), str(bare["error"])])
+
+	var missing: Dictionary = ml.read_mod_config(ProjectSettings.globalize_path("user://identity_missing.zip"))
+	_assert(str(missing["status"]) == "none" and missing["cfg"] == null,
+			"T7: a missing archive reads as none")
+
+	var folder := ProjectSettings.globalize_path("user://identity_folder")
+	DirAccess.make_dir_recursive_absolute(folder)
+	var f := FileAccess.open(folder.path_join("mod.txt"), FileAccess.WRITE)
+	if f != null:
+		f.store_string("[mod]\nname=\"Folder\"\nid=\"folder\"\n")
+		f.close()
+	var fr: Dictionary = ml.read_mod_config_folder(folder)
+	_assert(str(fr["status"]) == "ok" and fr["cfg"] is ConfigFile and (fr["files"] as Dictionary).is_empty(),
+			"T7: a folder mod reads as ok with no captured file list (got %s)" % str(fr["status"]))
+
+	for p in [ok_zip, nested_zip, broken_zip, bare_zip]:
+		DirAccess.remove_absolute(p)
+	DirAccess.remove_absolute(folder.path_join("mod.txt"))
+	DirAccess.remove_absolute(folder)
+
 # --- Fixture helpers ---------------------------------------------------------
+
+# Write a zip of {entry_name: text} and return its absolute path.
+func _write_zip(user_path: String, entries: Dictionary) -> String:
+	var abs_path := ProjectSettings.globalize_path(user_path)
+	var zp := ZIPPacker.new()
+	if zp.open(abs_path, ZIPPacker.APPEND_CREATE) != OK:
+		_fail("harness could not create " + abs_path)
+		return abs_path
+	for name in entries.keys():
+		zp.start_file(str(name))
+		zp.write_file(str(entries[name]).to_utf8_buffer())
+		zp.close_file()
+	zp.close()
+	return abs_path
 
 func _entry(file_name: String, version: String) -> Dictionary:
 	return {
@@ -203,7 +274,7 @@ func _fail(msg: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("[identity] PASS: %d assertion(s) across T1..T6" % _assertions)
+		print("[identity] PASS: %d assertion(s) across T1..T7" % _assertions)
 		quit(0)
 		return
 	for m in _failures:

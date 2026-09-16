@@ -172,63 +172,64 @@ static func _static_resolve_remaps(archive_path: String) -> int:
 
 # mod.txt parser
 
-func read_mod_config(path: String) -> ConfigFile:
-	_last_mod_txt_status = "none"
-	# Reset diagnostics alongside status: several early returns below bypass
-	# _parse_mod_txt and would otherwise leak the prior mod's error message
-	# and file list into the next mod's launcher warning.
-	_last_mod_txt_error = ""
-	_last_mod_txt_files.clear()
+## Read an archive's mod.txt. Returns {cfg, status, error, files}:
+##   cfg     the parsed ConfigFile, or null
+##   status  "ok", "none" (no root mod.txt, or the archive does not open),
+##           "parse_error", or "nested:<path>" for a mod.txt below the root
+##   error   the parse diagnostic when status is "parse_error", else ""
+##   files   {res_path: true} for every archive entry when a root mod.txt
+##           exists; the warning builder checks declared autoload paths against it
+func read_mod_config(path: String) -> Dictionary:
+	var read := _mod_txt_read("none")
 	var zr := ZIPReader.new()
 	if zr.open(path) != OK:
-		return null
+		return read
 	if not zr.file_exists("mod.txt"):
 		# Nested mod.txt (e.g. "SubFolder/mod.txt") means bad packaging.
 		for f: String in zr.get_files():
 			if f.get_file() == "mod.txt":
-				_last_mod_txt_status = "nested:" + f
-				zr.close()
-				return null
+				read["status"] = "nested:" + f
+				break
 		zr.close()
-		return null
+		return read
 	var raw := zr.read_file("mod.txt")
-	# Capture the file list while the reader is open; the warning builder
-	# checks declared autoload paths against it so bad paths show pre-launch.
+	# The file list is captured while the reader is open.
 	for zf: String in zr.get_files():
-		_last_mod_txt_files["res://" + zf] = true
+		read["files"]["res://" + zf] = true
 	zr.close()
 	if raw.size() == 0:
-		_last_mod_txt_status = "parse_error"
-		return null
-	var text := raw.get_string_from_utf8()
-	var cfg := _parse_mod_txt(text)
-	if cfg == null:
-		_last_mod_txt_status = "parse_error"
-		return null
-	_last_mod_txt_status = "ok"
-	return cfg
+		read["status"] = "parse_error"
+		return read
+	var parsed := _parse_mod_txt(raw.get_string_from_utf8())
+	read["cfg"] = parsed["cfg"]
+	read["error"] = parsed["error"]
+	read["status"] = "ok" if parsed["cfg"] != null else "parse_error"
+	return read
 
-func read_mod_config_folder(folder_path: String) -> ConfigFile:
-	_last_mod_txt_status = "none"
-	_last_mod_txt_error = ""  # see read_mod_config for rationale
-	_last_mod_txt_files.clear()  # folder mods carry no captured file list
+## read_mod_config for a developer-mode folder. `files` stays empty.
+func read_mod_config_folder(folder_path: String) -> Dictionary:
+	var read := _mod_txt_read("none")
 	var mod_txt_path := folder_path.path_join("mod.txt")
 	if not FileAccess.file_exists(mod_txt_path):
-		return null
+		return read
 	var f := FileAccess.open(mod_txt_path, FileAccess.READ)
 	if f == null:
-		return null
+		return read
 	var text := f.get_as_text()
 	f.close()
-	var cfg := _parse_mod_txt(text)
-	if cfg == null:
-		_last_mod_txt_status = "parse_error"
-		return null
-	_last_mod_txt_status = "ok"
-	return cfg
+	var parsed := _parse_mod_txt(text)
+	read["cfg"] = parsed["cfg"]
+	read["error"] = parsed["error"]
+	read["status"] = "ok" if parsed["cfg"] != null else "parse_error"
+	return read
 
-func _parse_mod_txt(text: String) -> ConfigFile:
-	_last_mod_txt_error = ""
+# A read record with no cfg, no diagnostic and no files.
+func _mod_txt_read(status: String) -> Dictionary:
+	return {"cfg": null, "status": status, "error": "", "files": {}}
+
+## Parse mod.txt text. Returns {cfg, error}: cfg is null and error is the
+## diagnostic when the text does not parse.
+func _parse_mod_txt(text: String) -> Dictionary:
 	if text.begins_with("\uFEFF"):
 		text = text.substr(1)
 	# Tolerate the wiki-documented [hooks] forms (`path = _ready, update_tooltip`,
@@ -241,8 +242,7 @@ func _parse_mod_txt(text: String) -> ConfigFile:
 	if cfg.parse(preprocessed) != OK:
 		# cfg.parse() doesn't report the offending line; locate it so the
 		# launcher can show the broken line instead of "re-download".
-		_last_mod_txt_error = _diagnose_parse_failure(preprocessed)
-		return null
+		return {"cfg": null, "error": _diagnose_parse_failure(preprocessed)}
 	# ConfigFile drops empty sections, and a bare [registry] header -- the
 	# common legitimate form, since it's a presence signal -- would vanish.
 	# Stash a sentinel key so has_section works downstream.
@@ -251,7 +251,7 @@ func _parse_mod_txt(text: String) -> ConfigFile:
 		if stripped == "[registry]" and not cfg.has_section("registry"):
 			cfg.set_value("registry", "_modloader_header_present", true)
 			break
-	return cfg
+	return {"cfg": cfg, "error": ""}
 
 # Wrap unquoted [hooks] values in double quotes so they parse as strings;
 # already-quoted values pass through verbatim. Inline `# / ;` comments are

@@ -133,15 +133,6 @@ var _ui_modpacks_scroll: ScrollContainer = null
 # Debounce guard for priority-spinbox saves (see _schedule_priority_save).
 var _priority_save_pending: bool = false
 var _has_loaded := false
-# Most recent mod.txt read result: "none", "ok", "parse_error" (details in
-# _last_mod_txt_error), "nested:<path>", "pck". Copied into candidates as
-# "mod_txt_status"; new values need both mod_discovery consumers checked.
-var _last_mod_txt_status := "none"
-# Author-facing parse diagnostic; empty unless status == "parse_error".
-var _last_mod_txt_error := ""
-# Archive file list captured by read_mod_config, read only by the next
-# _build_entry_warnings call. Not stored per entry. Empty for .pck/folder.
-var _last_mod_txt_files := {}
 # Once _boot_complete, UI mutations set _dirty_since_boot; reopen flow restarts on close.
 var _boot_complete: bool = false
 var _dirty_since_boot: bool = false

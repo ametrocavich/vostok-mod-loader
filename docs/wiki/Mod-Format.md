@@ -274,7 +274,7 @@ Deprecated alias for `[script_extend]`. Both parse identically; `[script_extend]
 
 ## mod.txt validity states
 
-Tracked per entry in `_last_mod_txt_status` (see [fs_archive.gd `read_mod_config`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/fs_archive.gd)):
+The `status` of the record [fs_archive.gd `read_mod_config`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/fs_archive.gd) returns, kept on each entry as `mod_txt_status`:
 
 | Status | Meaning | UI warning |
 |---|---|---|

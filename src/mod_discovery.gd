@@ -78,15 +78,11 @@ func _build_archive_entry(mods_dir: String, file_name: String, ext: String) -> D
 	# Ties Godot's non-UTF8 warning to the mod that tripped it; debug so re-scans stay quiet.
 	_log_debug("[ModScan] inspecting " + file_name)
 	var full_path := mods_dir.path_join(file_name)
-	if ext == "pck":
-		_last_mod_txt_status = "pck"
-		_last_mod_txt_files.clear()  # no read_mod_config call to reset it
-		# Reset so the previous mod's parse-error detail can't leak here.
-		_last_mod_txt_error = ""
-	var cfg: ConfigFile = read_mod_config(full_path) if ext != "pck" else null
-	var entry := _entry_from_config(cfg, file_name, full_path, ext)
-	entry["warnings"] = _build_entry_warnings(entry)
-	entry["author_notes"] = _build_entry_author_notes(entry)
+	# A .pck carries no mod.txt.
+	var read: Dictionary = read_mod_config(full_path) if ext != "pck" else _mod_txt_read("pck")
+	var entry := _entry_from_config(read, file_name, full_path, ext)
+	entry["warnings"] = _build_entry_warnings(entry, read["files"])
+	entry["author_notes"] = _build_entry_author_notes(entry, read["files"])
 	entry["security_findings"] = scan_mod(full_path, ext)
 	entry["risk_level"] = compute_risk_level(entry["security_findings"])
 	_log_security_findings(entry)
@@ -95,10 +91,10 @@ func _build_archive_entry(mods_dir: String, file_name: String, ext: String) -> D
 func _build_folder_entry(mods_dir: String, dir_name: String) -> Dictionary:
 	_log_debug("[ModScan] inspecting " + dir_name + " [folder]")
 	var folder_path := mods_dir.path_join(dir_name)
-	var cfg: ConfigFile = read_mod_config_folder(folder_path)
-	var entry := _entry_from_config(cfg, dir_name, folder_path, "folder")
-	entry["warnings"] = _build_entry_warnings(entry)
-	entry["author_notes"] = _build_entry_author_notes(entry)
+	var read := read_mod_config_folder(folder_path)
+	var entry := _entry_from_config(read, dir_name, folder_path, "folder")
+	entry["warnings"] = _build_entry_warnings(entry, read["files"])
+	entry["author_notes"] = _build_entry_author_notes(entry, read["files"])
 	entry["security_findings"] = scan_mod(folder_path, "folder")
 	entry["risk_level"] = compute_risk_level(entry["security_findings"])
 	_log_security_findings(entry)
@@ -107,8 +103,8 @@ func _build_folder_entry(mods_dir: String, dir_name: String) -> Dictionary:
 # A folder mod excluded by dev mode off, so the orphan scan can tell it from deleted.
 func _record_hidden_folder(mods_dir: String, dir_name: String) -> void:
 	var folder_path := mods_dir.path_join(dir_name)
-	var cfg: ConfigFile = read_mod_config_folder(folder_path)
-	var entry := _entry_from_config(cfg, dir_name, folder_path, "folder")
+	var read := read_mod_config_folder(folder_path)
+	var entry := _entry_from_config(read, dir_name, folder_path, "folder")
 	_hidden_folder_profile_keys[entry["profile_key"]] = true
 	if not entry["profile_key"].begins_with("zip:"):
 		_hidden_folder_ids[entry["mod_id"]] = true
@@ -184,14 +180,15 @@ func _log_security_findings(entry: Dictionary) -> void:
 #   dependency_ignored    per-profile "Load anyway" override
 #   cfg                   parsed mod.txt; null for .pck and unparseable archives
 #   mod_txt_status        "ok" | "none" | "parse_error" | "nested:<path>" | "pck",
-#                         from the _last_mod_txt_status side channel (fs_archive.gd)
-#   mod_txt_error         parse-error detail
+#                         the status of the read_mod_config record
+#   mod_txt_error         parse-error detail from the same record
 #   has_registry          mod.txt declares [registry]; drives the disable-time confirm
 # Added by _build_archive_entry / _build_folder_entry: warnings (Array[String]),
 # security_findings ({rule, file, line, preview}), risk_level (RISK_CLEAN | RISK_RED).
 # Added by _dedupe_by_mod_id on a winner: duplicates_hidden ({file_name, version}).
 # Added by ui.gd _apply_profile_to_entries: profile_version_mismatch {stored, current}.
-func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, ext: String) -> Dictionary:
+func _entry_from_config(read: Dictionary, file_name: String, full_path: String, ext: String) -> Dictionary:
+	var cfg: ConfigFile = read["cfg"]
 	var mod_name := file_name
 	var mod_id   := file_name
 	var version  := ""
@@ -259,13 +256,14 @@ func _entry_from_config(cfg: ConfigFile, file_name: String, full_path: String, e
 		"dependency_warnings": [], "dependency_blockers": [],
 		"dependency_blockers_info": [], "dependency_ignored": false,
 		"dependencies_satisfied": true,
-		"cfg": cfg, "mod_txt_status": _last_mod_txt_status,
-		"mod_txt_error": _last_mod_txt_error,
+		"cfg": cfg, "mod_txt_status": str(read["status"]),
+		"mod_txt_error": str(read["error"]),
 		"has_registry": cfg != null and cfg.has_section("registry"),
 	}
 	return entry
 
-func _build_entry_warnings(entry: Dictionary) -> Array[String]:
+# `mod_txt_files` is the archive file set from the entry's read_mod_config record.
+func _build_entry_warnings(entry: Dictionary, mod_txt_files: Dictionary) -> Array[String]:
 	var warnings: Array[String] = []
 	var ext: String = entry["ext"]
 	if ext == "pck" or ext == "folder":
@@ -283,17 +281,17 @@ func _build_entry_warnings(entry: Dictionary) -> Array[String]:
 	elif status.begins_with("nested:"):
 		warnings.append("Invalid mod -- mod.txt is in a subfolder, not at the zip root. Re-zip so mod.txt is at the root.")
 	elif status == "ok":
-		warnings.append_array(_autoload_path_warnings(entry))
+		warnings.append_array(_autoload_path_warnings(entry, mod_txt_files))
 	return warnings
 
 # Notes for the mod's author rather than its user: the mod loads, but its
 # mod.txt could be better. The Mods tab shows them only in developer mode.
-func _build_entry_author_notes(entry: Dictionary) -> Array[String]:
+func _build_entry_author_notes(entry: Dictionary, mod_txt_files: Dictionary) -> Array[String]:
 	var notes: Array[String] = []
 	var ext: String = entry["ext"]
 	if ext == "pck" or ext == "folder":
 		return notes
-	notes.append_array(_stale_bake_warnings(entry))
+	notes.append_array(_stale_bake_warnings(mod_txt_files))
 	notes.append_array(_missing_id_warnings(entry))
 	notes.append_array(_source_declaration_warnings(entry))
 	return notes
@@ -342,10 +340,10 @@ func _missing_id_warnings(entry: Dictionary) -> Array[String]:
 # An archive shipping Godot's export bake beside its sources: .gd.remap
 # redirects each script to compiled .gdc, so edits to the .gd do nothing.
 # _static_resolve_remaps leaves these alone (MCM ships a real baked cache).
-func _stale_bake_warnings(entry: Dictionary) -> Array[String]:
+func _stale_bake_warnings(mod_txt_files: Dictionary) -> Array[String]:
 	var warnings: Array[String] = []
 	var baked := 0
-	for p: String in _last_mod_txt_files:
+	for p: String in mod_txt_files:
 		if p.ends_with(".gd.remap"):
 			baked += 1
 	if baked > 0:
@@ -370,20 +368,19 @@ static func _split_autoload_marker(raw: String) -> Array:
 	return [path.strip_edges(), is_early]
 
 # Autoload paths that point nowhere inside the mod: such a mod mounts and
-# does nothing. Reads the _last_mod_txt_files side channel, so it must run
-# right after the entry's read_mod_config. Warns only on a same-name file elsewhere.
-func _autoload_path_warnings(entry: Dictionary) -> Array[String]:
+# does nothing. Warns only on a same-name file elsewhere in the archive.
+func _autoload_path_warnings(entry: Dictionary, mod_txt_files: Dictionary) -> Array[String]:
 	var warnings: Array[String] = []
 	var cfg: ConfigFile = entry.get("cfg")
-	if cfg == null or not cfg.has_section("autoload") or _last_mod_txt_files.is_empty():
+	if cfg == null or not cfg.has_section("autoload") or mod_txt_files.is_empty():
 		return warnings
 	for autoload_name: String in cfg.get_section_keys("autoload"):
 		# Must match what mod_loading.gd resolves, or this warns about mods that load fine.
 		var res_path: String = _split_autoload_marker(str(cfg.get_value("autoload", autoload_name, "")))[0]
-		if res_path.is_empty() or _last_mod_txt_files.has(res_path):
+		if res_path.is_empty() or mod_txt_files.has(res_path):
 			continue
 		var target := res_path.get_file().to_lower()
-		for p: String in _last_mod_txt_files:
+		for p: String in mod_txt_files:
 			if p.get_file().to_lower() == target:
 				warnings.append("Autoload \"" + autoload_name + "\" points at "
 					+ res_path + ", which is not in this mod -- did you mean "
@@ -1110,7 +1107,7 @@ func replace_mod_from_ref(target_path: String, ref: Dictionary) -> Dictionary:
 		failure["error"] = "Could not write the download to disk (disk full?)"
 		return failure
 
-	var new_cfg: ConfigFile = read_mod_config(temp_path)
+	var new_cfg: ConfigFile = read_mod_config(temp_path)["cfg"]
 	if new_cfg == null:
 		DirAccess.remove_absolute(temp_path)
 		failure["error"] = "Downloaded file is not a valid mod archive (no readable mod.txt)"
@@ -1270,7 +1267,7 @@ func _host_install_downloaded_archive(provider: String, download_url: String, he
 			DirAccess.remove_absolute(temp_path)
 			failure["error"] = "Downloaded file is not a valid archive"
 			return failure
-		if read_mod_config(temp_path) == null:
+		if read_mod_config(temp_path)["cfg"] == null:
 			_log_warning("Downloaded '%s' has no parseable root mod.txt -- installing as a plain resource pack" % derived_name)
 
 	var dir_access := DirAccess.open(_mods_dir)
