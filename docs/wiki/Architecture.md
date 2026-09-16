@@ -136,7 +136,7 @@ Sections other than the two autoload ones (`[display]`, `[input]`, ...) survive 
 | `timestamp` | Unix time, diagnostic only |
 | `script_overrides` | `[{vanilla_path, mod_script_path, mod_name, priority, seq}]` for Pass 2 to replay |
 | `hook_pack_path` | The pack static init mounts next boot |
-| `hook_pack_wrapped_paths` | The vanilla script paths the pack wrapped; static init preempts exactly these |
+| `hook_pack_wrapped_paths` | The vanilla script paths the pack wrapped and activated eagerly; static init preempts exactly these. Scripts deferred for a module-scope scene preload are not listed and lazy-compile from the mounted pack |
 
 Writer: `_write_pass_state`. Hash: `_compute_state_hash`. `_persist_hook_pack_state` writes the two hook-pack keys separately, seeding `exe_mtime` and `modloader_version` only when they are missing.
 

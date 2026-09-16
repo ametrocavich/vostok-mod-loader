@@ -42,11 +42,16 @@ const REGISTRY_EXPECTED_MARKERS: Dictionary = {
 	"Compiler.gd": "shelters/maps registry prelude",
 }
 
-# Wrapped res:// paths as persisted in pass_state; static init preempts exactly these.
-func _wrapped_paths_packed(filenames: Array[String]) -> PackedStringArray:
+# The wrapped res:// paths pass state records for the next session's static
+# init to force-compile. Scripts deferred for a module-scope scene preload
+# are left out: static init runs before any mod override, and force-loading
+# them there would bake their scenes against pre-override vanilla, the case
+# the deferral exists for. They lazy-compile from the mounted pack instead.
+func _eager_wrapped_paths(paths: Array[String]) -> PackedStringArray:
 	var out := PackedStringArray()
-	for fn in filenames:
-		out.append(fn)
+	for p in paths:
+		if not _scripts_with_scene_preloads.has(p):
+			out.append(p)
 	return out
 
 # Canary C helper. Detokenizes the first probe script with GDSC bytes and
@@ -559,7 +564,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			# init mounts it on a fresh engine; activating here would fire a false alarm.
 			_log_info("[RTVCodegen] Generated %d rewritten vanilla script(s), %d hook points -- activation deferred to Pass 2 fresh engine" \
 					% [script_count, hook_count])
-			_persist_hook_pack_state(pack_zip_rel, _wrapped_paths_packed(packed_paths))
+			_persist_hook_pack_state(pack_zip_rel, _eager_wrapped_paths(packed_paths))
 		elif ProjectSettings.load_resource_pack(pack_zip_rel, true):
 			var canary_got := FileAccess.get_file_as_string("res://__modloader_canary__.txt")
 			if canary_got.strip_edges() != canary_content:
@@ -842,9 +847,10 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 	_log_info("[RTVCodegen] Activated %d/%d rewritten script(s) (%d already live from static-init preload; %d deferred to lazy-compile)" \
 			% [activated, eager_total, preactivated, deferred.size()])
 
-	# Persist pack path and wrapped paths so next session's static init mounts
-	# and preempts them before game autoloads compile class_name scripts.
-	_persist_hook_pack_state(pack_path, _wrapped_paths_packed(filenames))
+	# Persist pack path and the eager wrapped paths so next session's static
+	# init mounts the pack and preempts them before game autoloads compile
+	# class_name scripts.
+	_persist_hook_pack_state(pack_path, _eager_wrapped_paths(filenames))
 
 	# Compile proof: the method list must hold the renamed vanilla beside the wrapper.
 	var compile_proof_ok := 0

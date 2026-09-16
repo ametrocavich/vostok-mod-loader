@@ -165,7 +165,7 @@ hook_pack_wrapped_paths=PackedStringArray("res://Scripts/Menu.gd")
 | `mods_hash` | Content hash of the enabled mod list. Unchanged hash + matching state = skip hook pack regeneration. |
 | `script_overrides` | Dynamic `overrideScript()` targets declared by mods, used by the dev-mode conflict report. `[]` on most installs. |
 | `hook_pack_path` | `user://modloader_hooks/framework_pack_<millis>.zip` to mount at static init next boot. A fresh filename per generation sidesteps Godot's `load_resource_pack` path dedup. |
-| `hook_pack_wrapped_paths` | The `res://Scripts/<Name>.gd` paths in the pack; drives which scripts get `CACHE_MODE_IGNORE` preempt at static init. Often just `["res://Scripts/Menu.gd"]` for loadouts that only use the core hook. |
+| `hook_pack_wrapped_paths` | The `res://Scripts/<Name>.gd` paths in the pack that static init force-compiles with `CACHE_MODE_IGNORE`. Scripts with a module-scope scene preload are left off the list and compile lazily from the pack. Often just `["res://Scripts/Menu.gd"]` for loadouts that only use the core hook. |
 
 Safe to delete. Next launch rebuilds it at the cost of a slower cold boot (the hook pack regenerates).
 

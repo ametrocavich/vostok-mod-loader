@@ -152,6 +152,7 @@ func _run() -> void:
 	_t7_hook_status_reaches_the_launcher()
 	_t8_pass_state_reads_coerce()
 	_t9_load_all_mods_keeps_applied_overrides()
+	_t10_persisted_wrapped_paths_exclude_deferred()
 
 	_finish()
 
@@ -493,6 +494,54 @@ func _t9_load_all_mods_keeps_applied_overrides() -> void:
 			+ "fills it before the call and the hook pack reads it after")
 	_ml._applied_script_overrides.clear()
 
+# --- T10: deferred scripts stay out of the persisted wrapped-path list -------
+
+# A rewritten vanilla script with a module-scope scene preload is deferred to
+# lazy compile so mod overrides land before its scenes bake. Static init
+# force-compiles every path listed in hook_pack_wrapped_paths before any
+# override runs, so listing a deferred script undoes the deferral on the
+# next launch. The generator and the activator cannot run headlessly (they
+# need the vanilla corpus and a mounted pack), so this drives the subset
+# helper and the persist step, then checks in the built source that both
+# call sites go through the helper. Both drift guards fail loudly.
+func _t10_persisted_wrapped_paths_exclude_deferred() -> void:
+	_assert(_ml.has_method("_eager_wrapped_paths"),
+			"T10: the loader must expose _eager_wrapped_paths(paths) -- the eager subset "
+			+ "the persist step writes; a script error here would skip every assertion below")
+	if not _ml.has_method("_eager_wrapped_paths"):
+		return
+	_reset_user_state()
+	_ml._scripts_with_scene_preloads.clear()
+	_ml._scripts_with_scene_preloads["res://Scripts/Deferred.gd"] = ["res://Scenes/X.tscn"]
+	var all_paths: Array[String] = ["res://Scripts/Menu.gd", "res://Scripts/Deferred.gd", "res://Scripts/AI.gd"]
+	var eager: PackedStringArray = _ml._eager_wrapped_paths(all_paths)
+	_assert(eager == PackedStringArray(["res://Scripts/Menu.gd", "res://Scripts/AI.gd"]),
+			"T10: the eager subset drops the deferred script and keeps order (got %s)" % str(eager))
+	_ml._persist_hook_pack_state("user://modloader_hooks/framework_pack_1.zip", eager)
+	var cfg := ConfigFile.new()
+	_assert(cfg.load(_pass_state_path) == OK, "T10: _persist_hook_pack_state wrote pass state")
+	var wrapped: PackedStringArray = _ml._state_paths(cfg, "hook_pack_wrapped_paths")
+	_assert(wrapped.has("res://Scripts/Menu.gd") and not wrapped.has("res://Scripts/Deferred.gd"),
+			"T10: the persisted list holds the eager scripts and not the deferred one (got %s)" % str(wrapped))
+	_ml._scripts_with_scene_preloads.clear()
+	_reset_user_state()
+
+	var src := FileAccess.get_file_as_string(MODLOADER_PATH)
+	if src.is_empty():
+		_fail("T10: could not read " + MODLOADER_PATH + " as text")
+		return
+	var call_lines := 0
+	for line in src.split("\n"):
+		if not line.contains("_persist_hook_pack_state(") or line.contains("func _persist_hook_pack_state("):
+			continue
+		call_lines += 1
+		_assert(line.contains("_eager_wrapped_paths("),
+				"T10: a _persist_hook_pack_state call passes a path list that did not go "
+				+ "through _eager_wrapped_paths: " + line.strip_edges())
+	_assert(call_lines >= 2,
+			"T10: expected the deferred-activation and activation call sites of "
+			+ "_persist_hook_pack_state in the built loader, found %d -- re-anchor this test" % call_lines)
+
 func _crashed_launch() -> void:
 	_next_launch_boot()
 	_arm_two_pass_restart()
@@ -671,7 +720,7 @@ func _cleanup_exe_cfg() -> void:
 func _finish() -> void:
 	_cleanup_exe_cfg()
 	if _failures.is_empty():
-		print("[boot-state] PASS: %d assertion(s) across T1..T9" % _assertions)
+		print("[boot-state] PASS: %d assertion(s) across T1..T10" % _assertions)
 		quit(0)
 		return
 	for m in _failures:
