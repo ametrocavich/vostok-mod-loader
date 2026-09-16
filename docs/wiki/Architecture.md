@@ -41,7 +41,7 @@ The static-init mount is the only way to rewire scripts Godot compiles while it 
 ```
 _check_crash_recovery()          # heartbeat survivor from the last launch
 _check_safe_mode()               # user-placed modloader_safe_mode
-_compile_regex(); _build_class_name_lookup(); _enumerate_game_scripts()
+_build_class_name_lookup(); _enumerate_game_scripts()
 _load_developer_mode_setting()
 _ui_mod_entries = collect_mod_metadata()   # scan <exe>/mods/, no mounting
 _clean_stale_cache(); _remove_retired_state()
@@ -87,13 +87,13 @@ Archives are already mounted (static init did it in this process) and early auto
 
 1. Writes `user://modloader_pass2_dirty` first thing. If the pass crashes before cleanup, the next static init sees the marker and wipes.
 2. Restores `[script_overrides]` entries from pass state and applies them.
-3. Re-runs `_compile_regex`, class lookup, script enumeration, dev-mode setting, metadata collection and `_load_ui_config`, then `load_all_mods("Pass 2")`. Archives already in `_filescope_mounted` are not mounted again.
-4. Registers the `RTVModLib` meta and generates plus activates the hook pack (no `defer_activation` this time).
-5. Re-applies the test pack when the flag is set, copying it to a fresh `user://test_pack_reapply_<ticks>.zip` because `load_resource_pack` dedupes by path.
+3. Re-runs the class lookup, script enumeration, dev-mode setting, metadata collection and `_load_ui_config`, then `load_all_mods("Pass 2")`. Archives already in `_filescope_mounted` are not mounted again. (`_compile_regex` runs once per launch, in `_ready`.)
+4. Hands off to `_finish_boot`, the tail every boot path shares: registers the `RTVModLib` meta and generates plus activates the hook pack (no `defer_activation` this time).
+5. Re-applies the test pack when the flag is set (`_test_pack_reapply` in debug.gd), copying it to a fresh `user://test_pack_reapply_<ticks>.zip` because `load_resource_pack` dedupes by path.
 6. Instantiates pending autoloads, skipping any already in the tree from `[autoload_prepend]`.
 7. Runs the dev-mode diagnostics, then `_emit_frameworks_ready`.
-8. Deletes the heartbeat, clears the restart streak, deletes the dirty marker. The streak is cleared here and not at entry: `load_all_mods` and autoload instantiation are where a mod crashes, so clearing earlier would record a streak of zero for a crashed launch.
-9. `reload_current_scene()` if any archive or autoload landed, then asks the OS for window focus (Windows hands foreground away when the Pass 1 process dies).
+8. Deletes the heartbeat and clears the restart streak, then `reload_current_scene()` if any archive or autoload landed. The streak is cleared here and not at entry: `load_all_mods` and autoload instantiation are where a mod crashes, so clearing earlier would record a streak of zero for a crashed launch.
+9. Back in `_run_pass_2`: deletes the dirty marker, then asks the OS for window focus (Windows hands foreground away when the Pass 1 process dies).
 
 Pass 2 never shows the launcher.
 
@@ -115,7 +115,7 @@ ModLoader="*res://modloader.gd"
 Three invariants:
 
 - ModLoader is always the last entry in `[autoload_prepend]`. That section is reverse-insertion (last listed = first loaded), so ModLoader's static-init mount runs before any mod autoload's script references resolve. In plain `[autoload]` some game autoloads would pin their bytecode before static init could preempt them.
-- Late autoloads never appear in `override.cfg`. Godot would try to load them before the archives are mounted. The `_finish_*` helpers instantiate them after the mounts land.
+- Late autoloads never appear in `override.cfg`. Godot would try to load them before the archives are mounted. `_finish_boot` instantiates them after the mounts land.
 - The write is atomic: `.tmp`, then park the live file as `override.cfg.old`, promote the `.tmp`, drop the `.old`. Windows `DirAccess.rename()` will not overwrite, hence the park step. On any failure the `.old` is restored (by byte copy if the rename back fails too). The live file is never deleted before its replacement is proven in place; losing it would un-load the ModLoader autoload with no way to self-heal. `_static_write_cfg_atomic` does the same for the static reset paths.
 
 Each early autoload line is checked by `_autoload_entry_writable` first: the name must be a plain identifier and the path a `res://` or extracted `user://modloader_early/` path with no quotes, backslashes or newlines. Godot stops applying entries at the first malformed line, and the ModLoader line comes after the mod entries.

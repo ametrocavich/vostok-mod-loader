@@ -340,25 +340,55 @@ func _t6_pass2_clears_after_the_crash_window() -> void:
 			break
 	var i_load := -1
 	var i_clear := -1
+	var i_finish := -1
 	for i in range(start, end):
 		var l: String = lines[i]
 		if i_load < 0 and l.contains("load_all_mods("):
 			i_load = i
 		if i_clear < 0 and l.contains("_clear_restart_counter("):
 			i_clear = i
+		if i_finish < 0 and l.contains("_finish_boot("):
+			i_finish = i
 	_assert(i_load >= 0,
 			"T6: _run_pass_2's body no longer calls load_all_mods() -- the crash "
 			+ "window this test is anchored to moved; re-anchor it")
 	if i_load < 0:
 		return
-	_assert(i_clear < 0 or i_clear > i_load,
-			"T6: _run_pass_2 clears the restart counter at line %d, BEFORE "
-					% (i_clear + 1)
-			+ "load_all_mods() at line %d. A mod crashing during load or autoload "
-					% (i_load + 1)
-			+ "instantiation therefore leaves a streak of zero. The clear belongs "
-			+ "with the other end-of-pass cleanup, next to the dirty-marker "
-			+ "removal")
+	if i_clear >= 0:
+		_assert(i_clear > i_load,
+				"T6: _run_pass_2 clears the restart counter at line %d, BEFORE "
+						% (i_clear + 1)
+				+ "load_all_mods() at line %d. A mod crashing during load or autoload "
+						% (i_load + 1)
+				+ "instantiation therefore leaves a streak of zero. The clear belongs "
+				+ "with the other end-of-pass cleanup, next to the dirty-marker "
+				+ "removal")
+		return
+	# The clear lives in the shared finish: it must be called after
+	# load_all_mods, and its body must still hold the clear.
+	_assert(i_finish > i_load,
+			"T6: _run_pass_2 neither clears the restart counter itself nor calls "
+			+ "_finish_boot after load_all_mods(); the streak would stay at zero "
+			+ "or be cleared before the crash window")
+	var finish_start := -1
+	for i in lines.size():
+		if lines[i].begins_with("func _finish_boot("):
+			finish_start = i
+			break
+	_assert(finish_start >= 0, "T6: expected 'func _finish_boot(' in the built loader")
+	if finish_start < 0:
+		return
+	var clears_in_finish := false
+	for i in range(finish_start + 1, lines.size()):
+		var l: String = lines[i]
+		if l.begins_with("func ") or l.begins_with("static func "):
+			break
+		if l.contains("_clear_restart_counter("):
+			clears_in_finish = true
+			break
+	_assert(clears_in_finish,
+			"T6: _finish_boot no longer calls _clear_restart_counter; the streak is "
+			+ "never reset after a clean Pass 2")
 
 # --- Production-order drivers ------------------------------------------------
 

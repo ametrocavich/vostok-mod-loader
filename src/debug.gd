@@ -35,6 +35,48 @@ func _test_post_autoload_verify() -> void:
 		var txt := bytes.get_string_from_utf8()
 		_log_info(TAG + "   FileAccess IXP/Controller.gd: " + str(bytes.size()) + " bytes, has marker: " + str("TEST-HOOK-IXP" in txt))
 
+# Pass 2 only: mount the test pack again after load_all_mods re-mounted the
+# archives, from a fresh copy because load_resource_pack dedupes by path.
+func _test_pack_reapply() -> void:
+	# Sweep prior sessions' reapply copies; nothing else deletes them.
+	var user_dir_abs := ProjectSettings.globalize_path("user://")
+	var user_dir := DirAccess.open(user_dir_abs)
+	if user_dir != null:
+		user_dir.list_dir_begin()
+		while true:
+			var stale_name := user_dir.get_next()
+			if stale_name == "":
+				break
+			if stale_name.begins_with("test_pack_reapply_") and stale_name.ends_with(".zip"):
+				DirAccess.remove_absolute(user_dir_abs.path_join(stale_name))
+		user_dir.list_dir_end()
+	var src_abs := ProjectSettings.globalize_path("user://test_pack_precedence.zip")
+	var reapply_abs := ProjectSettings.globalize_path("user://test_pack_reapply_" \
+			+ str(Time.get_ticks_msec()) + ".zip")
+	if FileAccess.file_exists(src_abs):
+		var src := FileAccess.open(src_abs, FileAccess.READ)
+		var dst := FileAccess.open(reapply_abs, FileAccess.WRITE)
+		if src and dst:
+			# A short write (disk full) would otherwise mount a truncated zip.
+			var write_ok := dst.store_buffer(src.get_buffer(src.get_length()))
+			src.close()
+			dst.close()
+			if not write_ok:
+				_log_warning("[TEST-REMAP] Pass 2: copy write failed")
+				DirAccess.remove_absolute(reapply_abs)
+			elif ProjectSettings.load_resource_pack(reapply_abs, true):
+				_log_info("[TEST-REMAP] Pass 2: re-applied test pack via copy " + reapply_abs.get_file())
+				# Verify VFS state post-reapply
+				if FileAccess.file_exists("res://ImmersiveXP/Controller.gd"):
+					var chk := FileAccess.get_file_as_bytes("res://ImmersiveXP/Controller.gd")
+					var has_marker := "TEST-HOOK-IXP" in chk.get_string_from_utf8()
+					_log_info("[TEST-REMAP] Pass 2 post-reapply: IXP/Controller.gd = " \
+							+ str(chk.size()) + " bytes, has marker: " + str(has_marker))
+			else:
+				_log_warning("[TEST-REMAP] Pass 2: load_resource_pack on copy failed")
+		else:
+			_log_warning("[TEST-REMAP] Pass 2: failed to copy test pack")
+
 # Temporary: pack-over-bytecode precedence test, gated behind a flag in
 # mod_config.cfg. Remove after verifying whether a mounted .gd + .gd.remap
 # beats the PCK's .gdc + .gd.remap for a given resource path.

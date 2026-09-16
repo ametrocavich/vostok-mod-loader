@@ -19,6 +19,7 @@ func _ready() -> void:
 			print("[ModLoader] disabled via sentinel file -- sitting idle")
 		return
 	await get_tree().process_frame
+	# Once per launch; both passes and the test scaffolding read the regexes.
 	_compile_regex()
 	# The test pack must mount after load_all_mods re-mounts archives.
 	var is_pass_2 := "--modloader-restart" in OS.get_cmdline_user_args()
@@ -91,7 +92,6 @@ func _run_pass_1() -> void:
 	_log_info("Metro Mod Loader v" + MODLOADER_VERSION)
 	_check_crash_recovery()
 	_check_safe_mode()
-	_compile_regex()
 	_build_class_name_lookup()
 	# Enumerate before load_all_mods so the .hook() resolver can match class_name-less scripts by stem.
 	_enumerate_game_scripts()
@@ -172,34 +172,29 @@ func _run_pass_1() -> void:
 		_log_info("[Hooks] Cleaned up unused hook artifacts")
 	await _finish_single_pass()
 
+# Pass 1 finish when the mod set matches the previous session: the archives
+# are already mounted from static init.
 func _finish_with_existing_mounts() -> void:
-	# Register meta and generate the pack before mod autoloads call .hook().
-	_boot_complete = true
-	_register_rtv_modlib_meta()
-	_generate_hook_pack()
-	for entry in _pending_autoloads:
-		if get_tree().root.has_node(entry["name"]):
-			_log_info("  Autoload '%s' already in tree -- skipped" % entry["name"])
-			continue
-		_instantiate_autoload(entry["mod_name"], entry["name"], entry["path"])
-	if _developer_mode:
-		_log_override_timing_warnings()
-		_print_conflict_summary()
-		_write_conflict_report()
-	_emit_frameworks_ready()
-	_delete_heartbeat()
-	# A stale restart_count surviving hash-match sessions would trip the breaker early.
-	_clear_restart_counter()
-	if not _filescope_mounted.is_empty() or not _archive_file_sets.is_empty() or _pending_autoloads.size() > 0:
-		var err := get_tree().reload_current_scene()
-		if err != OK:
-			_log_critical("reload_current_scene() failed with error " + str(err))
-			return
+	_finish_boot(not _filescope_mounted.is_empty() or not _archive_file_sets.is_empty()
+			or _pending_autoloads.size() > 0)
 
+# Pass 1 finish without a restart: nothing enabled, the crash breaker
+# tripped, or the restart could not be armed.
 func _finish_single_pass() -> void:
+	_finish_boot(not _archive_file_sets.is_empty() or _pending_autoloads.size() > 0)
+
+# The tail every boot path shares: register the RTVModLib meta and generate
+# the hook pack before mod autoloads call .hook(), instantiate the queued
+# autoloads, run the developer-mode diagnostics, emit frameworks_ready, and
+# clear the heartbeat and the crash streak. The streak is cleared after the
+# autoloads because they are where a mod crashes the process. Reloads the
+# current scene when asked; returns false only when that reload failed.
+func _finish_boot(reload_scene: bool, pass_2: bool = false) -> bool:
 	_boot_complete = true
 	_register_rtv_modlib_meta()
 	_generate_hook_pack()
+	if pass_2 and _load_test_pack_flag():
+		_test_pack_reapply()
 	for entry in _pending_autoloads:
 		# An autoload already loaded from override.cfg would be instantiated twice.
 		if get_tree().root.has_node(entry["name"]):
@@ -212,13 +207,14 @@ func _finish_single_pass() -> void:
 		_write_conflict_report()
 	_emit_frameworks_ready()
 	_delete_heartbeat()
-	# Session finished; a leftover restart_count is stale.
 	_clear_restart_counter()
-	if not _archive_file_sets.is_empty() or _pending_autoloads.size() > 0:
-		var err := get_tree().reload_current_scene()
-		if err != OK:
-			_log_critical("reload_current_scene() failed with error " + str(err))
-			return
+	if not reload_scene:
+		return true
+	var err := get_tree().reload_current_scene()
+	if err != OK:
+		_log_critical("reload_current_scene() failed with error " + str(err))
+		return false
+	return true
 
 # Pass 2: Post-restart -- archives already mounted at file-scope
 
@@ -242,7 +238,6 @@ func _run_pass_2() -> void:
 			else:
 				_log_warning("[Overrides] Malformed entry in pass state -- skipped")
 	_apply_script_overrides()
-	_compile_regex()
 	_build_class_name_lookup()
 	# See _run_pass_1: enumerate before load_all_mods for the filename-stem fallback.
 	_enumerate_game_scripts()
@@ -251,70 +246,14 @@ func _run_pass_2() -> void:
 	_load_ui_config()
 
 	load_all_mods("Pass 2")
-	_register_rtv_modlib_meta()
-	_generate_hook_pack()
-	# Re-apply the test pack after the re-mounts; copy to a fresh filename (path dedupe).
-	if _load_test_pack_flag():
-		# Sweep prior sessions' reapply copies; nothing else deletes them.
-		var user_dir_abs := ProjectSettings.globalize_path("user://")
-		var user_dir := DirAccess.open(user_dir_abs)
-		if user_dir != null:
-			user_dir.list_dir_begin()
-			while true:
-				var stale_name := user_dir.get_next()
-				if stale_name == "":
-					break
-				if stale_name.begins_with("test_pack_reapply_") and stale_name.ends_with(".zip"):
-					DirAccess.remove_absolute(user_dir_abs.path_join(stale_name))
-			user_dir.list_dir_end()
-		var src_abs := ProjectSettings.globalize_path("user://test_pack_precedence.zip")
-		var reapply_abs := ProjectSettings.globalize_path("user://test_pack_reapply_" \
-				+ str(Time.get_ticks_msec()) + ".zip")
-		if FileAccess.file_exists(src_abs):
-			var src := FileAccess.open(src_abs, FileAccess.READ)
-			var dst := FileAccess.open(reapply_abs, FileAccess.WRITE)
-			if src and dst:
-				# A short write (disk full) would otherwise mount a truncated zip.
-				var write_ok := dst.store_buffer(src.get_buffer(src.get_length()))
-				src.close()
-				dst.close()
-				if not write_ok:
-					_log_warning("[TEST-REMAP] Pass 2: copy write failed")
-					DirAccess.remove_absolute(reapply_abs)
-				elif ProjectSettings.load_resource_pack(reapply_abs, true):
-					_log_info("[TEST-REMAP] Pass 2: re-applied test pack via copy " + reapply_abs.get_file())
-					# Verify VFS state post-reapply
-					if FileAccess.file_exists("res://ImmersiveXP/Controller.gd"):
-						var chk := FileAccess.get_file_as_bytes("res://ImmersiveXP/Controller.gd")
-						var has_marker := "TEST-HOOK-IXP" in chk.get_string_from_utf8()
-						_log_info("[TEST-REMAP] Pass 2 post-reapply: IXP/Controller.gd = " \
-								+ str(chk.size()) + " bytes, has marker: " + str(has_marker))
-				else:
-					_log_warning("[TEST-REMAP] Pass 2: load_resource_pack on copy failed")
-			else:
-				_log_warning("[TEST-REMAP] Pass 2: failed to copy test pack")
-	for entry in _pending_autoloads:
-		if get_tree().root.has_node(entry["name"]):
-			_log_info("  Autoload '%s' already in tree -- skipped" % entry["name"])
-			continue
-		_instantiate_autoload(entry["mod_name"], entry["name"], entry["path"])
-
-	if _developer_mode:
-		_log_override_timing_warnings()
-		_print_conflict_summary()
-		_write_conflict_report()
-	_emit_frameworks_ready()
-	_delete_heartbeat()
-	# Clear the streak and drop the dirty marker at the end: clearing at entry
-	# would precede the crash window and the breaker could never trip.
-	_clear_restart_counter()
+	# The finish clears the streak after the autoloads, and the dirty marker
+	# goes after that: both stay behind the crash window so the breaker can trip.
+	var reloaded := _finish_boot(not _filescope_mounted.is_empty() or not _archive_file_sets.is_empty()
+			or _pending_autoloads.size() > 0, true)
 	if FileAccess.file_exists(PASS2_DIRTY_PATH):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(PASS2_DIRTY_PATH))
-	if not _filescope_mounted.is_empty() or not _archive_file_sets.is_empty() or _pending_autoloads.size() > 0:
-		var err := get_tree().reload_current_scene()
-		if err != OK:
-			_log_critical("reload_current_scene() failed with error " + str(err))
-			return
+	if not reloaded:
+		return
 	# Windows hands foreground away when the Pass-1 process dies; ask for focus
 	# once the window is mapped, with request_attention as the fallback.
 	await get_tree().process_frame

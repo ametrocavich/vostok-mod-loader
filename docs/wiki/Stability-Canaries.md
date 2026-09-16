@@ -174,7 +174,7 @@ Disable recently added mods if the game is unstable.
 
 resets the streak, restores a clean `override.cfg`, deletes pass state and finishes single-pass. The launcher stays reachable, so you can turn the offending mod off.
 
-Reset to zero: every finish path (`_finish_single_pass`, `_finish_with_existing_mounts`, the end of Pass 2) calls `_clear_restart_counter`, which zeroes both counters. Pass 2 clears at its end, not at entry: `load_all_mods` and autoload instantiation are the crash window, and clearing before them would record a streak of zero for a crashed launch.
+Reset to zero: every boot path ends in `_finish_boot`, which calls `_clear_restart_counter` after the autoloads are instantiated; that zeroes both counters. Pass 2 clears at its end, not at entry: `load_all_mods` and autoload instantiation are the crash window, and clearing before them would record a streak of zero for a crashed launch.
 
 `check_boot_state.sh` pins all of this: the streak survives the wipe, one crash does not trip, two do, a clean finish resets to zero, and the Pass 2 clear stays after the crash window.
 
