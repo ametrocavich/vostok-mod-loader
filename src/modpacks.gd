@@ -662,7 +662,7 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 			if cfg_re.load(UI_CONFIG_PATH) == OK:
 				_apply_profile_to_entries(cfg_re, _active_profile)
 
-	# 6. Refresh the Mods tab.
+	# 5. Refresh the Mods tab.
 	if is_instance_valid(tabs):
 		_rebuild_mods_tab(tabs)
 
