@@ -65,6 +65,7 @@ func _run() -> void:
 	_t5_ref_grammar(ml)
 	_t6_source_round_trip(ml)
 	_t7_modtxt_reader(ml)
+	_t11_source_precedence(ml)
 	_t8_vm_pure_surface(ml)
 	_t9_caps_match_wiring(ml)
 	_t10_hosted_modpacks(ml)
@@ -388,6 +389,108 @@ func _t7_modtxt_reader(ml: Object) -> void:
 	_assert(str(nullrec["provider"]) == "" and str(nullrec["id"]) == "",
 			"T7: a null ConfigFile reads as no-source, not a crash")
 
+# Ranking a mod.txt declaration against the [mod_sources] record the launcher
+# stored for the same mod. Files served by vostokmods.net carry only a legacy
+# modworkshop= line, so a mod downloaded from VostokMods must keep the identity
+# the download recorded; otherwise Browse shows it as not installed, the update
+# check asks the wrong host and a hosted pack re-downloads it on every apply.
+# An explicit source= is the author's word and wins over everything.
+func _t11_source_precedence(ml: Object) -> void:
+	var legacy := _cfg_from_text('[mod]
+version="1.2"
+
+[updates]
+modworkshop=777
+')
+	var explicit := _cfg_from_text('[updates]
+source="vostokmods:example"
+')
+	var silent := _cfg_from_text('[mod]
+version="1.2"
+')
+	var stored_vm := {"provider": "vostokmods", "id": "rtvcoop", "version": "5.0.0"}
+	var stored_mws := {"provider": "modworkshop", "id": "777", "version": "1.2"}
+	var stored_other_mws := {"provider": "modworkshop", "id": "999"}
+	var cases := [
+		# [label, mod.txt, stored record or null, want provider:id, want version]
+		["explicit source= beats a stored other-provider record", explicit, stored_other_mws, "vostokmods:example", ""],
+		["legacy plus a stored vostokmods record yields vostokmods", legacy, stored_vm, "vostokmods:rtvcoop", "5.0.0"],
+		["legacy alone yields modworkshop", legacy, null, "modworkshop:777", "1.2"],
+		["legacy plus a stored record of the same provider is unchanged", legacy, stored_mws, "modworkshop:777", "1.2"],
+		["nothing declared falls back to the stored record", silent, stored_vm, "vostokmods:rtvcoop", "5.0.0"],
+		["nothing declared and nothing stored is no source", silent, null, "", ""],
+	]
+	for c in cases:
+		var label: String = c[0]
+		var entry := {"profile_key": "k", "cfg": c[1]}
+		var persisted := {}
+		if c[2] != null:
+			persisted["k"] = ml._normalize_source_record(c[2])
+		var rec: Dictionary = ml._entry_source_record(entry, persisted)
+		var keys: Array = rec.keys()
+		keys.sort()
+		_assert(keys == ["id", "provider", "version"],
+				"T11 %s: resolved record has exactly provider/id/version (got %s)" % [label, str(keys)])
+		var got := ""
+		if str(rec["provider"]) != "":
+			got = str(rec["provider"]) + ":" + str(rec["id"])
+		_assert(got == str(c[3]),
+				"T11 %s: want '%s', got '%s'" % [label, str(c[3]), got])
+		_assert(str(rec["version"]) == str(c[4]),
+				"T11 %s: version (want '%s', got '%s')" % [label, str(c[4]), str(rec["version"])])
+
+	# The scan-time persist applies the same ranking to what it writes: a
+	# legacy line never displaces a record another host's download wrote, an
+	# explicit source= replaces whatever is stored, and a second scan with
+	# nothing new writes nothing.
+	var cfg_path := str(ml.UI_CONFIG_PATH)
+	var bak_path := cfg_path + ".bak"
+	_remove_user_file(cfg_path)
+	_remove_user_file(bak_path)
+	var seed := ConfigFile.new()
+	seed.set_value("mod_sources", "vm@1", ml._serialize_mod_source_rec(ml._normalize_source_record(stored_vm)))
+	seed.set_value("mod_sources", "same@1", ml._serialize_mod_source_rec(ml._normalize_source_record(stored_mws)))
+	seed.set_value("mod_sources", "other@1", ml._serialize_mod_source_rec(ml._normalize_source_record(stored_other_mws)))
+	_assert(seed.save(cfg_path) == OK, "T11: seeded mod_config.cfg in the throwaway user://")
+	var entries: Array[Dictionary] = [
+		{"profile_key": "vm@1", "cfg": legacy},
+		{"profile_key": "same@1", "cfg": legacy},
+		{"profile_key": "other@1", "cfg": explicit},
+		{"profile_key": "new@1", "cfg": legacy},
+	]
+	ml._persist_mod_sources_for_entries(entries)
+	var after: Dictionary = ml._get_persisted_mod_sources()
+	_assert(_stored_key(after, "vm@1") == "vostokmods:rtvcoop",
+			"T11 persist: a legacy line leaves a stored vostokmods record alone (got %s)" % _stored_key(after, "vm@1"))
+	_assert(_stored_key(after, "same@1") == "modworkshop:777",
+			"T11 persist: a legacy line keeps a stored record of the same provider (got %s)" % _stored_key(after, "same@1"))
+	_assert(_stored_key(after, "other@1") == "vostokmods:example",
+			"T11 persist: an explicit source= replaces a stored other-provider record (got %s)" % _stored_key(after, "other@1"))
+	_assert(_stored_key(after, "new@1") == "modworkshop:777",
+			"T11 persist: a legacy line is recorded when nothing is stored (got %s)" % _stored_key(after, "new@1"))
+	_remove_user_file(bak_path)
+	ml._persist_mod_sources_for_entries(entries)
+	_assert(not FileAccess.file_exists(bak_path),
+			"T11 persist: a second scan with nothing new must not rewrite mod_config.cfg")
+	_remove_user_file(cfg_path)
+	_remove_user_file(bak_path)
+
+func _cfg_from_text(text: String) -> ConfigFile:
+	var cfg := ConfigFile.new()
+	if cfg.parse(text) != OK:
+		_fail("fixture mod.txt failed to parse: " + _oneline(text))
+	return cfg
+
+func _stored_key(persisted: Dictionary, profile_key: String) -> String:
+	if not persisted.has(profile_key):
+		return "(absent)"
+	var rec: Dictionary = persisted[profile_key]
+	return str(rec["provider"]) + ":" + str(rec["id"])
+
+func _remove_user_file(path: String) -> void:
+	if FileAccess.file_exists(path):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+
 # --- Shared assertions -------------------------------------------------------
 
 # The "every field always present" rule: a normalizer's output must carry
@@ -644,7 +747,7 @@ func _fail(msg: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("[host] PASS: %d assertion(s) across T1..T10" % _assertions)
+		print("[host] PASS: %d assertion(s) across T1..T11" % _assertions)
 		quit(0)
 		return
 	for m in _failures:

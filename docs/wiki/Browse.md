@@ -34,7 +34,7 @@ Each row shows a thumbnail, name, author, version where the site reports one, qu
 - **No file yet**: the site has nothing to serve for this mod right now, usually because its upload is still being scanned. Check back later or open its page in the browser.
 - **Browse only**: the selected source cannot serve downloads through the launcher at all. Neither site in the menu does this today; the label exists for sources that might.
 
-Browse recognizes an installed mod by the source its `mod.txt` declares (`[updates] source="vostokmods:<slug>"` or `source="modworkshop:<id>"`, or the older `modworkshop=<id>`). When the author declared none, the launcher falls back to its own record of where it downloaded the file.
+Browse recognizes an installed mod by an explicit `[updates] source="vostokmods:<slug>"` or `source="modworkshop:<id>"` in its `mod.txt`. Without one, the launcher's own record of where it downloaded the file counts, and only then the older `modworkshop=<id>` line. Files served by VostokMods carry that older line, so a mod you installed from the VostokMods tab stays a VostokMods mod.
 
 Clicking the row name opens a detail dialog: banner image, full description, a **Files** list (every downloadable version with size and date, the current one marked `(primary)`), an **Open mod page in browser** button, and a **Download** or **Installed** button matching the row. A mod with nothing to download shows `No downloadable files yet.` where the list would be.
 

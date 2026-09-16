@@ -722,12 +722,12 @@ func _entry_host_ref(entry: Dictionary, persisted: Dictionary) -> Dictionary:
 
 
 ## The full source record behind _entry_host_ref: {provider, id, version},
-## provider "" when the mod has no known host. mod.txt wins.
+## provider "" when the mod has no known host. _resolve_mod_source ranks the
+## mod.txt declaration against the stored record.
 func _entry_source_record(entry: Dictionary, persisted: Dictionary) -> Dictionary:
-	var rec := _mod_source_from_cfg(entry.get("cfg"))
-	if str(rec["provider"]) == "":
-		rec = _normalize_source_record(persisted.get(str(entry.get("profile_key", ""))))
-	return rec
+	var declared := _mod_source_from_cfg(entry.get("cfg"))
+	var stored := _normalize_source_record(persisted.get(str(entry.get("profile_key", ""))))
+	return _resolve_mod_source(declared, stored)
 
 
 func _build_profile_sources() -> Dictionary:

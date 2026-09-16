@@ -97,7 +97,7 @@ Scans `<exe>/mods/`, parses mod.txt into entry Dictionaries, orders them, and ow
 - Identity: `_dedupe_by_mod_id` and `_normalized_mod_stem`, which `check_identity.sh` covers.
 - `compare_versions`, semver-ish with a `v` prefix tolerance and prerelease ordering.
 - Downloads and updates: `download_mod_from_ref`, `replace_mod_from_ref`, `fetch_latest_versions` take a host ref and dispatch through the seam; `_host_install_downloaded_archive` is the one place a downloaded body becomes a file in `mods/`.
-- Source records: `_parse_source_token`, `_mod_source_from_cfg` (reads `source="provider:id"` and the legacy `modworkshop=<id>`), `_normalize_source_record`, `_persist_mod_sources_for_entries` (the `[mod_sources]` section of `mod_config.cfg`, so a Browse download is remembered even when mod.txt says nothing). The legacy `modworkshop_id` mirror is written only when the provider is ModWorkshop.
+- Source records: `_parse_source_token`, `_mod_source_from_cfg` (reads `source="provider:id"` and the legacy `modworkshop=<id>`, and says which one it read), `_normalize_source_record`, `_resolve_mod_source` (an explicit `source=` wins, then the stored record, then the legacy line), `_persist_mod_sources_for_entries` (the `[mod_sources]` section of `mod_config.cfg`, so a Browse download is remembered even when mod.txt says nothing). The legacy `modworkshop_id` mirror is written only when the provider is ModWorkshop.
 - `_log_security_findings` writes the `[ModScan]` lines when an entry has findings.
 
 ### [modpacks.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/modpacks.gd)

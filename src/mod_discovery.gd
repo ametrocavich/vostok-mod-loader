@@ -1373,6 +1373,7 @@ func _looks_like_pck(path: String) -> bool:
 # The JSON record is {provider, id, modworkshop_id?, version?}; modworkshop_id
 # is a compat mirror emitted only for ModWorkshop, since a pre-source loader
 # reading it on another host's record would download the wrong mod.
+# When mod.txt and the stored record disagree, _resolve_mod_source ranks them.
 
 ## mod.txt `source=` value -> canonical record (version ""), {} on reject.
 ## Delegates to host_ref_from_key; bare no-colon values are rejected, not defaulted.
@@ -1390,22 +1391,49 @@ func _parse_source_token(raw: String) -> Dictionary:
 
 ## The one reader of a mod.txt source declaration. source= wins; a malformed
 ## one falls through to legacy modworkshop=, which must be a pure integer
-## (to_int() would mint id 12 out of "12abc").
+## (to_int() would mint id 12 out of "12abc"). The record carries a fourth
+## key, `explicit`: true when it came from source=, false for the legacy key
+## or no declaration. _resolve_mod_source ranks the two differently.
 func _mod_source_from_cfg(cfg: ConfigFile) -> Dictionary:
 	if cfg == null:
-		return {"provider": "", "id": "", "version": ""}
+		return {"provider": "", "id": "", "version": "", "explicit": false}
 	var version := str(cfg.get_value("mod", "version", "")).strip_edges()
 	if cfg.has_section_key("updates", "source"):
 		var rec := _parse_source_token(str(cfg.get_value("updates", "source", "")))
 		if not rec.is_empty():
 			rec["version"] = version
+			rec["explicit"] = true
 			return rec
 	if cfg.has_section_key("updates", "modworkshop"):
 		var legacy := str(cfg.get_value("updates", "modworkshop", "")).strip_edges()
 		if legacy.is_valid_int() and legacy.to_int() > 0:
 			# Round-trip through int so "0123" and "+123" normalize to the wire id.
-			return {"provider": HOST_MODWORKSHOP, "id": str(legacy.to_int()), "version": version}
-	return {"provider": "", "id": "", "version": ""}
+			return {"provider": HOST_MODWORKSHOP, "id": str(legacy.to_int()), "version": version, "explicit": false}
+	return {"provider": "", "id": "", "version": "", "explicit": false}
+
+
+## Rank a mod.txt declaration (from _mod_source_from_cfg) against the stored
+## [mod_sources] record for the same mod (normalized, or {}). An explicit
+## source= wins. Otherwise the stored record wins: the launcher wrote it at
+## download or pack-install time, so it names the host the file came from,
+## while a legacy modworkshop= line is what vostokmods.net serves in every
+## file. Legacy is used only when nothing is stored. Returns the canonical
+## {provider, id, version}, provider "" when neither names a host.
+func _resolve_mod_source(declared: Dictionary, stored: Dictionary) -> Dictionary:
+	var from_mod_txt := {
+		"provider": str(declared.get("provider", "")),
+		"id": str(declared.get("id", "")),
+		"version": str(declared.get("version", "")),
+	}
+	if bool(declared.get("explicit", false)) and from_mod_txt["provider"] != "":
+		return from_mod_txt
+	if str(stored.get("provider", "")) != "":
+		return {
+			"provider": str(stored["provider"]),
+			"id": str(stored.get("id", "")),
+			"version": str(stored.get("version", "")),
+		}
+	return from_mod_txt
 
 
 ## Normalize a [mod_sources]/profile.json record of either era. With a
@@ -1473,6 +1501,8 @@ func _serialize_mod_source_rec(rec: Dictionary) -> String:
 
 
 # Persist each scanned mod's source so missing-mod stubs can offer Download.
+# Follows the _resolve_mod_source ranking: a legacy modworkshop= line never
+# displaces a record another host's download wrote.
 func _persist_mod_sources_for_entries(entries: Array[Dictionary]) -> void:
 	var cfg := ConfigFile.new()
 	var load_err := cfg.load(UI_CONFIG_PATH)
@@ -1485,14 +1515,18 @@ func _persist_mod_sources_for_entries(entries: Array[Dictionary]) -> void:
 		return
 	var changed := false
 	for entry in entries:
-		var src := _mod_source_from_cfg(entry.get("cfg"))
-		if src["provider"] == "":
+		var declared := _mod_source_from_cfg(entry.get("cfg"))
+		if declared["provider"] == "":
 			continue
 		var pk: String = str(entry.get("profile_key", ""))
 		if pk == "":
 			continue
-		var serialized := _serialize_mod_source_rec(src)
 		var current := str(cfg.get_value("mod_sources", pk, ""))
+		if not bool(declared["explicit"]) and current != "":
+			var stored := _normalize_source_record(JSON.parse_string(current))
+			if stored["provider"] != "" and stored["provider"] != declared["provider"]:
+				continue
+		var serialized := _serialize_mod_source_rec(declared)
 		if current != serialized:
 			cfg.set_value("mod_sources", pk, serialized)
 			changed = true
