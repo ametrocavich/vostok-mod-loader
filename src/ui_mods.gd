@@ -1442,14 +1442,26 @@ func _run_updates_check_for_mods() -> Dictionary:
 	if _mod_updates_check_in_progress:
 		return {"checked": 0, "with_updates": 0, "errors": 0}
 	_mod_updates_check_in_progress = true
+	var pending := _updates_check_candidates(_ui_mod_entries, _get_persisted_mod_sources())
 	var summary := {"checked": 0, "with_updates": 0, "errors": 0}
+	if not pending.is_empty():
+		var refs: Array = []
+		for p in pending:
+			refs.append((p as Dictionary)["ref"])
+		summary = _updates_check_apply(pending, await fetch_latest_versions(refs))
+	_mod_updates_check_in_progress = false
+	return summary
+
+# The installed mods an update check asks about, as {profile_key, ref,
+# version, full_path, mod_name}. Skipped: a mod with no readable mod.txt, a
+# developer folder (a downloaded archive would land beside it), a mod with no
+# host or a host that cannot serve files, and a mod with no declared version.
+func _updates_check_candidates(entries: Array[Dictionary], persisted_sources: Dictionary) -> Array:
 	var pending: Array = []
-	var persisted_sources := _get_persisted_mod_sources()
-	for entry in _ui_mod_entries:
+	for entry in entries:
 		var cfg: ConfigFile = entry.get("cfg")
 		if cfg == null:
 			continue
-		# Dev folders cannot take a downloaded archive; never flag them.
 		if str(entry.get("ext", "")) == "folder":
 			continue
 		var ref := _entry_host_ref(entry, persisted_sources)
@@ -1465,13 +1477,14 @@ func _run_updates_check_for_mods() -> Dictionary:
 			"full_path": str(entry.get("full_path", "")),
 			"mod_name": str(entry.get("mod_name", "?")),
 		})
-	if pending.is_empty():
-		_mod_updates_check_in_progress = false
-		return summary
-	var refs: Array = []
-	for p in pending:
-		refs.append((p as Dictionary)["ref"])
-	var latest := await fetch_latest_versions(refs)
+	return pending
+
+# Fold the sites' answers (host ref key -> latest version, or null) into
+# _mod_updates_state and return {checked, with_updates, errors}. A missing
+# answer is an error; an installed version that is equal or newer clears any
+# stale entry; an older one records the update the row button acts on.
+func _updates_check_apply(pending: Array, latest: Dictionary) -> Dictionary:
+	var summary := {"checked": 0, "with_updates": 0, "errors": 0}
 	for p in pending:
 		summary["checked"] += 1
 		var info: Dictionary = p
@@ -1482,9 +1495,7 @@ func _run_updates_check_for_mods() -> Dictionary:
 		var latest_v := str(raw)
 		if latest_v.is_empty():
 			continue
-		var cmp := compare_versions(str(info["version"]), latest_v)
-		if cmp >= 0:
-			# Up to date -- drop any stale entry from a prior check.
+		if compare_versions(str(info["version"]), latest_v) >= 0:
 			_mod_updates_state.erase(info["profile_key"])
 			continue
 		summary["with_updates"] += 1
@@ -1495,5 +1506,4 @@ func _run_updates_check_for_mods() -> Dictionary:
 			"full_path": info["full_path"],
 			"mod_name": info["mod_name"],
 		}
-	_mod_updates_check_in_progress = false
 	return summary
