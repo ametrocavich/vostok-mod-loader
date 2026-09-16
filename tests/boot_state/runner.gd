@@ -153,6 +153,7 @@ func _run() -> void:
 	_t8_pass_state_reads_coerce()
 	_t9_load_all_mods_keeps_applied_overrides()
 	_t10_persisted_wrapped_paths_exclude_deferred()
+	_t11_removed_feature_state_is_swept()
 
 	_finish()
 
@@ -542,6 +543,54 @@ func _t10_persisted_wrapped_paths_exclude_deferred() -> void:
 			"T10: expected the deferred-activation and activation call sites of "
 			+ "_persist_hook_pack_state in the built loader, found %d -- re-anchor this test" % call_lines)
 
+# --- T11: state that nothing reads is removed ------------------------------
+
+# Restore points under user://.modpack_backups and the [settings]
+# preferred_author key have no reader or writer, and a profile snapshot slot
+# can hold an overrides/ tree and a manifest beside MCM/. Each is removed by
+# code that runs anyway: the Pass 1 sweep, the next config save, and the
+# slot delete when a profile goes.
+func _t11_removed_feature_state_is_swept() -> void:
+	_reset_user_state()
+	_assert(_ml.has_method("_remove_retired_state"),
+			"T11: the loader must expose _remove_retired_state(), the Pass 1 sweep")
+	if _ml.has_method("_remove_retired_state"):
+		_write_file("user://.modpack_backups/pack_1/profile.json", "{}")
+		_ml._remove_retired_state()
+		_assert(not DirAccess.dir_exists_absolute(ProjectSettings.globalize_path("user://.modpack_backups")),
+				"T11: the Pass 1 sweep removes user://.modpack_backups")
+
+	var cfg_path := str(_ml.UI_CONFIG_PATH)
+	var cfg := ConfigFile.new()
+	cfg.set_value("settings", "preferred_author", "someone")
+	cfg.set_value("settings", "active_profile", "Default")
+	cfg.set_value("profile.Default.enabled", "kept@1", true)
+	_assert(cfg.save(cfg_path) == OK, "T11: seeded mod_config.cfg")
+	_ml._save_ui_config()
+	var again := ConfigFile.new()
+	_assert(again.load(cfg_path) == OK, "T11: mod_config.cfg reloads after the save")
+	_assert(not again.has_section_key("settings", "preferred_author"),
+			"T11: the next config save drops [settings] preferred_author")
+	_assert(again.has_section_key("profile.Default.enabled", "kept@1"),
+			"T11: the save keeps a stored profile key with no live entry")
+
+	_write_file("user://.profile_snapshots/p/MCM/a.ini", "[a]\n")
+	_write_file("user://.profile_snapshots/p/overrides/b.txt", "b")
+	_write_file("user://.profile_snapshots/p/overrides_manifest.json", "{}")
+	_ml._delete_mcm_snapshot("p")
+	_assert(not DirAccess.dir_exists_absolute(ProjectSettings.globalize_path("user://.profile_snapshots/p")),
+			"T11: deleting a snapshot slot removes the files beside MCM/ too")
+	_reset_user_state()
+
+func _write_file(path: String, text: String) -> void:
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(path.get_base_dir()))
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		_fail("harness could not write " + path)
+		return
+	f.store_string(text)
+	f.close()
+
 func _crashed_launch() -> void:
 	_next_launch_boot()
 	_arm_two_pass_restart()
@@ -720,7 +769,7 @@ func _cleanup_exe_cfg() -> void:
 func _finish() -> void:
 	_cleanup_exe_cfg()
 	if _failures.is_empty():
-		print("[boot-state] PASS: %d assertion(s) across T1..T10" % _assertions)
+		print("[boot-state] PASS: %d assertion(s) across T1..T11" % _assertions)
 		quit(0)
 		return
 	for m in _failures:

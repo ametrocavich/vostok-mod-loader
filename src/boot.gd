@@ -808,6 +808,13 @@ func _clean_stale_cache() -> void:
 		_log_debug("Removed stale cache: " + fname)
 	dir.list_dir_end()
 
+# Delete user://.modpack_backups. Nothing reads or writes it.
+func _remove_retired_state() -> void:
+	var backups := ProjectSettings.globalize_path("user://.modpack_backups")
+	if DirAccess.dir_exists_absolute(backups):
+		_remove_dir_recursive(backups)
+		_log_info("Removed the unused directory user://.modpack_backups")
+
 func _restore_clean_override_cfg() -> void:
 	var exe_dir := OS.get_executable_path().get_base_dir()
 	var path := exe_dir.path_join("override.cfg")

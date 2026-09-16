@@ -358,6 +358,9 @@ func _save_ui_config() -> void:
 		cfg.erase_section("enabled")
 	if cfg.has_section("priority"):
 		cfg.erase_section("priority")
+	# No reader for this key.
+	if cfg.has_section_key("settings", "preferred_author"):
+		cfg.erase_section_key("settings", "preferred_author")
 
 	# The Vanilla sentinel must never materialize stored sections.
 	if _active_profile != VANILLA_PROFILE:
@@ -691,11 +694,10 @@ func _restore_mcm_from(profile_name: String) -> bool:
 	_remove_dir_recursive(MCM_SOURCE_DIR)
 	return _copy_dir_recursive(src, MCM_SOURCE_DIR)
 
+# Remove a profile's whole snapshot slot. A slot can hold files beside the
+# MCM/ tree, so the directory goes as a tree.
 func _delete_mcm_snapshot(profile_name: String) -> void:
-	_remove_dir_recursive(_mcm_snapshot_dir(profile_name))
-	var parent := MCM_SNAPSHOT_BASE.path_join(profile_name)
-	if DirAccess.dir_exists_absolute(parent):
-		DirAccess.remove_absolute(parent)
+	_remove_dir_recursive(MCM_SNAPSHOT_BASE.path_join(profile_name))
 
 func _rename_mcm_snapshot(old_name: String, new_name: String) -> void:
 	var old_parent := MCM_SNAPSHOT_BASE.path_join(old_name)

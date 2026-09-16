@@ -98,6 +98,7 @@ func _run_pass_1() -> void:
 	_load_developer_mode_setting()
 	_ui_mod_entries = collect_mod_metadata()
 	_clean_stale_cache()
+	_remove_retired_state()
 	_load_ui_config()
 	await show_mod_ui()
 	_save_ui_config()

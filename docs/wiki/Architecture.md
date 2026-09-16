@@ -44,7 +44,7 @@ _check_safe_mode()               # user-placed modloader_safe_mode
 _compile_regex(); _build_class_name_lookup(); _enumerate_game_scripts()
 _load_developer_mode_setting()
 _ui_mod_entries = collect_mod_metadata()   # scan <exe>/mods/, no mounting
-_clean_stale_cache()
+_clean_stale_cache(); _remove_retired_state()
 _load_ui_config()
 await show_mod_ui()              # the user configures and clicks Launch
 _save_ui_config()

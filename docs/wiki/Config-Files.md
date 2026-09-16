@@ -234,7 +234,9 @@ Two more `user://` directories are deliberately not in that table:
 
 | Path | Contents |
 |---|---|
-| `user://.profile_snapshots/<profile>/` | Per-profile MCM snapshot (`MCM/` tree), restored when you switch into that profile. Not regenerable: deleting it discards saved per-profile MCM settings. New in 3.3. |
+| `user://.profile_snapshots/<profile>/` | Per-profile MCM snapshot (`MCM/` tree), restored when you switch into that profile. Not regenerable: deleting it discards saved per-profile MCM settings. Deleting the profile in the launcher removes the whole slot, including any `overrides/` tree and `overrides_manifest.json` an earlier loader version left beside `MCM/`. |
+
+Two leftovers that nothing reads are removed for you: `user://.modpack_backups/` (restore points written by an earlier loader version) is deleted at the next launch, and a `[settings] preferred_author` key in `mod_config.cfg` is dropped at the next save.
 
 When to delete things:
 - Mod updates aren't taking effect: delete the `framework_pack_*.zip`. (The 3.0.0 stale-pack bug is fixed in 3.0.1, but manual deletion is a safe workaround.)
