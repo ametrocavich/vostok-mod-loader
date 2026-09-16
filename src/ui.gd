@@ -709,39 +709,6 @@ func _rename_mcm_snapshot(old_name: String, new_name: String) -> void:
 	if da != null:
 		da.rename(old_name, new_name)
 
-# --- Profile <-> zip serialization -----------------------------------------
-# Zip layout: "profile.json" at the root plus an optional "MCM/" tree
-# mirroring user://MCM/. No new file extension; contents are sniffed on load.
-
-## The host reference an installed mod resolves to: mod.txt's source= (or
-## legacy modworkshop=), else the [mod_sources] record cached at install
-## time. {} when neither names a host. `persisted` is _get_persisted_mod_sources().
-func _entry_host_ref(entry: Dictionary, persisted: Dictionary) -> Dictionary:
-	var rec := _entry_source_record(entry, persisted)
-	if str(rec["provider"]) == "":
-		return {}
-	return host_ref(str(rec["provider"]), str(rec["id"]))
-
-
-## The full source record behind _entry_host_ref: {provider, id, version},
-## provider "" when the mod has no known host. _resolve_mod_source ranks the
-## mod.txt declaration against the stored record.
-func _entry_source_record(entry: Dictionary, persisted: Dictionary) -> Dictionary:
-	var declared := _mod_source_from_cfg(entry.get("cfg"))
-	var stored := _normalize_source_record(persisted.get(str(entry.get("profile_key", ""))))
-	return _resolve_mod_source(declared, stored)
-
-
-func _build_profile_sources() -> Dictionary:
-	var sources: Dictionary = {}
-	var persisted := _get_persisted_mod_sources()
-	for entry in _ui_mod_entries:
-		var rec := _entry_source_record(entry, persisted)
-		if str(rec["provider"]) == "":
-			continue
-		sources[str(entry["profile_key"])] = _mod_source_payload(rec)
-	return sources
-
 # Write an MCM data map (relative_path -> bytes) into a profile's snapshot
 # slot. Creates the dir even when mcm_data is empty, or _has_mcm_snapshot
 # would be false and _switch_profile would seed from the previous profile.

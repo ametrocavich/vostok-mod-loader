@@ -1436,6 +1436,24 @@ func _resolve_mod_source(declared: Dictionary, stored: Dictionary) -> Dictionary
 	return from_mod_txt
 
 
+## The host reference an installed mod resolves to, or {} when it has none.
+## `persisted` is _get_persisted_mod_sources().
+func _entry_host_ref(entry: Dictionary, persisted: Dictionary) -> Dictionary:
+	var rec := _entry_source_record(entry, persisted)
+	if str(rec["provider"]) == "":
+		return {}
+	return host_ref(str(rec["provider"]), str(rec["id"]))
+
+
+## The full source record behind _entry_host_ref: {provider, id, version},
+## provider "" when the mod has no known host. _resolve_mod_source ranks the
+## mod.txt declaration against the stored record.
+func _entry_source_record(entry: Dictionary, persisted: Dictionary) -> Dictionary:
+	var declared := _mod_source_from_cfg(entry.get("cfg"))
+	var stored := _normalize_source_record(persisted.get(str(entry.get("profile_key", ""))))
+	return _resolve_mod_source(declared, stored)
+
+
 ## Normalize a [mod_sources]/profile.json record of either era. With a
 ## "provider" key present, modworkshop_id is never consulted, even as a fallback.
 func _normalize_source_record(v: Variant) -> Dictionary:
