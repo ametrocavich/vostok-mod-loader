@@ -56,7 +56,7 @@ Why: a future Godot with a v102 tokenizer would otherwise produce an "Empty deto
 
 Location: `_canary_detokenizer_roundtrip_ok` in hook_pack.gd, called from `_generate_hook_pack` right after the no-mods short-circuit.
 
-Probe: with mods loaded and canary B passed, detokenize the first probe script that carries GDSC bytes (same four as canary B) through `_detokenize_script` directly, not `_read_vanilla_source`, so a pristine on-disk cache from an earlier session cannot mask a detokenizer that is broken against the current build. Then require at least one colon-terminated `func` line followed by a tab-indented body line.
+Probe: with mods loaded and canary B passed, detokenize the probe scripts that carry GDSC bytes (same four as canary B) through `_detokenize_script` directly, not `_read_vanilla_source`, so a pristine on-disk cache from an earlier session cannot mask a detokenizer that is broken against the current build. The canary passes on the first probe whose reconstruction has a colon-terminated `func` line followed by a tab-indented body line, and fails only when some probe produced source and none passed, so one unusual script cannot disable hooks for the session.
 
 Alarm levels:
 

@@ -54,12 +54,16 @@ func _eager_wrapped_paths(paths: Array[String]) -> PackedStringArray:
 			out.append(p)
 	return out
 
-# Canary C helper. Detokenizes the first probe script with GDSC bytes and
-# checks structural indentation, through _detokenize_script so a pristine
-# cache cannot mask a broken detokenizer. True when no probe could be read.
+# Canary C helper. Detokenizes probe scripts with GDSC bytes, through
+# _detokenize_script so a pristine cache cannot mask a broken detokenizer,
+# and passes on the first one whose reconstruction has an indented func
+# body. Fails only when some probe produced source and none passed; a
+# single odd script must not disable hooks for the session. True when no
+# probe could be read.
 func _canary_detokenizer_roundtrip_ok() -> bool:
 	var probe_paths := ["res://Scripts/Camera.gd", "res://Scripts/Controller.gd",
 			"res://Scripts/Audio.gd", "res://Scripts/AI.gd"]
+	var produced_source := false
 	for p in probe_paths:
 		# Byte pre-check so missing paths don't spam warnings from _detokenize_script.
 		var raw := FileAccess.get_file_as_bytes(p)
@@ -70,8 +74,10 @@ func _canary_detokenizer_roundtrip_ok() -> bool:
 		var source := _detokenize_script(p)
 		if source.is_empty():
 			continue
-		return _source_has_indented_func_body(source)
-	return true
+		produced_source = true
+		if _source_has_indented_func_body(source):
+			return true
+	return not produced_source
 
 # True when a colon-terminated func is followed by a tab-indented body line.
 # Guards _indent_from_column's `col / 4`, which assumes 4-space vanilla source.

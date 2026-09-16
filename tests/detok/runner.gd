@@ -91,6 +91,7 @@ func _run() -> void:
 	_t7_pck_wins_over_vfs(ml)
 	_t8_old_cache_format_is_dropped(ml)
 	_t9_gdc_fallback_read(ml)
+	_t10_canary_passes_on_any_probe(ml)
 
 	_finish()
 
@@ -332,6 +333,41 @@ func _t9_gdc_fallback_read(ml: Object) -> void:
 			"T9: the .gd path falls through to the planted .gdc (got: %s)" % _oneline(src))
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(gdc_path))
 
+# Canary C probes a fixed list of vanilla scripts. One probe whose
+# reconstruction has no indented func body must not disable hooks for the
+# session when another probe reconstructs cleanly. The rule: pass when any
+# probe passes, fail only when probes produced source and none passed, and
+# treat no readable probe at all as a pass. The probes are planted under the
+# canary's own paths; with no game PCK the VFS fallback serves them.
+func _t10_canary_passes_on_any_probe(ml: Object) -> void:
+	_reset_detok_state(ml)
+	ml.set("_game_pck_path_override", "")
+	# The same synthetic script with its body at column 1, so the
+	# reconstruction has no indented body line.
+	var odd := _fixture_tokens()
+	for t in odd:
+		if t[0] == T_RETURN:
+			t[3] = 1
+		elif t[0] == T_LITERAL:
+			t[3] = 8
+	var odd_path := "res://Scripts/Camera.gdc"
+	var clean_path := "res://Scripts/Controller.gdc"
+	_assert(_write_bytes(odd_path, _encode(V101, odd, _fixture_identifiers(), _fixture_constants())),
+			"T10: planted the odd probe")
+	var odd_src := str(ml._detokenize_script("res://Scripts/Camera.gd"))
+	_assert(not odd_src.is_empty() and not bool(ml._source_has_indented_func_body(odd_src)),
+			"T10: the odd probe reconstructs without an indented body (got: %s)" % _oneline(odd_src))
+	_assert(not bool(ml._canary_detokenizer_roundtrip_ok()),
+			"T10: an odd probe with no clean one fails the canary")
+	_assert(_write_bytes(clean_path, _encode(V101, _fixture_tokens(), _fixture_identifiers(), _fixture_constants())),
+			"T10: planted the clean probe")
+	_assert(bool(ml._canary_detokenizer_roundtrip_ok()),
+			"T10: a clean probe after an odd one passes the canary")
+	for p in [odd_path, clean_path]:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
+	_assert(bool(ml._canary_detokenizer_roundtrip_ok()),
+			"T10: no readable probe at all is a pass")
+
 func _write_bytes(path: String, buf: PackedByteArray) -> bool:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(path.get_base_dir()))
 	var f := FileAccess.open(path, FileAccess.WRITE)
@@ -444,7 +480,7 @@ func _fail(msg: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("[detok] PASS: %d assertion(s) across T1..T9" % _assertions)
+		print("[detok] PASS: %d assertion(s) across T1..T10" % _assertions)
 		quit(0)
 		return
 	for m in _failures:
