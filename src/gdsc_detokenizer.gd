@@ -235,8 +235,7 @@ func _gdsc_read_script_bytes(script_path: String) -> PackedByteArray:
 	var f := FileAccess.open(script_path, FileAccess.READ)
 	if f:
 		raw = f.get_buffer(f.get_length())
-	f.close()
-
+		f.close()
 	if raw.is_empty():
 		var glob_path := ProjectSettings.globalize_path(script_path)
 		f = FileAccess.open(glob_path, FileAccess.READ)

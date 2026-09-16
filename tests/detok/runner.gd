@@ -90,6 +90,7 @@ func _run() -> void:
 	_t6_vfs_read_is_not_cached(ml)
 	_t7_pck_wins_over_vfs(ml)
 	_t8_old_cache_format_is_dropped(ml)
+	_t9_gdc_fallback_read(ml)
 
 	_finish()
 
@@ -315,6 +316,31 @@ func _t8_old_cache_format_is_dropped(ml: Object) -> void:
 	DirAccess.remove_absolute(ProjectSettings.globalize_path("res://Scripts/Foo.gd"))
 	DirAccess.remove_absolute(ProjectSettings.globalize_path("res://Scripts/Poison.gd"))
 
+# With no game PCK, a vanilla script path is served by the VFS: the .gd path
+# first, then its globalized form, then the .gdc beside it. In the game the
+# .gd path is a remap that FileAccess cannot open, so the .gdc step is the
+# one that serves anything; a null handle on the way there must not abort
+# the read.
+func _t9_gdc_fallback_read(ml: Object) -> void:
+	_reset_detok_state(ml)
+	ml.set("_game_pck_path_override", "")
+	var gdc_path := "res://Scripts/Camera.gdc"
+	_assert(_write_bytes(gdc_path, _encode(V101, _fixture_tokens(), _fixture_identifiers(), _fixture_constants())),
+			"T9: planted a .gdc with no .gd beside it")
+	var src := str(ml._detokenize_script("res://Scripts/Camera.gd"))
+	_assert(src.contains("func foo"),
+			"T9: the .gd path falls through to the planted .gdc (got: %s)" % _oneline(src))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(gdc_path))
+
+func _write_bytes(path: String, buf: PackedByteArray) -> bool:
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(path.get_base_dir()))
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		return false
+	f.store_buffer(buf)
+	f.close()
+	return true
+
 func _to_v100_indices(toks: Array) -> Array:
 	var out: Array = []
 	for t in toks:
@@ -418,7 +444,7 @@ func _fail(msg: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("[detok] PASS: %d assertion(s) across T1..T8" % _assertions)
+		print("[detok] PASS: %d assertion(s) across T1..T9" % _assertions)
 		quit(0)
 		return
 	for m in _failures:
