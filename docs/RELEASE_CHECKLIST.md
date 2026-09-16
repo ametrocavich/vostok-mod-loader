@@ -31,6 +31,9 @@ to tag.
 - [ ] PR into master. CI (`ci.yml`) builds and runs `check.sh` on the PR.
 - [ ] After the rebase-merge, reset `development` to `origin/master`.
       Rebase-merge rewrites SHAs and the branches diverge silently otherwise.
+- [ ] The wiki synced. `wiki-sync.yml` fires only on pushes to `development`
+      and `master`, so a page edited on a feature branch reaches the GitHub
+      Wiki only after the merge; open the wiki and check one changed page.
 
 ## The release itself
 
@@ -56,7 +59,12 @@ new install until someone notices.
       listing get whatever it hosts.
 - [ ] Smoke test in the real game: launch, toggle a mod, switch the Browse
       source between VostokMods and ModWorkshop, download something, apply a
-      modpack, check for updates. No harness covers the launcher end to end.
+      modpack, and click Check for updates on the Mods tab. No harness covers
+      the launcher end to end.
+- [ ] Upgrade over 3.3.1: start from a user folder that still holds
+      `.modpack_backups/` and a profile snapshot slot with `overrides/` and
+      `overrides_manifest.json` beside `MCM/`. After one launch the backups
+      directory is gone, and deleting that profile removes the whole slot.
 
 ## Known gaps in this process
 

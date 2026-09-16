@@ -76,6 +76,9 @@ func _run() -> void:
 	_t8_vm_pure_surface(ml)
 	_t9_caps_match_wiring(ml)
 	_t10_hosted_modpacks(ml)
+	_t13_update_check_rules(ml)
+	_t14_modpack_source_installed(ml)
+	_t15_warnings_and_author_notes(ml)
 	await _t12_apply_failure_shape(ml)
 
 	_finish()
@@ -724,6 +727,49 @@ func _t10_hosted_modpacks(ml: Object) -> void:
 	var warnings: PackedStringArray = conv["warnings"]
 	_assert(warnings.size() >= 1, "T10: the unsafe MCM key produced a warning")
 
+	# A pack zip is a mod list plus an MCM tree and nothing else: files beside
+	# profile.json do not stop validation and never reach user://, and only
+	# the MCM/ tree lands in the pack's own snapshot slot.
+	var pack_zip := _write_zip("user://host_pack.zip", {
+		"profile.json": JSON.stringify({"metroprofile": 1, "name": "Strangers", "enabled": {"x@1": true}}),
+		"mod_config.cfg": "[settings]\nactive_profile=\"Evil\"\n",
+		"foo.txt": "x",
+		"evil.pck": "GDPC",
+		"MCM/some-mod/config.ini": "[a]\nv=1\n",
+		"MCM/../escape.ini": "[a]\n",
+	})
+	var before := _user_listing()
+	var validation: Dictionary = ml._validate_modpack({"file_path": pack_zip})
+	_assert(bool(validation.get("ok", false)), "T10: a pack with stray files beside profile.json validates (got %s)" % str(validation.get("error", "")))
+	_assert(_user_listing() == before, "T10: validation writes nothing under user://")
+	var cfg_path := str(ml.UI_CONFIG_PATH)
+	_remove_user_file(cfg_path)
+	_remove_user_file(cfg_path + ".bak")
+	var mat: Dictionary = ml._materialize_modpack_profile({"file_path": pack_zip}, "modpack__strangers")
+	_assert(bool(mat.get("ok", false)), "T10: the pack materializes (got %s)" % str(mat.get("error", "")))
+	var after := _user_listing()
+	var slot := "user://.profile_snapshots/modpack__strangers/MCM"
+	_assert(FileAccess.file_exists(slot + "/some-mod/config.ini"), "T10: the MCM tree lands in the pack's snapshot slot")
+	var leaked: Array = []
+	for p in after:
+		if before.has(p):
+			continue
+		var path_s := str(p)
+		if path_s == cfg_path or path_s == cfg_path + ".bak" or path_s == "user://.profile_snapshots/" \
+				or path_s.begins_with("user://.profile_snapshots/modpack__strangers/"):
+			continue
+		leaked.append(path_s)
+	_assert(leaked.is_empty(), "T10: nothing else was written under user:// (got %s)" % str(leaked))
+	_assert(not FileAccess.file_exists("user://escape.ini") and not FileAccess.file_exists("user://.profile_snapshots/escape.ini"),
+			"T10: an MCM entry with .. in its path is dropped")
+	var written := ConfigFile.new()
+	_assert(written.load(cfg_path) == OK and str(written.get_value("settings", "active_profile", "")) != "Evil",
+			"T10: the pack's mod_config.cfg never replaces the launcher's")
+	ml._remove_tree("user://.profile_snapshots", false)
+	_remove_user_file(cfg_path)
+	_remove_user_file(cfg_path + ".bak")
+	_remove_user_file("user://host_pack.zip")
+
 	# Pack file path never escapes mods/.
 	var path := str(ml._hosted_pack_file_path("../Weird Slug!"))
 	_assert(path.get_file() == "vostokmods-weirdslug.zip",
@@ -757,6 +803,154 @@ func _t12_apply_failure_shape(ml: Object) -> void:
 	_assert(not bool(busy.get("ok", true)) and str(busy.get("error", "")).contains("in progress"),
 			"T12: the apply-in-progress refusal says so (got %s)" % str(busy.get("error", "")))
 
+# The update check in two pure halves: which installed mods are asked about,
+# and what the site's answers mean. A dev folder, a mod with no version, no
+# source, no readable mod.txt or a host that cannot serve files is skipped;
+# a missing answer is an error, an equal or newer installed version is up to
+# date and clears a stale entry, an older one records an update.
+func _t13_update_check_rules(ml: Object) -> void:
+	var entries: Array[Dictionary] = [
+		_update_entry("a@1.0", "vmz", '[mod]\nversion="1.0"\n\n[updates]\nsource="vostokmods:a"\n'),
+		_update_entry("b@1.0", "folder", '[mod]\nversion="1.0"\n\n[updates]\nsource="vostokmods:b"\n'),
+		_update_entry("c@", "vmz", '[updates]\nsource="vostokmods:c"\n'),
+		_update_entry("d@1.0", "vmz", '[mod]\nversion="1.0"\n'),
+		_update_entry("e@1.0", "pck", ""),
+		_update_entry("f@2.0", "zip", '[mod]\nversion="2.0"\n\n[updates]\nsource="modworkshop:5"\n'),
+		_update_entry("g@1.0", "vmz", '[mod]\nversion="1.0"\n\n[updates]\nsource="vostokmods:g"\n'),
+	]
+	var pending: Array = ml._updates_check_candidates(entries, {})
+	var keys: Array = []
+	for p in pending:
+		keys.append(str((p as Dictionary)["profile_key"]))
+	_assert(keys == ["a@1.0", "f@2.0", "g@1.0"],
+			"T13: only sourced, versioned, archive mods are checked (got %s)" % str(keys))
+	ml._mod_updates_state["f@2.0"] = {"latest_version": "9.9", "current_version": "2.0"}
+	var summary: Dictionary = ml._updates_check_apply(pending, {"vostokmods:a": "1.1", "modworkshop:5": "2.0"})
+	_assert(int(summary["checked"]) == 3 and int(summary["with_updates"]) == 1 and int(summary["errors"]) == 1,
+			"T13: counts are checked=3, with_updates=1, errors=1 (got %s)" % str(summary))
+	var state: Dictionary = ml._mod_updates_state
+	_assert(state.has("a@1.0") and str((state["a@1.0"] as Dictionary)["latest_version"]) == "1.1"
+			and str((state["a@1.0"] as Dictionary)["current_version"]) == "1.0",
+			"T13: an older installed version records the update (got %s)" % str(state.get("a@1.0")))
+	_assert(not state.has("f@2.0"), "T13: an up-to-date mod clears its stale update entry")
+	_assert(not state.has("g@1.0"), "T13: a mod the site did not answer for records nothing")
+	state.clear()
+
+func _update_entry(profile_key: String, ext: String, mod_txt: String) -> Dictionary:
+	var cfg: ConfigFile = null
+	if mod_txt != "":
+		cfg = _cfg_from_text(mod_txt)
+	return {"profile_key": profile_key, "ext": ext, "cfg": cfg,
+			"full_path": "/mods/" + profile_key, "mod_name": profile_key}
+
+# A pack's source record counts as installed when a mod with that host ref
+# is on disk, at the pinned version when the record pins one. Versions
+# compare without a v prefix, and a legacy modworkshop_id record resolves
+# like a provider-qualified one. A record is downloadable only from a host
+# this build can fetch files from.
+func _t14_modpack_source_installed(ml: Object) -> void:
+	var installed := {"vostokmods:rtvcoop": ["5.0.0", "v5.1.0"], "modworkshop:777": ["1.0"]}
+	var cases := [
+		# [label, record, want]
+		["unpinned, installed", {"provider": "vostokmods", "id": "rtvcoop"}, true],
+		["pinned to an installed version", {"provider": "vostokmods", "id": "rtvcoop", "version": "5.0.0"}, true],
+		["pinned with a v prefix", {"provider": "vostokmods", "id": "rtvcoop", "version": "v5.0.0"}, true],
+		["pinned to the v-prefixed installed copy", {"provider": "vostokmods", "id": "rtvcoop", "version": "5.1.0"}, true],
+		["pinned to a version not on disk", {"provider": "vostokmods", "id": "rtvcoop", "version": "5.2.0"}, false],
+		["not installed at all", {"provider": "vostokmods", "id": "other"}, false],
+		["legacy modworkshop_id record", {"modworkshop_id": 777}, true],
+		["legacy modworkshop_id pinned elsewhere", {"modworkshop_id": 777, "version": "2.0"}, false],
+		["unknown provider", {"provider": "steam", "id": "1"}, false],
+		["not a record", "rtvcoop", false],
+	]
+	for c in cases:
+		var got := bool(ml._modpack_source_installed(c[1], installed))
+		_assert(got == bool(c[2]), "T14 %s: want %s, got %s" % [str(c[0]), str(c[2]), str(got)])
+	_assert(bool(ml._modpack_ref_downloadable(ml.host_ref("vostokmods", "x"))), "T14: a VostokMods ref is downloadable")
+	_assert(bool(ml._modpack_ref_downloadable(ml.host_ref("modworkshop", "1"))), "T14: a ModWorkshop ref is downloadable")
+	_assert(not bool(ml._modpack_ref_downloadable({})), "T14: an empty ref is not downloadable")
+	_assert(not bool(ml._modpack_ref_downloadable({"provider": "steam", "id": "1"})), "T14: an unknown host is not downloadable")
+
+# Row warnings are for the player: the mod will not work. Author notes are
+# for the mod's author: it works, but its mod.txt could be better. Each
+# message must land in its own list and never in the other.
+func _t15_warnings_and_author_notes(ml: Object) -> void:
+	var nested := _entry_from(ml, null, "nested:Sub/mod.txt", "", {})
+	_assert(_has_line(nested["warnings"], "subfolder") and (nested["notes"] as Array).is_empty(),
+			"T15: a nested mod.txt is a warning, not a note (got %s / %s)" % [str(nested["warnings"]), str(nested["notes"])])
+	var broken := _entry_from(ml, null, "parse_error", "line 3 [mod]: nam", {})
+	_assert(_has_line(broken["warnings"], "parse error at line 3") and (broken["notes"] as Array).is_empty(),
+			"T15: a parse error is a warning naming the line (got %s)" % str(broken["warnings"]))
+	var files := {"res://mod.txt": true, "res://X/main.gd": true}
+	var no_id := _entry_from(ml, _cfg_from_text('[mod]\nname="X"\n\n[autoload]\nMain="res://X/Main.gd"\n'), "ok", "", files)
+	_assert(_has_line(no_id["warnings"], "did you mean res://X/main.gd"),
+			"T15: an autoload path that points nowhere is a warning with the near miss (got %s)" % str(no_id["warnings"]))
+	_assert(_has_line(no_id["notes"], "No id= in mod.txt") and not _has_line(no_id["warnings"], "No id="),
+			"T15: a missing id= is an author note, not a warning (got %s / %s)" % [str(no_id["warnings"]), str(no_id["notes"])])
+	var bad_source := _entry_from(ml, _cfg_from_text('[mod]\nid="bs"\nversion="1.0"\n\n[updates]\nsource="12345"\n'), "ok", "", {"res://mod.txt": true})
+	_assert(_has_line(bad_source["notes"], "unrecognized [updates] source") and (bad_source["warnings"] as Array).is_empty(),
+			"T15: an unrecognized source= is an author note only (got %s / %s)" % [str(bad_source["warnings"]), str(bad_source["notes"])])
+	var baked := _entry_from(ml, _cfg_from_text('[mod]\nid="bk"\nversion=1.10\n\n[updates]\nsource="vostokmods:bk"\n'), "ok", "",
+			{"res://mod.txt": true, "res://BK/A.gd": true, "res://BK/A.gd.remap": true})
+	_assert(_has_line(baked["notes"], "unquoted") and _has_line(baked["notes"], "pre-compiled script") and (baked["warnings"] as Array).is_empty(),
+			"T15: an unquoted version and a stale bake are author notes only (got %s / %s)" % [str(baked["warnings"]), str(baked["notes"])])
+	var pck := _entry_from(ml, null, "pck", "", {}, "pck")
+	_assert((pck["warnings"] as Array).is_empty() and (pck["notes"] as Array).is_empty(),
+			"T15: a .pck gets neither list")
+
+func _entry_from(ml: Object, cfg: ConfigFile, status: String, error: String, files: Dictionary, ext: String = "vmz") -> Dictionary:
+	var read := {"cfg": cfg, "status": status, "error": error, "files": files}
+	var entry: Dictionary = ml._entry_from_config(read, "Mod." + ext, "/mods/Mod." + ext, ext)
+	return {
+		"warnings": ml._build_entry_warnings(entry, files),
+		"notes": ml._build_entry_author_notes(entry, files),
+	}
+
+func _has_line(lines: Variant, needle: String) -> bool:
+	for l in (lines as Array):
+		if str(l).contains(needle):
+			return true
+	return false
+
+# Every path under user:// except Godot's own logs/, as user:// paths.
+func _user_listing() -> Dictionary:
+	var out: Dictionary = {}
+	_list_dir(ProjectSettings.globalize_path("user://"), "user://", out)
+	return out
+
+func _list_dir(abs_dir: String, prefix: String, out: Dictionary) -> void:
+	var d := DirAccess.open(abs_dir)
+	if d == null:
+		return
+	d.list_dir_begin()
+	while true:
+		var e := d.get_next()
+		if e == "":
+			break
+		if e == "." or e == ".." or (prefix == "user://" and e == "logs"):
+			continue
+		var child := prefix.path_join(e) if prefix != "user://" else "user://" + e
+		if d.current_is_dir():
+			out[child + "/"] = true
+			_list_dir(abs_dir.path_join(e), child, out)
+		else:
+			out[child] = true
+	d.list_dir_end()
+
+# Write a zip of {entry_name: text} into user:// and return its absolute path.
+func _write_zip(user_path: String, entries: Dictionary) -> String:
+	var abs_path := ProjectSettings.globalize_path(user_path)
+	var zp := ZIPPacker.new()
+	if zp.open(abs_path, ZIPPacker.APPEND_CREATE) != OK:
+		_fail("harness could not create " + abs_path)
+		return abs_path
+	for name in entries.keys():
+		zp.start_file(str(name))
+		zp.write_file(str(entries[name]).to_utf8_buffer())
+		zp.close_file()
+	zp.close()
+	return abs_path
+
 func _assert_same_keys(ml: Object, s: Variant, label: String) -> void:
 	var want: Array = (ml.host_empty_summary() as Dictionary).keys()
 	want.sort()
@@ -782,7 +976,7 @@ func _fail(msg: String) -> void:
 func _finish() -> void:
 	_done = true
 	if _failures.is_empty():
-		print("[host] PASS: %d assertion(s) across T1..T12" % _assertions)
+		print("[host] PASS: %d assertion(s) across T1..T15" % _assertions)
 		quit(0)
 		return
 	for m in _failures:
