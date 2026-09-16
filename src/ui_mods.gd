@@ -431,20 +431,16 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 
 
 	var rendered_any := false
-	# Per-build state every row reads; lambdas capture by value, so it travels
-	# as one record. dep_names_by_id is hoisted once per build because the
-	# display-name fallback rebuilds the map per call.
-	var row_ctx := {
-		"dep_names_by_id": _entries_by_mod_id(_ui_mod_entries),
-		"persisted_sources": _get_persisted_mod_sources(),
-		"profile_editable": _active_profile != VANILLA_PROFILE and active_modpack == "",
-		"refresh_order": refresh_order,
-	}
+	# Per-build state every row reads. dep_names_by_id is built once here
+	# because the display-name fallback rebuilds the map per call.
+	var dep_names_by_id := _entries_by_mod_id(_ui_mod_entries)
+	var persisted_sources := _get_persisted_mod_sources()
+	var profile_editable := _active_profile != VANILLA_PROFILE and active_modpack == ""
 	for entry in _ui_mod_entries:
 		if not _mods_entry_visible(entry):
 			continue
 		rendered_any = true
-		_mods_build_row(list, entry, row_ctx, tabs)
+		_mods_build_row(list, entry, tabs, refresh_order, persisted_sources, dep_names_by_id, profile_editable)
 
 	# The filter narrowed every row out; say so, distinct from no mods installed.
 	if not _ui_mod_entries.is_empty() and not rendered_any:
@@ -1146,8 +1142,8 @@ func _mods_build_header_row(list: VBoxContainer) -> void:
 
 # One mod row: checkbox, thumbnail and name column, load-order spinner,
 # Remove button, and the handlers that write through to the live entry.
-func _mods_build_row(list: VBoxContainer, entry: Dictionary, row_ctx: Dictionary, tabs: TabContainer) -> void:
-	var refresh_order: Callable = row_ctx["refresh_order"]
+func _mods_build_row(list: VBoxContainer, entry: Dictionary, tabs: TabContainer, refresh_order: Callable,
+		persisted_sources: Dictionary, dep_names_by_id: Dictionary, profile_editable: bool) -> void:
 	var row := HBoxContainer.new()
 	list.add_child(row)
 
@@ -1156,10 +1152,10 @@ func _mods_build_row(list: VBoxContainer, entry: Dictionary, row_ctx: Dictionary
 	check.custom_minimum_size.x = 30
 	row.add_child(check)
 
-	var name_parts := _mods_row_name_column(row, entry, row_ctx["persisted_sources"])
+	var name_parts := _mods_row_name_column(row, entry, persisted_sources)
 	var name_col: VBoxContainer = name_parts["name_col"]
 	var name_ctrl: Control = name_parts["name_ctrl"]
-	_mods_row_dependency_lines(name_col, name_ctrl, entry, row_ctx, tabs)
+	_mods_row_dependency_lines(name_col, name_ctrl, entry, dep_names_by_id, profile_editable, tabs)
 	_mods_row_notes(name_col, entry)
 
 	var spin := SpinBox.new()
@@ -1295,9 +1291,8 @@ func _mods_row_name_column(row: HBoxContainer, entry: Dictionary, persisted_sour
 
 # The dependency summary line, row warnings, and the blocked or
 # check-disabled row with its quick actions.
-func _mods_row_dependency_lines(name_col: VBoxContainer, name_ctrl: Control, entry: Dictionary, row_ctx: Dictionary, tabs: TabContainer) -> void:
-	var dep_names_by_id: Dictionary = row_ctx["dep_names_by_id"]
-	var profile_editable: bool = row_ctx["profile_editable"]
+func _mods_row_dependency_lines(name_col: VBoxContainer, name_ctrl: Control, entry: Dictionary,
+		dep_names_by_id: Dictionary, profile_editable: bool, tabs: TabContainer) -> void:
 	# Dependencies: one clipped line; the actionable blocked row renders below.
 	var required_deps: Array = entry.get("required_dependencies", [])
 	var optional_deps: Array = entry.get("optional_dependencies", [])
@@ -1424,8 +1419,8 @@ func _mods_row_notes(name_col: VBoxContainer, entry: Dictionary) -> void:
 	# Scanner indicator, red risk only: pattern combinations that are close
 	# to diagnostic of malware. Elevated-API findings are logged but not
 	# shown; most legitimate mods have one. Loading is never blocked.
-	var risk: int = int(entry.get("risk_level", 0))
-	if risk == 2:
+	var risk: int = int(entry.get("risk_level", RISK_CLEAN))
+	if risk == RISK_RED:
 		var sec_btn := Button.new()
 		sec_btn.text = "suspicious code"
 		sec_btn.flat = true
