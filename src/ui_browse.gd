@@ -125,9 +125,18 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	state["on_toggle"] = func(ref_key: String, enabled: bool, check: CheckBox):
 		_browse_on_toggle(state, ref_key, enabled, check)
 
-	_browse_build_toolbar(state, container)
+	var toolbar := _browse_build_toolbar(state, container)
+	state["provider_dropdown"] = toolbar["provider_dropdown"]
+	state["search_input"] = toolbar["search_input"]
+	state["sort_dropdown"] = toolbar["sort_dropdown"]
+	state["category_dropdown"] = toolbar["category_dropdown"]
 	container.add_child(HSeparator.new())
-	_browse_build_list_area(state, container)
+	var list_area := _browse_build_list_area(container)
+	state["banner_slot"] = list_area["banner_slot"]
+	state["status_lbl"] = list_area["status_lbl"]
+	state["scroll"] = list_area["scroll"]
+	state["list"] = list_area["list"]
+	state["load_more_btn"] = list_area["load_more_btn"]
 
 	# Debounce: text_changed fires per keystroke; only the timeout queries.
 	var search_debounce := Timer.new()
@@ -168,8 +177,9 @@ func build_browse_tab(tabs: TabContainer) -> Control:
 	return margin
 
 
-# Source, search, sort and category controls; the widgets go into state.
-func _browse_build_toolbar(state: Dictionary, container: VBoxContainer) -> void:
+# Source, search, sort and category controls. Returns the widgets by name:
+# provider_dropdown, search_input, sort_dropdown, category_dropdown.
+func _browse_build_toolbar(state: Dictionary, container: VBoxContainer) -> Dictionary:
 	var providers: PackedStringArray = state["providers"]
 	var initial_provider := str(state["provider"])
 	# -- Toolbar: source, search, sort, category --
@@ -224,14 +234,18 @@ func _browse_build_toolbar(state: Dictionary, container: VBoxContainer) -> void:
 	cat_popup.transient = true
 	if _ui_window != null and _ui_window.theme != null:
 		cat_popup.theme = _ui_window.theme
-	state["provider_dropdown"] = provider_dropdown
-	state["search_input"] = search_input
-	state["sort_dropdown"] = sort_dropdown
-	state["category_dropdown"] = category_dropdown
+	return {
+		"provider_dropdown": provider_dropdown,
+		"search_input": search_input,
+		"sort_dropdown": sort_dropdown,
+		"category_dropdown": category_dropdown,
+	}
 
 
 # Banner slot, status line, the scrolling list and the Load more button.
-func _browse_build_list_area(state: Dictionary, container: VBoxContainer) -> void:
+# Returns the widgets by name: banner_slot, status_lbl, scroll, list,
+# load_more_btn.
+func _browse_build_list_area(container: VBoxContainer) -> Dictionary:
 	# Offline-grace banner slot, a sibling above the list so it never covers rows.
 	var banner_slot := VBoxContainer.new()
 	banner_slot.visible = false
@@ -261,11 +275,13 @@ func _browse_build_list_area(state: Dictionary, container: VBoxContainer) -> voi
 	load_more_btn.text = "Load more"
 	load_more_btn.visible = false
 	container.add_child(load_more_btn)
-	state["banner_slot"] = banner_slot
-	state["status_lbl"] = status_lbl
-	state["scroll"] = scroll
-	state["list"] = list
-	state["load_more_btn"] = load_more_btn
+	return {
+		"banner_slot": banner_slot,
+		"status_lbl": status_lbl,
+		"scroll": scroll,
+		"list": list,
+		"load_more_btn": load_more_btn,
+	}
 
 
 # A fresh per-host view record.
@@ -274,12 +290,12 @@ func _browse_make_view(provider: String) -> Dictionary:
 	var first: Dictionary = sorts[0] if not sorts.is_empty() else {}
 	var has_sections := not host_sections(provider).is_empty()
 	return {
-		"mode": "discover" if has_sections else "filter",
 		"query": "",
 		"sort_key": str(first.get("key", "")),
 		"sort_field": str(first.get("row_field", "")),
 		"sort_label": str(first.get("label", "")),
-		# true while the sort menu rests on the curated landing item.
+		# True while the sort menu rests on the curated landing item; with a
+		# clear query and category it routes the next fetch to the landing.
 		"featured": has_sections,
 		"category_ref": "",
 		"category_name": "",
@@ -304,9 +320,9 @@ func _browse_view(state: Dictionary) -> Dictionary:
 # Controls are built once; switching hosts toggles visibility and repopulates
 # items. Capabilities that are off hide their control rather than disable it.
 func _browse_apply_provider_controls(state: Dictionary, provider: String) -> void:
-	var search_input = state["search_input"]
-	var sort_dropdown = state["sort_dropdown"]
-	var category_dropdown = state["category_dropdown"]
+	var search_input: LineEdit = state["search_input"]
+	var sort_dropdown: OptionButton = state["sort_dropdown"]
+	var category_dropdown: OptionButton = state["category_dropdown"]
 	var caps: Dictionary = host_caps(provider)
 	var v: Dictionary = _browse_view(state)
 	search_input.visible = bool(caps["search"])
@@ -342,7 +358,7 @@ func _browse_apply_provider_controls(state: Dictionary, provider: String) -> voi
 
 # Every Browse state change routes through here so color matches message.
 func _browse_set_status(state: Dictionary, text: String, color: Color) -> void:
-	var status_lbl = state["status_lbl"]
+	var status_lbl: Label = state["status_lbl"]
 	if not is_instance_valid(status_lbl):
 		return
 	status_lbl.text = text
@@ -376,7 +392,7 @@ func _browse_fail_reason(state: Dictionary) -> String:
 
 
 func _browse_clear_banner(state: Dictionary) -> void:
-	var banner_slot = state["banner_slot"]
+	var banner_slot: VBoxContainer = state["banner_slot"]
 	if not is_instance_valid(banner_slot):
 		return
 	for child in banner_slot.get_children():
@@ -386,7 +402,7 @@ func _browse_clear_banner(state: Dictionary) -> void:
 
 # Banner with a Retry action that re-runs the current view's fetch.
 func _browse_show_banner(state: Dictionary, text: String, saved_at_unix: int, edge_color: Color) -> void:
-	var banner_slot = state["banner_slot"]
+	var banner_slot: VBoxContainer = state["banner_slot"]
 	if not is_instance_valid(banner_slot):
 		return
 	for child in banner_slot.get_children():
@@ -414,8 +430,8 @@ func _browse_show_banner(state: Dictionary, text: String, saved_at_unix: int, ed
 # sit under a toolbar that says otherwise until the fetch renders. Search
 # text is the exception: results stay while typing.
 func _browse_clear_list_now(state: Dictionary, label: String) -> void:
-	var list = state["list"]
-	var load_more_btn = state["load_more_btn"]
+	var list: VBoxContainer = state["list"]
+	var load_more_btn: Button = state["load_more_btn"]
 	if not is_instance_valid(list):
 		return
 	for child in list.get_children():
@@ -426,7 +442,7 @@ func _browse_clear_list_now(state: Dictionary, label: String) -> void:
 
 # Enable/disable toggle from a Browse row; mutates the live entry, saves, rebuilds Mods.
 func _browse_on_toggle(state: Dictionary, ref_key: String, enabled: bool, check: CheckBox) -> void:
-	var tabs = state["tabs"]
+	var tabs: TabContainer = state["tabs"]
 	var entry_v: Variant = _browse_install_map().get(ref_key)
 	if not (entry_v is Dictionary):
 		return
@@ -450,9 +466,9 @@ func _browse_on_toggle(state: Dictionary, ref_key: String, enabled: bool, check:
 
 # Download one queued item, then drain the rest of the queue.
 func _browse_perform_download(state: Dictionary, item: Dictionary) -> void:
-	var status_lbl = state["status_lbl"]
-	var scroll = state["scroll"]
-	var tabs = state["tabs"]
+	var status_lbl: Label = state["status_lbl"]
+	var scroll: ScrollContainer = state["scroll"]
+	var tabs: TabContainer = state["tabs"]
 	var mod_data: Dictionary = item["mod_data"]
 	var get_btn = item.get("get_btn")
 	var ref: Dictionary = mod_data["ref"]
@@ -596,8 +612,8 @@ func _browse_empty_copy(state: Dictionary) -> String:
 
 # Render a filtered or searched listing, with its header.
 func _browse_render_rows(state: Dictionary, rows: Array, append: bool) -> void:
-	var sort_dropdown = state["sort_dropdown"]
-	var list = state["list"]
+	var sort_dropdown: OptionButton = state["sort_dropdown"]
+	var list: VBoxContainer = state["list"]
 	var v: Dictionary = _browse_view(state)
 	if not append:
 		for child in list.get_children():
@@ -624,11 +640,11 @@ func _browse_render_rows(state: Dictionary, rows: Array, append: bool) -> void:
 # The curated landing: one list query per section the host declares.
 # Hosts without sections never come here.
 func _browse_discover_fetch(state: Dictionary) -> void:
-	var sort_dropdown = state["sort_dropdown"]
-	var status_lbl = state["status_lbl"]
-	var scroll = state["scroll"]
-	var list = state["list"]
-	var load_more_btn = state["load_more_btn"]
+	var sort_dropdown: OptionButton = state["sort_dropdown"]
+	var status_lbl: Label = state["status_lbl"]
+	var scroll: ScrollContainer = state["scroll"]
+	var list: VBoxContainer = state["list"]
+	var load_more_btn: Button = state["load_more_btn"]
 	var provider := str(state["provider"])
 	var v: Dictionary = _browse_view(state)
 	var sections: Array = host_sections(provider)
@@ -641,7 +657,6 @@ func _browse_discover_fetch(state: Dictionary) -> void:
 	if state.has("restore_scroll"):
 		my_restore = int(state["restore_scroll"])
 		state.erase("restore_scroll")
-	v["mode"] = "discover"
 	v["featured"] = true
 	if sort_dropdown.visible and sort_dropdown.selected != 0:
 		sort_dropdown.select(0)
@@ -727,9 +742,9 @@ func _browse_discover_fetch(state: Dictionary) -> void:
 
 # The plain listing: search, sort and category, one page per call.
 func _browse_filter_fetch(state: Dictionary, append: bool) -> void:
-	var status_lbl = state["status_lbl"]
-	var scroll = state["scroll"]
-	var load_more_btn = state["load_more_btn"]
+	var status_lbl: Label = state["status_lbl"]
+	var scroll: ScrollContainer = state["scroll"]
+	var load_more_btn: Button = state["load_more_btn"]
 	var provider := str(state["provider"])
 	var caps: Dictionary = host_caps(provider)
 	var v: Dictionary = _browse_view(state)
@@ -739,7 +754,6 @@ func _browse_filter_fetch(state: Dictionary, append: bool) -> void:
 	if state.has("restore_scroll"):
 		my_restore = int(state["restore_scroll"])
 		state.erase("restore_scroll")
-	v["mode"] = "filter"
 	var cursor := str(v["cursor"]) if append else ""
 	if not append:
 		v["cursor"] = ""
@@ -828,7 +842,7 @@ func _browse_route(state: Dictionary) -> void:
 
 
 func _browse_on_sort_selected(state: Dictionary, idx: int) -> void:
-	var sort_dropdown = state["sort_dropdown"]
+	var sort_dropdown: OptionButton = state["sort_dropdown"]
 	var v: Dictionary = _browse_view(state)
 	var md: Variant = sort_dropdown.get_item_metadata(idx)
 	var opt: Dictionary = md if md is Dictionary else {}
@@ -850,7 +864,7 @@ func _browse_on_sort_selected(state: Dictionary, idx: int) -> void:
 
 
 func _browse_on_category_selected(state: Dictionary, idx: int) -> void:
-	var category_dropdown = state["category_dropdown"]
+	var category_dropdown: OptionButton = state["category_dropdown"]
 	var v: Dictionary = _browse_view(state)
 	var md: Variant = category_dropdown.get_item_metadata(idx)
 	v["category_ref"] = str(md) if md != null else ""
@@ -860,7 +874,7 @@ func _browse_on_category_selected(state: Dictionary, idx: int) -> void:
 
 
 func _browse_on_provider_selected(state: Dictionary, idx: int) -> void:
-	var provider_dropdown = state["provider_dropdown"]
+	var provider_dropdown: OptionButton = state["provider_dropdown"]
 	var p := str(provider_dropdown.get_item_metadata(idx))
 	if p == str(state["provider"]):
 		return
@@ -879,7 +893,7 @@ func _browse_on_provider_selected(state: Dictionary, idx: int) -> void:
 # Category menu, per host. Re-invoked by the banner Retry and every
 # successful list fetch until it lands; the two flags prevent stacking.
 func _browse_populate_categories(state: Dictionary) -> void:
-	var category_dropdown = state["category_dropdown"]
+	var category_dropdown: OptionButton = state["category_dropdown"]
 	var provider := str(state["provider"])
 	var v: Dictionary = _browse_view(state)
 	if not bool(host_caps(provider)["categories"]):
