@@ -199,7 +199,7 @@ func build_modpacks_tab(tabs: TabContainer) -> Control:
 
 	if _modpack_entries.is_empty():
 		var empty := Label.new()
-		empty.text = "No modpacks yet.\n\nA modpack is a shareable list of mods -- one small file that gives someone your exact setup in one click (the mods download automatically when they apply it).\n\nGet one from VostokMods above, save your current profile as a modpack, or drop someone else's modpack zip into your mods folder."
+		empty.text = "No modpacks yet.\n\nA modpack is a list of mods with their load order and settings in one small zip; applying it downloads the mods you are missing and switches you to that setup.\n\nModpacks come from VostokMods: click Get from VostokMods above."
 		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		empty.add_theme_color_override("font_color", COL_TEXT_DIM)
 		list.add_child(empty)

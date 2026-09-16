@@ -196,7 +196,7 @@ func _mods_cached_summary(ref: Dictionary) -> Dictionary:
 
 # Persisted per-mod meta sidecar so relaunches do not re-fetch every mod's
 # detail: {"<ref_key>": {"mod": <ModDetail>, "saved_at": unix}} under
-# user://mws_cache/ (deny-listed for modpack overrides). Stale entries soft-refresh.
+# user://mws_cache/. Stale entries soft-refresh.
 const _MODS_META_SIDECAR_PATH := "user://mws_cache/mods_meta_v2.json"
 const _MODS_META_REFRESH_SEC := 86400
 
@@ -1225,12 +1225,11 @@ func _mods_build_row(list: VBoxContainer, entry: Dictionary, row_ctx: Dictionary
 # plain label otherwise, and the dev-folder marker. Returns {name_col, name_ctrl}.
 func _mods_row_name_column(row: HBoxContainer, entry: Dictionary, persisted_sources: Dictionary) -> Dictionary:
 	# Host info column: async thumbnail, author line and name click-through to
-	# the detail dialog. A link-out host opens the mod page instead. Mods with
-	# no host keep the same-width cell so the name column stays aligned.
+	# the detail dialog. Mods with no host keep the same-width cell so the name
+	# column stays aligned.
 	var row_ref := _entry_host_ref(entry, persisted_sources)
 	var row_key := host_ref_key(row_ref)
 	var row_browsable := row_key != "" and bool(host_caps(str(row_ref["provider"]))["browse"])
-	var row_page_url := host_mod_page_url(row_ref) if row_key != "" else ""
 	var meta_holder: Dictionary = {}
 	var thumb_ref: TextureRect = null
 	# Every row gets a thumbnail cell. A hosted row reads "loading..." until
@@ -1248,7 +1247,7 @@ func _mods_row_name_column(row: HBoxContainer, entry: Dictionary, persisted_sour
 
 	# name_ctrl: clickable for hosted mods, plain Label otherwise.
 	var name_ctrl: Control
-	if row_browsable or row_page_url != "":
+	if row_browsable:
 		# Flat Button, not LinkButton, so clip_text keeps a long name from widening the row.
 		var name_lnk := Button.new()
 		name_lnk.flat = true
@@ -1258,28 +1257,21 @@ func _mods_row_name_column(row: HBoxContainer, entry: Dictionary, persisted_sour
 		name_lnk.alignment = HORIZONTAL_ALIGNMENT_LEFT
 		name_lnk.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		var row_host := host_display_name(str(row_ref["provider"]))
-		name_lnk.tooltip_text = str(entry["mod_name"]) + ("  --  click for " + row_host + " details" if row_browsable \
-				else "  --  click to open the " + row_host + " page in your browser")
+		name_lnk.tooltip_text = str(entry["mod_name"]) + "  --  click for " + row_host + " details"
 		name_lnk.add_theme_color_override("font_color", COL_OK if entry["enabled"] else COL_TEXT_DIM)
 		name_lnk.add_theme_color_override("font_hover_color", COL_TEXT_HI)
 		name_col.add_child(name_lnk)
-		if row_browsable:
-			name_lnk.pressed.connect(_open_mods_host_detail.bind(meta_holder, row_ref))
-			# Register the row's live nodes before the meta load so paints resolve to
-			# current nodes. Appended: several rows can share one host mod.
-			var meta_rows: Array = _mods_meta_nodes.get(row_key, [])
-			meta_rows.append({
-				"thumb": thumb_ref,
-				"name_col": name_col,
-				"holder": meta_holder,
-			})
-			_mods_meta_nodes[row_key] = meta_rows
-			_mods_load_host_meta(row_ref)
-		else:
-			var captured_page := row_page_url
-			name_lnk.pressed.connect(func():
-				OS.shell_open(captured_page)
-			)
+		name_lnk.pressed.connect(_open_mods_host_detail.bind(meta_holder, row_ref))
+		# Register the row's live nodes before the meta load so paints resolve to
+		# current nodes. Appended: several rows can share one host mod.
+		var meta_rows: Array = _mods_meta_nodes.get(row_key, [])
+		meta_rows.append({
+			"thumb": thumb_ref,
+			"name_col": name_col,
+			"holder": meta_holder,
+		})
+		_mods_meta_nodes[row_key] = meta_rows
+		_mods_load_host_meta(row_ref)
 		name_ctrl = name_lnk
 	else:
 		var name_lbl := Label.new()

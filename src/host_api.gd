@@ -14,17 +14,15 @@
 ## implement, e.g. after a loader downgrade.
 
 
-## Providers this build can dispatch to, in display order. Distinct from
-## HOST_PROVIDERS_KNOWN (what the on-disk parser accepts). Browse-style
-## listings use host_browse_providers(), which filters on caps.browse.
+## Providers this build can dispatch to, in display order. HOST_PROVIDERS_KNOWN
+## is the wider set the on-disk source parser accepts.
 func host_providers() -> PackedStringArray:
 	# Order is the product decision: index 0 is what the Browse tab opens on.
 	return PackedStringArray([HOST_VOSTOKMODS, HOST_MODWORKSHOP])
 
 
-## host_providers() filtered by caps.browse. The Browse provider switcher is
-## built from this, never from host_providers() directly. Synchronous and
-## network-free, safe during widget construction.
+## host_providers() filtered by caps.browse; the Browse source menu is built
+## from this. Synchronous and network-free, safe during widget construction.
 func host_browse_providers() -> PackedStringArray:
 	var out := PackedStringArray()
 	for p in host_providers():

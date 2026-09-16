@@ -291,12 +291,9 @@ func _get_missing_mods_for_modpack(entry: Dictionary) -> Array:
 		var item := {"profile_key": src_key, "ref": ref, "version": version, "source": src_rec,
 				"sha256": str(checksums.get(src_key, ""))}
 		if not _modpack_ref_downloadable(ref):
-			# Not downloadable; surface an explanatory failure row.
+			# No usable source; surface an explanatory failure row.
 			item["unreachable"] = true
-			if not ref.is_empty():
-				item["unreachable_reason"] = "this mod is hosted on " + host_display_name(str(ref["provider"])) \
-						+ ", which the loader cannot download from -- install it manually"
-			elif not (src_data is Dictionary) or (src_data as Dictionary).is_empty():
+			if not (src_data is Dictionary) or (src_data as Dictionary).is_empty():
 				item["unreachable_reason"] = "the modpack has no download info for this mod -- install it manually"
 			else:
 				item["unreachable_reason"] = "the modpack does not say where this mod is hosted -- install it manually"

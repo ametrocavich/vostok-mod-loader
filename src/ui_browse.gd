@@ -21,7 +21,7 @@ func _browse_metric(row: Dictionary, key: String) -> int:
 
 # Offline grace for the Browse landing, per host: the last fully populated
 # landing, in memory and on disk, so a first launch offline still shows
-# something. Lives under user://mws_cache/, deny-listed for pack overrides.
+# something. Lives under user://mws_cache/.
 var _browse_landing_snapshots: Dictionary = {}
 const _BROWSE_LANDING_CACHE_DIR := "user://mws_cache"
 
@@ -178,7 +178,7 @@ func _browse_build_toolbar(state: Dictionary, container: VBoxContainer) -> void:
 	container.add_child(toolbar)
 
 	# The source switcher scopes everything to its right. Built from
-	# host_browse_providers(): a link-out host must not appear in a listing control.
+	# host_browse_providers(), the hosts with the browse capability.
 	var provider_dropdown := OptionButton.new()
 	for p in providers:
 		provider_dropdown.add_item(host_display_name(p))
@@ -1071,16 +1071,13 @@ func _browse_render_mod_row(summary: Dictionary, install_entry: Variant, on_get:
 		_wire_hint(get_btn, "Download this mod from " + host_display_name(provider) + ".")
 	else:
 		var no_dl := Label.new()
-		no_dl.text = "No file yet" if bool(caps["resolve_file"]) else "Browse only"
+		no_dl.text = "No file yet"
 		no_dl.add_theme_font_size_override("font_size", FS_META)
 		no_dl.add_theme_color_override("font_color", COL_TEXT_DIM)
 		no_dl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		no_dl.mouse_filter = Control.MOUSE_FILTER_PASS
 		row.add_child(no_dl)
-		if bool(caps["resolve_file"]):
-			_wire_hint(no_dl, host_display_name(provider) + " has no downloadable file for this mod yet (it may still be scanning).")
-		else:
-			_wire_hint(no_dl, host_display_name(provider) + " does not provide downloads through the loader.")
+		_wire_hint(no_dl, host_display_name(provider) + " has no downloadable file for this mod yet (it may still be scanning).")
 
 	return row
 
@@ -1115,12 +1112,6 @@ func _show_browse_mod_detail_dialog(summary: Dictionary, on_get: Callable) -> vo
 
 	var can_download := bool(caps["resolve_file"]) \
 			and (not bool(caps["lists_downloadable"]) or str(summary["default_file_id"]) != "")
-	if not bool(caps["resolve_file"]):
-		var note := Label.new()
-		note.text = host_display_name(provider) + " does not provide downloads through the loader."
-		note.add_theme_font_size_override("font_size", FS_META)
-		note.add_theme_color_override("font_color", COL_TEXT_DIM)
-		box.add_child(note)
 
 	# Description: the short text now, the full one once the detail lands. Adapters deliver BBCode.
 	var desc_hdr := Label.new()

@@ -32,7 +32,6 @@ Each row shows a thumbnail, name, author, version where the site reports one, qu
 - **Download**: the mod is not installed. Click to fetch it into your `mods/` folder.
 - **Enabled in <profile>**: the mod is already on disk. The checkbox toggles it in your active profile without a trip to the Mods tab.
 - **No file yet**: the site has nothing to serve for this mod right now, usually because its upload is still being scanned. Check back later or open its page in the browser.
-- **Browse only**: the selected source cannot serve downloads through the launcher at all. Neither site in the menu does this today; the label exists for sources that might.
 
 Browse recognizes an installed mod by an explicit `[updates] source="vostokmods:<slug>"` or `source="modworkshop:<id>"` in its `mod.txt`. Without one, the launcher's own record of where it downloaded the file counts, and only then the older `modworkshop=<id>` line. Files served by VostokMods carry that older line, so a mod you installed from the VostokMods tab stays a VostokMods mod.
 
