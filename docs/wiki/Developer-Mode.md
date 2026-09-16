@@ -80,7 +80,7 @@ A `load()` that returns null is a warning in every mode. Mod source is never rew
 
 ### 7. Live-probe hooks
 
-`_activate_rewritten_scripts` in [hook_pack.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd) registers real hooks through the public `hook()` API on eight methods:
+`_dev_hook_probes` in [debug.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/debug.gd), called from `_activate_rewritten_scripts` in dev mode, registers real hooks through the public `hook()` API on eight methods:
 
 | Hook | Fires |
 |---|---|
@@ -99,7 +99,7 @@ When dispatch counts are non-zero the same timer prints `DISPATCH-COUNT top 20 /
 
 ### 8. AUTOLOAD-CHECK
 
-Also in `_activate_rewritten_scripts`. For each of nine autoloads (`Database`, `GameData`, `Settings`, `Menu`, `Loader`, `Inputs`, `Mode`, `Profiler`, `Simulation`) it logs:
+Also in `_dev_hook_probes`. For each of nine autoloads (`Database`, `GameData`, `Settings`, `Menu`, `Loader`, `Inputs`, `Mode`, `Profiler`, `Simulation`) it logs:
 
 ```
 [RTVCodegen] AUTOLOAD-CHECK <name>: script=<path> script_has_rename=<bool> instance_has_rename=<bool>
@@ -121,7 +121,7 @@ ImmersiveXP markers (`"ImmersiveXP"`, `"IXP "`, `"overrideScript"`) confirm IXP'
 
 ### 10. Registry smoke probe
 
-Also behind the dev-mode return in `_activate_rewritten_scripts`. Logs under `[RegistryProbe]`: checks that `Database._rtv_vanilla_scenes` exists and is populated and that `db.get(first_key)` returns a PackedScene, warning on each failure.
+Also in `_dev_hook_probes`. Logs under `[RegistryProbe]`: checks that `Database._rtv_vanilla_scenes` exists and is populated and that `db.get(first_key)` returns a PackedScene, warning on each failure.
 
 ### 11. Dispatch counters
 
@@ -134,7 +134,7 @@ Mods-tab rows show notes meant for the mod's author only while dev mode is on: a
 ## Where the gate sits
 
 - `_log_debug` (logging.gd): full no-op when off.
-- `_activate_rewritten_scripts` (hook_pack.gd): the PRE-ACTIVATE classification is inside an `if _developer_mode:` block, and one `if not _developer_mode: return` covers the live probes, COMPILE-PROOF (canary A), AUTOLOAD-CHECK, the registry probe, IXP-VERIFY and the 30-second timer.
+- `_activate_rewritten_scripts` (hook_pack.gd) calls `_dev_preactivate_summary` and `_dev_hook_probes` (debug.gd) only when dev mode is on; between them COMPILE-PROOF (canary A) runs for everyone.
 - The conflict summary and report calls in lifecycle.gd.
 - The `_dispatch_counts` increment inside each generated wrapper.
 

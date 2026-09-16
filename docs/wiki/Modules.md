@@ -196,7 +196,7 @@ Limitation: direct constant access (`Database.Potato`) bypasses the injected `_g
 
 ### [framework_wrappers.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/framework_wrappers.gd)
 
-One function, `_rtv_collect_nodes_by_class`: a scene-tree walk that finds nodes whose script, or any ancestor in its `extends` chain, carries a given `class_name`. Used by the dev-mode IXP-VERIFY probe in `hook_pack.gd`. The name is left over from the extends-wrapper pipeline (`[rtvmodlib] needs=`, generated `Framework<X>.gd` subclasses, `node_added` swaps) that v3.0.1 removed.
+One function, `_rtv_collect_nodes_by_class`: a scene-tree walk that finds nodes whose script, or any ancestor in its `extends` chain, carries a given `class_name`. Used by the dev-mode IXP-VERIFY probe in `debug.gd`. The name is left over from the extends-wrapper pipeline (`[rtvmodlib] needs=`, generated `Framework<X>.gd` subclasses, `node_added` swaps) that v3.0.1 removed.
 
 ## Codegen pipeline
 
@@ -253,7 +253,7 @@ Mod sources are not rewritten. A mod script that extends a wrapped vanilla sees 
 10. `_log_hook_reconciliation`: one info line when every declared target made it, a critical block per lost target otherwise.
 11. With `defer_activation`, persist the pack path and stop. Otherwise mount with `replace_files=true`, read the canary back, and call `_activate_rewritten_scripts`.
 
-`_activate_rewritten_scripts` defers scripts with module-scope scene preloads to lazy compile (with a 60-second DEFER-VERIFY watchdog), and for the rest checks whether static init already preempted the script, then falls back to `source_code + reload()` and finally `CACHE_MODE_IGNORE + take_over_path`. It warns again when it displaces a mod's replacement script, persists `hook_pack_path` and `hook_pack_wrapped_paths`, and in dev mode registers the eight live probes and runs the canary A summary, AUTOLOAD-CHECK, the registry probe and the 30-second timer. See [Stability-Canaries](Stability-Canaries) and [Developer-Mode](Developer-Mode).
+`_activate_rewritten_scripts` defers scripts with module-scope scene preloads to lazy compile (with a 60-second DEFER-VERIFY watchdog), and for the rest checks whether static init already preempted the script, then falls back to `source_code + reload()` and finally `CACHE_MODE_IGNORE + take_over_path`. It warns again when it displaces a mod's replacement script, persists `hook_pack_path` and `hook_pack_wrapped_paths`, runs the canary A compile proof for every player, and in dev mode hands off to `_dev_preactivate_summary` and `_dev_hook_probes` in `debug.gd`. See [Stability-Canaries](Stability-Canaries) and [Developer-Mode](Developer-Mode).
 
 ## Orchestration
 
@@ -275,8 +275,8 @@ Injects a "Mods" button into RTV's main menu (`res://Scripts/Menu.gd`) so the la
 
 Mutations to `mod_config.cfg` while the reopened launcher is open flip `_dirty_since_boot`; on close the loader restarts into a clean Pass 1.
 
-## Temporary scaffolding
+## Developer probes and test scaffolding
 
 ### [debug.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/debug.gd)
 
-Gated behind `[settings] test_pack_precedence = true` in `user://mod_config.cfg`; the default config has no such key. `_load_test_pack_flag` is static so `boot.gd` can read it at static init. `_test_pack_precedence` (Pass 1, before the restart) exercises pack-over-bytecode precedence for `Controller.gd`; `_test_pack_reapply` (Pass 2, from `_finish_boot`) mounts the pack again from a fresh copy after the re-mounts; `_test_post_autoload_verify` runs one second after the autoloads and reports what took over the path. The header says it is removable once the rewrite system has proven itself in production.
+`_dev_preactivate_summary` and `_dev_hook_probes` are the developer-mode probes `_activate_rewritten_scripts` runs: the pre-activation classification, the eight live hooks, AUTOLOAD-CHECK, the registry smoke probe, IXP-VERIFY and the 30-second report timer ([Developer-Mode](Developer-Mode) lists them). The rest is gated behind `[settings] test_pack_precedence = true` in `user://mod_config.cfg`; the default config has no such key. `_load_test_pack_flag` is static so `boot.gd` can read it at static init. `_test_pack_precedence` (Pass 1, before the restart) exercises pack-over-bytecode precedence for `Controller.gd`; `_test_pack_reapply` (Pass 2, from `_finish_boot`) mounts the pack again from a fresh copy after the re-mounts; `_test_post_autoload_verify` runs one second after the autoloads and reports what took over the path.

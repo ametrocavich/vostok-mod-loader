@@ -4,7 +4,7 @@ Boot-time probes that log one loud line when something the loader depends on sto
 
 ## Canary A: COMPILE-PROOF
 
-Location: [hook_pack.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd), the summary block in `_activate_rewritten_scripts`. Dev mode only; it sits after the `if not _developer_mode: return` that also gates the live probes.
+Location: [hook_pack.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd), the summary block in `_activate_rewritten_scripts`. It runs for every player; the developer-mode probes in `debug.gd` follow it.
 
 The compile-proof check and this alarm run for every player, not only in developer mode (the end-to-end hook probes and the autoload inspection stay developer-only). Its outcome is also written to `user://modloader_hook_status.json`, and the launcher reads that record on the next start: if none of the rewrites took effect, or a critical script lost its rewrite, the Mods tab shows a red banner saying hooks did not work last session, with a button to the loader's release page. Canary B and canary C write the same record when they stop generation, so an unsupported script format after a game update is reported in the launcher as well as the log. A record written by another loader version, or before the game executable changed, is ignored. Static init also drops a `user://modloader_game_updated` marker when the executable's mtime changes; the Mods tab shows a notice while it exists, and the next healthy activation removes it.
 
