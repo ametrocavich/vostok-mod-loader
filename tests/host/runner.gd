@@ -35,12 +35,19 @@ const MODLOADER_PATH := "res://modloader_neutered.gd"
 
 var _failures: PackedStringArray = []
 var _assertions := 0
+# Set by _finish. _run awaits coroutines that must complete without
+# suspending; if one suspends, the main loop would end with exit code 0 and
+# no verdict, so the guard below turns that into a failure.
+var _done := false
 
 func _init() -> void:
 	print("[host] harness start")
 
 func _process(_delta: float) -> bool:
 	_run()
+	if not _done:
+		printerr("[host] FAIL: the run suspended on an await and never reached _finish")
+		quit(1)
 	return true
 
 func _run() -> void:
@@ -69,6 +76,7 @@ func _run() -> void:
 	_t8_vm_pure_surface(ml)
 	_t9_caps_match_wiring(ml)
 	_t10_hosted_modpacks(ml)
+	await _t12_apply_failure_shape(ml)
 
 	_finish()
 
@@ -723,6 +731,32 @@ func _t10_hosted_modpacks(ml: Object) -> void:
 	_assert(str(ml._hosted_pack_file_path("!!!")) == "", "T10: a slug with nothing safe in it yields no path")
 
 
+# Every return from the modpack apply flow carries the same keys, so the
+# dialogs can read the download counts without shape-checking. Both early
+# failures here return before any download starts, so the coroutine
+# completes without suspending.
+func _t12_apply_failure_shape(ml: Object) -> void:
+	var want_keys := ["downloaded", "error", "failed_downloads", "failures", "ok"]
+	var r: Dictionary = await ml._apply_modpack_inner({}, null, Callable())
+	var keys: Array = r.keys()
+	keys.sort()
+	_assert(keys == want_keys,
+			"T12: a validation failure returns the apply shape (got %s)" % str(keys))
+	_assert(not bool(r.get("ok", true)) and str(r.get("error", "")) != "",
+			"T12: a validation failure is ok=false with a message")
+	_assert(int(r.get("downloaded", -1)) == 0 and int(r.get("failed_downloads", -1)) == 0
+			and (r.get("failures", null) is Array) and (r.get("failures", [1]) as Array).is_empty(),
+			"T12: a validation failure reports zero downloads (got %s)" % str(r))
+	ml.set("_modpack_apply_in_progress", true)
+	var busy: Dictionary = await ml.apply_modpack({}, null, Callable())
+	ml.set("_modpack_apply_in_progress", false)
+	var busy_keys: Array = busy.keys()
+	busy_keys.sort()
+	_assert(busy_keys == want_keys,
+			"T12: the apply-in-progress refusal returns the apply shape (got %s)" % str(busy_keys))
+	_assert(not bool(busy.get("ok", true)) and str(busy.get("error", "")).contains("in progress"),
+			"T12: the apply-in-progress refusal says so (got %s)" % str(busy.get("error", "")))
+
 func _assert_same_keys(ml: Object, s: Variant, label: String) -> void:
 	var want: Array = (ml.host_empty_summary() as Dictionary).keys()
 	want.sort()
@@ -746,8 +780,9 @@ func _fail(msg: String) -> void:
 	_failures.append(msg)
 
 func _finish() -> void:
+	_done = true
 	if _failures.is_empty():
-		print("[host] PASS: %d assertion(s) across T1..T11" % _assertions)
+		print("[host] PASS: %d assertion(s) across T1..T12" % _assertions)
 		quit(0)
 		return
 	for m in _failures:

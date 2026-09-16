@@ -454,14 +454,27 @@ func _await_host_rate_cooldown(provider: String, progress: Callable, current: in
 		await get_tree().create_timer(1.0).timeout
 
 
+# The apply result for a failure. Every return from apply_modpack carries
+# these keys; the counts describe the downloads that ran before the failure.
+func _modpack_apply_failure(error: String, downloaded: int = 0, failed_downloads: int = 0,
+		failures: Array = []) -> Dictionary:
+	return {
+		"ok": false,
+		"error": error,
+		"downloaded": downloaded,
+		"failed_downloads": failed_downloads,
+		"failures": failures,
+	}
+
 # Apply a discovered modpack: back up, download missing mods, materialize,
 # switch, mark active. progress is Callable(info) with {current, total, mod_name,
 # action}, action one of downloading | skipped | applying | rate_wait.
-# Returns {ok, error, downloaded, failed_downloads}.
+# Returns {ok, error, downloaded, failed_downloads, failures}, plus
+# cancelled=true when the user cancelled during the downloads.
 func apply_modpack(entry: Dictionary, tabs: TabContainer, progress: Callable = Callable()) -> Dictionary:
 	# apply awaits during downloads; a second Apply click would race on cfg writes.
 	if _modpack_apply_in_progress:
-		return {"ok": false, "error": "Another apply is in progress; wait for it to finish"}
+		return _modpack_apply_failure("Another apply is in progress; wait for it to finish")
 	_modpack_apply_in_progress = true
 	_modpack_apply_cancelled = false
 
@@ -473,18 +486,18 @@ func apply_modpack(entry: Dictionary, tabs: TabContainer, progress: Callable = C
 func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Callable) -> Dictionary:
 	var validation := _validate_modpack(entry)
 	if not bool(validation.get("ok", false)):
-		return validation
+		return _modpack_apply_failure(str(validation.get("error", "")))
 
 	var sanitized: String = str(entry.get("sanitized_name", ""))
 	if sanitized.is_empty():
-		return {"ok": false, "error": "Invalid modpack name"}
+		return _modpack_apply_failure("Invalid modpack name")
 	var modpack_profile := MODPACK_PROFILE_PREFIX + sanitized
 	var backup_profile := MODPACK_BACKUP_PREFIX + sanitized
 
 	# The UI hides Apply while another pack is active; guard anyway.
 	var current_active := get_active_modpack()
 	if current_active != "" and current_active != sanitized:
-		return {"ok": false, "error": "Unload " + current_active + " before applying another modpack"}
+		return _modpack_apply_failure("Unload " + current_active + " before applying another modpack")
 
 	# Re-apply of the active pack skips backup, materialize and switch (each
 	# would clobber user state); it only re-downloads missing mods.
@@ -586,7 +599,8 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 		# and persisting that would erase every profile. Abort before mutating.
 		var cfg_err := cfg.load(UI_CONFIG_PATH)
 		if cfg_err != OK and cfg_err != ERR_FILE_NOT_FOUND:
-			return {"ok": false, "error": "Cannot read your mod settings file (mod_config.cfg, error %d) -- the modpack was not applied and your profiles are unchanged. Any downloaded mods remain in your mods folder. Restart the game and try again." % cfg_err}
+			return _modpack_apply_failure("Cannot read your mod settings file (mod_config.cfg, error %d) -- the modpack was not applied and your profiles are unchanged. Any downloaded mods remain in your mods folder. Restart the game and try again." % cfg_err,
+					done_dl, failed_dl, failures)
 
 		var src_en := _profile_sec(pre_active, ".enabled")
 		var src_pr := _profile_sec(pre_active, ".priority")
@@ -621,14 +635,16 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 		var cfg2_err := cfg.load(UI_CONFIG_PATH)
 		if cfg2_err != OK:
 			# Same empty-cfg hazard as step 1; the reconciler clears the flag next boot.
-			return {"ok": false, "error": "Cannot read settings (error %d) -- nothing was changed." % cfg2_err}
+			return _modpack_apply_failure("Cannot read settings (error %d) -- nothing was changed." % cfg2_err,
+					done_dl, failed_dl, failures)
 		if not cfg.has_section(_profile_sec(modpack_profile, ".enabled")):
 			var mat_result := _materialize_modpack_profile(entry, modpack_profile)
 			if not bool(mat_result.get("ok", false)):
 				# Nothing took effect on this clean return; clear the flag set in step 1.
 				cfg.set_value("settings", "active_modpack", "")
 				_persist_ui_cfg(cfg)
-				return mat_result
+				return _modpack_apply_failure(str(mat_result.get("error", "")),
+						done_dl, failed_dl, failures)
 
 		# 3. Switch to the modpack profile (handles the MCM swap).
 		_switch_profile(modpack_profile)
