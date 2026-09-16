@@ -135,8 +135,9 @@ func _merge_hook_calls_into_wrap_mask() -> void:
 			_log_debug("[Hooks] %d scanned .hook() call(s) resolved to vanilla scripts [%s]" % [resolved_count, mod_name])
 
 # One mod, one call: mount its archive, scan and register file claims, then
-# apply its mod.txt sections via the handler blocks below. Adding a section:
-#   1. Add an idempotent handler block (load_all_mods re-runs in Pass 2).
+# apply its mod.txt sections through the handlers below it. Adding a section:
+#   1. Add an idempotent handler function beside _apply_hooks_section
+#      (load_all_mods re-runs in Pass 2).
 #   2. List the name in MOD_TXT_KNOWN_SECTIONS or every user gets the notice.
 #   3. Non-Variant value syntax (bare identifiers, `*`, top-level commas) needs
 #      preprocessing in _parse_mod_txt; empty presence sections need the
@@ -150,7 +151,7 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 	var ext:       String = c["ext"]
 	var mod_name:  String = c["mod_name"]
 	var mod_id:    String = c["mod_id"]
-	var cfg               = c["cfg"]
+	var cfg: ConfigFile   = c["cfg"]
 
 	_log_info("--- [" + str(load_index + 1) + "] " + mod_name + " (" + file_name + ")")
 
@@ -223,76 +224,7 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 	if not _unknown_sections.is_empty():
 		_log_info("  mod.txt section(s) %s not recognized by this loader -- ignored (typo? see the Mod-Format wiki)" % ", ".join(_unknown_sections))
 
-	# [hooks] static declaration, for mods the .hook() scanner cannot see.
-	# Formats:
-	#   res://Scripts/Interface.gd = _ready, update_tooltip   # named methods
-	#   res://Scripts/Interface.gd = *                        # all methods
-	#   res://Scripts/Interface.gd =                          # empty = all
-	# Populates _hooked_methods[path][method], lowercased; the wildcard mask
-	# (see _mask_is_wildcard) means wrap all.
-	if cfg != null and cfg.has_section("hooks"):
-		# Per-mod tallies for one summary line; per-method detail is debug-only.
-		var hooks_scripts_declared := 0
-		var hooks_methods_declared := 0
-		var hooks_wildcards := 0
-		for key in cfg.get_section_keys("hooks"):
-			var script_path := str(key).strip_edges()
-			var methods_str := str(cfg.get_value("hooks", key, "")).strip_edges()
-			if script_path.is_empty():
-				continue
-			var mask_existed := _hooked_methods.has(script_path)
-			if not mask_existed:
-				_hooked_methods[script_path] = {}
-			var script_mask: Dictionary = _hooked_methods[script_path] as Dictionary
-			# A wildcard from an earlier mod must not be narrowed.
-			var wildcard_already := mask_existed and _mask_is_wildcard(script_mask)
-			# "*" anywhere in the list promotes to a whole-script wildcard.
-			var specific_methods: Array[String] = []
-			var has_wildcard := methods_str == ""
-			for raw_method in methods_str.split(","):
-				var method_name: String = raw_method.strip_edges()
-				if method_name == "":
-					continue
-				if method_name == "*":
-					has_wildcard = true
-					continue
-				specific_methods.append(method_name)
-			if not has_wildcard and specific_methods.is_empty():
-				# Content that yielded no names is junk, not a wildcard.
-				if not mask_existed:
-					_hooked_methods.erase(script_path)
-				_log_warning("  [hooks] %s has no valid method names ('%s') -- entry ignored [%s]" % [script_path, methods_str, mod_name])
-				continue
-			# Attribution so a lost hook target can name the declaring mod.
-			if not _hook_declared_by.has(script_path):
-				_hook_declared_by[script_path] = {}
-			(_hook_declared_by[script_path] as Dictionary)[mod_name] = true
-			hooks_scripts_declared += 1
-			if has_wildcard:
-				hooks_wildcards += 1
-				if not specific_methods.is_empty():
-					_log_warning("  [hooks] %s mixes '*' with specific methods (%s); '*' wins, all methods wrapped [%s]" \
-							% [script_path, ", ".join(specific_methods), mod_name])
-				else:
-					_log_debug("  Hooks declared: %s :: * (all methods) [%s]" % [script_path, mod_name])
-				# "*" wins across mods too; wrap-all is a superset.
-				if not _mask_is_wildcard(script_mask):
-					_log_info("  Hooks: '*' from %s widens the earlier method list for %s -- all methods wrapped" % [mod_name, script_path])
-					_mask_widen(script_mask)
-				continue
-			hooks_methods_declared += specific_methods.size()
-			if wildcard_already:
-				if not specific_methods.is_empty():
-					_log_debug("  Hooks declared: %s :: %s [%s] -- already covered by an earlier wildcard (*), all methods wrapped" \
-							% [script_path, ", ".join(specific_methods), mod_name])
-				continue
-			for method_name in specific_methods:
-				script_mask[method_name.to_lower()] = true
-				_log_debug("  Hook declared: %s :: %s [%s]" % [script_path, method_name, mod_name])
-		if hooks_scripts_declared > 0:
-			var wc_tag := (", %d wildcard (all methods)" % hooks_wildcards) if hooks_wildcards > 0 else ""
-			_log_info("  Hooks: %d method(s) across %d script(s)%s [%s]" \
-					% [hooks_methods_declared, hooks_scripts_declared, wc_tag, mod_name])
+	_apply_hooks_section(cfg, mod_name)
 
 	# [registry] opt-in gates the Database.gd wrapping and const-to-dict
 	# transform; without it lib.register()/override() do not work. Presence suffices.
@@ -310,29 +242,108 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 		else:
 			_log_info("  B_Loader-style call detected [%s] -- compat shim active" % mod_name)
 
-	# [script_extend] / [script_overrides]: full script replacements chained via
-	# extends. Higher-priority mods land last (latest take_over_path wins).
-	var _extend_sections: Array[String] = ["script_extend", "script_overrides"]
-	if cfg != null:
-		for section in _extend_sections:
-			if not cfg.has_section(section):
-				continue
-			for key in cfg.get_section_keys(section):
-				var vanilla_path := str(key).strip_edges()
-				var mod_script_path := str(cfg.get_value(section, key)).strip_edges()
-				if vanilla_path.is_empty() or mod_script_path.is_empty():
-					_log_warning("  Empty [%s] entry -- skipped" % section)
-					continue
-				_pending_script_overrides.append({
-					"vanilla_path": vanilla_path,
-					"mod_script_path": mod_script_path,
-					"mod_name": mod_name,
-					"priority": c.get("priority", 0),
-					"seq": _pending_script_overrides.size(),
-				})
-				_log_info("  [%s] %s -> %s" % [section, vanilla_path, mod_script_path])
+	_apply_extend_sections(cfg, mod_name, int(c.get("priority", 0)))
+	_apply_autoload_section(cfg, mod_name, file_name, load_index)
 
-	if cfg == null or not cfg.has_section("autoload"):
+# [hooks] static declaration, for mods the .hook() scanner cannot see.
+# Formats:
+#   res://Scripts/Interface.gd = _ready, update_tooltip   # named methods
+#   res://Scripts/Interface.gd = *                        # all methods
+#   res://Scripts/Interface.gd =                          # empty = all
+# Populates _hooked_methods[path][method], lowercased; the wildcard mask
+# (see _mask_is_wildcard) means wrap all.
+func _apply_hooks_section(cfg: ConfigFile, mod_name: String) -> void:
+	if not cfg.has_section("hooks"):
+		return
+	# Per-mod tallies for one summary line; per-method detail is debug-only.
+	var hooks_scripts_declared := 0
+	var hooks_methods_declared := 0
+	var hooks_wildcards := 0
+	for key in cfg.get_section_keys("hooks"):
+		var script_path := str(key).strip_edges()
+		var methods_str := str(cfg.get_value("hooks", key, "")).strip_edges()
+		if script_path.is_empty():
+			continue
+		var mask_existed := _hooked_methods.has(script_path)
+		if not mask_existed:
+			_hooked_methods[script_path] = {}
+		var script_mask: Dictionary = _hooked_methods[script_path] as Dictionary
+		# A wildcard from an earlier mod must not be narrowed.
+		var wildcard_already := mask_existed and _mask_is_wildcard(script_mask)
+		# "*" anywhere in the list promotes to a whole-script wildcard.
+		var specific_methods: Array[String] = []
+		var has_wildcard := methods_str == ""
+		for raw_method in methods_str.split(","):
+			var method_name: String = raw_method.strip_edges()
+			if method_name == "":
+				continue
+			if method_name == "*":
+				has_wildcard = true
+				continue
+			specific_methods.append(method_name)
+		if not has_wildcard and specific_methods.is_empty():
+			# Content that yielded no names is junk, not a wildcard.
+			if not mask_existed:
+				_hooked_methods.erase(script_path)
+			_log_warning("  [hooks] %s has no valid method names ('%s') -- entry ignored [%s]" % [script_path, methods_str, mod_name])
+			continue
+		# Attribution so a lost hook target can name the declaring mod.
+		if not _hook_declared_by.has(script_path):
+			_hook_declared_by[script_path] = {}
+		(_hook_declared_by[script_path] as Dictionary)[mod_name] = true
+		hooks_scripts_declared += 1
+		if has_wildcard:
+			hooks_wildcards += 1
+			if not specific_methods.is_empty():
+				_log_warning("  [hooks] %s mixes '*' with specific methods (%s); '*' wins, all methods wrapped [%s]" \
+						% [script_path, ", ".join(specific_methods), mod_name])
+			else:
+				_log_debug("  Hooks declared: %s :: * (all methods) [%s]" % [script_path, mod_name])
+			# "*" wins across mods too; wrap-all is a superset.
+			if not _mask_is_wildcard(script_mask):
+				_log_info("  Hooks: '*' from %s widens the earlier method list for %s -- all methods wrapped" % [mod_name, script_path])
+				_mask_widen(script_mask)
+			continue
+		hooks_methods_declared += specific_methods.size()
+		if wildcard_already:
+			if not specific_methods.is_empty():
+				_log_debug("  Hooks declared: %s :: %s [%s] -- already covered by an earlier wildcard (*), all methods wrapped" \
+						% [script_path, ", ".join(specific_methods), mod_name])
+			continue
+		for method_name in specific_methods:
+			script_mask[method_name.to_lower()] = true
+			_log_debug("  Hook declared: %s :: %s [%s]" % [script_path, method_name, mod_name])
+	if hooks_scripts_declared > 0:
+		var wc_tag := (", %d wildcard (all methods)" % hooks_wildcards) if hooks_wildcards > 0 else ""
+		_log_info("  Hooks: %d method(s) across %d script(s)%s [%s]" \
+				% [hooks_methods_declared, hooks_scripts_declared, wc_tag, mod_name])
+
+# [script_extend] / [script_overrides]: full script replacements chained via
+# extends. Higher-priority mods land last (latest take_over_path wins).
+func _apply_extend_sections(cfg: ConfigFile, mod_name: String, priority: int) -> void:
+	for section in ["script_extend", "script_overrides"]:
+		if not cfg.has_section(section):
+			continue
+		for key in cfg.get_section_keys(section):
+			var vanilla_path := str(key).strip_edges()
+			var mod_script_path := str(cfg.get_value(section, key)).strip_edges()
+			if vanilla_path.is_empty() or mod_script_path.is_empty():
+				_log_warning("  Empty [%s] entry -- skipped" % section)
+				continue
+			_pending_script_overrides.append({
+				"vanilla_path": vanilla_path,
+				"mod_script_path": mod_script_path,
+				"mod_name": mod_name,
+				"priority": priority,
+				"seq": _pending_script_overrides.size(),
+			})
+			_log_info("  [%s] %s -> %s" % [section, vanilla_path, mod_script_path])
+
+# [autoload]: queue each entry for instantiation after the mounts. A path
+# the archive does not carry must exist somewhere (the game or another
+# mod), or the entry is dropped with a hint at same-named files.
+func _apply_autoload_section(cfg: ConfigFile, mod_name: String, file_name: String, load_index: int) -> void:
+	if not cfg.has_section("autoload"):
 		return
 
 	var keys: PackedStringArray = cfg.get_section_keys("autoload")
@@ -352,9 +363,7 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 
 		if _archive_file_sets.has(file_name) and not _archive_file_sets[file_name].has(res_path):
 			# Autoloads may point at a vanilla script or another mod's file; only a path that exists nowhere is an error.
-			if ResourceLoader.exists(res_path):
-				pass
-			else:
+			if not ResourceLoader.exists(res_path):
 				_log_critical("  Autoload path not found: " + res_path)
 				_log_critical("    Declared in mod.txt but missing from " + file_name + " and not provided by any mod or the game")
 				# Log similar paths to help mod authors diagnose typos / case mismatches.
@@ -517,25 +526,7 @@ func scan_and_register_archive_claims(archive_path: String, mod_name: String,
 	zr.close()
 	if _mod_script_analysis.has(mod_name):
 		# Two archives can share a display name; merge so both scans reach the wrap mask.
-		var prev: Dictionary = _mod_script_analysis[mod_name]
-		for k: String in ["take_over_literal_paths", "extends_paths",
-				"lifecycle_no_super", "class_names", "extends_class_names",
-				"preload_paths", "hook_calls"]:
-			for v in (gd_analysis[k] as Array):
-				if v not in (prev[k] as Array):
-					(prev[k] as Array).append(v)
-		for k: String in ["uses_dynamic_override", "calls_update_tooltip",
-				"calls_base", "calls_bloader_api"]:
-			prev[k] = prev[k] or gd_analysis[k]
-		var prev_om: Dictionary = prev["override_methods"]
-		for target: String in (gd_analysis["override_methods"] as Dictionary):
-			if not prev_om.has(target):
-				prev_om[target] = gd_analysis["override_methods"][target]
-			else:
-				for m in (gd_analysis["override_methods"][target] as Array):
-					if m not in (prev_om[target] as Array):
-						(prev_om[target] as Array).append(m)
-		prev["total_gd_files"] = int(prev["total_gd_files"]) + int(gd_analysis["total_gd_files"])
+		_merge_gd_analysis(_mod_script_analysis[mod_name], gd_analysis)
 	else:
 		_mod_script_analysis[mod_name] = gd_analysis
 	_archive_file_sets[archive_file] = path_set
@@ -551,6 +542,31 @@ func scan_and_register_archive_claims(archive_path: String, mod_name: String,
 				+ str(override_count) + " override target(s)" + dynamic_tag)
 
 # GDScript source analysis
+
+# Merge one archive's analysis record into another's, by the value type each
+# key holds: arrays union, bools or, ints add, and the override_methods map
+# unions its per-target method lists. The record's keys are declared once, in
+# scan_and_register_archive_claims.
+func _merge_gd_analysis(into: Dictionary, add: Dictionary) -> void:
+	for k: String in add:
+		var v: Variant = add[k]
+		if v is Array:
+			for item in (v as Array):
+				if item not in (into[k] as Array):
+					(into[k] as Array).append(item)
+		elif v is Dictionary:
+			var targets: Dictionary = into[k]
+			for target: String in (v as Dictionary):
+				if not targets.has(target):
+					targets[target] = (v as Dictionary)[target]
+					continue
+				for m in ((v as Dictionary)[target] as Array):
+					if m not in (targets[target] as Array):
+						(targets[target] as Array).append(m)
+		elif v is bool:
+			into[k] = bool(into[k]) or v
+		elif v is int:
+			into[k] = int(into[k]) + v
 
 func _scan_gd_source(text: String, analysis: Dictionary) -> void:
 	for m in _re_take_over.search_all(text):
