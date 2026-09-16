@@ -638,8 +638,9 @@ func _mods_build_toolbar(outer: VBoxContainer, tabs: TabContainer, active_modpac
 
 	dev_check.toggled.connect(func(on: bool):
 		_developer_mode = on
-		_ui_mod_entries = collect_mod_metadata()
-		_load_ui_config()
+		# Folder mods are scanned only in developer mode, so rescan and re-apply
+		# the active profile to the new entry list. The profile stays selected.
+		_reload_entries_for_active_profile()
 		# Persist now: the post-boot reopen path has no closing save.
 		_save_ui_config()
 		_rebuild_mods_tab(tabs)
