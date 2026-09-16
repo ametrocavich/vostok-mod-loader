@@ -101,7 +101,28 @@ func _source_has_indented_func_body(source: String) -> bool:
 # Build the framework pack: enumerate res://Scripts/*.gd, detokenize, parse,
 # generate wrappers, zip, mount. The zip mounts at res://: extends-chain
 # resolution for class_name parents breaks for scripts loaded from user://.
+# The steps are the five functions below, in order.
 func _generate_hook_pack(defer_activation: bool = false) -> String:
+	var pack_zip_rel := _hook_pack_preflight()
+	if pack_zip_rel == "":
+		return ""
+	var script_paths := _hook_pack_script_paths()
+	var needed_paths: Dictionary = {}
+	var hook_mask: Dictionary = {}
+	var reconcile := _hook_pack_wrap_surface(script_paths, needed_paths, hook_mask)
+	var sibling_fixes := _hook_pack_collect_siblings()
+	var packed_paths: Array[String] = []
+	var hook_count := _hook_pack_write_zip(pack_zip_rel, script_paths, needed_paths, hook_mask,
+			reconcile, sibling_fixes, packed_paths)
+	if hook_count < 0:
+		return ""
+	return _hook_pack_mount_and_activate(pack_zip_rel, packed_paths, hook_count, reconcile, defer_activation)
+
+# Everything that must hold before a pack is built: a fresh pack path (a
+# same-path remount is a no-op and Windows will not delete a mounted zip),
+# canary B on the GDSC format, at least one loaded mod, and canary C on the
+# detokenizer. Returns the pack path to write, or "" to stop.
+func _hook_pack_preflight() -> String:
 	# Repopulated only here; a stale entry would skew the eager/deferred accounting.
 	_scripts_with_scene_preloads.clear()
 	var hook_dir := ProjectSettings.globalize_path(HOOK_PACK_DIR)
@@ -146,7 +167,27 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 				% [Engine.get_version_info().get("string", "unknown"), tok_version])
 		_hook_status_write({"state": HOOK_STATE_DETOK_FAILED, "gdsc_version": tok_version})
 		return ""
+	return pack_zip_rel
 
+# The vanilla scripts the wrap surface is checked against, with the
+# class_name map as the fallback when the PCK could not be enumerated.
+func _hook_pack_script_paths() -> Array[String]:
+	var script_paths: Array[String] = _enumerate_game_scripts()
+	if script_paths.is_empty():
+		_log_warning("[RTVCodegen] script enumeration failed -- falling back to class_name list (%d)" % _class_name_to_path.size())
+		for path: String in _class_name_to_path.values():
+			script_paths.append(path)
+	return script_paths
+
+# The wrap surface. Fills needed_paths (res_path -> true) and hook_mask
+# (res_path -> {method: true}; an empty inner dict means every method, the
+# "[hooks] <path> = *" wildcard and the registry targets) from the [hooks]
+# and .hook() declarations and, when a mod declared [registry], from
+# REGISTRY_TARGETS. Returns the reconciliation ledger, one entry per
+# declared target: {declared, methods, status: pending -> wrapped|lost,
+# detail, missing_methods}.
+func _hook_pack_wrap_surface(script_paths: Array[String], needed_paths: Dictionary,
+		hook_mask: Dictionary) -> Dictionary:
 	# Opt-in gate: user mods run against unmodified vanilla unless one declares
 	# [hooks], .hook() or [registry]. Captured before _seed_core_hooks adds the
 	# core Menu.gd wrap; a modlist that declares nothing gets only that wrap.
@@ -157,11 +198,6 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	if user_wrap_empty:
 		_log_info("[RTVCodegen] No user opt-in declarations ([hooks] / .hook() / [registry]) -- user mods' vanilla targets run unmodified (v2.1.0-equivalent). Pack contains core hooks only.")
 
-	var script_paths: Array[String] = _enumerate_game_scripts()
-	if script_paths.is_empty():
-		_log_warning("[RTVCodegen] script enumeration failed -- falling back to class_name list (%d)" % _class_name_to_path.size())
-		for path: String in _class_name_to_path.values():
-			script_paths.append(path)
 	# A vanilla script enters needed_paths only via a [hooks] declaration, a
 	# literal .hook() call, or REGISTRY_TARGETS when some mod declares
 	# [registry]. No inference from extends or take_over_path. The enumerated set
@@ -169,10 +205,6 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	var vanilla_path_set: Dictionary = {}
 	for sp: String in script_paths:
 		vanilla_path_set[sp] = true
-	var needed_paths: Dictionary = {}
-	# Per-path method mask: res_path -> {method_name: true}. An empty inner dict
-	# means wrap all methods (the "[hooks] <path> = *" wildcard and REGISTRY_TARGETS).
-	var hook_mask: Dictionary = {}
 	# Reconciliation ledger, one entry per declared target: {declared, methods,
 	# status: pending -> wrapped|lost, detail, missing_methods}.
 	var reconcile: Dictionary = {}
@@ -232,13 +264,16 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		RTV_RESOURCE_SERIALIZED_SKIP.size(),
 		RTV_SKIP_LIST.size() + RTV_RESOURCE_DATA_SKIP.size() + RTV_RESOURCE_SERIALIZED_SKIP.size(),
 	])
+	return reconcile
 
-	# Pre-read mod sibling scripts before opening ZIPPacker: the previous
-	# session's mounted pack holds a FileAccessZIP handle to this file, and
-	# opening it for write invalidates that handle on Windows. Emit every
-	# sibling, not just changed ones, so the new pack stays a superset of the
-	# old for every sibling path. Read from each mod archive via ZIPReader, not
-	# the VFS, where the stale old pack would win and mod updates never land.
+# Pre-read mod sibling scripts before opening ZIPPacker: the previous
+# session's mounted pack holds a FileAccessZIP handle to this file, and
+# opening it for write invalidates that handle on Windows. Emit every
+# sibling, not just changed ones, so the new pack stays a superset of the
+# old for every sibling path. Read from each mod archive via ZIPReader, not
+# the VFS, where the stale old pack would win and mod updates never land.
+# Returns res_path -> {fixed_src, af, reload_stripped, changed}.
+func _hook_pack_collect_siblings() -> Dictionary:
 	var sibling_fixes: Dictionary = {}  # p -> {fixed_src, af, reload_stripped, changed}
 	for archive_file: String in _archive_file_sets:
 		var paths_set: Dictionary = _archive_file_sets[archive_file]
@@ -296,17 +331,29 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 			}
 		if zr != null:
 			zr.close()
+	return sibling_fixes
 
+# The VFS-precedence canary the pack carries; the mount step reads it back.
+func _hook_pack_canary_content(pack_zip_rel: String) -> String:
+	return "MODLOADER-VFS-CANARY-" + pack_zip_rel.get_file()
+
+# Write the pack: three entries per wrapped vanilla script (the rewrite, a
+# self-referencing .gd.remap and an empty .gdc), the autofixed mod siblings
+# and the VFS canary file. Appends every packed script to packed_paths and
+# records each declared target's fate in the ledger. Returns the number of
+# hook points written, or -1 when the pack could not be written (the zip is
+# deleted and the failure logged).
+func _hook_pack_write_zip(pack_zip_rel: String, script_paths: Array[String], needed_paths: Dictionary,
+		hook_mask: Dictionary, reconcile: Dictionary, sibling_fixes: Dictionary,
+		packed_paths: Array[String]) -> int:
 	var zip_abs := ProjectSettings.globalize_path(pack_zip_rel)
 	var zp := ZIPPacker.new()
 	if zp.open(zip_abs) != OK:
 		_log_critical("[RTVCodegen] Failed to create framework pack zip at %s" % zip_abs)
-		return ""
+		return -1
 	var pack_write_failed := false
 
-	var script_count := 0
 	var hook_count := 0
-	var packed_paths: Array[String] = []
 	var zero_byte_skipped: int = 0
 	var surface_skipped: int = 0
 	for script_path: String in script_paths:
@@ -481,7 +528,6 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 		if zp.close_file() != OK:
 			pack_write_failed = true
 
-		script_count += 1
 		hook_count += hookable_count * 4  # pre/post/callback/replace per method
 		packed_paths.append(script_path)
 		if not rec_v.is_empty() and rec_v["status"] == "pending":
@@ -530,7 +576,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 				% sibling_carried)
 
 	# VFS-precedence canary: a known-content file that must read back after mount.
-	var canary_content := "MODLOADER-VFS-CANARY-" + pack_zip_rel.get_file()
+	var canary_content := _hook_pack_canary_content(pack_zip_rel)
 	if zp.start_file("__modloader_canary__.txt") == OK:
 		if zp.write_file(canary_content.to_utf8_buffer()) != OK:
 			pack_write_failed = true
@@ -545,16 +591,25 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	if pack_write_failed:
 		DirAccess.remove_absolute(zip_abs)
 		_log_critical("[RTVCodegen] Hook pack write failed (disk full / I/O error?) at %s -- pack discarded, hooks disabled this session, running vanilla" % zip_abs)
-		return ""
+		return -1
 
-	# Mount before mod autoloads run and before any scene compiles against the
-	# rewritten scripts. replace_files=true is the default, passed explicitly.
 	if zero_byte_skipped > 0:
 		_log_debug("[RTVCodegen] Skipped %d zero-byte PCK entry(ies) (base game ships empty .gd files -- not hookable, not a modloader failure): %s" \
 				% [zero_byte_skipped, ", ".join(_pck_zero_byte_paths.keys())])
 	if surface_skipped > 0:
 		_log_debug("[RTVCodegen] Surface-skipped %d vanilla script(s) with no mod interaction -- they run native (no dispatch overhead)" \
 				% surface_skipped)
+	return hook_count
+
+# Reconcile the ledger against what was packed, then either persist the pack
+# for the next session's static init (defer_activation, the Pass 1
+# pre-restart path) or mount it now, read the VFS canary back and activate
+# the rewritten scripts. Returns the pack path, or "" when nothing was
+# mounted.
+func _hook_pack_mount_and_activate(pack_zip_rel: String, packed_paths: Array[String], hook_count: int,
+		reconcile: Dictionary, defer_activation: bool) -> String:
+	var zip_abs := ProjectSettings.globalize_path(pack_zip_rel)
+	var canary_content := _hook_pack_canary_content(pack_zip_rel)
 	# Any entry still pending was never visited: a declared path missing from the enumeration.
 	for rp: String in reconcile:
 		var pending_rec: Dictionary = reconcile[rp]
@@ -564,12 +619,14 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 				pending_rec["detail"] = "never reached the rewrite loop (not in the enumerated vanilla script list)"
 	# Reconciliation: declared vs packed; pack-level failures already discarded the pack.
 	_log_hook_reconciliation(reconcile)
-	if script_count > 0:
+	# Mount before mod autoloads run and before any scene compiles against the
+	# rewritten scripts. replace_files=true is the default, passed explicitly.
+	if packed_paths.size() > 0:
 		if defer_activation:
 			# Pass 1 pre-restart: write the zip and persist pass_state so Pass 2's static
 			# init mounts it on a fresh engine; activating here would fire a false alarm.
 			_log_info("[RTVCodegen] Generated %d rewritten vanilla script(s), %d hook points -- activation deferred to Pass 2 fresh engine" \
-					% [script_count, hook_count])
+					% [packed_paths.size(), hook_count])
 			_persist_hook_pack_state(pack_zip_rel, _eager_wrapped_paths(packed_paths))
 		elif ProjectSettings.load_resource_pack(pack_zip_rel, true):
 			var canary_got := FileAccess.get_file_as_string("res://__modloader_canary__.txt")
@@ -580,7 +637,7 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 				return ""
 			_log_info("[STABILITY] VFS canary OK: hook pack mount precedence verified (%s)" % canary_got.strip_edges())
 			_log_info("[RTVCodegen] Generated %d rewritten vanilla script(s), %d hook points -- pack mounted at res:// (%s)" \
-					% [script_count, hook_count, pack_zip_rel.get_file()])
+					% [packed_paths.size(), hook_count, pack_zip_rel.get_file()])
 			_activate_rewritten_scripts(packed_paths, pack_zip_rel)
 		else:
 			_log_critical("[RTVCodegen] Failed to mount hook pack at %s -- script hooks will not fire this session, vanilla scripts run. Next launch regenerates the pack." % zip_abs)
