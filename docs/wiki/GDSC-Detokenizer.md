@@ -63,7 +63,7 @@ var encoded = var_to_bytes(val)
 offset += encoded.size()
 ```
 
-A failed `bytes_to_var` desyncs everything after it. After all three sections are read, the collected identifier, constant and token counts are checked against the header counts; a mismatch logs `Section truncation/desync ... refusing partial reconstruction` and returns empty rather than reconstructing (and caching) garbage.
+A failed `bytes_to_var` desyncs everything after it. After all three sections are read, the collected identifier, constant and token counts are checked against the header counts; a mismatch logs `Section truncation/desync ... refusing partial reconstruction` and returns empty instead of reconstructing (and caching) garbage.
 
 ### Line and column maps
 

@@ -47,15 +47,11 @@ mods/MyMod/                  Resulting res:// paths after mount
   MyMod/data/items.json      res://MyMod/data/items.json
 ```
 
-Breaking change in 3.3.1: 3.1.2 through 3.3.0 wrapped a dev folder's entries
-under the folder name, so a folder mod needed an extra `res://<folder>/` prefix
-that stopped working the moment the mod was zipped and shipped. 3.3.1 removes the
-wrapper so folder and `.zip` agree. A folder mod authored against the wrap must
-drop the extra prefix (or add a real subfolder inside the mod if it wants that
-namespace, same as a zip). A stale path is not silent: the loader logs
-`Autoload path not found: <path>` along with the similar paths it did find.
-The `_dev.zip` cache self-invalidates on upgrade, so no manual cache clear is
-needed. Folder mode is dev-only, gated behind the developer-mode toggle.
+A folder mod's entries mount at `res://` exactly as the zip's do, so nothing
+changes when the mod is zipped and shipped; a namespace comes from a real
+subfolder inside the mod, same as in a zip. A stale path is not silent: the
+loader logs `Autoload path not found: <path>` along with the similar paths it
+did find. Folder mode is dev-only, gated behind the developer-mode toggle.
 
 ## mod.txt
 
@@ -100,7 +96,7 @@ Only `[mod]` is required. `[autoload]`, `[updates]`, `[dependencies]`, `[hooks]`
 | `version` | string | `""` | Used by the update check to compare against the mod's site, and as the version a modpack pins |
 | `priority` | int | 0 (or parsed from filename prefix) | Higher loads later, wins file conflicts. Clamped to `-999..999` |
 | `author` | string | `""` | Shown as `by <author>` on the mod's row and in its detail view |
-| `provides` | string array | `[]` | Rename aliases: old ids this mod still satisfies for other mods' dependencies (added 3.3.0). See below |
+| `provides` | string array | `[]` | Rename aliases: old ids this mod still satisfies for other mods' dependencies. See below |
 
 Compatibility with the older VostokMods injector (Ryhon0's loader, not the vostokmods.net site): if the archive filename matches `^(-?\d+)-(.*)`, the numeric prefix is the fallback priority when `[mod] priority` is not set, and the rest of the stem is the default name and id. `100-BetterAI.vmz` loads with `priority=100`. See [mod_discovery.gd `_entry_from_config`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd).
 
@@ -123,7 +119,7 @@ optional=["happy_fireplace"]
 
 Use Godot `ConfigFile` string arrays. Bare CSV (`required=a, b`) is not valid `ConfigFile` syntax and fails the whole `mod.txt` parse. Accepted value shapes: [Dependencies#value-syntax](Dependencies#value-syntax-required-optional-provides).
 
-### Renaming a mod: `[mod] provides` (added 3.3.0)
+### Renaming a mod: `[mod] provides`
 
 If you change your mod's `id`, every mod that lists the old id in `[dependencies]` breaks. Declare the old id (or ids) in `provides` and those requirements stay satisfied:
 
@@ -154,7 +150,7 @@ EarlyNode="!res://MyMod/Early.gd"
 
 Early autoloads go into `override.cfg`'s `[autoload_prepend]` section, so Godot loads them before the game's own autoloads. Late autoloads are instantiated by the loader after mounts land and the hook pack is generated. The loader always writes itself (`ModLoader="*res://modloader.gd"`) last in `[autoload_prepend]`; Godot loads that section in reverse insertion order, so the loader comes up first.
 
-Early-autoload `.gd` scripts that only exist inside a mounted archive are extracted to `user://modloader_early/<path>` so Godot can find them before the restart completes its static-init mount. Scenes (`.tscn`) resolve through the file-scope mount directly. See [boot.gd `_ensure_early_autoload_on_disk`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd). An early autoload whose name is not a plain identifier, or whose path contains a quote or newline, is skipped with a warning rather than written into `override.cfg`.
+Early-autoload `.gd` scripts that only exist inside a mounted archive are extracted to `user://modloader_early/<path>` so Godot can find them before the restart completes its static-init mount. Scenes (`.tscn`) resolve through the file-scope mount directly. See [boot.gd `_ensure_early_autoload_on_disk`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd). An early autoload whose name is not a plain identifier, or whose path contains a quote or newline, is skipped with a warning instead of written into `override.cfg`.
 
 Duplicate autoload names are logged and skipped (first wins). A path that exists nowhere (not in the archive, not in another mod, not in the game) is skipped at boot with `Autoload path not found: <path>` plus a `Similar paths in archive:` line listing files with the same name at another path. The launcher catches the common case earlier: when the same filename exists elsewhere in the archive, the row warns `Autoload "<name>" points at <path>, which is not in this mod -- did you mean <other path>?` before you launch.
 
@@ -165,7 +161,7 @@ Duplicate autoload names are logged and skipped (first wins). A path that exists
 | `source` | String | Where this mod is hosted, as `"<provider>:<id>"`. Enables the update check and modpack auto-download. Preferred over `modworkshop`. |
 | `modworkshop` | int | Legacy ModWorkshop mod id. Still read, no sunset planned; equivalent to `source="modworkshop:<id>"`. |
 
-`source` is the provider-qualified form. The provider is a known host token: `vostokmods` (the id is the mod's slug, the last part of its page URL) or `modworkshop` (the numeric mod id). The provider is matched case-insensitively. A value with no colon is rejected, not guessed, so `source="12345"` is an error rather than a ModWorkshop id; the row says so (`mod.txt has an unrecognized [updates] source=...`). A malformed `source=` falls through to `modworkshop=` when both are present.
+`source` is the provider-qualified form. The provider is a known host token: `vostokmods` (the id is the mod's slug, the last part of its page URL) or `modworkshop` (the numeric mod id). The provider is matched case-insensitively. A value with no colon is rejected, not guessed, so `source="12345"` is an error, not a ModWorkshop id; in developer mode the row carries the note `mod.txt has an unrecognized [updates] source=...`. A malformed `source=` falls through to `modworkshop=` when both are present.
 
 For a VostokMods mod, declare the slug, which is the last part of the mod's page URL (`vostokmods.net/mod/<slug>`):
 

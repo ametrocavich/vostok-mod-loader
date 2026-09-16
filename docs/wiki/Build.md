@@ -140,7 +140,7 @@ Automates the version bump and the changelog from [Conventional Commits](https:/
 
 1. A PR merges to `master`.
 2. `release-please-action@v4` parses the Conventional Commits since the last tag (`release-please-config.json`, `.release-please-manifest.json`).
-3. It opens a release PR ("chore(master): release 3.3.1" or similar) that bumps `MODLOADER_VERSION` in `src/constants.gd` and updates `CHANGELOG.md`. That constant is the only file release-please edits.
+3. It opens a release PR ("chore(master): release <version>") that bumps `MODLOADER_VERSION` in `src/constants.gd` and updates `CHANGELOG.md`. That constant is the only file release-please edits.
 4. Merging the release PR creates the tag and a draft GitHub Release.
 5. The same workflow then runs `./build.sh`, downloads Godot and runs `./check.sh` against the exact bytes about to ship (release-please rewrote `constants.gd` on the way in, so no PR compiled this file), uploads `modloader.gd`, `override.cfg`, `windows-installer.bat` and `linux-installer.sh` as release assets, and only then flips the release from draft to published.
 
@@ -150,13 +150,7 @@ Normal pushes to `master` do not build anything; only a release creation does.
 
 ### Version-bump mapping
 
-| Type | Bump | Example |
-|---|---|---|
-| `feat:` | minor (3.3.1 -> 3.4.0) | new feature or user-facing behavior |
-| `fix:` | patch (3.3.1 -> 3.3.2) | bug fix |
-| `feat!:` / `fix!:` | major (3.3.1 -> 4.0.0) | breaking change |
-
-`chore:`, `docs:`, `refactor:`, `test:`, `perf:`, `build:`, `ci:` and `style:` do not bump; they appear under "Miscellaneous" in the changelog.
+`feat:` bumps the minor version, `fix:` the patch, and a `!` after the type the major. The full table, with the types that do not bump, is in [CONTRIBUTING.md](https://github.com/ametrocavich/vostok-mod-loader/blob/development/CONTRIBUTING.md#pr-titles).
 
 ### Where the version lives
 
@@ -164,7 +158,7 @@ One line in `src/constants.gd`:
 
 ```gdscript
 # x-release-please-start-version
-const MODLOADER_VERSION := "3.3.1"
+const MODLOADER_VERSION := "<version>"
 # x-release-please-end
 ```
 

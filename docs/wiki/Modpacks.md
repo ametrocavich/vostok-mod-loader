@@ -8,7 +8,7 @@ Applying a pack downloads each mod from VostokMods at the version the pack names
 
 ## Packs from VostokMods
 
-**Get from VostokMods** on the Modpacks tab opens the packs published on vostokmods.net. Search them, sort by recently updated, newest or name, and click **Get** on one, or paste a pack link into the box at the top (the pack's page address or the "Copy loader link" from the site both work) and click **Add**. The launcher fetches the pack's mod list and writes it into your mods folder as `vostokmods-<slug>.zip`, and from there it is an ordinary modpack: **Apply**, **Unload** and **Restore backup** all work the same way.
+**Get from VostokMods** on the Modpacks tab opens the packs published on vostokmods.net. Search them, sort by recently updated, newest or name, and click **Get** on one, or paste a pack link into the box at the top (the pack's page address or the "Copy loader link" from the site both work) and click **Add**. The launcher fetches the pack's mod list and writes it into your mods folder as `vostokmods-<slug>.zip`, and from there it is an ordinary modpack: **Apply** and **Unload** work the same way.
 
 A pack from the site lists VostokMods mods only. Each mod is downloaded by its slug at the version the pack names, and when the site publishes a checksum for the file the download is checked against it. A mod the site cannot serve right now shows as **Not available** in the pack's details, with the reason on hover, and is reported on apply instead of downloaded:
 
@@ -49,7 +49,7 @@ Clicking **Apply** on the already-active pack re-runs only the download step, to
 
 The Mods tab treats your profile as locked while a modpack is active:
 
-- The profile toolbar's **New / Rename / Delete** buttons are disabled (`Unload the active modpack first`).
+- The profile toolbar's add (**+**), rename (pencil) and delete (trash can) buttons are disabled; their tooltip reads `Unload the active modpack first`.
 - The per-row dependency actions **Enable dependency**, **Load anyway** and **Re-check** are hidden. The orange `won't load -- needs ...` line still shows why a mod is blocked; you just cannot act on it until you unload the pack.
 
 A banner at the top of the Mods tab reads `Modpack "<name>" is active. Changes here save to the modpack, not your profiles.` with an **Unload** button beside it.

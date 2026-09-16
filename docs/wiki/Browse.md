@@ -1,6 +1,6 @@
 # Browse
 
-The **Browse** tab installs mods from a mod site without leaving the launcher. It is the second tab in the pre-launch window, after **Mods**. It arrived in 3.3.0 and has browsed more than one site since 3.3.1.
+The **Browse** tab installs mods from a mod site without leaving the launcher. It is the second tab in the pre-launch window, after **Mods**.
 
 ## What it talks to
 

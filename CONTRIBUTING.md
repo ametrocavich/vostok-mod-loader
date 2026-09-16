@@ -160,7 +160,7 @@ No rule. release-please reads commit and PR titles, not branch names.
 const in `src/*.gd` is global across files, duplicate names break the build,
 and a const referenced by another const's initializer must appear earlier in
 `build.sh`'s `FILES` order. The maps below list every file and function you
-touch for the common extension jobs, checked against the 3.3.1 source.
+touch for the common extension jobs, checked against the current source.
 Function names are stable anchors; line numbers are not.
 
 ### Adding a mod.txt key or section (scan-time metadata)
@@ -172,7 +172,7 @@ Function names are stable anchors; line numbers are not.
   author should hear about it. The Mods tab renders `entry["warnings"]` for
   everyone and `entry["author_notes"]` in developer mode, so no UI edit.
 - `docs/wiki/Mod-Format.md` documents the section.
-- If the section affects loading and not only scan-time metadata, also
+- If the section affects loading as well as scan-time metadata, also
   `src/mod_loading.gd: _process_mod_candidate`, which is where `[hooks]`,
   `[registry]`, `[script_extend]` and `[autoload]` are consumed. Add the
   section name to `MOD_TXT_KNOWN_SECTIONS` there, or every mod using it gets

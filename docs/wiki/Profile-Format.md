@@ -30,14 +30,14 @@ The JSON is plain UTF-8 `profile.json` at the root of a modpack zip, next to an 
 | Key | Required | Type | Meaning |
 |---|---|---|---|
 | `metroprofile` | yes | int | Schema version. Always `1` for v1 payloads. |
-| `name` | yes | String | Modpack display name from the save dialog, falling back to the source profile name. Stored as typed, whitespace-stripped. The zip filename and the profile slot used on apply are derived with `_sanitize_profile_name` (letters in any script, digits, space, hyphen, underscore). |
+| `name` | yes | String | Modpack display name, the pack's name on the site, whitespace-stripped. The zip filename and the profile slot used on apply are derived with `_sanitize_profile_name` (letters in any script, digits, space, hyphen, underscore). |
 | `enabled` | yes | Dictionary | `profile_key -> bool`. Only enabled mods are written (all values true); disabled-but-installed mods are left out so applying the pack never downloads or tracks them. Parsers still read the bool. |
 | `priority` | no | Dictionary | `profile_key -> int`, load-order priority in `[-999, 999]`. Absent entries default to 0 on apply. |
-| `modloader_version` | no | String | The exporter's `MODLOADER_VERSION`. Advisory only. |
-| `exported_at` | no | String | Datetime when exported (`Time.get_datetime_string_from_system()`). Advisory only. |
-| `description` | no | String | Modpack description from the save dialog. Omitted when empty. |
-| `author` | no | String | Author handle from the save dialog. Omitted when empty. |
-| `sources` | no | Dictionary | `profile_key -> {provider: String, id: String, modworkshop_id?: int, version?: String}`. Derived from each installed mod's `[updates] source=` (or legacy `modworkshop=`) plus `[mod] version=`, or, when `mod.txt` declares nothing, from the `[mod_sources]` record the launcher wrote when it downloaded the mod; lets apply download missing mods and pin exact versions. Only enabled mods' sources are written. The legacy `modworkshop_id` mirror is emitted if and only if `provider == "modworkshop"`, so an older loader reading a VostokMods record treats it as source-less instead of downloading an unrelated ModWorkshop mod of the same number. |
+| `modloader_version` | no | String | The `MODLOADER_VERSION` of the loader that wrote the file. Advisory only. |
+| `exported_at` | no | String | When the pack last changed on the site (the manifest's `updatedAt`). Advisory only. |
+| `description` | no | String | The pack's summary on the site. Omitted when empty. |
+| `author` | no | String | The pack's author on the site. Omitted when empty. |
+| `sources` | no | Dictionary | `profile_key -> {provider: String, id: String, modworkshop_id?: int, version?: String}`, one record per mod the site could serve, pinned to the version the manifest names; lets apply download missing mods. The legacy `modworkshop_id` mirror is emitted if and only if `provider == "modworkshop"`, so an older loader reading a VostokMods record treats it as source-less instead of downloading an unrelated ModWorkshop mod of the same number. |
 | `dep_ignore` | no | Dictionary | `profile_key -> true`, sparse (true-only entries). The "Load anyway" dependency overrides, re-materialized on apply. |
 | `hosted` | no | Dictionary | Present on a pack the launcher pulled from a mod site: `{provider, slug, url, manifest_url, hash, format}`. `hash` is the site's own change token; **Refresh** re-fetches the manifest and rewrites the zip when it differs. |
 | `unavailable` | no | Dictionary | `profile_key -> reason` for mods the site listed but could not serve when the pack was fetched (`scanning`, `no_files`, `removed`). Apply reports these instead of downloading. |
@@ -59,9 +59,9 @@ When a stored profile key `foo@1.0` matches no installed mod exactly but `foo@2.
 
 Mods without a declared `mod_id` (`zip:*` keys) do not take part in id-prefix matching; only an exact filename match counts.
 
-## Round-trip guarantee
+## What apply reproduces
 
-Saving a modpack then applying it reproduces the author's enabled set, priorities, and Load-anyway overrides for those mods. Apply materializes into a dedicated modpack profile slot: `_materialize_modpack_profile` erases the slot's enabled / priority / dep_ignore sections and writes only the pack's entries, so mods not in the pack are absent (treated as disabled). Disabled-but-installed mods on the author's machine are never serialized. The user's own pre-apply profile is backed up and restored on unload.
+Applying a pack reproduces the author's enabled set, priorities, and Load-anyway overrides for the mods it lists. Apply materializes into a dedicated modpack profile slot: `_materialize_modpack_profile` erases the slot's enabled / priority / dep_ignore sections and writes only the pack's entries, so mods not in the pack are absent (treated as disabled). The user's own pre-apply profile is backed up and restored on unload.
 
 ## Forward-compatibility rules
 

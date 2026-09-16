@@ -1,6 +1,6 @@
 # Modules
 
-A tour of the `src/` tree. The order follows the `FILES` array in `build.sh`, which is the order the files are concatenated into `modloader.gd`. Dependencies flow top-down: a const referenced by another const's initializer must come earlier, and everything shares one namespace. Function bodies can call anything anywhere. 53 files as of 3.4.0.
+A tour of the `src/` tree. The order follows the `FILES` array in `build.sh`, which is the order the files are concatenated into `modloader.gd`. Dependencies flow top-down: a const referenced by another const's initializer must come earlier, and everything shares one namespace. Function bodies can call anything anywhere. One section per file.
 
 Links point at the file; function names are the anchors. Line numbers drift.
 
@@ -89,7 +89,7 @@ VostokMods adapter (`_vmp_*`), the default host. Talks to `https://vostokmods.ne
 
 ### [mod_discovery.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd)
 
-Scans `<exe>/mods/`, parses mod.txt into entry Dictionaries, orders them, and owns the host-neutral install path. No mounting; that is `mod_loading.gd`.
+Scans `<exe>/mods/`, parses mod.txt into entry Dictionaries, orders them, and owns the host-neutral install path. No mounting; that is `mod_loading.gd`. An entry is a plain Dictionary; its fields are listed in the comment above `_entry_from_config`.
 
 - `collect_mod_metadata` is the scanner. Accepted extensions are `vmz`, `zip`, `pck`, plus folders in dev mode; a zip with `profile.json` at its root is a modpack and goes to `modpacks.gd`.
 - `_entry_from_config`, `_build_entry_warnings` and `_build_entry_author_notes` turn a ConfigFile into an entry, its row warnings (broken or misplaced mod.txt, bad autoload path) and the author notes developer mode shows (unquoted version, missing `id=`, stale bake, unrecognized source).
@@ -131,7 +131,7 @@ Developer-mode diagnostics. `_print_conflict_summary` and `_write_conflict_repor
 
 ### [ui.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd) and the `ui_*.gd` files
 
-The launcher window shown before the game starts. Three tabs (Mods, Browse, Modpacks) plus the bottom bar with Launch and "Launch vanilla". Closing the window is the same as clicking Launch. Seven files share the work; `build.sh` concatenates them, so every helper is reachable from every tab.
+The launcher window shown before the game starts. Three tabs (Mods, Browse, Modpacks) plus the bottom bar with Launch and "Launch vanilla". Closing the window is the same as clicking Launch. Six files share the work; `build.sh` concatenates them, so every helper is reachable from every tab.
 
 | File | Owns |
 |---|---|

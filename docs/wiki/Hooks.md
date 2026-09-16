@@ -63,7 +63,7 @@ Two rules keep you out of trouble:
 1. Hook names must be a literal string, fully lowercase. A name built at runtime (concatenation, variable) registers fine but never fires, because the scanner can only enroll literal strings (see [Wrap surface](#wrap-surface----why-hook-alone-is-not-enough)). A mixed-case name enrolls the wrap, but the runtime key never matches; write it lowercase.
 2. Register from `_ready` or later using the readiness pattern above. Calling `hook()` from `_ready` directly also works (the API exists before mod autoloads run). Waiting for `frameworks_ready` also guarantees every other mod's autoload has finished, which you need for peer integration (`has_mod`) and registry-backed state. `await Engine.get_meta("RTVModLib").frameworks_ready` does the same job.
 
-Working from an unpacked folder in [Developer Mode](Developer-Mode)? Use the same layout and the same `mod.txt`. A folder's contents mount at `res://` exactly like the zip you will ship, so `mods/BigJump/` holds `mod.txt` and `BigJump/Main.gd`, and no paths change when you zip it up. Before 3.3.1 a dev folder was wrapped under its own name, so folder mods needed an extra prefix that broke the moment you zipped them. If you have a folder mod authored against that, drop the extra prefix.
+Working from an unpacked folder in [Developer Mode](Developer-Mode)? Use the same layout and the same `mod.txt`. A folder's contents mount at `res://` exactly like the zip you will ship, so `mods/BigJump/` holds `mod.txt` and `BigJump/Main.gd`, and no paths change when you zip it up.
 
 If the mod loads but nothing happens in game, check the console log. An `Autoload path not found: <path>` line means the `mod.txt` path does not match where the file landed. The loader prints the similar paths it did find, so you can see the correct prefix. The launcher usually catches this before launch with a row warning (`Autoload "X" points at ..., which is not in this mod -- did you mean ...?`).
 
@@ -161,8 +161,6 @@ func _custom_loot():
 ### `await` inside a replace hook
 
 Only suspend (`await` something that actually waits) inside a replace callback when the vanilla method you replaced is itself a coroutine. The wrapper `await`s your replace callback only when vanilla is a coroutine. If vanilla is synchronous and your callback suspends, the method's result is a coroutine state object instead of the declared type, and any typed call site (`var n: int = obj.Method()`) throws a runtime error in vanilla code you cannot fix from a mod. For async work behind a synchronous hook, use `call_deferred` or a `-callback` hook and return a plain value.
-
-Fixed in 3.3.1: 3.3.0 emitted that `await` unconditionally. In GDScript any function whose body contains `await` is a coroutine, so the wrapper for a synchronous vanilla method became a coroutine itself, and every existing caller failed at parse time with `Function "X()" is a coroutine, so it must be called with "await"`. This broke unrelated mods that called vanilla correctly, and it scaled with the wrap surface. The rule above is unchanged. Suspending in a replace callback for a synchronous method was never supported; only the wrapper's behavior was wrong.
 
 ## Post hooks and result mutation
 
@@ -439,7 +437,7 @@ func <name>(args):
 Notes:
 
 - Void methods use a structurally similar template but fire `_dispatch("<hook_base>-post", ...)` (return ignored) instead of `_dispatch_post`.
-- Coroutines: `await` is prepended to the vanilla call and the replace-callback call only when the vanilla body itself contains `await`. An unconditional `await` on the replace call was the 3.3.0 regression: it marked every wrapped method a coroutine and broke every non-awaited call site at parse time. Fixed in 3.3.1 and regression-locked by `check_codegen.sh`.
+- Coroutines: `await` is prepended to the vanilla call and the replace-callback call only when the vanilla body itself contains `await`. In GDScript any function whose body contains `await` is a coroutine, so an unconditional `await` would turn every wrapped method into one and break every non-awaited call site at parse time; `check.sh` and `check_codegen.sh` lock the rule.
 - The dispatch helpers (`_dispatch`, `_dispatch_post`, `_dispatch_deferred` in `src/hooks_api.gd`) iterate a `.duplicate()` snapshot of the entry array. That is what makes mid-dispatch `hook()`/`unhook()` safe.
 - `_skip_super` is saved and restored around the replace call, so nested wrapped calls are safe.
 - The legacy-post deprecation warning is one-shot per (hook name, callback object, callback method), so hot-path methods do not spam the log.

@@ -105,7 +105,7 @@ Every mutating verb returns a bool. Failures log a `push_warning` with the reaso
 
 ### Registry constants
 
-Use `lib.Registry.<NAME>` rather than raw strings so typos surface at parse time:
+Use `lib.Registry.<NAME>` instead of raw strings so typos surface at parse time:
 
 | Constant | String | Underlying store | Verbs supported |
 |---|---|---|---|
@@ -427,7 +427,7 @@ lib.revert(lib.Registry.LOOT, "mymod_swap_bandage")
 
 There is no patch on loot; entries are whole `ItemData` references. Patch the `ItemData` through `items` instead.
 
-Registering an item that is already in the table is refused rather than double-inserted. Two `override` calls with the same `replaces:` target: the second fails because the first already removed `replaces` from the table.
+Registering an item that is already in the table is refused, not inserted twice. Two `override` calls with the same `replaces:` target: the second fails because the first already removed `replaces` from the table.
 
 ### SOUNDS
 
@@ -782,7 +782,7 @@ lib.revert(lib.Registry.AI_LOADOUTS, "mymod_rifle_loadout")  # undo the override
 lib.remove(lib.Registry.AI_LOADOUTS, "mymod_rifle_loadout")
 ```
 
-`ai_types` names are canonicalized to CamelCase; an unknown name fails the whole call with a warning, so a typo surfaces at register time rather than when nothing spawns. `chance` values outside 0..1 are clamped with a warning. `replace: true` clears the agent's existing weapon options before adding this one, which also wipes weapons added by other mods' entries that ran earlier. `register_ai_loadout(entries)` is a batched wrapper over this registry, and `register_weapon` can create an entry for you through its `ai_loadout` field.
+`ai_types` names are canonicalized to CamelCase; an unknown name fails the whole call with a warning, so a typo surfaces at register time instead of when nothing spawns. `chance` values outside 0..1 are clamped with a warning. `replace: true` clears the agent's existing weapon options before adding this one, which also wipes weapons added by other mods' entries that ran earlier. `register_ai_loadout(entries)` is a batched wrapper over this registry, and `register_weapon` can create an entry for you through its `ai_loadout` field.
 
 No patch; entries are flat dicts, so `override` to replace.
 

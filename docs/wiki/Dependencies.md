@@ -136,7 +136,7 @@ What your users see, so you can write install instructions that match:
 ## Gotchas
 
 - No version constraints in `[dependencies]`. Required entries are bare ids; presence and enabled state are all that is checked. The only version gate is runtime `has_mod(id, min_version)`.
-- Bare CSV kills the whole `mod.txt`. `required=a, b` is a parse error for the entire file, not just the key. Your mod mounts with no metadata at all. Use `required=["a", "b"]`.
+- Bare CSV kills the whole `mod.txt`. `required=a, b` makes the entire file fail to parse, so your mod mounts with no metadata at all. Use `required=["a", "b"]`.
 - Depend on ids, and declare your own. A mod without a declared `id` is addressable only by its archive filename (extension included), which changes whenever the user renames the file.
 - `has_mod()` does not resolve aliases and is case-sensitive, unlike `[dependencies]` matching. Check the dependency's current declared id.
 - Cycles warn, they do not block. If your mod is in a cycle it still loads, but ordering falls back to priorities, so do not rely on load order inside a cycle.

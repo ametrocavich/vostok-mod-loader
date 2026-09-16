@@ -69,7 +69,7 @@ Godot's `ConfigFile` writes a blank line after every section header, quotes Stri
 | `[settings]` | `active_profile`: the selected profile. `developer_mode`: enables dev-only UI (folder mods, conflict report, extra diagnostics). `ui_scale`: launcher zoom, 1.0 to 2.0. `active_modpack`, `modpack_backup_profile`, `modpack_backup_valid`: modpack state, see below. `test_pack_precedence`: developer test flag for the static-init mount canary; leave it unset. |
 | `[profile.<name>.enabled]` | `profile_key -> true\|false`. The list you see checked in the UI under that profile. One section per named profile. |
 | `[profile.<name>.priority]` | `profile_key -> int` in `[-999, 999]`. A higher number loads later and wins file conflicts. |
-| `[profile.<name>.dep_ignore]` | `profile_key -> true`. The "Load anyway" dependency overrides for that profile. Sparse: only mods you told to load past a missing or disabled requirement appear, always as `=true`. New in 3.3. |
+| `[profile.<name>.dep_ignore]` | `profile_key -> true`. The "Load anyway" dependency overrides for that profile. Sparse: only mods you told to load past a missing or disabled requirement appear, always as `=true`. |
 | `[profile.<name>.settings]` | Per-profile launcher view settings. Currently `hide_disabled`, the Mods tab's hide-disabled-mods filter. |
 | `[mod_sources]` | `profile_key -> JSON record` of where each mod is hosted: `{provider, id, modworkshop_id?, version?}`. Written by every download made through Browse, an update or a modpack, and filled in from each mod's `mod.txt` at scan time. An explicit `source=` in `mod.txt` replaces the stored record; a legacy `modworkshop=` line does not replace a record that names another host. This is how the update check and the missing-mod rows know a mod's host when its `mod.txt` says nothing, and how a modpack can offer Download for a mod that failed to install. |
 | `[modloader_update]` | `last_seen_version`: the newest loader release the update dialog has already shown you, so it only pops once per release. |
@@ -88,7 +88,7 @@ See [Mod-Format](Mod-Format) for the mod.txt schema and [Profile-Format](Profile
 - `"Default"`: the profile created on first launch. Persistent like every other profile.
 - `"__vanilla__"`: a leftover from older versions' Reset to Vanilla. On load the launcher treats it as missing and switches to your first real profile. To boot the game without mods once, use the **Launch vanilla** button in the launcher; it writes a `modloader_disabled_once` file that is cleared on the next launch.
 
-### Modpack keys and managed profiles (3.3)
+### Modpack keys and managed profiles
 
 Applying a modpack (see [Modpacks](Modpacks)) reuses the ordinary profile machinery, so an active modpack shows up in `mod_config.cfg` as a few `[settings]` keys plus profile sections under reserved name prefixes.
 
@@ -239,7 +239,7 @@ Two more `user://` directories are deliberately not in that table:
 Two leftovers that nothing reads are removed for you: `user://.modpack_backups/` (restore points written by an earlier loader version) is deleted at the next launch, and a `[settings] preferred_author` key in `mod_config.cfg` is dropped at the next save.
 
 When to delete things:
-- Mod updates aren't taking effect: delete the `framework_pack_*.zip`. (The 3.0.0 stale-pack bug is fixed in 3.0.1, but manual deletion is a safe workaround.)
+- Mod updates aren't taking effect: delete the `framework_pack_*.zip`.
 - Weird boot behavior after a game update: delete the whole `user://modloader_hooks/` directory to force a full regeneration.
 - Suspected cached-state corruption: delete `user://mod_pass_state.cfg`.
 
