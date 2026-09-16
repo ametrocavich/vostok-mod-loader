@@ -13,10 +13,9 @@ func _seed_core_hooks() -> void:
 	if not _hooked_methods.has(_MENU_SCRIPT_PATH):
 		_hooked_methods[_MENU_SCRIPT_PATH] = {"_ready": true}
 		return
-	# An empty dict is the wildcard sentinel (wrap every method), which already
-	# covers _ready; inserting a key would silently narrow it.
+	# A wildcard already covers _ready; inserting a key would narrow it.
 	var mask := _hooked_methods[_MENU_SCRIPT_PATH] as Dictionary
-	if mask.is_empty():
+	if _mask_is_wildcard(mask):
 		return
 	mask["_ready"] = true
 

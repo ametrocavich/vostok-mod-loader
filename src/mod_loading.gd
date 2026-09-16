@@ -4,7 +4,7 @@
 
 # Attribution side channel for the hook reconciliation in hook_pack.gd:
 # res_path -> {mod_name: true}. _hooked_methods cannot carry it, since an
-# empty inner dict is the wildcard sentinel. Diagnostic only.
+# empty inner dict is the wildcard mask. Diagnostic only.
 var _hook_declared_by: Dictionary = {}
 var _database_replaced_by := ""
 
@@ -126,9 +126,9 @@ func _merge_hook_calls_into_wrap_mask() -> void:
 				_hooked_methods[path] = {method.to_lower(): true}
 				continue
 			var mask: Dictionary = _hooked_methods[path] as Dictionary
-			# An existing empty dict is the "[hooks] <path> = *" wildcard sentinel;
-			# inserting the method would narrow wrap-all and kill the wildcard mod's hooks.
-			if mask.is_empty():
+			# Inserting a method into a wildcard would narrow it and kill the
+			# wildcard mod's hooks.
+			if _mask_is_wildcard(mask):
 				continue
 			mask[method.to_lower()] = true
 		if resolved_count > 0:
@@ -228,7 +228,8 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 	#   res://Scripts/Interface.gd = _ready, update_tooltip   # named methods
 	#   res://Scripts/Interface.gd = *                        # all methods
 	#   res://Scripts/Interface.gd =                          # empty = all
-	# Populates _hooked_methods[path][method], lowercased; an empty inner dict means wrap all.
+	# Populates _hooked_methods[path][method], lowercased; the wildcard mask
+	# (see _mask_is_wildcard) means wrap all.
 	if cfg != null and cfg.has_section("hooks"):
 		# Per-mod tallies for one summary line; per-method detail is debug-only.
 		var hooks_scripts_declared := 0
@@ -243,8 +244,8 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 			if not mask_existed:
 				_hooked_methods[script_path] = {}
 			var script_mask: Dictionary = _hooked_methods[script_path] as Dictionary
-			# Empty mask = wildcard sentinel from an earlier mod; do not narrow it.
-			var wildcard_already := mask_existed and script_mask.is_empty()
+			# A wildcard from an earlier mod must not be narrowed.
+			var wildcard_already := mask_existed and _mask_is_wildcard(script_mask)
 			# "*" anywhere in the list promotes to a whole-script wildcard.
 			var specific_methods: Array[String] = []
 			var has_wildcard := methods_str == ""
@@ -275,9 +276,9 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 				else:
 					_log_debug("  Hooks declared: %s :: * (all methods) [%s]" % [script_path, mod_name])
 				# "*" wins across mods too; wrap-all is a superset.
-				if not script_mask.is_empty():
+				if not _mask_is_wildcard(script_mask):
 					_log_info("  Hooks: '*' from %s widens the earlier method list for %s -- all methods wrapped" % [mod_name, script_path])
-					script_mask.clear()
+					_mask_widen(script_mask)
 				continue
 			hooks_methods_declared += specific_methods.size()
 			if wildcard_already:

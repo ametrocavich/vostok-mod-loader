@@ -235,7 +235,8 @@ func _hook_pack_wrap_surface(script_paths: Array[String], needed_paths: Dictiona
 		for rt_filename in REGISTRY_TARGETS:
 			var rt_path := "res://Scripts/" + rt_filename
 			needed_paths[rt_path] = true
-			hook_mask.erase(rt_path)  # whole-script wrap, no mask
+			if hook_mask.has(rt_path):
+				_mask_widen(hook_mask[rt_path])
 			if reconcile.has(rt_path):
 				# Also declared via [hooks]: registry opt-in widens it to a wildcard.
 				(reconcile[rt_path] as Dictionary)["declared"] = "[hooks]+[registry]"
@@ -407,9 +408,9 @@ func _hook_pack_write_zip(pack_zip_rel: String, script_paths: Array[String], nee
 			continue
 
 		var parsed := _rtv_parse_script(filename, source)
-		# No mask entry = wrap every hookable method; with a mask, only declared ones.
+		# A registry target has no mask entry, which reads as the wildcard.
 		var path_mask: Dictionary = hook_mask.get(script_path, {}) as Dictionary
-		var apply_mask: bool = not path_mask.is_empty()
+		var apply_mask: bool = not _mask_is_wildcard(path_mask)
 		# Track which declared methods matched so a partial miss is reported per method.
 		var matched_names: Array[String] = []
 		var matched_mask_keys: Dictionary = {}

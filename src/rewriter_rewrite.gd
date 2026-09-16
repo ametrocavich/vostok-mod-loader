@@ -8,7 +8,7 @@
 func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask: Dictionary = {}) -> String:
 	# method_mask restricts which methods get renamed and wrapped. Empty = wrap
 	# every non-static method (REGISTRY_TARGETS and the "*" wildcard).
-	var apply_mask: bool = not method_mask.is_empty()
+	var apply_mask: bool = not _mask_is_wildcard(method_mask)
 	var hookable: Array = []
 	for fe in parsed["functions"]:
 		if fe["is_static"]:

@@ -11,6 +11,16 @@ var _is_ready: bool = false              # public: true once frameworks_ready ha
 # "<hook_name>::<callback object_id>".
 var _post_legacy_warned: Dictionary = {}
 
+# A per-script wrap mask is {method_name: true} for the declared methods, and
+# an empty Dictionary is the wildcard: wrap every method. These two functions
+# are the only places that convention is read or written.
+static func _mask_is_wildcard(mask: Dictionary) -> bool:
+	return mask.is_empty()
+
+# Promote a mask to the wildcard in place; a wildcard is a superset of any list.
+static func _mask_widen(mask: Dictionary) -> void:
+	mask.clear()
+
 # Version accessors, for mods gating features on modloader version.
 static func version() -> String:
 	return MODLOADER_VERSION
