@@ -907,17 +907,11 @@ func _dedupe_group_key(entry: Dictionary) -> String:
 # survives must contain a letter, or bare-numeric filenames would all collapse.
 func _normalized_mod_stem(file_name: String) -> String:
 	var stem := file_name.get_basename().to_lower().strip_edges()
-	var re := RegEx.new()
-	# Version-token shapes: [_-.] separator with optional v, space plus explicit
-	# v, space plus dotted number, or v attached to the name. A space plus a bare
-	# integer is not a version: "Ammo Pack 1" and "Ammo Pack 2" are different mods.
-	re.compile("^(.*?)(?:[_\\-.]+v?[0-9]+(?:[._][0-9]+)*| +v[0-9]+(?:[._][0-9]+)*| +[0-9]+(?:[._][0-9]+)+|v[0-9]+(?:[._][0-9]+)*)$")
-	var m := re.search(stem)
+	var m := _re_mod_stem_version.search(stem)
 	if m != null:
+		# A head with no letter left is a bare version, not a name.
 		var head := m.get_string(1).strip_edges()
-		var named := RegEx.new()
-		named.compile("[a-z]")
-		if named.search(head) != null:
+		if _re_mod_stem_named.search(head) != null:
 			return head
 	return stem
 
@@ -1062,50 +1056,16 @@ func replace_mod_from_ref(target_path: String, ref: Dictionary) -> Dictionary:
 		return failure
 	var file: Dictionary = resolved["data"]
 
-	var req := HTTPRequest.new()
-	req.timeout = API_DOWNLOAD_TIMEOUT
-	req.download_body_size_limit = 256 * 1024 * 1024
-	add_child(req)
-	var err := req.request(str(file["download_url"]), _host_download_headers(file))
-	if err != OK:
-		req.queue_free()
-		failure["error"] = "Could not start the download request (error %d)" % err
-		return failure
-	var res: Array = await req.request_completed
-	req.queue_free()
-	host_note_rate_headers(provider, int(res[1]), res[2])
-
-	if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] < 200 or res[1] >= 300:
-		if res[0] != HTTPRequest.RESULT_SUCCESS:
-			failure["error"] = "Download failed (connection error or timeout) -- check your network and retry"
-		else:
-			failure["error"] = host_error_status(provider, "Download failed (HTTP %d)" % int(res[1]))
-		return failure
-	var headers: PackedStringArray = res[2]
-	var response_body: PackedByteArray = res[3]
-	if response_body.is_empty():
-		failure["error"] = "Server returned an empty file"
-		return failure
-
 	var temp_path   := target_path + ".download"
 	var backup_path := target_path + ".bak"
-	if FileAccess.file_exists(temp_path):   DirAccess.remove_absolute(temp_path)
-	if FileAccess.file_exists(backup_path): DirAccess.remove_absolute(backup_path)
-
-	var out := FileAccess.open(temp_path, FileAccess.WRITE)
-	if out == null:
-		failure["error"] = "Could not write to the mods folder (permissions or disk full)"
+	if FileAccess.file_exists(backup_path):
+		DirAccess.remove_absolute(backup_path)
+	var dl := await _http_download_to_temp(provider, str(file["download_url"]),
+			_host_download_headers(file), temp_path)
+	if not dl["ok"]:
+		failure["error"] = dl["error"]
 		return failure
-	var wrote := out.store_buffer(response_body)
-	out.close()
-	var verify := FileAccess.open(temp_path, FileAccess.READ)
-	var disk_len: int = verify.get_length() if verify != null else -1
-	if verify != null:
-		verify.close()
-	if not wrote or disk_len != response_body.size():
-		DirAccess.remove_absolute(temp_path)
-		failure["error"] = "Could not write the download to disk (disk full?)"
-		return failure
+	var headers: PackedStringArray = dl["headers"]
 
 	var new_cfg: ConfigFile = read_mod_config(temp_path)["cfg"]
 	if new_cfg == null:
@@ -1163,38 +1123,14 @@ func _host_install_downloaded_archive(provider: String, download_url: String, he
 		_mods_dir = OS.get_executable_path().get_base_dir().path_join(MOD_DIR)
 	DirAccess.make_dir_recursive_absolute(_mods_dir)
 
-	var req := HTTPRequest.new()
-	req.timeout = API_DOWNLOAD_TIMEOUT
-	req.download_body_size_limit = 256 * 1024 * 1024
-	add_child(req)
-	var err := req.request(download_url, headers)
-	if err != OK:
-		req.queue_free()
-		failure["error"] = "Could not start the download request (error %d)" % err
+	# The final name comes from the response headers, so the download lands
+	# under the fallback stem first and is renamed once.
+	var temp_path := _mods_dir.path_join(fallback_stem + ".download")
+	var dl := await _http_download_to_temp(provider, download_url, headers, temp_path, expected_sha256)
+	if not dl["ok"]:
+		failure["error"] = dl["error"]
 		return failure
-	var res: Array = await req.request_completed
-	req.queue_free()
-	if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] < 200 or res[1] >= 300:
-		# Transport failures have no status code (res[1] is 0); split the branches.
-		if res[0] != HTTPRequest.RESULT_SUCCESS:
-			failure["error"] = "Download failed (connection error or timeout) -- check your network and retry"
-		else:
-			failure["error"] = host_error_status(provider, "Download failed (HTTP %d)" % int(res[1]))
-		return failure
-	var resp_headers: PackedStringArray = res[2]
-	var body: PackedByteArray = res[3]
-	if body.is_empty():
-		failure["error"] = "The download came back empty. Try again later."
-		return failure
-	# A pack that names the file's checksum gets it checked before it reaches mods/.
-	if expected_sha256 != "":
-		var ctx := HashingContext.new()
-		ctx.start(HashingContext.HASH_SHA256)
-		ctx.update(body)
-		var got := ctx.finish().hex_encode()
-		if got != expected_sha256.to_lower():
-			failure["error"] = "The downloaded file does not match the checksum the modpack lists. Try again later; if it keeps failing, the file on the site may have changed."
-			return failure
+	var resp_headers: PackedStringArray = dl["headers"]
 
 	# Same _is_safe_mod_filename gate as the update path. The adapter's
 	# filename_hint carries whatever its host knows; the fallback stem is
@@ -1204,8 +1140,6 @@ func _host_install_downloaded_archive(provider: String, download_url: String, he
 		derived_name = filename_hint
 	if derived_name.is_empty():
 		derived_name = fallback_stem + ".zip"
-
-	var temp_path := _mods_dir.path_join(derived_name + ".download")
 	var final_path := _mods_dir.path_join(derived_name)
 
 	# Collisions: Browse refuses. Modpack apply (allow_rename_on_collision)
@@ -1213,6 +1147,7 @@ func _host_install_downloaded_archive(provider: String, download_url: String, he
 	if FileAccess.file_exists(final_path):
 		if not allow_rename_on_collision:
 			# Prefix contract with modpacks.gd _apply_modpack_inner; reword it there too.
+			DirAccess.remove_absolute(temp_path)
 			failure["error"] = "Already have a file named " + derived_name
 			return failure
 		var meta_version := version_hint.strip_edges().lstrip("vV")
@@ -1226,28 +1161,11 @@ func _host_install_downloaded_archive(provider: String, download_url: String, he
 		var stem := derived_name.get_basename()
 		derived_name = stem + "-v" + meta_version + ("." + ext if ext != "" else "")
 		final_path = _mods_dir.path_join(derived_name)
-		temp_path = _mods_dir.path_join(derived_name + ".download")
 		if FileAccess.file_exists(final_path):
 			# Same "Already have" prefix contract as above.
+			DirAccess.remove_absolute(temp_path)
 			failure["error"] = "Already have a file named " + derived_name + " (and the renamed variant)"
 			return failure
-	if FileAccess.file_exists(temp_path):
-		DirAccess.remove_absolute(temp_path)
-
-	var out := FileAccess.open(temp_path, FileAccess.WRITE)
-	if out == null:
-		failure["error"] = "Could not write to the mods folder (permissions or disk full)"
-		return failure
-	var wrote := out.store_buffer(body)
-	out.close()
-	var verify := FileAccess.open(temp_path, FileAccess.READ)
-	var disk_len: int = verify.get_length() if verify != null else -1
-	if verify != null:
-		verify.close()
-	if not wrote or disk_len != body.size():
-		DirAccess.remove_absolute(temp_path)
-		failure["error"] = "Could not write the download to disk (disk full?)"
-		return failure
 
 	# Validate before adopting, mirroring collect_mod_metadata: a .pck has no
 	# readable root mod.txt, so check its container magic instead.
@@ -1284,6 +1202,64 @@ func _host_install_downloaded_archive(provider: String, download_url: String, he
 	return {"ok": true, "file_name": derived_name, "error": ""}
 
 
+## Download `url` to `temp_path`, replacing any file there, and verify the
+## bytes on disk match the body. `expected_sha256`, when set, is checked
+## before anything is written. Returns {ok, error, headers}; on failure no
+## temp file is left behind and `error` is the user-facing text.
+func _http_download_to_temp(provider: String, url: String, headers: PackedStringArray,
+		temp_path: String, expected_sha256: String = "") -> Dictionary:
+	var failure := {"ok": false, "error": "", "headers": PackedStringArray()}
+	var req := HTTPRequest.new()
+	req.timeout = API_DOWNLOAD_TIMEOUT
+	req.download_body_size_limit = 256 * 1024 * 1024
+	add_child(req)
+	var err := req.request(url, headers)
+	if err != OK:
+		req.queue_free()
+		failure["error"] = "Could not start the download request (error %d)" % err
+		return failure
+	var res: Array = await req.request_completed
+	req.queue_free()
+	host_note_rate_headers(provider, int(res[1]), res[2])
+	if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] < 200 or res[1] >= 300:
+		# Transport failures have no status code (res[1] is 0); split the branches.
+		if res[0] != HTTPRequest.RESULT_SUCCESS:
+			failure["error"] = "Download failed (connection error or timeout) -- check your network and retry"
+		else:
+			failure["error"] = host_error_status(provider, "Download failed (HTTP %d)" % int(res[1]))
+		return failure
+	var body: PackedByteArray = res[3]
+	if body.is_empty():
+		failure["error"] = "The download came back empty. Try again later."
+		return failure
+	# A pack that names the file's checksum gets it checked before it reaches mods/.
+	if expected_sha256 != "":
+		var ctx := HashingContext.new()
+		ctx.start(HashingContext.HASH_SHA256)
+		ctx.update(body)
+		var got := ctx.finish().hex_encode()
+		if got != expected_sha256.to_lower():
+			failure["error"] = "The downloaded file does not match the checksum the modpack lists. Try again later; if it keeps failing, the file on the site may have changed."
+			return failure
+	if FileAccess.file_exists(temp_path):
+		DirAccess.remove_absolute(temp_path)
+	var out := FileAccess.open(temp_path, FileAccess.WRITE)
+	if out == null:
+		failure["error"] = "Could not write to the mods folder (permissions or disk full)"
+		return failure
+	var wrote := out.store_buffer(body)
+	out.close()
+	var verify := FileAccess.open(temp_path, FileAccess.READ)
+	var disk_len: int = verify.get_length() if verify != null else -1
+	if verify != null:
+		verify.close()
+	if not wrote or disk_len != body.size():
+		DirAccess.remove_absolute(temp_path)
+		failure["error"] = "Could not write the download to disk (disk full?)"
+		return failure
+	return {"ok": true, "error": "", "headers": res[2]}
+
+
 ## Download headers: our User-Agent (a default one gets a bodyless 403) plus
 ## the adapter's per-file headers, such as a signed-CDN token.
 func _host_download_headers(file: Dictionary) -> PackedStringArray:
@@ -1310,11 +1286,14 @@ func _host_resolve_failure_copy(provider: String, res: Dictionary, version: Stri
 			return host_error_message(provider, res)
 
 
-## Record where an installed archive came from, so update checks and modpack
-## exports work even when its mod.txt declares no source.
+## Record where an installed archive came from, so the update check and a
+## modpack apply know its host even when its mod.txt declares no source.
+## Only the profile key is needed, so the archive is not security-scanned here.
 func _record_installed_mod_source(file_name: String, ref: Dictionary, version: String) -> void:
-	var entry := _build_archive_entry(_mods_dir, file_name, file_name.get_extension().to_lower())
-	var pk := str(entry.get("profile_key", ""))
+	var full_path := _mods_dir.path_join(file_name)
+	var ext := file_name.get_extension().to_lower()
+	var read: Dictionary = read_mod_config(full_path) if ext != "pck" else _mod_txt_read("pck")
+	var pk := str(_entry_from_config(read, file_name, full_path, ext).get("profile_key", ""))
 	if pk.is_empty():
 		return
 	_persist_single_mod_source(pk, {"provider": str(ref["provider"]), "id": str(ref["id"]), "version": version})

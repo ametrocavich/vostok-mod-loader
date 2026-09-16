@@ -76,6 +76,8 @@ func _run() -> void:
 		_fail("modloader boot static-init was NOT neutralized -- refusing to run")
 		_finish()
 		return
+	# The stem normalizer reads regexes _ready compiles once per launch.
+	ml._compile_regex()
 
 	_t1_stem_table(ml)
 	_t2_extension_change_collapses(ml)

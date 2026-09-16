@@ -56,6 +56,14 @@ func _compile_regex() -> void:
 	# a dispatch variant, not part of the method name.
 	_re_hook_call = RegEx.new()
 	_re_hook_call.compile('\\.hook\\s*\\(\\s*"([A-Za-z_][\\w]*)-([A-Za-z_][\\w]*?)(?:-(?:pre|post|callback))?"')
+	# Version-token shapes in a mod filename, read by _normalized_mod_stem:
+	# [_-.] separator with optional v, space plus explicit v, space plus dotted
+	# number, or v attached to the name. A space plus a bare integer is not a
+	# version: "Ammo Pack 1" and "Ammo Pack 2" are different mods.
+	_re_mod_stem_version = RegEx.new()
+	_re_mod_stem_version.compile("^(.*?)(?:[_\\-.]+v?[0-9]+(?:[._][0-9]+)*| +v[0-9]+(?:[._][0-9]+)*| +[0-9]+(?:[._][0-9]+)+|v[0-9]+(?:[._][0-9]+)*)$")
+	_re_mod_stem_named = RegEx.new()
+	_re_mod_stem_named.compile("[a-z]")
 
 # --- Codegen source parsing (regex compile + script-structure extraction) ---
 
