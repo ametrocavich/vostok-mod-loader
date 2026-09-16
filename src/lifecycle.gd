@@ -102,6 +102,9 @@ func _run_pass_1() -> void:
 	await show_mod_ui()
 	_save_ui_config()
 
+	# Pass 2 applies the overrides before its load_all_mods call and the hook
+	# pack reads the applied map after it, so the map is cleared here, not there.
+	_applied_script_overrides.clear()
 	load_all_mods()
 	_apply_script_overrides()  # apply [script_overrides] before hook generation
 

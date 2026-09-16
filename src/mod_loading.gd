@@ -29,7 +29,6 @@ func load_all_mods(pass_label: String = "") -> void:
 	_archive_zip_paths.clear()
 	_hooks.clear()
 	_pending_script_overrides.clear()
-	_applied_script_overrides.clear()
 	_hooked_methods.clear()
 	_hook_declared_by.clear()
 	_any_mod_declared_registry = false

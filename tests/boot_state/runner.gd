@@ -151,6 +151,7 @@ func _run() -> void:
 	_t6_pass2_clears_after_the_crash_window()
 	_t7_hook_status_reaches_the_launcher()
 	_t8_pass_state_reads_coerce()
+	_t9_load_all_mods_keeps_applied_overrides()
 
 	_finish()
 
@@ -475,6 +476,23 @@ func _t7_hook_status_reaches_the_launcher() -> void:
 	_assert((_ml._hook_status_problem() as Dictionary).is_empty(), "T7: nothing to show after a healthy activation")
 	clear.call()
 
+# --- T9: Pass 2 keeps the applied-override map through load_all_mods --------
+
+# Pass 2 applies [script_extend] / [script_overrides] from pass state before
+# load_all_mods runs, and _generate_hook_pack reads _applied_script_overrides
+# afterwards to warn when a rewrite displaces a mod's replacement script. A
+# load_all_mods that clears the map silences that warning on every Pass 2.
+# With no mod entries the call takes its no-mods return right after the
+# clears at its top, which is all this needs to reach.
+func _t9_load_all_mods_keeps_applied_overrides() -> void:
+	_ml._applied_script_overrides["res://Scripts/Menu.gd"] = true
+	_ml.load_all_mods("Pass 2")
+	var applied: Dictionary = _ml._applied_script_overrides
+	_assert(applied.has("res://Scripts/Menu.gd"),
+			"T9: load_all_mods must not clear _applied_script_overrides -- Pass 2 "
+			+ "fills it before the call and the hook pack reads it after")
+	_ml._applied_script_overrides.clear()
+
 func _crashed_launch() -> void:
 	_next_launch_boot()
 	_arm_two_pass_restart()
@@ -653,7 +671,7 @@ func _cleanup_exe_cfg() -> void:
 func _finish() -> void:
 	_cleanup_exe_cfg()
 	if _failures.is_empty():
-		print("[boot-state] PASS: %d assertion(s) across T1..T8" % _assertions)
+		print("[boot-state] PASS: %d assertion(s) across T1..T9" % _assertions)
 		quit(0)
 		return
 	for m in _failures:
