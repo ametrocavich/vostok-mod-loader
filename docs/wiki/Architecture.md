@@ -11,7 +11,7 @@ The header comment of [src/boot.gd](https://github.com/ametrocavich/vostok-mod-l
 
 | Stage | Trigger | Code |
 |---|---|---|
-| Static init | Module-scope var initializer runs at script-load time | `var _filescope_mounted: Dictionary = _mount_previous_session()` in [src/constants.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd) |
+| Static init | Module-scope var initializer runs at script-load time | `var _filescope_mounted: Dictionary = _mount_previous_session()` at the top of [src/boot.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd) |
 | `_ready` | Godot calls it once the autoload enters the tree | `_ready` in [src/lifecycle.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd) |
 
 Godot evaluates `var = <call>()` initializers while the script loads, so the mounts land in the VFS before any autoload scene graph resolves. A game autoload can `preload("res://ModPath/Foo.gd")` without the archive being mounted again in `_ready`.

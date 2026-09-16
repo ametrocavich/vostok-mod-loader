@@ -77,7 +77,7 @@ INIT_LINE='var _filescope_mounted: Dictionary = _mount_previous_session()'
 n=$(grep -cxF "$INIT_LINE" "$OUT" || true)
 if [[ "$n" -ne 1 ]]; then
     echo "ERROR: expected exactly 1 occurrence of the static-init initializer line" >&2
-    echo "       in $OUT, found $n. constants.gd changed -- update INIT_LINE in" >&2
+    echo "       in $OUT, found $n. boot.gd changed -- update INIT_LINE in" >&2
     echo "       check_identity.sh so the harness keeps neutering the right thing." >&2
     exit 1
 fi

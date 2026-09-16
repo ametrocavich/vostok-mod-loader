@@ -29,14 +29,14 @@
 #      wrapper silently becoming a coroutine.
 #
 # WHY LOADING THE MODLOADER HERE IS SAFE: merely instantiating modloader.gd
-# executes its boot sequence, because constants.gd declares
+# executes its boot sequence, because boot.gd declares
 #     var _filescope_mounted: Dictionary = _mount_previous_session()
 # and _mount_previous_session() mounts archives, rewrites override.cfg and
 # wipes hook caches relative to OS.get_executable_path() -- which in a test
 # is the GODOT BINARY's directory. This script therefore builds
 # modloader_neutered.gd: a byte-identical copy with that ONE initializer
 # mechanically replaced by `= {}` (verified to match exactly once, so the
-# harness fails loudly if constants.gd drifts). No boot code can run; the
+# harness fails loudly if boot.gd drifts). No boot code can run; the
 # runner double-checks _filescope_mounted is empty after new().
 #
 # HOW TO ADD A FIXTURE:
@@ -169,7 +169,7 @@ INIT_LINE='var _filescope_mounted: Dictionary = _mount_previous_session()'
 n=$(grep -cxF "$INIT_LINE" "$OUT" || true)
 if [[ "$n" -ne 1 ]]; then
     echo "ERROR: expected exactly 1 occurrence of the static-init initializer line" >&2
-    echo "       in $OUT, found $n. constants.gd changed -- update INIT_LINE in" >&2
+    echo "       in $OUT, found $n. boot.gd changed -- update INIT_LINE in" >&2
     echo "       check_codegen.sh so the harness keeps neutering the right thing." >&2
     exit 1
 fi

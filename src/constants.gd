@@ -208,11 +208,6 @@ var _re_preload: RegEx
 var _re_filename_priority: RegEx
 var _re_hook_call: RegEx
 
-# Mounts the previous session's archives at file-scope (before _ready). Keyed
-# by pass-state path; _process_mod_candidate skips re-mounts that would
-# clobber static-init overlays.
-var _filescope_mounted: Dictionary = _mount_previous_session()
-
 # Host-transport response cache, keyed by full URL (absolute, so providers
 # cannot collide). Entry: {data: Variant, expires_at: int (msec)}; evicted
 # on read. Session memory only.

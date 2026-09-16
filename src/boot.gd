@@ -1,7 +1,7 @@
 ## ----- boot.gd -----
 ## Static-init boot layer. _mount_previous_session runs while the ModLoader
-## script is loading (constants.gd calls it from a var initializer), before
-## any game autoload compiles a class_name script. It mounts the previous
+## script is loading (the var initializer below calls it), before any game
+## autoload compiles a class_name script. It mounts the previous
 ## session's archives and the hook pack, rewrites override.cfg, and owns pass
 ## state, the heartbeat and crash recovery. docs/wiki/Architecture.md has the
 ## long form; the sequence is:
@@ -40,6 +40,10 @@
 ##                       means the previous launch died in between.
 ##   PASS2_DIRTY_PATH    user://, written at Pass 2 entry, cleared at its end.
 ##                       A survivor makes the next static init force-wipe.
+
+# Static init starts here: the initializer runs while the script loads, before
+# _ready. Keyed by pass-state path; _process_mod_candidate skips these mounts.
+var _filescope_mounted: Dictionary = _mount_previous_session()
 
 static func _is_modloader_disabled() -> bool:
 	var exe_dir := OS.get_executable_path().get_base_dir()

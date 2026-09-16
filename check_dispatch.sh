@@ -39,7 +39,7 @@
 # full rationale). modloader.gd's single static-init boot line
 #     var _filescope_mounted: Dictionary = _mount_previous_session()
 # is replaced by `= {}` in a TEMP copy, asserted to occur exactly once so
-# drift in constants.gd fails loudly; the runner double-checks no boot code
+# drift in boot.gd fails loudly; the runner double-checks no boot code
 # ran. This NEVER opens a window and NEVER touches the game install:
 # --headless only, against a throwaway project under the system temp dir.
 #
@@ -103,7 +103,7 @@ prepare_work() {
     n=$(grep -cxF "$INIT_LINE" "$OUT" || true)
     if [[ "$n" -ne 1 ]]; then
         echo "ERROR: expected exactly 1 occurrence of the static-init initializer line" >&2
-        echo "       in $OUT, found $n. constants.gd changed -- update INIT_LINE in" >&2
+        echo "       in $OUT, found $n. boot.gd changed -- update INIT_LINE in" >&2
         echo "       check_dispatch.sh so the harness keeps neutering the right thing." >&2
         exit 1
     fi

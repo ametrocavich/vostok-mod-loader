@@ -19,7 +19,6 @@ Shared `const`, `var` and `signal` declarations: anything read by more than one 
 - `API_CHECK_TIMEOUT`, the request timeout shared by the host transport and the loader's own update check.
 - `PACK_FORMAT_V2` / `V3` / `V4` and `GDSC_VERSION_V100` / `V101`, the engine binary formats the parsers accept.
 - The rewriter skip lists: `RTV_SKIP_LIST` (7 scripts), `RTV_RESOURCE_SERIALIZED_SKIP` (11), `RTV_RESOURCE_DATA_SKIP` (25), each entry with its reason inline.
-- `var _filescope_mounted: Dictionary = _mount_previous_session()`. A module-scope var with a call initializer, which is what runs the static-init mount before `_ready`.
 - The hook registry state (`_hooks`, `_hooked_bases`, `_any_mod_hooked`, `_caller`), the host-seam response cache `_host_cache` and the live Mods-tab row nodes `_mods_meta_nodes`.
 
 ### [logging.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/logging.gd)
@@ -40,6 +39,7 @@ Static functions are the ones static init can call before an instance exists.
 
 Owns the boot sequence; its header comment is the short form of [Architecture](Architecture).
 
+- `var _filescope_mounted: Dictionary = _mount_previous_session()` at the top of the file: a module-scope var with a call initializer, which is what runs static init before `_ready`.
 - `_mount_previous_session`, the static-init entry point.
 - Sentinel handling: `_is_modloader_disabled`, `_check_safe_mode`, the Pass 2 dirty marker branch.
 - The crash streak: `_static_read_crash_streak`, `_static_write_crash_streak`, `_crash_breaker_tripped`.
