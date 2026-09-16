@@ -677,15 +677,15 @@ func _override_claimants(script_path: String) -> PackedStringArray:
 # rewritten source. Scene ext_resources and ClassName.new() resolve through
 # the cache, so a stale entry means the wrappers never fire. source_code +
 # reload() recompiles the cached script in place; live references keep working.
-func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) -> void:
+func _activate_rewritten_scripts(res_paths: Array[String], pack_path: String) -> void:
 	# Scripts with module-scope PackedScene preloads are deferred from eager
 	# load+reload: loading them now would bake scene Script ext_resources to
 	# pre-override vanilla, and a later take_over_path leaves those refs
 	# empty-path. VFS mount precedence still serves the rewrite at lazy compile.
 	var deferred: PackedStringArray = []
-	for fname: String in filenames:
-		if _scripts_with_scene_preloads.has(fname):
-			deferred.append(fname)
+	for res_path: String in res_paths:
+		if _scripts_with_scene_preloads.has(res_path):
+			deferred.append(res_path)
 	if deferred.size() > 0:
 		_log_info("[RTVCodegen] DEFER %d script(s) with module-scope scene preload -- will lazy-compile via VFS after mod overrides: %s" \
 				% [deferred.size(), ", ".join(Array(deferred))])
@@ -736,11 +736,10 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 		var pre_d := 0
 		var pre_b_names: PackedStringArray = []
 		var pre_c_names: PackedStringArray = []
-		for fname: String in filenames:
-			if _scripts_with_scene_preloads.has(fname):
+		for res_path: String in res_paths:
+			if _scripts_with_scene_preloads.has(res_path):
 				continue
-			var vp := fname
-			var c := load(vp) as GDScript
+			var c := load(res_path) as GDScript
 			if c == null:
 				pre_d += 1
 				continue
@@ -754,12 +753,12 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 				pre_a += 1
 			elif srclen > 0:
 				pre_b += 1
-				pre_b_names.append(fname)
+				pre_b_names.append(res_path)
 			else:
 				pre_c += 1
-				pre_c_names.append(fname)
+				pre_c_names.append(res_path)
 		_log_debug("[RTVCodegen] PRE-ACTIVATE summary: inline-live=%d, pinned-with-source=%d, pinned-tokenized=%d, other=%d / total=%d" \
-				% [pre_a, pre_b, pre_c, pre_d, filenames.size()])
+				% [pre_a, pre_b, pre_c, pre_d, res_paths.size()])
 		if pre_b > 0:
 			_log_debug("[RTVCodegen]   pinned-with-source (GDScriptCache has our text but compiled methods are vanilla): %s" \
 					% ", ".join(Array(pre_b_names).slice(0, 25)))
@@ -769,20 +768,19 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 
 	var activated := 0
 	var preactivated := 0
-	for fname: String in filenames:
-		if _scripts_with_scene_preloads.has(fname):
+	for res_path: String in res_paths:
+		if _scripts_with_scene_preloads.has(res_path):
 			continue
-		var vp := fname
-		var cached := load(vp) as GDScript
+		var cached := load(res_path) as GDScript
 		if cached == null:
-			_log_warning("[RTVCodegen] activate %s: load returned null -- skip" % vp)
+			_log_warning("[RTVCodegen] activate %s: load returned null -- skip" % res_path)
 			continue
 		# Overrides are applied before the pack is generated, so load() may return
 		# a mod's replacement; the reload below overwrites it with the rewrite.
-		var displaced := _override_claimants(vp)
+		var displaced := _override_claimants(res_path)
 		if not displaced.is_empty():
 			_log_warning("[RTVCodegen] activate %s: replacing the script installed by %s with the rewritten vanilla script -- that replacement will not run this session" \
-					% [vp, ", ".join(displaced)])
+					% [res_path, ", ".join(displaced)])
 
 		# Static-init preload already put the rewrite in this cached script: skip
 		# the reload, which would fail on autoload-backed scripts. A newer loader's
@@ -793,14 +791,14 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 				already_live = true
 				break
 		if already_live:
-			var fresh_source := FileAccess.get_file_as_string(vp)
+			var fresh_source := FileAccess.get_file_as_string(res_path)
 			if not fresh_source.is_empty() and fresh_source != cached.source_code:
-				_log_info("[RTVCodegen] activate %s: cached rewrite is stale (static-init had an older pack), forcing fresh+take_over_path" % vp)
-				var fresh := ResourceLoader.load(vp, "", ResourceLoader.CACHE_MODE_IGNORE) as GDScript
+				_log_info("[RTVCodegen] activate %s: cached rewrite is stale (static-init had an older pack), forcing fresh+take_over_path" % res_path)
+				var fresh := ResourceLoader.load(res_path, "", ResourceLoader.CACHE_MODE_IGNORE) as GDScript
 				if fresh == null:
-					_log_critical("[RTVCodegen] activate %s: fresh load returned null -- skip" % vp)
+					_log_critical("[RTVCodegen] activate %s: fresh load returned null -- skip" % res_path)
 					continue
-				fresh.take_over_path(vp)
+				fresh.take_over_path(res_path)
 				# Report-only rename check (take_over already happened).
 				var stale_fresh_ok := false
 				for m in fresh.get_script_method_list():
@@ -808,7 +806,7 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 						stale_fresh_ok = true
 						break
 				if not stale_fresh_ok:
-					_log_critical("[RTVCodegen] activate %s: fresh load lacks _rtv_vanilla_ renames -- rewrite isn't compiling; hooks on this script will not fire" % vp)
+					_log_critical("[RTVCodegen] activate %s: fresh load lacks _rtv_vanilla_ renames -- rewrite isn't compiling; hooks on this script will not fire" % res_path)
 				activated += 1
 				continue
 			preactivated += 1
@@ -816,14 +814,14 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 			continue
 
 		# Otherwise mutate source_code and reload (compiled from source, no rewrite yet).
-		var our_source := FileAccess.get_file_as_string(vp)
+		var our_source := FileAccess.get_file_as_string(res_path)
 		if our_source.is_empty():
-			_log_warning("[RTVCodegen] activate %s: FileAccess returned empty -- skip" % vp)
+			_log_warning("[RTVCodegen] activate %s: FileAccess returned empty -- skip" % res_path)
 			continue
 		cached.source_code = our_source
 		var err := cached.reload()
 		if err != OK:
-			_log_warning("[RTVCodegen] activate %s: reload failed (%s)" % [vp, error_string(err)])
+			_log_warning("[RTVCodegen] activate %s: reload failed (%s)" % [res_path, error_string(err)])
 		# Verify the reload took: scripts originally compiled from .gdc do not
 		# re-parse mutated source_code. Fall back to CACHE_MODE_IGNORE + take_over_path.
 		var has_rename := false
@@ -832,10 +830,10 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 				has_rename = true
 				break
 		if not has_rename:
-			_log_info("[RTVCodegen] activate %s: reload didn't apply (pre-compiled); falling back to fresh+take_over_path" % vp)
-			var fresh := ResourceLoader.load(vp, "", ResourceLoader.CACHE_MODE_IGNORE) as GDScript
+			_log_info("[RTVCodegen] activate %s: reload didn't apply (pre-compiled); falling back to fresh+take_over_path" % res_path)
+			var fresh := ResourceLoader.load(res_path, "", ResourceLoader.CACHE_MODE_IGNORE) as GDScript
 			if fresh == null:
-				_log_critical("[RTVCodegen] activate %s: fresh load returned null -- skip" % vp)
+				_log_critical("[RTVCodegen] activate %s: fresh load returned null -- skip" % res_path)
 				continue
 			var fresh_has_rename := false
 			for m in fresh.get_script_method_list():
@@ -843,31 +841,30 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 					fresh_has_rename = true
 					break
 			if not fresh_has_rename:
-				_log_critical("[RTVCodegen] activate %s: fresh load also lacks renames -- rewrite isn't compiling" % vp)
+				_log_critical("[RTVCodegen] activate %s: fresh load also lacks renames -- rewrite isn't compiling" % res_path)
 				continue
-			fresh.take_over_path(vp)
-			_log_info("[RTVCodegen] activate %s: fresh script took over vanilla path" % vp)
+			fresh.take_over_path(res_path)
+			_log_info("[RTVCodegen] activate %s: fresh script took over vanilla path" % res_path)
 		activated += 1
 	# Denominator uses `deferred`, not the raw dict, so a stray entry cannot mask a miss.
-	var eager_total := filenames.size() - deferred.size()
+	var eager_total := res_paths.size() - deferred.size()
 	_log_info("[RTVCodegen] Activated %d/%d rewritten script(s) (%d already live from static-init preload; %d deferred to lazy-compile)" \
 			% [activated, eager_total, preactivated, deferred.size()])
 
 	# Persist pack path and the eager wrapped paths so next session's static
 	# init mounts the pack and preempts them before game autoloads compile
 	# class_name scripts.
-	_persist_hook_pack_state(pack_path, _eager_wrapped_paths(filenames))
+	_persist_hook_pack_state(pack_path, _eager_wrapped_paths(res_paths))
 
 	# Compile proof: the method list must hold the renamed vanilla beside the wrapper.
 	var compile_proof_ok := 0
 	var compile_proof_fail: PackedStringArray = []
-	for fname: String in filenames:
-		if _scripts_with_scene_preloads.has(fname):
+	for res_path: String in res_paths:
+		if _scripts_with_scene_preloads.has(res_path):
 			continue  # deferred to lazy-compile; compile-proof runs post-override elsewhere
-		var vp := fname
-		var s := load(vp) as GDScript
+		var s := load(res_path) as GDScript
 		if s == null:
-			compile_proof_fail.append(fname)
+			compile_proof_fail.append(res_path)
 			continue
 		var methods := s.get_script_method_list()
 		var has_vanilla_rename := false
@@ -876,17 +873,15 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 			var n: String = str(m["name"])
 			if n.begins_with("_rtv_vanilla_"):
 				has_vanilla_rename = true
-				if sample_rename == "":
-					sample_rename = n
-				if sample_rename != "" and has_vanilla_rename:
-					break
+				sample_rename = n
+				break
 		if _developer_mode:
 			_log_info("[RTVCodegen] COMPILE-PROOF %s: %d methods compiled, _rtv_vanilla_* present=%s (e.g. %s)" \
-					% [vp, methods.size(), has_vanilla_rename, sample_rename])
+					% [res_path, methods.size(), has_vanilla_rename, sample_rename])
 		if has_vanilla_rename:
 			compile_proof_ok += 1
 		else:
-			compile_proof_fail.append(fname)
+			compile_proof_fail.append(res_path)
 
 	# Canary A: alarm on catastrophic or critical-script failure.
 	var critical_set: Dictionary = {"Controller.gd": true, "Camera.gd": true,
@@ -897,7 +892,7 @@ func _activate_rewritten_scripts(filenames: Array[String], pack_path: String) ->
 		if critical_set.has(String(f).get_file()):
 			critical_failures.append(f)
 	# Deferred scripts skip the compile proof; the watchdog covers them.
-	var attempted := filenames.size() - deferred.size()
+	var attempted := res_paths.size() - deferred.size()
 	if compile_proof_ok == 0 and attempted > 0:
 		_log_critical("[STABILITY] ALL %d rewrites failed to take effect -- VFS mount, hook pack, or cache eviction is broken. Mods will NOT work this session. Click 'Launch vanilla' in the launcher or create modloader_disabled in the game folder." % attempted)
 	elif critical_failures.size() > 0:
