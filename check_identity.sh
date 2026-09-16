@@ -92,13 +92,13 @@ fi
 # copy only, which restores the "CoolMod.vmz and CoolMod_v1.1.zip are separate
 # mods" behavior, and demand the harness FAIL.
 if [[ $PROVE -eq 1 ]]; then
-    STEM_LINE='	var m := re.search(stem)'
+    STEM_LINE='	var m := _re_mod_stem_version.search(stem)'
     if [[ $(grep -cxF "$STEM_LINE" "$WORK/modloader_neutered.gd" || true) -ne 1 ]]; then
         echo "ERROR: --prove could not find the stem-match line to neuter." >&2
         echo "       _normalized_mod_stem changed shape; update STEM_LINE." >&2
         exit 1
     fi
-    sed -i 's|^\tvar m := re\.search(stem)$|\tvar m: RegExMatch = null  # --prove: stem normalization disabled (temp copy only)|' \
+    sed -i 's|^\tvar m := _re_mod_stem_version\.search(stem)$|\tvar m: RegExMatch = null  # --prove: stem normalization disabled (temp copy only)|' \
         "$WORK/modloader_neutered.gd"
     if [[ $(grep -cxF "$STEM_LINE" "$WORK/modloader_neutered.gd" || true) -ne 0 ]]; then
         echo "ERROR: --prove substitution did not apply." >&2
