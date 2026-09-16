@@ -3,8 +3,10 @@
 **Using the loader**
 - [Home](Home)
 - [Setup](Setup)
+- [Mods](Mods)
 - [Browse](Browse)
 - [Modpacks](Modpacks)
+- [Troubleshooting](Troubleshooting)
 - [Limitations](Limitations)
 
 **Writing a mod**
@@ -14,11 +16,11 @@
 - [Mod-Format](Mod-Format)
 - [Setup-Plans](Setup-Plans)
 - [Config-Files](Config-Files)
-- [Profile-Format](Profile-Format)
 
-**Internals**
+**For developers**
 - [Architecture](Architecture)
 - [Modules](Modules)
+- [Profile-Format](Profile-Format)
 - [GDSC-Detokenizer](GDSC-Detokenizer)
 - [Stability-Canaries](Stability-Canaries)
 - [Build](Build)

@@ -1,6 +1,6 @@
 # Road to Vostok -- Community Mod Loader
 
-Mod loader for Road to Vostok (Godot 4.6). Adds a pre-game window for installing mods, managing load order and profiles, sharing modpacks, and checking for updates.
+Mod loader for Road to Vostok (Godot 4.6). Adds a pre-game window for installing mods, managing load order and profiles, applying modpacks, and checking for updates.
 
 Docs live on the [Wiki](https://github.com/ametrocavich/vostok-mod-loader/wiki): setup, Browse, modpacks, the mod format, hook internals, stability canaries, limitations.
 
@@ -17,20 +17,20 @@ Docs live on the [Wiki](https://github.com/ametrocavich/vostok-mod-loader/wiki):
    C:\Program Files (x86)\Steam\steamapps\common\Road to Vostok\
    ```
 3. Create a `mods` folder there if it doesn't exist.
-4. Drop `.vmz` files into `mods/`, or skip this and use the Browse tab.
+4. Drop `.vmz` files into `mods/`, or leave it empty and install mods from the launcher.
 5. Launch the game. The mod loader window appears before the main menu.
 
 ## Launcher UI
 
 Three tabs:
 
-- **Mods**: detected mods with checkboxes and a priority spinbox. Higher priority loads later and wins file conflicts. The load-order preview on the right updates as you edit. Profiles, the Developer Mode toggle, dependency handling and **Check for updates** live here too; a mod with a newer version on its site gets an Update button on its row.
+- **Mods**: detected mods with checkboxes and a priority spinbox. Higher priority loads later and wins file conflicts. The load-order preview on the right updates as you edit. Profiles, the Developer Mode toggle, dependency handling and **Check for updates** live here too; a mod with a newer version on its site gets an Update button on its row. See the [Mods wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Mods).
 - **Browse**: search and install mods from [VostokMods](https://vostokmods.net), or switch the source menu to [ModWorkshop](https://modworkshop.net). Each site has a landing view plus search, sort and category filters. **Download** installs into your `mods/` folder; downloads queue and run one at a time. See the [Browse wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Browse).
 - **Modpacks**: apply a setup published on [VostokMods](https://vostokmods.net). A modpack is a small `.zip` listing which mods to enable (plus their settings), not the mod files themselves. Apply downloads any missing mods and switches you to the author's setup; Unload restores your prior state. Only one modpack can be active at a time. See the [Modpacks wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Modpacks).
 
 Dependencies are handled inline on the Mods tab. A mod with `[dependencies] required=[...]` in `mod.txt` shows an orange `won't load -- needs ...` line when a requirement is missing or disabled, with **Enable dependency** and **Load anyway** buttons beside it, and the loader skips mods whose required dependencies are not loadable.
 
-Click **Launch modded** (or **Launch**, when no mods are enabled) or close the window to start. If you reopen the window from the main menu's **Mods** button and change anything, closing it restarts the game into the new mod set.
+Click the launch button or close the window to start. It reads **Launch modded** when at least one enabled mod will load, **Launch unmodded (N blocked)** when every enabled mod is blocked by a missing dependency, and **Launch** when nothing is enabled. If you reopen the window from the main menu's **Mods** button and change anything, closing it restarts the game into the new mod set.
 
 ### Guardrails
 
@@ -174,7 +174,7 @@ If the game crashes or won't launch:
 - Force-disable: create an empty file named `modloader_disabled` (no extension) in the game folder. On the next launch the loader mounts nothing and the game boots vanilla. Delete the file to re-enable. Use this when the loader itself is broken and you can't reach the UI.
 - Safe-mode reset: create an empty file named `modloader_safe_mode` (no extension) in the game folder. On the next launch the loader resets its files to a clean state, then deletes the safe-mode file so it only runs once.
 
-More recovery detail (heartbeat, restart counter, crashed-Pass-2 dirty marker): [Stability-Canaries wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Stability-Canaries).
+The [Troubleshooting wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Troubleshooting) has the longer version, including the reset steps after an update. Recovery internals (heartbeat, restart counter, crashed-Pass-2 dirty marker): [Stability-Canaries wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Stability-Canaries).
 
 ## Best Practices (for mod authors)
 
