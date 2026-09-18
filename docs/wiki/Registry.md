@@ -370,7 +370,7 @@ var elixir = load("res://mymod/items/Elixir.tres")
 # register: sets elixir.file = "mymod_elixir" for you (vanilla code reads item.file)
 lib.register(lib.Registry.ITEMS, "mymod_elixir", elixir)
 
-# override: replace a vanilla item wholesale
+# override: what lib.get_entry and the aggregators resolve for "Potato" from now on
 lib.override(lib.Registry.ITEMS, "Potato", load("res://mymod/items/GoldenPotato.tres"))
 
 # patch: mutate specific fields on the current entry
@@ -388,6 +388,8 @@ lib.revert(lib.Registry.ITEMS, "Potato")
 # remove: undo register
 lib.remove(lib.Registry.ITEMS, "mymod_elixir")
 ```
+
+`override` on `items` swaps what the registry resolves for that id: `get_entry`, later `patch` calls and the aggregator helpers see the new ItemData. Vanilla code that already holds the original Resource (a loot table, a trader pool, a save) keeps it, since vanilla has no lookup by `file`. To change an item everywhere, `patch` it.
 
 Patches are global and persist into saves. Godot's Resource cache shares one instance program-wide, so patching an item mutates it for every holder, including what saves serialize (`SlotData` serializes ItemData by value). There is no per-save isolation; `revert` is the only undo.
 
