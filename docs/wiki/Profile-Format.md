@@ -43,7 +43,7 @@ The JSON is plain UTF-8 `profile.json` at the root of a modpack zip, next to an 
 | `unavailable` | no | Dictionary | `profile_key -> reason` for mods the site listed but could not serve when the pack was fetched (`scanning`, `no_files`, `removed`). Apply reports these instead of downloading. |
 | `checksums` | no | Dictionary | `profile_key -> sha256 hex` for mods whose file checksum the site published. The download is refused if the bytes do not match. |
 
-This JSON has one writer (`_hosted_manifest_to_profile` in hosted_modpacks.gd) and several readers in modpacks.gd and ui.gd. Profile-state fields (`enabled` / `priority` / `dep_ignore`) must be read by the single state consumer `_materialize_modpack_profile` (modpacks.gd) or they silently drop on apply. Metadata fields (`name`, `description`, `author`, `sources`) have their own readers (`_build_modpack_entry`, `_get_missing_mods_for_modpack`, the modpack detail dialog). `_validate_modpack` checks schema, `name` and `enabled` before apply.
+This JSON has one writer (`_hosted_manifest_to_profile` in hosted_modpacks.gd) and several readers in modpacks.gd, profiles.gd and ui_modpacks.gd. Profile-state fields (`enabled` / `priority` / `dep_ignore`) must be read by the single state consumer `_materialize_modpack_profile` (modpacks.gd) or they silently drop on apply. Metadata fields (`name`, `description`, `author`, `sources`) have their own readers (`_build_modpack_entry`, `_get_missing_mods_for_modpack`, the modpack detail dialog). `_validate_modpack` checks schema, `name` and `enabled` before apply.
 
 ## Profile key format
 

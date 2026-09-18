@@ -27,7 +27,12 @@ src/
   hosted_modpacks.gd       # packs published on VostokMods, turned into local pack zips
   mod_loading.gd           # mount + apply mods at runtime
   conflict_report.gd       # developer-mode diagnostics
-  ui.gd                    # launcher window, profiles, shared UI helpers
+  profiles.gd              # profile state and mod_config.cfg persistence
+  profile_snapshots.gd     # per-profile MCM filesystem operations
+  ui.gd                    # launcher window and launch controls
+  ui_images.gd             # thumbnail controls and image caches
+  ui_format.gd             # text formatting helpers
+  loader_update.gd         # loader release check and notification
   ui_theme.gd              # palette tokens, theme, styling voices, glyphs
   ui_dialogs.gd            # dialog plumbing + profile dialogs
   ui_mods.gd               # Mods tab
@@ -187,7 +192,7 @@ Function names are stable anchors; line numbers are not.
 `mod.txt` is parsed by `_parse_mod_txt` in `src/fs_archive.gd` (ConfigFile
 syntax, plus the unquoted-`[hooks]` value repair and an empty-section
 workaround for `[registry]`). Entry Dictionaries are read by key name across
-ui.gd, mod_loading.gd, boot.gd and modpacks.gd: new keys are additive-safe,
+profiles.gd, mod_loading.gd, boot.gd and modpacks.gd: new keys are additive-safe,
 renames are not.
 
 ### Adding a mod host

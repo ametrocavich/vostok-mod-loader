@@ -36,7 +36,12 @@ FILES=(
     "$SRC/mod_loading.gd"
     "$SRC/conflict_report.gd"
     # UI
+    "$SRC/profiles.gd"
+    "$SRC/profile_snapshots.gd"
     "$SRC/ui.gd"
+    "$SRC/ui_images.gd"
+    "$SRC/ui_format.gd"
+    "$SRC/loader_update.gd"
     "$SRC/ui_theme.gd"
     "$SRC/ui_dialogs.gd"
     "$SRC/ui_mods.gd"
