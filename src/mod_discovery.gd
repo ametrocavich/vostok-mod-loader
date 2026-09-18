@@ -1206,6 +1206,17 @@ func _host_install_downloaded_archive(provider: String, download_url: String, he
 	return {"ok": true, "file_name": derived_name, "error": ""}
 
 
+## The user-facing reason a download request failed. A transport failure has
+## no status code; a body over the size cap is its own case, since retrying it
+## cannot help.
+func _download_failure_text(provider: String, result: int, status: int) -> String:
+	if result == HTTPRequest.RESULT_BODY_SIZE_LIMIT_EXCEEDED:
+		return "This file is larger than the 256 MB the mod loader will download. Get it from the mod's page and put it in the mods folder yourself."
+	if result != HTTPRequest.RESULT_SUCCESS:
+		return "Download failed (connection error or timeout) -- check your network and retry"
+	return host_error_status(provider, "Download failed (HTTP %d)" % status)
+
+
 ## Download `url` to `temp_path`, replacing any file there, and verify the
 ## bytes on disk match the body. `expected_sha256`, when set, is checked
 ## before anything is written. Returns {ok, error, headers}; on failure no
@@ -1226,11 +1237,7 @@ func _http_download_to_temp(provider: String, url: String, headers: PackedString
 	req.queue_free()
 	host_note_rate_headers(provider, int(res[1]), res[2])
 	if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] < 200 or res[1] >= 300:
-		# Transport failures have no status code (res[1] is 0); split the branches.
-		if res[0] != HTTPRequest.RESULT_SUCCESS:
-			failure["error"] = "Download failed (connection error or timeout) -- check your network and retry"
-		else:
-			failure["error"] = host_error_status(provider, "Download failed (HTTP %d)" % int(res[1]))
+		failure["error"] = _download_failure_text(provider, int(res[0]), int(res[1]))
 		return failure
 	var body: PackedByteArray = res[3]
 	if body.is_empty():

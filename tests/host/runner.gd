@@ -87,6 +87,7 @@ func _run() -> void:
 	_t20_rate_limit_headers(ml)
 	_t21_mws_list_params(ml)
 	_t22_update_check_message(ml)
+	_t23_download_failure_text(ml)
 
 	_finish()
 
@@ -1114,6 +1115,21 @@ func _t22_update_check_message(ml: Object) -> void:
 	_assert(pending.is_empty() and int(skipped.get("no_version", 0)) == 1,
 			"T22: a mod with a site and no version is counted as skipped (got %s, %s)" % [str(pending), str(skipped)])
 
+# --- T23: why a download failed --------------------------------------------------
+
+func _t23_download_failure_text(ml: Object) -> void:
+	_assert(ml.has_method("_download_failure_text"), "T23: the loader has _download_failure_text")
+	if not ml.has_method("_download_failure_text"):
+		return
+	(ml.get("_host_cooldown_until_ms") as Dictionary).clear()
+	var too_big := str(ml._download_failure_text("modworkshop", HTTPRequest.RESULT_BODY_SIZE_LIMIT_EXCEEDED, 200))
+	_assert(too_big.contains("256 MB") and not too_big.contains("network"),
+			"T23: a file over the size cap is named as such, not as a network problem (got '%s')" % too_big)
+	var dropped := str(ml._download_failure_text("modworkshop", HTTPRequest.RESULT_CANT_CONNECT, 0))
+	_assert(dropped.contains("network"), "T23: a transport failure points at the network (got '%s')" % dropped)
+	var refused := str(ml._download_failure_text("modworkshop", HTTPRequest.RESULT_SUCCESS, 404))
+	_assert(refused.contains("HTTP 404"), "T23: an HTTP failure carries its status (got '%s')" % refused)
+
 # The update check in two pure halves: which installed mods are asked about,
 # and what the site's answers mean. A dev folder, a mod with no version, no
 # source, no readable mod.txt or a host that cannot serve files is skipped;
@@ -1287,7 +1303,7 @@ func _fail(msg: String) -> void:
 func _finish() -> void:
 	_done = true
 	if _failures.is_empty():
-		print("[host] PASS: %d assertion(s) across T1..T22" % _assertions)
+		print("[host] PASS: %d assertion(s) across T1..T23" % _assertions)
 		quit(0)
 		return
 	for m in _failures:
