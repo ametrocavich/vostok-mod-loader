@@ -155,6 +155,7 @@ func _run() -> void:
 	_t10_persisted_wrapped_paths_exclude_deferred()
 	_t11_removed_feature_state_is_swept()
 	_t12_game_update_is_seen_through_the_pck()
+	_t13_missing_config_recovers_from_backup()
 
 	_finish()
 
@@ -559,6 +560,51 @@ func _t12_game_update_is_seen_through_the_pck() -> void:
 		if FileAccess.file_exists(p):
 			DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
 
+# --- T13: a missing mod_config.cfg recovers from its backup ------------------
+
+# Pass 1 scans the mods folder before it loads the launcher config, and the
+# scan persists each mod's declared source into mod_config.cfg. With the live
+# file missing and a .bak present, that write would create a fresh file, the
+# load would then find nothing to recover, and the next save would copy the
+# near-empty file over the backup. Pins: the scan-time persist stands down,
+# the load recovers every profile, and the backup survives.
+func _t13_missing_config_recovers_from_backup() -> void:
+	_reset_user_state()
+	var cfg_path := str(_ml.UI_CONFIG_PATH)
+	var bak_path := cfg_path + ".bak"
+	var good := ConfigFile.new()
+	good.set_value("settings", "active_profile", "Hardcore")
+	good.set_value("profile.Default.enabled", "a@1.0", true)
+	good.set_value("profile.Hardcore.enabled", "a@1.0", false)
+	good.set_value("profile.Hardcore.priority", "a@1.0", 40)
+	_assert(good.save(bak_path) == OK, "T13: wrote the backup")
+	_assert(not FileAccess.file_exists(cfg_path), "T13: the live config is missing")
+
+	var mod_txt := ConfigFile.new()
+	mod_txt.parse("[mod]\nname=\"A\"\nid=\"a\"\nversion=\"1.0\"\n\n[updates]\nsource=\"vostokmods:a\"\n")
+	var entries: Array[Dictionary] = [{"profile_key": "a@1.0", "cfg": mod_txt}]
+	_ml._persist_mod_sources_for_entries(entries)
+	_assert(not FileAccess.file_exists(cfg_path),
+			"T13: the scan-time persist does not create mod_config.cfg while a backup waits to be recovered")
+
+	var empty: Array[Dictionary] = []
+	_ml.set("_ui_mod_entries", empty)
+	_ml._load_ui_config()
+	_assert(str(_ml.get("_active_profile")) == "Hardcore",
+			"T13: the load recovers the active profile from the backup (got '%s')" % str(_ml.get("_active_profile")))
+	var profiles: Array = _ml._list_profiles()
+	_assert(profiles.has("Default") and profiles.has("Hardcore"),
+			"T13: every profile is back (got %s)" % str(profiles))
+	var bak := ConfigFile.new()
+	_assert(bak.load(bak_path) == OK and bak.has_section("profile.Hardcore.priority"),
+			"T13: the backup still holds the profiles after the recovery")
+
+	# With no backup a missing file is a fresh install, and the persist writes.
+	_reset_user_state()
+	_ml._persist_mod_sources_for_entries(entries)
+	_assert(FileAccess.file_exists(cfg_path), "T13: with no backup the persist creates the file as before")
+	_reset_user_state()
+
 # --- T9: Pass 2 keeps the applied-override map through load_all_mods --------
 
 # Pass 2 applies [script_extend] / [script_overrides] from pass state before
@@ -850,7 +896,7 @@ func _cleanup_exe_cfg() -> void:
 func _finish() -> void:
 	_cleanup_exe_cfg()
 	if _failures.is_empty():
-		print("[boot-state] PASS: %d assertion(s) across T1..T12" % _assertions)
+		print("[boot-state] PASS: %d assertion(s) across T1..T13" % _assertions)
 		quit(0)
 		return
 	for m in _failures:

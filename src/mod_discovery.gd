@@ -1498,18 +1498,32 @@ func _serialize_mod_source_rec(rec: Dictionary) -> String:
 	return JSON.stringify(_mod_source_payload(rec))
 
 
+# Whether a [mod_sources] write must stand down after mod_config.cfg failed to
+# load, logging why. Both cases keep the rolling backup usable. A file that
+# exists but does not parse would be saved over. A missing file with a .bak
+# beside it is what _load_ui_config recovers from: the scan runs before that
+# load, a fresh file written here would hide the loss from it, and the next
+# save would copy the near-empty file over the backup. A missing file with no
+# backup is a fresh install, and the write proceeds.
+func _mod_sources_write_blocked(load_err: int, what: String) -> bool:
+	if load_err == OK:
+		return false
+	if FileAccess.file_exists(UI_CONFIG_PATH):
+		_log_critical("mod_config.cfg exists but failed to load (error %d) -- skipped saving %s so the config backup stays usable. The launcher will attempt backup recovery when it loads." \
+				% [load_err, what])
+		return true
+	if FileAccess.file_exists(UI_CONFIG_PATH + ".bak"):
+		_log_info("mod_config.cfg is missing and a backup exists -- skipped saving %s until the launcher has recovered the backup." % what)
+		return true
+	return false
+
 # Persist each scanned mod's source so missing-mod stubs can offer Download.
 # Follows the _resolve_mod_source ranking: a legacy modworkshop= line never
 # displaces a record another host's download wrote.
 func _persist_mod_sources_for_entries(entries: Array[Dictionary]) -> void:
 	var cfg := ConfigFile.new()
 	var load_err := cfg.load(UI_CONFIG_PATH)
-	# Never save over a config that exists but failed to parse: this runs before
-	# backup recovery and would clobber the good .bak. A missing file is fine.
-	if load_err != OK and FileAccess.file_exists(UI_CONFIG_PATH):
-		_log_critical("mod_config.cfg exists but failed to load (error " + str(load_err)
-				+ ") -- skipped saving the mod-source cache so the config backup stays"
-				+ " usable. The launcher will attempt backup recovery when it loads.")
+	if _mod_sources_write_blocked(load_err, "the mod-source cache"):
 		return
 	var changed := false
 	for entry in entries:
@@ -1556,11 +1570,7 @@ func _persist_single_mod_source(profile_key: String, rec: Dictionary) -> void:
 		return
 	var cfg := ConfigFile.new()
 	var load_err := cfg.load(UI_CONFIG_PATH)
-	# Same guard as _persist_mod_sources_for_entries.
-	if load_err != OK and FileAccess.file_exists(UI_CONFIG_PATH):
-		_log_critical("mod_config.cfg exists but failed to load (error " + str(load_err)
-				+ ") -- skipped recording the mod source for '" + profile_key
-				+ "' so the config backup stays usable.")
+	if _mod_sources_write_blocked(load_err, "the mod source for '" + profile_key + "'"):
 		return
 	var serialized := _serialize_mod_source_rec(rec)
 	var current := str(cfg.get_value("mod_sources", profile_key, ""))

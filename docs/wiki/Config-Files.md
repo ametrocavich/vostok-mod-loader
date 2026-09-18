@@ -261,7 +261,7 @@ A: Create a file named `modloader_disabled` (no extension) in the game's install
 
 **Q: Everything broke after an update. How do I reset?**  
 A: 
-1. Delete `mod_config.cfg` (resets the UI and profiles to fresh-install state).
+1. Delete `mod_config.cfg` and `mod_config.cfg.bak` (resets the UI and profiles to fresh-install state; with only the first gone the launcher restores it from the backup).
 2. Delete `user://mod_pass_state.cfg` (forces a rebuild of boot state).
 3. Delete `user://modloader_hooks/` (forces hook pack regeneration).
 4. If the game won't launch at all, create `modloader_disabled` in the install dir, launch vanilla, then remove the sentinel and relaunch. The loader rebuilds from scratch.

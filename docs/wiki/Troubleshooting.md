@@ -30,7 +30,7 @@ The loader is registered through `override.cfg` in the game folder. If that file
 
 ## Everything broke after an update
 
-1. Delete `mod_config.cfg` in the user folder ([Config-Files](Config-Files) has the path). This resets profiles and settings to fresh-install state.
+1. Delete `mod_config.cfg` and `mod_config.cfg.bak` in the user folder ([Config-Files](Config-Files) has the path). This resets profiles and settings to fresh-install state. With only the first file gone the launcher restores your profiles from the backup.
 2. Delete `mod_pass_state.cfg` in the same folder to force a rebuild of the boot state.
 3. Delete the `modloader_hooks` folder there to force the hook pack to regenerate.
 4. If the game will not launch at all, create `modloader_disabled` in the game folder, launch vanilla, then remove the file and launch again. The loader rebuilds from scratch.
