@@ -30,7 +30,7 @@ The JSON is plain UTF-8 `profile.json` at the root of a modpack zip, next to an 
 | Key | Required | Type | Meaning |
 |---|---|---|---|
 | `metroprofile` | yes | int | Schema version. Always `1` for v1 payloads. |
-| `name` | yes | String | Modpack display name, the pack's name on the site, whitespace-stripped. The zip filename and the profile slot used on apply are derived with `_sanitize_profile_name` (letters in any script, digits, space, hyphen, underscore). |
+| `name` | yes | String | Modpack display name, the pack's name on the site, whitespace-stripped. The profile slot used on apply is derived with `_sanitize_profile_name` (letters in any script, digits, space, hyphen, underscore), and so is the zip filename of a pack you export. A pack added from VostokMods is saved as `vostokmods-<slug>.zip`, named from its site slug and not from `name`. |
 | `enabled` | yes | Dictionary | `profile_key -> bool`. Only enabled mods are written (all values true); disabled-but-installed mods are left out so applying the pack never downloads or tracks them. Parsers still read the bool. |
 | `priority` | no | Dictionary | `profile_key -> int`, load-order priority in `[-999, 999]`. Absent entries default to 0 on apply. |
 | `modloader_version` | no | String | The `MODLOADER_VERSION` of the loader that wrote the file. Advisory only. |
