@@ -615,11 +615,11 @@ lib.revert(lib.Registry.INPUTS, "forward")
 lib.remove(lib.Registry.INPUTS, "mymod_quick_heal")
 ```
 
-Registered actions work immediately through `Input.is_action_pressed("mymod_quick_heal")` in your own code. `register` fails if the action already exists in `InputMap`, vanilla or otherwise; use `override`. `remove` refuses a vanilla action that a mod only patched; use `revert`.
+Registered actions work immediately through `Input.is_action_pressed("mymod_quick_heal")` in your own code. `register` fails if the action already exists in `InputMap`, vanilla or otherwise; use `override`. `remove` only takes away an action a mod registered; a vanilla action that a mod patched or overrode is left in `InputMap`, and `revert` is what undoes those.
 
 Vanilla's Settings -> Keybinds panel reads a hardcoded `inputs` dict inside `Inputs.gd`. A registered action works in-game but does not appear in the rebind menu without a hook on `inputs-createactions-pre` (hook names are lowercase) that merges it into that dict. The registry does not install that hook.
 
-Two mods overriding the same action: both succeed and the last write wins. The stash keeps the original event list and deadzone, so `revert` restores them.
+Two mods overriding the same action: both succeed and the last write wins. The stash keeps the original event list and deadzone, so `revert` restores them. A `default_event` patch stashes every event the action had, not only the first.
 
 ### SCENE_PATHS
 

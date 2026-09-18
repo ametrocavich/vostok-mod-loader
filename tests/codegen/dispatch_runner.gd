@@ -51,6 +51,8 @@
 ##   T12 defaulted parameters flow through when omitted at the call site
 ##   T13 registry inputs: an override's deadzone reaches InputMap, and revert
 ##       restores the deadzone the action had
+##   T14 registry inputs: revert brings back every event of a patched
+##       action, and a reverted override leaves nothing for remove() to take
 extends SceneTree
 
 const FIXTURE_PATH := "res://Scripts/FixtureDispatch.gd"
@@ -94,7 +96,7 @@ func _finish() -> void:
 	_done = true
 	var ms := Time.get_ticks_msec() - _t0
 	if _failures.is_empty():
-		print("[dispatch] PASS: %d assertion(s) across T1..T13, %d frame(s), %d ms in-engine" % [_checks, _frames, ms])
+		print("[dispatch] PASS: %d assertion(s) across T1..T14, %d frame(s), %d ms in-engine" % [_checks, _frames, ms])
 		quit(0)
 	else:
 		printerr("[dispatch] FAILED: %d of %d assertion(s) (%d ms in-engine); first: %s" % [_failures.size(), _checks, ms, _failures[0]])
@@ -225,6 +227,7 @@ func _run_tests() -> void:
 	await _t11_coroutine()
 	_t12_defaults()
 	_t13_input_deadzone()
+	_t14_input_action_comes_back_whole()
 
 func _t1_pre() -> void:
 	var id: int = _lib.hook("fixturedispatch-add-pre", func(x, y): _log.append("pre:add:%d:%d" % [x, y]))
@@ -495,3 +498,37 @@ func _t13_input_deadzone() -> void:
 	_expect(is_equal_approx(InputMap.action_get_deadzone(action), 0.2), "T13",
 			"reverting a deadzone patch restores the live value, not the engine default (got %f)" % InputMap.action_get_deadzone(action))
 	InputMap.erase_action(action)
+
+func _t14_input_action_comes_back_whole() -> void:
+	var action := "rtv_dispatch_two_event_action"
+	_vanilla_action(action)
+	_expect(_lib.patch("inputs", action, {"default_event": _key_event(KEY_C)}), "T14", "an event patch succeeds")
+	_expect_eq(InputMap.action_get_events(action).size(), 1, "T14", "events while patched")
+	_expect(_lib.revert("inputs", action), "T14", "revert of the event patch succeeds")
+	var codes: Array = []
+	for ev in InputMap.action_get_events(action):
+		codes.append((ev as InputEventKey).keycode)
+	_expect_eq(codes, [KEY_A, KEY_B], "T14", "every event the action had is back after the revert")
+
+	# An override that was reverted leaves nothing of the registry's on the
+	# action, so remove() has nothing to take away.
+	_expect(_lib.override("inputs", action, {"default_event": _key_event(KEY_C)}), "T14", "override succeeds")
+	_expect(_lib.revert("inputs", action), "T14", "revert of the override succeeds")
+	_expect(_lib.get_entry("inputs", action) == null, "T14", "a reverted override leaves no registry entry on an action the registry did not add")
+	_expect(not _lib.remove("inputs", action), "T14", "remove() refuses an action the registry did not add")
+	_expect(InputMap.has_action(action), "T14", "the action is still in InputMap")
+
+	# A mod's own registration gets its payload back when an override on it is reverted.
+	var own := "rtv_dispatch_registered_action"
+	if InputMap.has_action(own):
+		InputMap.erase_action(own)
+	_expect(_lib.register("inputs", own, {"display_label": "Mine", "default_event": _key_event(KEY_A)}), "T14", "register succeeds")
+	_expect(_lib.override("inputs", own, {"display_label": "Theirs", "default_event": _key_event(KEY_B)}), "T14", "override of a registration succeeds")
+	_expect(_lib.revert("inputs", own), "T14", "revert of that override succeeds")
+	var entry = _lib.get_entry("inputs", own)
+	_expect(entry is Dictionary and str((entry as Dictionary).get("display_label", "")) == "Mine", "T14",
+			"the registration's own payload is back after the revert (got %s)" % str(entry))
+	_expect(_lib.remove("inputs", own), "T14", "the mod's own registration can still be removed")
+	_expect(not InputMap.has_action(own), "T14", "and its action leaves InputMap")
+	if InputMap.has_action(action):
+		InputMap.erase_action(action)

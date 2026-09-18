@@ -73,22 +73,23 @@ func _override_input(id: String, data: Variant) -> bool:
 	if payload.is_empty():
 		return false
 	var ov: Dictionary = _registry_overridden.get("inputs", {})
-	# Stash original event list + deadzone once so revert can restore.
+	var reg: Dictionary = _registry_registered.get("inputs", {})
+	# Stash the event list, the deadzone and this registry's own entry (null
+	# for an action it did not add) once, so revert can restore all three.
 	if not ov.has(id):
 		var originals: Array = []
 		for e in InputMap.action_get_events(id):
 			originals.append(e)
-		# Stash the real deadzone so revert restores it, not a forced 0.5.
 		ov[id] = {
 			"events": originals,
 			"deadzone": InputMap.action_get_deadzone(id),
+			"registered": reg.get(id),
 		}
 		_registry_overridden["inputs"] = ov
 	InputMap.action_erase_events(id)
 	InputMap.action_add_event(id, payload["default_event"])
 	InputMap.action_set_deadzone(id, payload["deadzone"])
 	# Update the metadata dict too so get_entry/patch see the current label.
-	var reg: Dictionary = _registry_registered.get("inputs", {})
 	reg[id] = payload
 	_registry_registered["inputs"] = reg
 	_log_debug("[Registry] overrode input '%s' (label=%s)" % [id, payload["display_label"]])
@@ -138,10 +139,8 @@ func _patch_input(id: String, fields: Dictionary) -> bool:
 					push_warning("[Registry] patch('inputs', '%s'): default_event must be InputEvent" % id)
 					continue
 				if not stash.has(fname):
-					# Stash the live first event so revert restores exactly
-					# what was active.
-					var existing := InputMap.action_get_events(id)
-					stash[fname] = existing[0] if existing.size() > 0 else null
+					# Stash every live event: an action can carry several.
+					stash[fname] = InputMap.action_get_events(id).duplicate()
 				InputMap.action_erase_events(id)
 				InputMap.action_add_event(id, val)
 				current["default_event"] = val
@@ -164,6 +163,24 @@ func _patch_input(id: String, fields: Dictionary) -> bool:
 	_registry_patched["inputs"] = patched
 	_log_debug("[Registry] patched input '%s' fields %s" % [id, fields.keys()])
 	return true
+
+# Write an entry back after a revert. The stub that carries a patch on an
+# action this registry did not add goes away with its last patch.
+func _store_reverted_input(id: String, entry: Dictionary, still_patched: bool) -> void:
+	var reg: Dictionary = _registry_registered.get("inputs", {})
+	if entry.is_empty() or (bool(entry.get("vanilla_stub", false)) and not still_patched):
+		reg.erase(id)
+	else:
+		reg[id] = entry
+	_registry_registered["inputs"] = reg
+
+# Put a stashed event list back on an action. Returns the first event, which
+# is what the entry's default_event field holds.
+func _restore_input_events(id: String, events: Array) -> InputEvent:
+	InputMap.action_erase_events(id)
+	for e in events:
+		InputMap.action_add_event(id, e)
+	return events[0] if events.size() > 0 else null
 
 func _remove_input(id: String) -> bool:
 	var reg: Dictionary = _registry_registered.get("inputs", {})
@@ -206,18 +223,13 @@ func _revert_input(id: String, fields: Array) -> bool:
 					"display_label":
 						current["display_label"] = stash[fname]
 					"default_event":
-						InputMap.action_erase_events(id)
-						if stash[fname] != null:
-							InputMap.action_add_event(id, stash[fname])
-						current["default_event"] = stash[fname]
+						current["default_event"] = _restore_input_events(id, stash[fname])
 					"deadzone":
 						InputMap.action_set_deadzone(id, float(stash[fname]))
 						current["deadzone"] = stash[fname]
-			if not current.is_empty():
-				reg2[id] = current
-				_registry_registered["inputs"] = reg2
 			patched.erase(id)
 			_registry_patched["inputs"] = patched
+			_store_reverted_input(id, current, false)
 			did_something = true
 		if ov.has(id):
 			var entry: Dictionary = ov[id]
@@ -225,10 +237,12 @@ func _revert_input(id: String, fields: Array) -> bool:
 			for e in entry["events"]:
 				InputMap.action_add_event(id, e)
 			InputMap.action_set_deadzone(id, float(entry["deadzone"]))
+			# The entry goes back to what it was: the mod's own registration,
+			# a patch stub, or nothing for an action this registry did not add.
+			var before: Dictionary = entry["registered"] if entry.get("registered") is Dictionary else {}
+			_store_reverted_input(id, before, patched.has(id))
 			ov.erase(id)
 			_registry_overridden["inputs"] = ov
-			# reg is left intact: it now reflects vanilla state, or the
-			# mod's own registration if the mod also registered the action.
 			did_something = true
 		if not did_something:
 			push_warning("[Registry] revert('inputs', '%s'): nothing to revert" % id)
@@ -249,10 +263,7 @@ func _revert_input(id: String, fields: Array) -> bool:
 			"display_label":
 				current2["display_label"] = stash2[fname]
 			"default_event":
-				InputMap.action_erase_events(id)
-				if stash2[fname] != null:
-					InputMap.action_add_event(id, stash2[fname])
-				current2["default_event"] = stash2[fname]
+				current2["default_event"] = _restore_input_events(id, stash2[fname])
 			"deadzone":
 				InputMap.action_set_deadzone(id, float(stash2[fname]))
 				current2["deadzone"] = stash2[fname]
@@ -263,7 +274,5 @@ func _revert_input(id: String, fields: Array) -> bool:
 	else:
 		patched[id] = stash2
 	_registry_patched["inputs"] = patched
-	if not current2.is_empty():
-		reg3[id] = current2
-		_registry_registered["inputs"] = reg3
+	_store_reverted_input(id, current2, patched.has(id))
 	return did_something
