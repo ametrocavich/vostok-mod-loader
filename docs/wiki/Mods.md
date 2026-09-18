@@ -59,7 +59,7 @@ The **Developer mode** checkbox in the toolbar turns on verbose logging, a confl
 
 In the toolbar at the top of the tab, **Open mods folder** opens the `mods` folder in your file manager and **UI scale** resizes the launcher. In the bottom bar, the launch button reads **Launch modded** when at least one enabled mod will load, **Launch unmodded (N blocked)** when every enabled mod is blocked by a missing dependency, and **Launch** when nothing is enabled; closing the window does the same as clicking it. **Launch vanilla** starts the game once with no mods and leaves your profiles alone.
 
-Once the game is running, the **Mods** button on the main menu reopens this window. If you change which mods load there, closing it restarts the game into the new mod set. Renaming a profile, or creating one with **Copy current selection**, changes nothing that loads, so it does not restart.
+Once the game is running, the **Mods** button on the main menu reopens this window. The loader adds the button by wrapping the menu script, which it only does when at least one mod loaded; launched with nothing enabled, the game has no such button and the window opens again at the next launch. If you change which mods load there, closing it restarts the game into the new mod set. Renaming a profile, or creating one with **Copy current selection**, changes nothing that loads, so it does not restart.
 
 ## Related
 

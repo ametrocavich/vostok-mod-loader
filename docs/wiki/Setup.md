@@ -17,7 +17,7 @@ How to install the mod loader and get your first mods running.
 3. Create a `mods` folder in that same game folder if there isn't one already.
 4. Launch the game. The mod loader window appears before the main menu.
 
-That's it. From that window you can turn mods on and off, download new ones, and launch the game; [Mods](Mods) walks through it. Once in the main menu, the **Mods** button reopens the same window; if you change anything there, closing it restarts the game so the new mod set loads.
+That's it. From that window you can turn mods on and off, download new ones, and launch the game; [Mods](Mods) walks through it. Once in the main menu, the **Mods** button reopens the same window (the button is there whenever at least one mod loaded; with none, the window still opens at the next launch); if you change anything there, closing it restarts the game so the new mod set loads.
 
 ## Get some mods
 

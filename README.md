@@ -84,7 +84,7 @@ Mods without `mod.txt` still mount as resource packs. Their files override vanil
 
 ### Opt-in hook declarations
 
-The loader uses an opt-in model (since v3.0.1): a mod list that declares nothing loads byte-identical to a vanilla setup (no wrap, no rewrite, no hook pack). Declarations turn on specific parts of the system.
+The loader uses an opt-in model (since v3.0.1): a mod list that declares nothing runs the game's scripts as shipped. The one exception is the loader's own wrap of `Menu.gd :: _ready`, which adds the main-menu **Mods** button whenever at least one mod loaded. Declarations turn on specific parts of the system.
 
 Most mods don't need any declaration. If your mod calls `.hook("controller-jump-pre", cb)` directly in its source, the scanner finds it and enrolls `Controller.gd :: jump` for you. That covers every mod written against the native hook API.
 
@@ -124,7 +124,7 @@ v3.0.0 inferred the wrap surface from `extends`, `take_over_path`, and a pinned 
 
 ### Migrating from v2.1.0
 
-If you stayed on v2.1.0 because v3.0.0 broke your loadout, upgrade directly. v3.0.1 and later behave like v2.1.0 for undeclared mods: no declarations means no rewriting, and your mods run against unmodified vanilla bytes.
+If you stayed on v2.1.0 because v3.0.0 broke your loadout, upgrade directly. v3.0.1 and later behave like v2.1.0 for undeclared mods: no declarations means no rewriting beyond the loader's own `Menu.gd` wrap for the **Mods** button, and your mods run against unmodified vanilla scripts.
 
 Declare only the features you use:
 
