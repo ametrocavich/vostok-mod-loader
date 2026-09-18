@@ -41,9 +41,9 @@ Your edits to the pack are kept, so re-applying the same pack resumes where you 
 
 If the backup is missing (a corrupt or hand-edited launcher config), unload refuses and leaves everything untouched: `The backup for this modpack is missing, so nothing was unloaded and your profiles are untouched.` To force-remove the pack in that case, quit the game and delete the `active_modpack` line from `mod_config.cfg`.
 
-## Re-apply
+## Retrying failed downloads
 
-Clicking **Apply** on the already-active pack re-runs only the download step, to pick up mods that failed the first time. It never overwrites your backup and never discards edits you made while the pack was active. The **Retry failed** button in the apply summary re-attempts only the downloads that failed.
+The apply summary lists the downloads that failed, and its **Retry failed** button re-attempts only those. After that, a mod the pack lists but that is not installed shows in the Mods tab as a missing-mod row with its own **Download** button. Neither path touches your backup or the edits you made while the pack was active. The active pack's row offers **Unload** only; there is no second **Apply**.
 
 ## While a pack is active, profile editing is limited
 
@@ -123,7 +123,7 @@ A record with neither a resolvable `provider` + `id` nor a positive `modworkshop
 
 A pack from VostokMods pins every mod to the version its manifest names. A hand-written pack may carry only the id, in which case the current file is fetched.
 
-At apply time, only an exact `profile_key` match (or a case-insensitive `mod_id@version` match) counts as already installed. A different version of the same mod is treated as missing and the pinned version is fetched, landing beside the copy already there with a `-v<version>` suffix. After the downloads land, the pack's `enabled` / `priority` / `dep_ignore` keys are rewritten to the keys those mods actually have on the recipient's machine (matched by `mod_id@version`, or by the pack's source record against the installed mod's source), so a mod the author keyed by filename still enables when the host serves it under another name.
+At apply time a mod counts as already installed on an exact `profile_key` match, a case-insensitive `mod_id@version` match, or when an installed mod's recorded source is the pack entry's site id at the pinned version (any version when the pack pins none). A different version of the same mod is treated as missing and the pinned version is fetched, landing beside the copy already there with a `-v<version>` suffix. After the downloads land, the pack's `enabled` / `priority` / `dep_ignore` keys are rewritten to the keys those mods actually have on the recipient's machine (matched by `mod_id@version`, or by the pack's source record against the installed mod's source), so a mod the author keyed by filename still enables when the host serves it under another name.
 
 ### Generated state
 
