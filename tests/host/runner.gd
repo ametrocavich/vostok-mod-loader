@@ -427,6 +427,13 @@ func _t7_modtxt_reader(ml: Object) -> void:
 	_assert(bare_cfg != null and bare_cfg.has_section("registry"), "T7: a bare [registry] header survives the parse")
 	_assert(bare_cfg != null and bare_cfg.has_section("Registry"), "T7: a bare header the loader does not know survives too, so it can be reported")
 	_assert(bare_cfg != null and not bare_cfg.has_section("hooks"), "T7: a bare known section gets no placeholder key")
+	# The parse diagnostic names the broken line, not an earlier value that
+	# legitimately spans several lines.
+	var spanning: Dictionary = ml._parse_mod_txt('[mod]\nname="X"\ntags=[\n"a",\n"b"\n]\nid=not quoted\n')
+	_assert(spanning["cfg"] == null and str(spanning["error"]).begins_with("line 7 [mod]"),
+			"T7: the diagnostic skips a multi-line value and names line 7 (got '%s')" % str(spanning["error"]))
+	var first_line: Dictionary = ml._parse_mod_txt('[mod]\nname=X Y\nid="x"\n')
+	_assert(str(first_line["error"]).begins_with("line 2 [mod]"), "T7: a broken single line is still named (got '%s')" % str(first_line["error"]))
 
 # Ranking a mod.txt declaration against the [mod_sources] record the launcher
 # stored for the same mod. Files served by vostokmods.net carry only a legacy

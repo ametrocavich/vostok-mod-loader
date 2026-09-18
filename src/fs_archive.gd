@@ -307,27 +307,29 @@ func _quote_unquoted_hooks_values(text: String) -> String:
 		out.append(rebuilt)
 	return "\n".join(out)
 
-# Locate the first line ConfigFile.parse() rejects. O(N) parses, but it
-# only fires on already-broken mods.
+# Locate the line ConfigFile.parse() rejects: the first line of content after
+# the longest prefix of the file that still parses. Growing a prefix, where a
+# per-line probe would blame a value that legitimately spans several lines.
+# O(N) parses, but it only fires on already-broken mods.
 func _diagnose_parse_failure(text: String) -> String:
+	var lines := text.split("\n")
+	var last_ok := 0
+	var prefix := ""
+	for i in lines.size():
+		prefix += lines[i] + "\n"
+		if ConfigFile.new().parse(prefix) == OK:
+			last_ok = i + 1
 	var current_section := ""
-	var line_num := 0
-	for line in text.split("\n"):
-		line_num += 1
-		var stripped := line.strip_edges()
+	for i in lines.size():
+		var stripped := lines[i].strip_edges()
 		if stripped.is_empty() or stripped.begins_with("#") or stripped.begins_with(";"):
 			continue
+		if i >= last_ok:
+			var section_label := ("[%s]" % current_section) if current_section != "" else "(no section)"
+			return "line %d %s: %s" % [i + 1, section_label, _truncate_for_log(stripped)]
 		if stripped.begins_with("[") and stripped.ends_with("]"):
 			current_section = stripped.substr(1, stripped.length() - 2)
-			continue
-		var probe := ConfigFile.new()
-		var header := ""
-		if current_section != "":
-			header = "[%s]\n" % current_section
-		if probe.parse(header + line + "\n") != OK:
-			var section_label := ("[%s]" % current_section) if current_section != "" else "(no section)"
-			return "line %d %s: %s" % [line_num, section_label, _truncate_for_log(stripped)]
-	return "could not pin line (full parse failed but per-line probes passed)"
+	return "could not pin line (every prefix of the file parses, the whole does not)"
 
 func _truncate_for_log(s: String) -> String:
 	if s.length() <= 80:
