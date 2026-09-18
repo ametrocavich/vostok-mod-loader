@@ -95,6 +95,7 @@ func _array_op_on_resource(reg: String, stash_key: Variant, target: Resource, fi
 	var stash: Dictionary = patched.get(stash_key, {})
 	if not stash.has(field):
 		stash[field] = (current as Array).duplicate()
+		_patch_source_note(reg, stash_key, field, target)
 	match op:
 		"append":
 			for v in values:
@@ -120,6 +121,32 @@ func _array_op_on_resource(reg: String, stash_key: Variant, target: Resource, fi
 	_log_debug("[Registry] %s('%s', %s) field '%s' values=%s" % [op, reg, str(stash_key), field, str(values)])
 	return true
 
+
+# Record the object or dict a stashed field value was read from.
+func _patch_source_note(reg: String, key: Variant, field: String, source: Variant) -> void:
+	var by_key: Dictionary = _registry_patch_sources.get(reg, {})
+	var by_field: Dictionary = by_key.get(key, {})
+	by_field[field] = source
+	by_key[key] = by_field
+	_registry_patch_sources[reg] = by_key
+
+# The recorded source of a stashed field, or `fallback` when none was recorded.
+func _patch_source(reg: String, key: Variant, field: String, fallback: Variant) -> Variant:
+	var by_field: Dictionary = (_registry_patch_sources.get(reg, {}) as Dictionary).get(key, {})
+	return by_field.get(field, fallback)
+
+# Forget one field's source, or every field's when `field` is empty.
+func _patch_source_forget(reg: String, key: Variant, field: String = "") -> void:
+	var by_key: Dictionary = _registry_patch_sources.get(reg, {})
+	if not by_key.has(key):
+		return
+	if field == "":
+		by_key.erase(key)
+		return
+	var by_field: Dictionary = by_key[key]
+	by_field.erase(field)
+	if by_field.is_empty():
+		by_key.erase(key)
 
 # Coerce a single value or Array into an Array.
 func _coerce_to_array(values: Variant) -> Array:

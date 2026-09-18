@@ -50,6 +50,11 @@ const Registry := {
 var _registry_registered: Dictionary = {}
 var _registry_overridden: Dictionary = {}
 var _registry_patched: Dictionary = {}
+# Where each stashed value was read from: reg -> {key -> {field -> Resource or
+# Dictionary}}. An override placed after a patch changes what the id resolves
+# to, and revert has to reach the object the patch changed. Read by items,
+# sounds and scene_paths, the slots where an override can do that.
+var _registry_patch_sources: Dictionary = {}
 
 # Default-arm diagnostic: a mod typo, or a Registry const with no match arm
 # for this verb, which is a loader bug nothing else flags.

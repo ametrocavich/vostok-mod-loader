@@ -145,6 +145,7 @@ func _patch_scene_path(id: String, fields: Dictionary) -> bool:
 				stash[fname] = target_dict[fname]
 			else:
 				stash[fname] = "__rtv_missing__"
+			_patch_source_note("scene_paths", id, fname, target_dict)
 		target_dict[fname] = fields[field]
 	# Dicts are references; the re-store is redundant but explicit.
 	if target_store == "override":
@@ -180,8 +181,17 @@ func _remove_scene_path(id: String) -> bool:
 	if patched.has(id):
 		patched.erase(id)
 		_registry_patched["scene_paths"] = patched
+		_patch_source_forget("scene_paths", id)
 	_log_debug("[Registry] removed scene_path '%s'" % id)
 	return true
+
+# Put one stashed field back on a scene-path dict; the sentinel marks a key
+# the patch added. The type gate is needed: bool == String is a runtime error.
+func _restore_scene_path_field(target_dict: Dictionary, fname: String, stashed_val: Variant) -> void:
+	if stashed_val is String and stashed_val == "__rtv_missing__":
+		target_dict.erase(fname)
+	else:
+		target_dict[fname] = stashed_val
 
 func _revert_scene_path(id: String, fields: Array) -> bool:
 	var ldr := _loader_node()
@@ -195,7 +205,8 @@ func _revert_scene_path(id: String, fields: Array) -> bool:
 	var target_dict: Dictionary
 	var stash: Dictionary
 	if fields.is_empty():
-		# Patches first (onto whatever dict is current).
+		# Patches first, each value onto the dict it was read from: the
+		# override when the patch came after it, the registration otherwise.
 		if patched.has(id):
 			stash = patched[id]
 			if ldr._rtv_override_scene_paths.has(id):
@@ -203,15 +214,10 @@ func _revert_scene_path(id: String, fields: Array) -> bool:
 			elif ldr._rtv_mod_scene_paths.has(id):
 				target_dict = ldr._rtv_mod_scene_paths[id]
 			for fname in stash.keys():
-				# Gate the sentinel check by type: bool == String raises a
-				# runtime error under strict GDScript.
-				var stashed_val = stash[fname]
-				if stashed_val is String and stashed_val == "__rtv_missing__":
-					target_dict.erase(fname)
-				else:
-					target_dict[fname] = stashed_val
+				_restore_scene_path_field(_patch_source("scene_paths", id, fname, target_dict), fname, stash[fname])
 			patched.erase(id)
 			_registry_patched["scene_paths"] = patched
+			_patch_source_forget("scene_paths", id)
 			did_something = true
 		if ov.has(id):
 			ldr._rtv_override_scene_paths.erase(id)
@@ -238,11 +244,8 @@ func _revert_scene_path(id: String, fields: Array) -> bool:
 		if not stash.has(fname):
 			push_warning("[Registry] revert('scene_paths', '%s'): field '%s' wasn't patched" % [id, fname])
 			continue
-		var stashed_val = stash[fname]
-		if stashed_val is String and stashed_val == "__rtv_missing__":
-			target_dict.erase(fname)
-		else:
-			target_dict[fname] = stashed_val
+		_restore_scene_path_field(_patch_source("scene_paths", id, fname, target_dict), fname, stash[fname])
+		_patch_source_forget("scene_paths", id, fname)
 		stash.erase(fname)
 		did_something = true
 	if stash.is_empty():

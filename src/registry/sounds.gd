@@ -184,6 +184,7 @@ func _patch_sound(id: String, fields: Dictionary) -> bool:
 			continue
 		if not stash.has(field_name):
 			stash[field_name] = target.get(field_name)
+			_patch_source_note("sounds", id, field_name, target)
 		target.set(field_name, fields[field])
 	patched[id] = stash
 	_registry_patched["sounds"] = patched
@@ -204,6 +205,7 @@ func _remove_sound(id: String) -> bool:
 	if patched.has(id):
 		patched.erase(id)
 		_registry_patched["sounds"] = patched
+		_patch_source_forget("sounds", id)
 	_log_debug("[Registry] removed sound '%s'" % id)
 	return true
 
@@ -212,17 +214,18 @@ func _revert_sound(id: String, fields: Array) -> bool:
 	var ov: Dictionary = _registry_overridden.get("sounds", {})
 	var patched: Dictionary = _registry_patched.get("sounds", {})
 	var lib := _audio_library()
-	# Full revert: patches first (onto whatever currently resolves, which
-	# may be an override), then the override itself.
+	# Full revert: patches first, each value onto the AudioEvent it was read
+	# from (see _revert_item), then the override itself.
 	if fields.is_empty():
 		if patched.has(id):
-			var target := _lookup_sound(id)
-			if target != null:
-				var stash: Dictionary = patched[id]
-				for fname in stash.keys():
-					target.set(fname, stash[fname])
+			var stash: Dictionary = patched[id]
+			for fname in stash.keys():
+				var source: Resource = _patch_source("sounds", id, fname, _lookup_sound(id))
+				if source != null:
+					source.set(fname, stash[fname])
 			patched.erase(id)
 			_registry_patched["sounds"] = patched
+			_patch_source_forget("sounds", id)
 			did_something = true
 		if ov.has(id) and lib != null:
 			lib.set(id, ov[id])
@@ -245,7 +248,8 @@ func _revert_sound(id: String, fields: Array) -> bool:
 		if not stash.has(fname):
 			push_warning("[Registry] revert('sounds', '%s'): field '%s' wasn't patched" % [id, fname])
 			continue
-		target.set(fname, stash[fname])
+		(_patch_source("sounds", id, fname, target) as Resource).set(fname, stash[fname])
+		_patch_source_forget("sounds", id, fname)
 		stash.erase(fname)
 		did_something = true
 	if stash.is_empty():

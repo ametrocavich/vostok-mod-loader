@@ -54,6 +54,8 @@
 ##   T14 registry inputs: revert brings back every event of a patched
 ##       action, and a reverted override leaves nothing for remove() to take
 ##   T15 registry scenes: remove() refuses an id that carries an override
+##   T16 registry items and scene_paths: a patch made before an override is
+##       reverted onto the object it changed
 extends SceneTree
 
 const FIXTURE_PATH := "res://Scripts/FixtureDispatch.gd"
@@ -99,7 +101,7 @@ func _finish() -> void:
 	_done = true
 	var ms := Time.get_ticks_msec() - _t0
 	if _failures.is_empty():
-		print("[dispatch] PASS: %d assertion(s) across T1..T15, %d frame(s), %d ms in-engine" % [_checks, _frames, ms])
+		print("[dispatch] PASS: %d assertion(s) across T1..T16, %d frame(s), %d ms in-engine" % [_checks, _frames, ms])
 		quit(0)
 	else:
 		printerr("[dispatch] FAILED: %d of %d assertion(s) (%d ms in-engine); first: %s" % [_failures.size(), _checks, ms, _failures[0]])
@@ -235,6 +237,7 @@ func _run_tests() -> void:
 	_t13_input_deadzone()
 	_t14_input_action_comes_back_whole()
 	_t15_scene_override_blocks_remove()
+	_t16_revert_reaches_the_patched_object()
 
 func _t1_pre() -> void:
 	var id: int = _lib.hook("fixturedispatch-add-pre", func(x, y): _log.append("pre:add:%d:%d" % [x, y]))
@@ -585,3 +588,39 @@ func _t15_scene_override_blocks_remove() -> void:
 	_expect(_lib.get_entry("scenes", "rtv_test_scene") == mine, "T15", "the registration resolves again, it was not removed from under the override")
 	_expect(_lib.remove("scenes", "rtv_test_scene"), "T15", "remove() takes the registration once the override is gone")
 	_expect(_lib.get_entry("scenes", "rtv_test_scene") == null, "T15", "and the id no longer resolves")
+
+func _item_like(file_name: String, weight: float) -> Resource:
+	var script := GDScript.new()
+	script.source_code = "extends Resource\nvar file: String = \"\"\nvar weight: float = 0.0\nvar tags: Array = []\n"
+	script.reload()
+	var res: Resource = script.new()
+	res.set("file", file_name)
+	res.set("weight", weight)
+	return res
+
+func _t16_revert_reaches_the_patched_object() -> void:
+	_registry_tree()
+	# An item: patched, then overridden, then reverted. The patch goes back
+	# onto the object it changed, not onto the override.
+	var first := _item_like("rtv_test_item", 1.0)
+	var second := _item_like("rtv_test_item", 7.0)
+	_expect(_lib.register("items", "rtv_test_item", first), "T16", "register of an item succeeds")
+	_expect(_lib.patch("items", "rtv_test_item", {"weight": 5.0}), "T16", "patch succeeds")
+	_expect(_lib.append("items", "rtv_test_item", "tags", "heavy"), "T16", "append succeeds")
+	_expect(_lib.override("items", "rtv_test_item", second), "T16", "override after the patch succeeds")
+	_expect(_lib.revert("items", "rtv_test_item"), "T16", "full revert succeeds")
+	_expect_eq(first.get("weight"), 1.0, "T16", "the patched item has its own weight back")
+	_expect_eq((first.get("tags") as Array).size(), 0, "T16", "and its own array back")
+	_expect_eq(second.get("weight"), 7.0, "T16", "the override object was not written to")
+	_expect(_lib.get_entry("items", "rtv_test_item") == first, "T16", "the id resolves to the registration again")
+	_lib.remove("items", "rtv_test_item")
+
+	# The same order of calls on a scene path.
+	var path := "res://Scripts/FixtureDispatch.gd"
+	_expect(_lib.register("scene_paths", "rtv_test_path", {"path": path, "shelter": false}), "T16", "register of a scene path succeeds")
+	_expect(_lib.patch("scene_paths", "rtv_test_path", {"shelter": true}), "T16", "scene path patch succeeds")
+	_expect(_lib.override("scene_paths", "rtv_test_path", {"path": path, "shelter": false, "menu": true}), "T16", "scene path override succeeds")
+	_expect(_lib.revert("scene_paths", "rtv_test_path"), "T16", "scene path full revert succeeds")
+	var registered: Dictionary = _fake_loader.get("_rtv_mod_scene_paths").get("rtv_test_path", {})
+	_expect_eq(registered.get("shelter"), false, "T16", "the registered scene path has its own flag back")
+	_lib.remove("scene_paths", "rtv_test_path")

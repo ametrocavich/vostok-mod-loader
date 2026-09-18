@@ -76,6 +76,7 @@ func _patch_item(id: String, fields: Dictionary) -> bool:
 			continue
 		if not stash.has(field_name):
 			stash[field_name] = target.get(field_name)
+			_patch_source_note("items", id, field_name, target)
 		target.set(field_name, fields[field])
 	patched[id] = stash
 	_registry_patched["items"] = patched
@@ -109,6 +110,7 @@ func _remove_item(id: String) -> bool:
 	if patched.has(id):
 		patched.erase(id)
 		_registry_patched["items"] = patched
+		_patch_source_forget("items", id)
 	_log_debug("[Registry] removed item '%s'" % id)
 	return true
 
@@ -116,19 +118,19 @@ func _revert_item(id: String, fields: Array) -> bool:
 	var did_something := false
 	var ov: Dictionary = _registry_overridden.get("items", {})
 	var patched: Dictionary = _registry_patched.get("items", {})
-	# Full revert. Order matters: restore the patch stash first (onto the
-	# currently-resolving entry, which may be an override), then drop the
-	# override. Reversed, patch values would land on vanilla ItemData,
-	# mutating the base resource permanently.
+	# Full revert: the patch stash first, each value onto the object it was
+	# read from (the override when the patch came after it, the entry under
+	# the override when it came before), then the override.
 	if fields.is_empty():
 		if patched.has(id):
-			var target := _lookup_item(id)
-			if target != null:
-				var stash: Dictionary = patched[id]
-				for fname in stash.keys():
-					target.set(fname, stash[fname])
+			var stash: Dictionary = patched[id]
+			for fname in stash.keys():
+				var source: Resource = _patch_source("items", id, fname, _lookup_item(id))
+				if source != null:
+					source.set(fname, stash[fname])
 			patched.erase(id)
 			_registry_patched["items"] = patched
+			_patch_source_forget("items", id)
 			did_something = true
 		if ov.has(id):
 			var reg: Dictionary = _registry_registered.get("items", {})
@@ -159,7 +161,8 @@ func _revert_item(id: String, fields: Array) -> bool:
 		if not stash.has(fname):
 			push_warning("[Registry] revert('items', '%s'): field '%s' wasn't patched" % [id, fname])
 			continue
-		target.set(fname, stash[fname])
+		(_patch_source("items", id, fname, target) as Resource).set(fname, stash[fname])
+		_patch_source_forget("items", id, fname)
 		stash.erase(fname)
 		did_something = true
 	if stash.is_empty():
