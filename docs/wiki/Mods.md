@@ -59,7 +59,7 @@ The **Developer mode** checkbox in the toolbar turns on verbose logging, a confl
 
 **UI scale** resizes the launcher. **Open mods folder** opens the `mods` folder in your file manager. The launch button reads **Launch modded** when at least one enabled mod will load, **Launch unmodded (N blocked)** when every enabled mod is blocked by a missing dependency, and **Launch** when nothing is enabled; closing the window does the same as clicking it. **Launch vanilla** starts the game once with no mods and leaves your profiles alone.
 
-Once the game is running, the **Mods** button on the main menu reopens this window. If you change anything there, closing it restarts the game into the new mod set.
+Once the game is running, the **Mods** button on the main menu reopens this window. If you change which mods load there, closing it restarts the game into the new mod set. Renaming a profile or creating one from the current selection changes nothing that loads, so it does not restart.
 
 ## Related
 

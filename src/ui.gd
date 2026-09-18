@@ -526,8 +526,18 @@ func _create_profile(name: String) -> void:
 	if old != VANILLA_PROFILE and old != name:
 		_snapshot_mcm_to(old)
 	_active_profile = name
-	_save_ui_config()
+	# The new profile has no stored view settings; start from the defaults.
+	_mods_hide_disabled = false
+	_save_profile_bookkeeping()
 	_snapshot_mcm_to(name)
+
+# _save_ui_config for a change that touches no mod state: a copy or a rename
+# of the active profile leaves the enabled set and the load order as they
+# were, so it must not flag the restart a post-boot mod change needs.
+func _save_profile_bookkeeping() -> void:
+	var was_dirty := _dirty_since_boot
+	_save_ui_config()
+	_dirty_since_boot = was_dirty
 
 # Delete the active profile's sections and its MCM snapshot, then switch to
 # the first remaining profile. Caller ensures another profile exists.
@@ -596,7 +606,7 @@ func _rename_profile(new_name: String) -> void:
 	if old == new_name:
 		return
 	_active_profile = new_name
-	_save_ui_config()
+	_save_profile_bookkeeping()
 	var cfg := ConfigFile.new()
 	if cfg.load(UI_CONFIG_PATH) != OK:
 		return

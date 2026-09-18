@@ -89,6 +89,7 @@ func _run() -> void:
 	_t8_priority_does_not_leak_between_profiles(ml)
 	_t9_repackaged_mod_drops_its_old_key(ml)
 	_t10_missing_profile_falls_back_to_a_user_profile(ml)
+	_t11_profile_bookkeeping_is_not_a_mod_change(ml)
 
 	_finish()
 
@@ -350,6 +351,39 @@ func _t10_missing_profile_falls_back_to_a_user_profile(ml: Object) -> void:
 		if FileAccess.file_exists(p):
 			DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
 
+# Renaming or creating a profile changes no mod state, so a launcher opened
+# in-game must not restart over it. A new profile starts from the default
+# view settings, which is what its stored state says after the next launch.
+func _t11_profile_bookkeeping_is_not_a_mod_change(ml: Object) -> void:
+	var cfg_path := str(ml.UI_CONFIG_PATH)
+	for p in [cfg_path, cfg_path + ".bak"]:
+		if FileAccess.file_exists(p):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
+	var seed := ConfigFile.new()
+	seed.set_value("settings", "active_profile", "Default")
+	seed.set_value("profile.Default.enabled", "a@1.0", true)
+	_assert(seed.save(cfg_path) == OK, "T11: seeded mod_config.cfg")
+	var none: Array[Dictionary] = []
+	ml.set("_ui_mod_entries", none)
+	ml.set("_active_profile", "Default")
+	ml.set("_boot_complete", true)
+	ml.set("_dirty_since_boot", false)
+	ml._rename_profile("Renamed")
+	_assert(not bool(ml.get("_dirty_since_boot")), "T11: a rename does not ask for a restart")
+	_assert(str(ml.get("_active_profile")) == "Renamed", "T11: the rename took effect")
+	ml.set("_mods_hide_disabled", true)
+	ml._create_profile("Fresh")
+	_assert(not bool(ml.get("_dirty_since_boot")), "T11: creating a profile does not ask for a restart")
+	_assert(not bool(ml.get("_mods_hide_disabled")), "T11: a new profile starts with Hide disabled off, as its stored state says")
+	ml.set("_boot_complete", false)
+	ml.set("_active_profile", "Default")
+	for p in [cfg_path, cfg_path + ".bak"]:
+		if FileAccess.file_exists(p):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
+	for d in ["user://.profile_snapshots"]:
+		if DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(d)):
+			ml._remove_tree(d, false)
+
 func _entry(file_name: String, version: String) -> Dictionary:
 	return {
 		"file_name": file_name,
@@ -381,7 +415,7 @@ func _fail(msg: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("[identity] PASS: %d assertion(s) across T1..T10" % _assertions)
+		print("[identity] PASS: %d assertion(s) across T1..T11" % _assertions)
 		quit(0)
 		return
 	for m in _failures:
