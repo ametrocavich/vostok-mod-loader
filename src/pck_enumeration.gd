@@ -156,7 +156,7 @@ func _enumerate_game_scripts() -> Array[String]:
 		return scripts
 	return []
 
-# Script-index disk cache: "<exe mtime>\n<path>\n<path>...". Lines prefixed
+# Script-index disk cache: "<exe mtime>|<PCK stamp>\n<path>\n<path>...". Lines prefixed
 # "!" carry the PCK's zero-byte .gd entries; a cache hit must restore that
 # side channel (_pck_zero_byte_paths) or downstream detokenize/hook-gen
 # misdiagnose zero-byte scripts as a game build mismatch. Any stamp mismatch
@@ -164,7 +164,7 @@ func _enumerate_game_scripts() -> Array[String]:
 const _SCRIPT_INDEX_CACHE := "user://modloader_hooks/script_index.txt"
 
 func _script_index_stamp() -> String:
-	return str(FileAccess.get_modified_time(OS.get_executable_path()))
+	return "%d|%s" % [FileAccess.get_modified_time(OS.get_executable_path()), _game_pck_stamp()]
 
 func _load_script_index_cache() -> Array[String]:
 	var empty: Array[String] = []

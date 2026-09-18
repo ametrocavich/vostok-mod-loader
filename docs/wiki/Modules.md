@@ -45,6 +45,7 @@ Owns the boot sequence; its header comment is the short form of [Architecture](A
 - The crash streak: `_static_read_crash_streak`, `_static_write_crash_streak`, `_crash_breaker_tripped`.
 - `override.cfg` reading and writing: `_write_override_cfg`, `_restore_clean_override_cfg`, `_static_reset_override_cfg`, `_static_write_cfg_atomic`, `_autoload_entry_writable`.
 - Pass state: `_write_pass_state`, `_persist_hook_pack_state`, `_compute_state_hash`, `_stable_path_mtime`.
+- Game-update detection: `_static_game_pck_path`, `_static_game_pck_stamp`, `_static_game_build_changed`. The executable's mtime and the PCK's mtime and size are both recorded, because a content patch can replace the PCK alone.
 - Heartbeat and crash recovery: `_write_heartbeat`, `_delete_heartbeat`, `_check_crash_recovery`, `_clear_restart_counter`.
 - Hook-cache wiping and orphan-pack cleanup: `_static_wipe_hook_cache`, `_static_cleanup_orphan_hook_packs`, `_static_hook_pack_path_sane`.
 - Early-autoload extraction to `user://modloader_early/` (`_ensure_early_autoload_on_disk`) and `_clean_stale_cache`.
@@ -213,7 +214,7 @@ Also owns the vanilla-source cache under `user://modloader_hooks/vanilla/` (`_re
 PCK introspection. `DirAccess.get_files_at()` returns at most one entry for PCK-backed paths in Godot 4.6, so the file table of `RTV.pck` is parsed directly.
 
 - `_build_class_name_lookup` loads `res://.godot/global_script_class_cache.cfg` and falls back to the 58-entry `_get_hardcoded_class_map` when the cache is missing or a mounted mod has shadowed it with a tiny one (fewer than 10 entries).
-- `_enumerate_game_scripts` parses the PCK (`_parse_pck_file_list`, pack formats v2 and v3; v4 is refused with a message naming the exporting Godot version), canonicalizes `.gdc` and `.remap` entries to `.gd`, keeps `res://Scripts/`, records zero-byte entries in `_pck_zero_byte_paths` (RTV 4.6.1 ships an empty `CasettePlayer.gd`), and caches the list in `user://modloader_hooks/script_index.txt` stamped with the exe mtime.
+- `_enumerate_game_scripts` parses the PCK (`_parse_pck_file_list`, pack formats v2 and v3; v4 is refused with a message naming the exporting Godot version), canonicalizes `.gdc` and `.remap` entries to `.gd`, keeps `res://Scripts/`, records zero-byte entries in `_pck_zero_byte_paths` (RTV 4.6.1 ships an empty `CasettePlayer.gd`), and caches the list in `user://modloader_hooks/script_index.txt` stamped with the exe mtime and the PCK stamp.
 - `_collect_module_scope_scene_preloads` finds column-0 `preload("res://...tscn|.scn")` lines, which decide which rewritten scripts are deferred from eager compile.
 
 ### rewriter_*.gd
@@ -260,7 +261,7 @@ Mod sources are not rewritten. A mod script that extends a wrapped vanilla sees 
 
 ### [hook_status.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_status.gd)
 
-The hook system's last outcome, written where the launcher can read it (`user://modloader_hook_status.json`). Generation and activation run after the launcher closes, so without this a game update that breaks the rewriter is visible only in the log. `_hook_status_write` is called from the canary B and C stops, the no-mods short-circuit and the end of activation; `_hook_status_problem` turns the record (and the static-init `modloader_game_updated` marker) into the banner `build_mods_tab` shows. Records from another loader version or another game executable are ignored.
+The hook system's last outcome, written where the launcher can read it (`user://modloader_hook_status.json`). Generation and activation run after the launcher closes, so without this a game update that breaks the rewriter is visible only in the log. `_hook_status_write` is called from the canary B and C stops, the no-mods short-circuit and the end of activation; `_hook_status_problem` turns the record (and the static-init `modloader_game_updated` marker) into the banner `build_mods_tab` shows. Records from another loader version or another game build (executable mtime or PCK stamp) are ignored.
 ### [lifecycle.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd)
 
 `_ready` clears the one-shot vanilla sentinel or dispatches to `_run_pass_1` / `_run_pass_2`. `_modloader_restart` is the shared relaunch helper (keeps the Steam rendering flags, forwards user args). `reopen_mod_ui` is the post-boot entry from the main-menu button; it restarts into a clean Pass 1 when the session is dirty. Every boot path ends in `_finish_boot`, which registers the meta, generates the pack, instantiates queued autoloads, run the dev-mode diagnostics, emits `frameworks_ready`, clears the heartbeat and the streak, and reloads the current scene when asked; `_finish_with_existing_mounts` and `_finish_single_pass` are the Pass 1 entries that pick the reload rule, and Pass 2 calls it directly. See [Architecture](Architecture).

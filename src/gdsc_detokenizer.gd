@@ -124,12 +124,11 @@ var _last_detokenize_from_pck: bool = false
 func _locate_game_pck() -> String:
 	if _game_pck_path_override != "":
 		return _game_pck_path_override
-	var exe_dir := OS.get_executable_path().get_base_dir()
-	for cand in ["RTV.pck", OS.get_executable_path().get_file().get_basename() + ".pck"]:
-		var p := exe_dir.path_join(cand)
-		if FileAccess.file_exists(p):
-			return p
-	return ""
+	return _static_game_pck_path()
+
+## Stamp of the game PCK this session reads (see _static_game_pck_stamp).
+func _game_pck_stamp() -> String:
+	return _static_game_pck_stamp(_locate_game_pck())
 
 func _ensure_game_pck_index() -> void:
 	if _game_pck_indexed:
@@ -495,36 +494,55 @@ func _gdsc_variant_to_source(value: Variant) -> String:
 			_log_critical("[Detokenize] Constant pool holds an unexpected Variant type %d -- cannot render it as source. The rewritten script would not compile." % typeof(value))
 			return "null"
 
-# The cache's format; an older or missing stamp wipes the directory. Format 2
-# is the first that holds only PCK-sourced text, so every earlier cache is
-# dropped as possibly poisoned by a mod's file read through the VFS.
+# Two stamp files at the cache root; a mismatch on either wipes the
+# directory. "format" names the cache layout: format 2 is the first that holds
+# only PCK-sourced text, so every earlier cache is dropped as possibly
+# poisoned by a mod's file read through the VFS. "build" names the PCK the
+# text was read from, so a game update that replaces the PCK drops the cache.
 const _VANILLA_CACHE_FORMAT := 2
 const _VANILLA_CACHE_STAMP := "format"
+const _VANILLA_CACHE_BUILD_STAMP := "build"
 var _vanilla_cache_checked: bool = false
 
-func _ensure_vanilla_cache_format() -> void:
+func _vanilla_cache_stamp_read(stamp_name: String) -> String:
+	var stamp_file := VANILLA_CACHE_DIR.path_join(stamp_name)
+	if not FileAccess.file_exists(stamp_file):
+		return ""
+	return FileAccess.get_file_as_string(stamp_file).strip_edges()
+
+func _vanilla_cache_stamp_write(stamp_name: String, value: String) -> void:
+	if value == "":
+		return
+	var f := FileAccess.open(VANILLA_CACHE_DIR.path_join(stamp_name), FileAccess.WRITE)
+	if f != null:
+		f.store_string(value)
+		f.close()
+
+func _ensure_vanilla_cache_current() -> void:
 	if _vanilla_cache_checked:
 		return
 	_vanilla_cache_checked = true
 	var dir := ProjectSettings.globalize_path(VANILLA_CACHE_DIR)
-	var stamp_file := VANILLA_CACHE_DIR.path_join(_VANILLA_CACHE_STAMP)
-	var have := FileAccess.get_file_as_string(stamp_file).strip_edges() if FileAccess.file_exists(stamp_file) else ""
-	if have == str(_VANILLA_CACHE_FORMAT):
+	var have_format := _vanilla_cache_stamp_read(_VANILLA_CACHE_STAMP)
+	var want_build := _game_pck_stamp()
+	var format_current := have_format == str(_VANILLA_CACHE_FORMAT)
+	if format_current and _vanilla_cache_stamp_read(_VANILLA_CACHE_BUILD_STAMP) == want_build:
 		return
 	if DirAccess.dir_exists_absolute(dir):
-		_log_info("[Detokenize] vanilla cache is format '%s', want %d -- rebuilding it" % [have, _VANILLA_CACHE_FORMAT])
+		if format_current:
+			_log_info("[Detokenize] the game PCK changed since the vanilla cache was written -- rebuilding it")
+		else:
+			_log_info("[Detokenize] vanilla cache is format '%s', want %d -- rebuilding it" % [have_format, _VANILLA_CACHE_FORMAT])
 		_remove_tree(dir, true)
 	DirAccess.make_dir_recursive_absolute(dir)
-	var f := FileAccess.open(stamp_file, FileAccess.WRITE)
-	if f != null:
-		f.store_string(str(_VANILLA_CACHE_FORMAT))
-		f.close()
+	_vanilla_cache_stamp_write(_VANILLA_CACHE_STAMP, str(_VANILLA_CACHE_FORMAT))
+	_vanilla_cache_stamp_write(_VANILLA_CACHE_BUILD_STAMP, want_build)
 
 func _read_vanilla_source(script_path: String) -> String:
 	# On-disk cache first. Never call load(script_path) here: any load() caches
 	# the PCK's tokenized result at that path, and later hook-pack loads hit it
 	# instead of the rewrite. The cache must stay cold until the pack is mounted.
-	_ensure_vanilla_cache_format()
+	_ensure_vanilla_cache_current()
 	var cache_file := VANILLA_CACHE_DIR.path_join(script_path.trim_prefix("res://"))
 	if FileAccess.file_exists(cache_file):
 		var cached := FileAccess.get_file_as_string(cache_file)

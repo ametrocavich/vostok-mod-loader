@@ -24,7 +24,7 @@ Static function in `boot.gd`. It only has the static helpers and the constants t
 2. Crashed Pass 2. If `user://modloader_pass2_dirty` exists, the previous Pass 2 died before cleanup; same full wipe, nothing mounted.
 3. Load `user://mod_pass_state.cfg`; return if it is missing.
 4. Version mismatch. A saved `modloader_version` that differs from `MODLOADER_VERSION` wipes the hook cache, deletes pass state and resets `override.cfg`. Rewriter output can change between versions, so a stale pack must not be mounted.
-5. Game update. If the exe mtime differs from the saved `exe_mtime`, same wipe: vanilla scripts may have changed.
+5. Game update. If the exe mtime differs from the saved `exe_mtime`, or the game PCK's mtime and size differ from the saved `pck_stamp` (`_static_game_build_changed`), same wipe: vanilla scripts may have changed. A content patch can replace the PCK and leave the executable untouched, so both are checked.
 6. Missing archives. If any recorded archive is gone, write a clean `override.cfg` and delete pass state. A same-basename cache zip that survived does not count as present.
 7. Mount loop. Each archive goes through `ProjectSettings.load_resource_pack`, with the `.vmz -> .zip` cache fallback (`_static_vmz_to_zip`) and `.remap` resolution (`_static_resolve_remaps`).
 8. Orphan hook packs. `_static_cleanup_orphan_hook_packs` deletes every `framework_pack_*.zip` except the one pass state points at. Nothing is mounted yet, so Windows lets them go.
@@ -133,12 +133,13 @@ Sections other than the two autoload ones (`[display]`, `[input]`, ...) survive 
 | `archive_paths` | `PackedStringArray` replayed by static init's mount loop |
 | `modloader_version` | Version check at static init |
 | `exe_mtime` | Game-update detection |
+| `pck_stamp` | The game PCK's `<mtime>:<size>`, the other half of game-update detection |
 | `timestamp` | Unix time, diagnostic only |
 | `script_overrides` | `[{vanilla_path, mod_script_path, mod_name, priority, seq}]` for Pass 2 to replay |
 | `hook_pack_path` | The pack static init mounts next boot |
 | `hook_pack_wrapped_paths` | The vanilla script paths the pack wrapped and activated eagerly; static init preempts exactly these. Scripts deferred for a module-scope scene preload are not listed and lazy-compile from the mounted pack |
 
-Writer: `_write_pass_state`. Hash: `_compute_state_hash`. `_persist_hook_pack_state` writes the two hook-pack keys separately, seeding `exe_mtime` and `modloader_version` only when they are missing.
+Writer: `_write_pass_state`. Hash: `_compute_state_hash`. `_persist_hook_pack_state` writes the two hook-pack keys separately, seeding `exe_mtime`, `pck_stamp` and `modloader_version` only when they are missing.
 
 The crash streak lives in its own file, `user://modloader_crash_streak` (`CRASH_STREAK_PATH`): a bare integer, bumped by `_write_pass_state`, reset to zero by `_clear_restart_counter`, read by `_crash_breaker_tripped`. `_static_force_vanilla_state` never touches it. See [Stability-Canaries](Stability-Canaries#restart-counter).
 

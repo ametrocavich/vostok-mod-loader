@@ -92,6 +92,7 @@ func _run() -> void:
 	_t8_old_cache_format_is_dropped(ml)
 	_t9_gdc_fallback_read(ml)
 	_t10_canary_passes_on_any_probe(ml)
+	_t11_changed_pck_drops_the_cache(ml)
 
 	_finish()
 
@@ -367,6 +368,45 @@ func _t10_canary_passes_on_any_probe(ml: Object) -> void:
 	_assert(bool(ml._canary_detokenizer_roundtrip_ok()),
 			"T10: no readable probe at all is a pass")
 
+# The cached source is only as current as the PCK it was read from. A game
+# update can replace the PCK and leave the executable alone, so the cache
+# records the PCK it came from and is dropped when that PCK changes.
+func _t11_changed_pck_drops_the_cache(ml: Object) -> void:
+	_assert(ml.has_method("_static_game_pck_stamp") and ml.has_method("_game_pck_stamp"),
+			"T11: the loader has _static_game_pck_stamp and _game_pck_stamp")
+	if not ml.has_method("_static_game_pck_stamp") or not ml.has_method("_game_pck_stamp"):
+		return
+	_reset_detok_state(ml)
+	var pck := "user://fake_game_build.pck"
+	var pck_abs := ProjectSettings.globalize_path(pck)
+	_assert(_write_fake_pck(pck, {"res://Scripts/Build.gd": "extends Node\nvar build_one = true\n"}),
+			"T11: wrote the first game build")
+	ml.set("_game_pck_path_override", pck_abs)
+	var first := str(ml._read_vanilla_source("res://Scripts/Build.gd"))
+	_assert(first.contains("build_one"), "T11: the first build's text is read (got: %s)" % _oneline(first))
+	var stamp := str(ml._static_game_pck_stamp(pck_abs))
+	_assert(stamp != "" and stamp == str(ml._game_pck_stamp()),
+			"T11: the PCK stamp is known and follows the override (got '%s')" % stamp)
+	_assert(FileAccess.get_file_as_string(CACHE_DIR + "/build").strip_edges() == stamp,
+			"T11: the cache records the PCK it was read from")
+	# The game updates: same path, different bytes. The size differs, so the
+	# stamp moves even when both writes land in the same second.
+	_assert(_write_fake_pck(pck, {"res://Scripts/Build.gd": "extends Node\nvar build_two_is_a_longer_line = true\n"}),
+			"T11: wrote the second game build over the first")
+	_assert(str(ml._static_game_pck_stamp(pck_abs)) != stamp, "T11: the stamp moved with the PCK")
+	# A new launch: per-session state is gone, the on-disk cache is not.
+	ml.set("_game_pck_index", {})
+	ml.set("_game_pck_path", "")
+	ml.set("_game_pck_indexed", false)
+	ml.set("_vanilla_cache_checked", false)
+	var second := str(ml._read_vanilla_source("res://Scripts/Build.gd"))
+	_assert(second.contains("build_two") and not second.contains("build_one"),
+			"T11: a changed PCK drops the cached text (got: %s)" % _oneline(second))
+	_assert(str(ml._static_game_pck_stamp("")) == "" and str(ml._static_game_pck_stamp(pck_abs + ".absent")) == "",
+			"T11: no PCK reads as the empty stamp")
+	ml.set("_game_pck_path_override", "")
+	DirAccess.remove_absolute(pck_abs)
+
 func _write_bytes(path: String, buf: PackedByteArray) -> bool:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(path.get_base_dir()))
 	var f := FileAccess.open(path, FileAccess.WRITE)
@@ -479,7 +519,7 @@ func _fail(msg: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("[detok] PASS: %d assertion(s) across T1..T10" % _assertions)
+		print("[detok] PASS: %d assertion(s) across T1..T11" % _assertions)
 		quit(0)
 		return
 	for m in _failures:

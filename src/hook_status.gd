@@ -7,8 +7,8 @@
 ## banner when that record says hooks did not work.
 
 const HOOK_STATUS_PATH := "user://modloader_hook_status.json"
-# Written by static init when the game executable's mtime changed; cleared
-# by the next healthy hook activation.
+# Written by static init when the game build changed (executable mtime or
+# PCK stamp); cleared by the next healthy hook activation.
 const GAME_UPDATED_MARKER_PATH := "user://modloader_game_updated"
 
 # state values a record can carry
@@ -20,12 +20,14 @@ const HOOK_STATE_CRITICAL_FAILED := "critical_failed"
 
 
 ## Record the outcome of this session's hook work. `fields` carries at least
-## "state"; the loader version and the game's exe mtime are added so a
-## record from another loader build or another game build is ignored.
+## "state"; the loader version and the game build (executable mtime, PCK
+## stamp) are added so a record from another loader build or another game
+## build is ignored.
 func _hook_status_write(fields: Dictionary) -> void:
 	var rec := fields.duplicate()
 	rec["loader_version"] = MODLOADER_VERSION
 	rec["exe_mtime"] = FileAccess.get_modified_time(OS.get_executable_path())
+	rec["pck_stamp"] = _game_pck_stamp()
 	rec["written_at"] = int(Time.get_unix_time_from_system())
 	var f := FileAccess.open(HOOK_STATUS_PATH, FileAccess.WRITE)
 	if f != null:
@@ -38,7 +40,7 @@ func _hook_status_write(fields: Dictionary) -> void:
 
 
 ## The last record, or {} when there is none, it was written by a different
-## loader build, or the game executable has changed since.
+## loader build, or the game's executable or PCK has changed since.
 func _hook_status_read() -> Dictionary:
 	if not FileAccess.file_exists(HOOK_STATUS_PATH):
 		return {}
@@ -51,6 +53,10 @@ func _hook_status_read() -> Dictionary:
 	var mtime_v: Variant = rec.get("exe_mtime", 0)
 	var mtime := int(mtime_v) if (mtime_v is int or mtime_v is float) else 0
 	if mtime != FileAccess.get_modified_time(OS.get_executable_path()):
+		return {}
+	var rec_pck_stamp := str(rec.get("pck_stamp", ""))
+	var pck_stamp := _game_pck_stamp()
+	if rec_pck_stamp != "" and pck_stamp != "" and rec_pck_stamp != pck_stamp:
 		return {}
 	return rec
 

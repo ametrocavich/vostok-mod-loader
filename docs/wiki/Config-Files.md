@@ -149,6 +149,7 @@ mods_hash="d90eae97b1868a4e9051f17ced71b7a6"
 archive_paths=PackedStringArray("C:/Program Files (x86)/Steam/steamapps/common/Road to Vostok/mods/RTVCoopVMZ.vmz")
 modloader_version="3.3.1"
 exe_mtime=1776042534
+pck_stamp="1776042534:5837583904"
 timestamp=1776897837.26
 script_overrides=[]
 hook_pack_path="user://modloader_hooks/framework_pack_5758.zip"
@@ -160,6 +161,7 @@ hook_pack_wrapped_paths=PackedStringArray("res://Scripts/Menu.gd")
 | `archive_paths` | The `.vmz`/`.zip`/`.pck` paths mounted last session, in load order. Stored as `PackedStringArray(...)`. |
 | `modloader_version` | The loader version that wrote this state. A mismatch with the current version wipes the state. |
 | `exe_mtime` | Game `.exe` modification time at write. A change (game update) wipes the state, since vanilla scripts may have moved. |
+| `pck_stamp` | The game `.pck`'s modification time and size at write. A change wipes the state the same way: a content patch can replace the `.pck` and leave the `.exe` untouched. |
 | `timestamp` | Unix epoch seconds when Pass 1 wrote the file. Informational. |
 | `restart_count` | Pass-2 restart counter. Max 2; cleared after a clean boot. Stops infinite restart loops. |
 | `mods_hash` | Content hash of the enabled mod list. Unchanged hash + matching state = skip hook pack regeneration. |
@@ -217,15 +219,15 @@ Everything here is regenerated on demand:
 | Path | Contents |
 |---|---|
 | `user://modloader_hooks/framework_pack_<millis>.zip` | The generated hook pack, mounted at static init. Each Pass-1 generation picks a fresh timestamp suffix (Godot's `load_resource_pack` dedups by path and would keep stale mount offsets). Old generations are cleaned up before mount. |
-| `user://modloader_hooks/vanilla/` | Cached vanilla script source, decoded from the game's own `.pck` (never from a mounted mod), wiped on a game update. A `format` stamp at its root names the cache layout; a missing or older stamp rebuilds the cache. Speeds up later hook-pack generation. |
+| `user://modloader_hooks/vanilla/` | Cached vanilla script source, decoded from the game's own `.pck` (never from a mounted mod), wiped on a game update. Two stamp files sit at its root: `format` names the cache layout and `build` names the game `.pck` the text was read from. A mismatch on either rebuilds the cache. Speeds up later hook-pack generation. |
 | `user://vmz_mount_cache/` | `.vmz -> .zip` copies so Godot's `load_resource_pack` can mount them, plus `.zip.src` sidecars naming the source. |
 | `user://modloader_early/` | Extracted copies of `!`-prefixed early-autoload scripts that live inside archives. |
 | `user://modloader_heartbeat.txt` | Crash-detection sentinel. Written each launch, deleted at clean boot. Present on the next launch = the previous session crashed. |
 | `user://modloader_pass2_dirty` | Pass-2-in-progress marker. Present on the next launch = Pass 2 was interrupted (crash, force-quit). Next launch wipes state and retries. |
 | `user://modloader_crash_streak` | Count of consecutive crashed two-pass restarts. At 2 the loader refuses the two-pass restart and finishes in a single pass instead: mods that can load still load, and the launcher stays reachable so you can disable the one that crashes. Cleared by a clean boot. |
 | `user://modloader_conflicts.txt` | Developer mode only. The conflict report (which mods claim the same `res://` paths). |
-| `user://modloader_hook_status.json` | What happened to the hook system last session (whether the script rewrites took effect, or why generation stopped). The launcher reads it on the next start and shows a banner on the Mods tab when hooks did not work. Ignored once the loader or the game executable changes. |
-| `user://modloader_game_updated` | Written when the game executable changed since the last run. The Mods tab shows a "Road to Vostok was updated" notice while it exists; the next session in which the hook rewrites work removes it. |
+| `user://modloader_hook_status.json` | What happened to the hook system last session (whether the script rewrites took effect, or why generation stopped). The launcher reads it on the next start and shows a banner on the Mods tab when hooks did not work. Ignored once the loader, the game executable or the game `.pck` changes. |
+| `user://modloader_game_updated` | Written when the game executable or `.pck` changed since the last run. The Mods tab shows a "Road to Vostok was updated" notice while it exists; the next session in which the hook rewrites work removes it. |
 | `user://mws_cache/` | Browse-tab caches. `thumbs/` holds ModWorkshop thumbnail and banner images (VostokMods images stay in memory). `landing_<site>.json` holds each site's last successful Browse landing so the offline view survives a relaunch. `mods_meta_v2.json` caches the host detail each installed mod's row shows on the Mods tab. Search and filter responses are cached in memory only. |
 
 Deleting anything in that table is safe. Next launch regenerates whatever it needs; the cost is a slower cold boot while the hook pack rebuilds.

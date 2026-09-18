@@ -154,6 +154,7 @@ func _run() -> void:
 	_t9_load_all_mods_keeps_applied_overrides()
 	_t10_persisted_wrapped_paths_exclude_deferred()
 	_t11_removed_feature_state_is_swept()
+	_t12_game_update_is_seen_through_the_pck()
 
 	_finish()
 
@@ -508,6 +509,56 @@ func _t7_hook_status_reaches_the_launcher() -> void:
 	_assert((_ml._hook_status_problem() as Dictionary).is_empty(), "T7: nothing to show after a healthy activation")
 	clear.call()
 
+# --- T12: a game update is seen through the PCK as well as the executable ------
+
+# A content patch can replace the game's PCK and leave the executable
+# untouched. Pass state and the hook status record carry the PCK's stamp, and
+# static init treats a moved stamp like a moved executable mtime. Pins: the
+# decision static init takes, that _write_pass_state records the stamp, and
+# that a hook status record from another PCK is ignored.
+func _t12_game_update_is_seen_through_the_pck() -> void:
+	for m in ["_static_game_build_changed", "_static_game_pck_stamp", "_game_pck_stamp"]:
+		_assert(_ml.has_method(m), "T12: the loader has %s" % m)
+		if not _ml.has_method(m):
+			return
+	var cfg := ConfigFile.new()
+	cfg.set_value("state", "exe_mtime", 100)
+	cfg.set_value("state", "pck_stamp", "200:3000")
+	_assert(not bool(_ml._static_game_build_changed(cfg, 100, "200:3000")), "T12: same executable, same PCK -> unchanged")
+	_assert(bool(_ml._static_game_build_changed(cfg, 101, "200:3000")), "T12: a moved executable mtime -> changed")
+	_assert(bool(_ml._static_game_build_changed(cfg, 100, "201:3000")), "T12: a moved PCK mtime -> changed")
+	_assert(bool(_ml._static_game_build_changed(cfg, 100, "200:3001")), "T12: a resized PCK -> changed")
+	_assert(not bool(_ml._static_game_build_changed(cfg, 100, "")), "T12: no PCK beside the executable -> unchanged")
+	var older := ConfigFile.new()
+	older.set_value("state", "exe_mtime", 100)
+	_assert(not bool(_ml._static_game_build_changed(older, 100, "200:3000")),
+			"T12: pass state that recorded no stamp -> unchanged")
+	_assert(not bool(_ml._static_game_build_changed(ConfigFile.new(), 100, "200:3000")),
+			"T12: empty pass state -> unchanged")
+
+	# The instance side reads the PCK through the same override the detokenizer uses.
+	var pck := "user://harness_game.pck"
+	var pck_abs := ProjectSettings.globalize_path(pck)
+	_write_file(pck, "first build")
+	_ml.set("_game_pck_path_override", pck_abs)
+	var stamp := str(_ml._game_pck_stamp())
+	_assert(stamp != "", "T12: the stamp of an existing PCK is not empty")
+	_ml._write_pass_state(PackedStringArray(["user://harness_fixture_mod.zip"]), FIXTURE_HASH)
+	var state := ConfigFile.new()
+	_assert(state.load(str(_ml.PASS_STATE_PATH)) == OK and str(state.get_value("state", "pck_stamp", "")) == stamp,
+			"T12: _write_pass_state records the PCK stamp")
+
+	var status_path := str(_ml.HOOK_STATUS_PATH)
+	_ml._hook_status_write({"state": "all_failed", "attempted": 4, "ok": 0})
+	_assert(not (_ml._hook_status_problem() as Dictionary).is_empty(), "T12: a failure record from this PCK shows")
+	_write_file(pck, "second build, a different size")
+	_assert((_ml._hook_status_problem() as Dictionary).is_empty(), "T12: a record from another PCK is ignored")
+
+	_ml.set("_game_pck_path_override", "")
+	for p in [status_path, pck, str(_ml.PASS_STATE_PATH), str(_ml.CRASH_STREAK_PATH)]:
+		if FileAccess.file_exists(p):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
+
 # --- T9: Pass 2 keeps the applied-override map through load_all_mods --------
 
 # Pass 2 applies [script_extend] / [script_overrides] from pass state before
@@ -799,7 +850,7 @@ func _cleanup_exe_cfg() -> void:
 func _finish() -> void:
 	_cleanup_exe_cfg()
 	if _failures.is_empty():
-		print("[boot-state] PASS: %d assertion(s) across T1..T11" % _assertions)
+		print("[boot-state] PASS: %d assertion(s) across T1..T12" % _assertions)
 		quit(0)
 		return
 	for m in _failures:

@@ -11,10 +11,11 @@
 ##   2. PASS2_DIRTY_PATH present: a previous Pass 2 crashed mid-run. Same
 ##      wipe, mount nothing.
 ##   3. Load PASS_STATE_PATH; missing means mount nothing. A loader version
-##      mismatch, a changed exe mtime or a missing archive resets override.cfg
-##      and deletes pass state (version and mtime mismatches also wipe the
-##      hook cache). That launch may log autoload errors because Godot read
-##      override.cfg first; the next one boots clean.
+##      mismatch, a changed game build (executable mtime or PCK stamp) or a
+##      missing archive resets override.cfg and deletes pass state (version
+##      and game-build mismatches also wipe the hook cache). That launch may
+##      log autoload errors because Godot read override.cfg first; the next
+##      one boots clean.
 ##   4. Mount every recorded archive, then the hook pack on top with
 ##      replace_files=true, then preempt the wrapped class_name scripts with
 ##      CACHE_MODE_IGNORE + take_over_path.
@@ -166,6 +167,39 @@ static func _state_paths(cfg: ConfigFile, key: String) -> PackedStringArray:
 				out.append(str(item))
 	return out
 
+## The game's PCK beside the executable, or "" when there is none.
+static func _static_game_pck_path() -> String:
+	var exe_path := OS.get_executable_path()
+	var exe_dir := exe_path.get_base_dir()
+	for cand in ["RTV.pck", exe_path.get_file().get_basename() + ".pck"]:
+		var p := exe_dir.path_join(cand)
+		if FileAccess.file_exists(p):
+			return p
+	return ""
+
+## "<mtime>:<size>" of the PCK at pck_path, or "" when it cannot be read. A
+## content patch can replace the PCK and leave the executable untouched, so
+## game-update detection keys on this stamp as well as the executable's mtime.
+static func _static_game_pck_stamp(pck_path: String) -> String:
+	if pck_path == "" or not FileAccess.file_exists(pck_path):
+		return ""
+	var f := FileAccess.open(pck_path, FileAccess.READ)
+	if f == null:
+		return ""
+	var size := f.get_length()
+	f.close()
+	return "%d:%d" % [FileAccess.get_modified_time(pck_path), size]
+
+## True when pass state was written against another game build: the
+## executable's mtime moved, or the PCK's stamp did. A value missing on
+## either side reads as unchanged.
+static func _static_game_build_changed(cfg: ConfigFile, exe_mtime: int, pck_stamp: String) -> bool:
+	var saved_exe_mtime := _state_int(cfg, "exe_mtime", 0)
+	if saved_exe_mtime != 0 and saved_exe_mtime != exe_mtime:
+		return true
+	var saved_pck_stamp := _state_str(cfg, "pck_stamp", "")
+	return saved_pck_stamp != "" and pck_stamp != "" and saved_pck_stamp != pck_stamp
+
 # A folder mod is recorded by its cache zip, which outlives the folder; the
 # source folder must exist too, or the deleted mod would mount once more.
 static func _static_archive_source_present(path: String) -> bool:
@@ -217,18 +251,16 @@ static func _mount_previous_session() -> Dictionary:
 		_write_filescope_log(log_lines)
 		return mounted
 	# Game update: vanilla scripts may have changed.
-	var saved_exe_mtime := _state_int(cfg, "exe_mtime", 0)
-	if saved_exe_mtime != 0:
-		var current_exe_mtime := FileAccess.get_modified_time(OS.get_executable_path())
-		if current_exe_mtime != saved_exe_mtime:
-			log_lines.append("[FileScope] Game exe mtime changed -- wiping hook cache")
-			_static_wipe_hook_cache()
-			# The launcher tells the player; a healthy activation clears it.
-			_static_mark_game_updated()
-			DirAccess.remove_absolute(ProjectSettings.globalize_path(PASS_STATE_PATH))
-			_static_reset_override_cfg(log_lines)
-			_write_filescope_log(log_lines)
-			return mounted
+	if _static_game_build_changed(cfg, FileAccess.get_modified_time(OS.get_executable_path()),
+			_static_game_pck_stamp(_static_game_pck_path())):
+		log_lines.append("[FileScope] Game build changed (executable or PCK) -- wiping hook cache")
+		_static_wipe_hook_cache()
+		# The launcher tells the player; a healthy activation clears it.
+		_static_mark_game_updated()
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(PASS_STATE_PATH))
+		_static_reset_override_cfg(log_lines)
+		_write_filescope_log(log_lines)
+		return mounted
 	var paths := _state_paths(cfg, "archive_paths")
 	if paths.is_empty():
 		log_lines.append("[FileScope] Pass state has no archive paths -- skipping")
@@ -585,9 +617,11 @@ func _persist_hook_pack_state(pack_path: String, wrapped_paths: PackedStringArra
 	cfg.load(PASS_STATE_PATH)  # OK if missing; we populate below
 	cfg.set_value("state", "hook_pack_path", pack_path)
 	cfg.set_value("state", "hook_pack_wrapped_paths", wrapped_paths)
-	# Seed exe_mtime only when missing; _write_pass_state's value is authoritative.
+	# Seed the game-build keys only when missing; _write_pass_state's values are authoritative.
 	if _state_int(cfg, "exe_mtime", 0) == 0:
 		cfg.set_value("state", "exe_mtime", FileAccess.get_modified_time(OS.get_executable_path()))
+	if _state_str(cfg, "pck_stamp", "") == "":
+		cfg.set_value("state", "pck_stamp", _game_pck_stamp())
 	if _state_str(cfg, "modloader_version", "") == "":
 		cfg.set_value("state", "modloader_version", MODLOADER_VERSION)
 	if cfg.save(PASS_STATE_PATH) == OK:
@@ -605,6 +639,7 @@ func _write_pass_state(archive_paths: PackedStringArray, state_hash: String = ""
 	cfg.set_value("state", "archive_paths", archive_paths)
 	cfg.set_value("state", "modloader_version", MODLOADER_VERSION)
 	cfg.set_value("state", "exe_mtime", FileAccess.get_modified_time(OS.get_executable_path()))
+	cfg.set_value("state", "pck_stamp", _game_pck_stamp())
 	cfg.set_value("state", "timestamp", Time.get_unix_time_from_system())
 	# Persist script overrides so Pass 2 can apply them without re-parsing mods.
 	var override_data: Array = []
