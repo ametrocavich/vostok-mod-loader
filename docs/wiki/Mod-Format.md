@@ -8,10 +8,10 @@ A mod is an archive (`.vmz`, `.zip`, or `.pck`; unpacked folders too in develope
 |---|---|---|---|---|
 | `.vmz` | Copied to `user://vmz_mount_cache/<name>.zip`, then `ProjectSettings.load_resource_pack` | Yes | Yes | Yes |
 | `.zip` | `ProjectSettings.load_resource_pack` directly | Yes | Yes | Yes |
-| `.pck` | `ProjectSettings.load_resource_pack` directly | No | No | Only if the launcher downloaded it from Browse and remembers the source |
-| folder | Zipped to `user://vmz_mount_cache/<name>_dev.zip`, then mounted. The folder's contents sit at the archive root, so it mounts like the zip you would ship (see [Folder mode layout](#folder-mode-layout)). Developer mode only | Yes | Yes | Yes |
+| `.pck` | `ProjectSettings.load_resource_pack` directly | No | No | No: the check needs a readable `mod.txt` for the installed version |
+| folder | Zipped to `user://vmz_mount_cache/<name>_dev.zip`, then mounted. The folder's contents sit at the archive root, so it mounts like the zip you would ship (see [Folder mode layout](#folder-mode-layout)). Developer mode only | Yes | Yes | No: a downloaded archive would land beside the folder as a duplicate |
 
-`.vmz` is the historical community convention. Godot's ZIPReader will not open a file with a `.vmz` extension, so the loader copies it to `<name>.zip` in the cache dir first ([fs_archive.gd `_static_vmz_to_zip`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/fs_archive.gd)). The copy carries a `.src` sidecar holding the source's mtime and size; when either changes, or the sidecar is missing, the copy is redone. `.zip` archives skip the cache and mount directly.
+`.vmz` is the historical community convention. `ProjectSettings.load_resource_pack` picks its reader by file extension and refuses `.vmz` (ZIPReader, which the loader uses to read `mod.txt`, opens it fine), so the loader copies it to `<name>.zip` in the cache dir first ([fs_archive.gd `_static_vmz_to_zip`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/fs_archive.gd)). The copy carries a `.src` sidecar holding the source's mtime and size; when either changes, or the sidecar is missing, the copy is redone. `.zip` archives skip the cache and mount directly.
 
 ### Packaging layout
 
@@ -277,7 +277,7 @@ The `status` of the record [fs_archive.gd `read_mod_config`](https://github.com/
 | `ok` | Parse succeeded | none |
 | `none` | No mod.txt at archive root | `Invalid mod -- may not work correctly. Try re-downloading.` |
 | `nested:<path>` | `mod.txt` exists but not at root (e.g. `SubFolder/mod.txt`); bad packaging | `Invalid mod -- mod.txt is in a subfolder, not at the zip root. Re-zip so mod.txt is at the root.` |
-| `parse_error` | `ConfigFile.parse` failed, or the file is empty | `mod.txt parse error at <line N [section]: text>`, or `Invalid mod -- mod.txt failed to parse. Try re-downloading.` when no line could be pinned |
+| `parse_error` | `ConfigFile.parse` failed, or the file is empty | `mod.txt parse error at <line N [section]: text>`, or `Invalid mod -- mod.txt failed to parse. Try re-downloading.` for an empty file, the one case with no line to name |
 | `pck` | Not applicable (a `.pck` carries no readable mod.txt) | none |
 
 A UTF-8 BOM is stripped before parsing so files saved from Windows editors do not trip ConfigFile. Non-UTF8 bytes elsewhere in `mod.txt` (or in any `.gd` inside the archive) produce a Godot warning, `Unicode parsing error, some characters were replaced with U+FFFD`. In developer mode the loader logs `[ModScan] inspecting <file>` at debug level right before the decode so you can match the warning to the mod.

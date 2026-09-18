@@ -4,7 +4,8 @@
 
 const TRACKED_EXTENSIONS: Array[String] = ["gd", "tscn", "tres", "gdns", "gdnlib", "scn"]
 
-# Copies a .vmz to the cache dir as .zip so ZIPReader can open it. Cache
+# Copies a .vmz to the cache dir as .zip: load_resource_pack picks its reader
+# by extension and refuses .vmz (ZIPReader opens one as it is). Cache
 # identity is the source's mtime+size in a <zip>.src sidecar; any mismatch
 # (including an older restored/downgraded timestamp) or a missing sidecar
 # forces a re-copy. Returns the cached zip path, or "" on failure.
