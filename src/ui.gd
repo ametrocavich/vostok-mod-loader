@@ -679,11 +679,17 @@ func _snapshot_mcm_to(profile_name: String) -> bool:
 	_remove_tree(dst, false)
 	return _copy_dir_recursive(MCM_SOURCE_DIR, dst)
 
+# Replace user://MCM/ with a profile's snapshot. False when the profile has no
+# snapshot, and the live folder is then left alone. An empty snapshot is a
+# valid one: it restores to no MCM settings.
 func _restore_mcm_from(profile_name: String) -> bool:
 	var src := _mcm_snapshot_dir(profile_name)
-	# Replace user://MCM/ wholesale; a partial overlay would leak old files.
+	if not DirAccess.dir_exists_absolute(src):
+		return false
+	# Wholesale; a partial overlay would leak old files.
 	_remove_tree(MCM_SOURCE_DIR, false)
-	return _copy_dir_recursive(src, MCM_SOURCE_DIR)
+	_copy_dir_recursive(src, MCM_SOURCE_DIR)
+	return true
 
 # Remove a profile's whole snapshot slot. A slot can hold files beside the
 # MCM/ tree, so the directory goes as a tree.

@@ -80,6 +80,7 @@ func _run() -> void:
 	_t14_modpack_source_installed(ml)
 	_t15_warnings_and_author_notes(ml)
 	await _t12_apply_failure_shape(ml)
+	await _t16_unload_leaves_no_pack_mcm_behind(ml)
 
 	_finish()
 
@@ -817,6 +818,91 @@ func _t12_apply_failure_shape(ml: Object) -> void:
 	_assert(str(ml._modpack_apply_outcome({"ok": false, "cancelled": true, "failed_downloads": 1})) == "cancelled",
 			"T12: a cancelled apply is 'cancelled' whatever else it carries")
 
+# --- Pack apply and unload, with nothing to download --------------------------
+
+# An applied pack lives in its own profile slot, and the slot is kept on
+# unload so the player's edits survive. These tests run the real apply and
+# unload against a pack whose mods are all installed, so no request is made.
+const PACK_ZIP := "user://host_round_trip.zip"
+
+func _pack_cleanup(ml: Object) -> void:
+	var cfg_path := str(ml.UI_CONFIG_PATH)
+	for p in [cfg_path, cfg_path + ".bak", PACK_ZIP]:
+		_remove_user_file(p)
+	for d in ["user://MCM", "user://.profile_snapshots"]:
+		if DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(d)):
+			ml._remove_tree(d, false)
+	var none: Array[Dictionary] = []
+	ml.set("_ui_mod_entries", none)
+	ml.set("_modpack_entries", none)
+
+# Two installed mods on the Default profile, a@1.0 and foo@2.0. foo came from
+# VostokMods and its mod.txt says nothing, so only [mod_sources] knows its host.
+func _pack_setup(ml: Object) -> void:
+	_pack_cleanup(ml)
+	var installed: Array[Dictionary] = [_installed_entry("a@1.0", "a", "1.0"), _installed_entry("foo@2.0", "foo", "2.0")]
+	ml.set("_ui_mod_entries", installed)
+	ml.set("_active_profile", "Default")
+	var seed := ConfigFile.new()
+	seed.set_value("settings", "active_profile", "Default")
+	seed.set_value("profile.Default.enabled", "a@1.0", true)
+	seed.set_value("mod_sources", "foo@2.0",
+			ml._serialize_mod_source_rec({"provider": "vostokmods", "id": "foo", "version": "2.0"}))
+	_assert(seed.save(str(ml.UI_CONFIG_PATH)) == OK, "pack fixture: seeded mod_config.cfg")
+
+func _pack_write(ml: Object, profile: Dictionary, mcm_value: String) -> Dictionary:
+	_remove_user_file(PACK_ZIP)
+	var zip_path := _write_zip(PACK_ZIP, {
+		"profile.json": JSON.stringify(profile),
+		"MCM/some-mod/config.ini": "[a]\nv=" + mcm_value + "\n",
+	})
+	var entry: Dictionary = ml._build_modpack_entry(zip_path)
+	var packs: Array[Dictionary] = [entry]
+	ml.set("_modpack_entries", packs)
+	return entry
+
+func _installed_entry(profile_key: String, mod_id: String, version: String) -> Dictionary:
+	return {
+		"file_name": mod_id + ".zip", "full_path": "/nonexistent/" + mod_id + ".zip", "ext": "zip",
+		"mod_name": mod_id, "mod_id": mod_id, "version": version, "profile_key": profile_key,
+		"enabled": true, "priority": 0, "priority_default": 0, "cfg": null,
+	}
+
+# Applying a pack replaces the player's MCM settings and unload puts them
+# back. A player who had no MCM folder before the apply has none after the
+# unload, and the pack's settings are not seeded into their own profile slot.
+func _t16_unload_leaves_no_pack_mcm_behind(ml: Object) -> void:
+	_pack_setup(ml)
+	var entry := _pack_write(ml, {"metroprofile": 1, "name": "Round Trip", "enabled": {"a@1.0": true}}, "1")
+	var r: Dictionary = await ml.apply_modpack(entry, null, Callable())
+	_assert(bool(r.get("ok", false)), "T16: the pack applies (got %s)" % str(r.get("error", "")))
+	_assert(FileAccess.file_exists("user://MCM/some-mod/config.ini"), "T16: the pack's MCM is live while it is active")
+	var u: Dictionary = ml.unload_modpack(null)
+	_assert(bool(u.get("ok", false)), "T16: the pack unloads (got %s)" % str(u.get("error", "")))
+	_assert(str(ml.get("_active_profile")) == "Default", "T16: unload returns to the profile the player was on")
+	_assert(not FileAccess.file_exists("user://MCM/some-mod/config.ini"),
+			"T16: unload leaves no pack MCM behind when the player had none before")
+	_assert(not FileAccess.file_exists("user://.profile_snapshots/Default/MCM/some-mod/config.ini"),
+			"T16: the pack's MCM is not seeded into the player's own profile slot")
+	_assert(not DirAccess.dir_exists_absolute(ProjectSettings.globalize_path("user://.profile_snapshots/_before_modpack_Round Trip")),
+			"T16: the consumed backup slot is removed")
+
+	# A player who did have MCM settings gets exactly those back.
+	_pack_setup(ml)
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("user://MCM/mine"))
+	var mine := FileAccess.open("user://MCM/mine/config.ini", FileAccess.WRITE)
+	mine.store_string("[m]\nv=own\n")
+	mine.close()
+	entry = _pack_write(ml, {"metroprofile": 1, "name": "Round Trip", "enabled": {"a@1.0": true}}, "1")
+	r = await ml.apply_modpack(entry, null, Callable())
+	_assert(bool(r.get("ok", false)) and not FileAccess.file_exists("user://MCM/mine/config.ini"),
+			"T16: while the pack is active its MCM replaces the player's")
+	ml.unload_modpack(null)
+	_assert(FileAccess.get_file_as_string("user://MCM/mine/config.ini").contains("v=own")
+			and not FileAccess.file_exists("user://MCM/some-mod/config.ini"),
+			"T16: unload restores the player's own MCM and nothing of the pack's")
+	_pack_cleanup(ml)
+
 # The update check in two pure halves: which installed mods are asked about,
 # and what the site's answers mean. A dev folder, a mod with no version, no
 # source, no readable mod.txt or a host that cannot serve files is skipped;
@@ -990,7 +1076,7 @@ func _fail(msg: String) -> void:
 func _finish() -> void:
 	_done = true
 	if _failures.is_empty():
-		print("[host] PASS: %d assertion(s) across T1..T15" % _assertions)
+		print("[host] PASS: %d assertion(s) across T1..T16" % _assertions)
 		quit(0)
 		return
 	for m in _failures:

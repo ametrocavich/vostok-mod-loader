@@ -638,8 +638,11 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 		_persist_ui_cfg(cfg)
 
 		# Snapshot pre-modpack MCM; vanilla has no MCM state worth preserving.
+		# With no MCM folder yet the backup is an empty snapshot, so unload
+		# restores "none" and does not leave the pack's settings in place.
 		if pre_active != VANILLA_PROFILE:
 			_snapshot_mcm_to(backup_profile)
+			DirAccess.make_dir_recursive_absolute(_mcm_snapshot_dir(backup_profile))
 
 		# 2. Materialize the modpack profile from the zip unless the slot exists (user edits).
 		var cfg2_err := cfg.load(UI_CONFIG_PATH)
@@ -813,6 +816,10 @@ func unload_modpack(tabs: TabContainer) -> Dictionary:
 	var mcm_ok := true
 	if _has_mcm_snapshot(backup_profile):
 		mcm_ok = _restore_mcm_from(backup_profile)
+		# Step 3 seeds a profile that has no snapshot yet from the live folder,
+		# which still held the pack's MCM; re-take it from the restored state.
+		if mcm_ok and pre_active != VANILLA_PROFILE:
+			_snapshot_mcm_to(pre_active)
 
 	# 5. Wipe the backup slot, only once the MCM restore consumed it.
 	if mcm_ok:
