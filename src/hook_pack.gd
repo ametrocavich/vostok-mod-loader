@@ -841,6 +841,7 @@ func _activate_rewritten_scripts(res_paths: Array[String], pack_path: String) ->
 						break
 				if not stale_fresh_ok:
 					_log_critical("[RTVCodegen] activate %s: fresh load lacks _rtv_vanilla_ renames -- rewrite isn't compiling; hooks on this script will not fire" % res_path)
+					continue
 				activated += 1
 				continue
 			preactivated += 1
