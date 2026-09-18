@@ -50,6 +50,9 @@ FILES=(
     "$SRC/ui_theme.gd"
     "$SRC/ui_dialogs.gd"
     "$SRC/ui_mods.gd"
+    "$SRC/ui_mods_rows.gd"
+    "$SRC/ui_mods_metadata.gd"
+    "$SRC/mod_updates.gd"
     "$SRC/ui_browse.gd"
     "$SRC/ui_modpacks.gd"
     # Public API (hooks + registry)

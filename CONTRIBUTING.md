@@ -35,7 +35,10 @@ src/
   loader_update.gd         # loader release check and notification
   ui_theme.gd              # palette tokens, theme, styling voices, glyphs
   ui_dialogs.gd            # dialog plumbing + profile dialogs
-  ui_mods.gd               # Mods tab
+  ui_mods.gd               # Mods tab composition and actions
+  ui_mods_rows.gd          # installed mod rows
+  ui_mods_metadata.gd      # background host metadata and row updates
+  mod_updates.gd          # installed mod update selection and results
   ui_browse.gd             # Browse tab
   ui_modpacks.gd           # Modpacks tab + apply flow dialogs
   hooks_api.gd             # public hook + version + mod-info API

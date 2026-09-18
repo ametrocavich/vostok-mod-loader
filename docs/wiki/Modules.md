@@ -146,7 +146,10 @@ The launcher window shown before the game starts. Three tabs (Mods, Browse, Modp
 | `loader_update.gd` | `_check_modloader_update_async` and the loader release notification |
 | `ui_theme.gd` | The `COL_*` / `FS_*` / `SP_*` tokens (the VostokMods site palette: dark grey surfaces, one accent green, one success green, one red), `make_dark_theme`, the `style_*` voices, the badge and banner builders, the code-drawn glyphs |
 | `ui_dialogs.gd` | `_attach_ui_dialog` and the dialog plumbing, `_await_dialog_choice`, the content-mod disable confirm, the New / Rename / Delete profile dialogs |
-| `ui_mods.gd` | `build_mods_tab` and `_rebuild_mods_tab`, the update check (`_run_updates_check_for_mods`) and its badges, the host meta sidecar (`mods_meta_v2.json`), the security findings dialog, the row Remove confirm |
+| `ui_mods.gd` | `build_mods_tab`, `_rebuild_mods_tab`, filters, toolbar, missing/update sections, security findings and Remove dialogs |
+| `ui_mods_rows.gd` | Installed mod row controls, dependency actions and author notes |
+| `ui_mods_metadata.gd` | Host metadata sidecar (`mods_meta_v2.json`), fetch queue and row updates |
+| `mod_updates.gd` | `_run_updates_check_for_mods`, candidate selection and update result state |
 | `ui_browse.gd` | `build_browse_tab`, the per-host landing snapshots (`landing_<host>.json`), `_browse_render_mod_row`, the Browse detail dialog |
 | `ui_modpacks.gd` | `build_modpacks_tab`, row rendering, the apply flow and progress dialog, the failure and retry dialogs, the pack detail dialog, the VostokMods pack picker |
 
