@@ -250,8 +250,9 @@ func loaded_mods() -> Array[String]:
 # Non-numeric components compare as 0; missing trailing components are 0.
 # No semver pre-release/build parsing -- RTV mods don't use it.
 func _compare_versions(a: String, b: String) -> int:
-	var pa: PackedStringArray = a.split(".")
-	var pb: PackedStringArray = b.split(".")
+	# A leading "v" is common in mod.txt versions; unstripped, "v1" reads as 0.
+	var pa: PackedStringArray = a.lstrip("vV").split(".")
+	var pb: PackedStringArray = b.lstrip("vV").split(".")
 	var n: int = max(pa.size(), pb.size())
 	for i in n:
 		var ai: int = 0 if i >= pa.size() else _to_version_int(pa[i])

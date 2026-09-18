@@ -60,6 +60,7 @@
 ##       cannot point a scene at a file that does not exist
 ##   T18 setup(): a when-predicate returning null or a String reads as false
 ##       and the rest of the plan still runs
+##   T19 has_mod(id, min_version) reads a v-prefixed version
 extends SceneTree
 
 const FIXTURE_PATH := "res://Scripts/FixtureDispatch.gd"
@@ -105,7 +106,7 @@ func _finish() -> void:
 	_done = true
 	var ms := Time.get_ticks_msec() - _t0
 	if _failures.is_empty():
-		print("[dispatch] PASS: %d assertion(s) across T1..T18, %d frame(s), %d ms in-engine" % [_checks, _frames, ms])
+		print("[dispatch] PASS: %d assertion(s) across T1..T19, %d frame(s), %d ms in-engine" % [_checks, _frames, ms])
 		quit(0)
 	else:
 		printerr("[dispatch] FAILED: %d of %d assertion(s) (%d ms in-engine); first: %s" % [_failures.size(), _checks, ms, _failures[0]])
@@ -244,6 +245,7 @@ func _run_tests() -> void:
 	_t16_revert_reaches_the_patched_object()
 	_t17_scene_path_reads_and_checks()
 	_t18_when_predicate_cannot_abort_a_plan()
+	_t19_has_mod_reads_a_v_prefix()
 
 func _t1_pre() -> void:
 	var id: int = _lib.hook("fixturedispatch-add-pre", func(x, y): _log.append("pre:add:%d:%d" % [x, y]))
@@ -670,3 +672,14 @@ func _t18_when_predicate_cannot_abort_a_plan() -> void:
 	_expect_eq((results[2] as Dictionary).get("evaluated"), true, "T18", "a predicate returning 1 reads as true")
 	_expect(InputMap.has_action(own), "T18", "the entry after the bad predicates still ran")
 	_lib.remove("inputs", own)
+
+func _t19_has_mod_reads_a_v_prefix() -> void:
+	var loaded: Dictionary = _ml.get("_loaded_mod_ids")
+	loaded["rtv_test_mod"] = {"mod_id": "rtv_test_mod", "version": "v1.3.0"}
+	_expect(_lib.has_mod("rtv_test_mod", "1.2"), "T19", "a mod at v1.3.0 satisfies min_version 1.2")
+	_expect(_lib.has_mod("rtv_test_mod", "v1.3"), "T19", "a v-prefixed min_version compares the same")
+	_expect(not _lib.has_mod("rtv_test_mod", "1.4"), "T19", "and it does not satisfy 1.4")
+	loaded["rtv_test_mod"] = {"mod_id": "rtv_test_mod", "version": ""}
+	_expect(_lib.has_mod("rtv_test_mod", "0"), "T19", "a mod with no version still satisfies min_version 0")
+	_expect(not _lib.has_mod("rtv_test_mod", "0.1"), "T19", "and nothing stricter")
+	loaded.erase("rtv_test_mod")

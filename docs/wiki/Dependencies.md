@@ -47,7 +47,7 @@ All three live on the `RTVModLib` object (`Engine.get_meta("RTVModLib")`, see [H
 
 | Call | Returns | Notes |
 |---|---|---|
-| `has_mod(mod_id: String, min_version: String = "") -> bool` | true if a mod with that id is loaded | Optional `min_version` does a component-wise numeric compare (`"1.2.3"` split on `.`); non-numeric components compare as 0, so no semver prerelease. A mod that declares no `version` compares as `0.0.0`. |
+| `has_mod(mod_id: String, min_version: String = "") -> bool` | true if a mod with that id is loaded | Optional `min_version` does a component-wise numeric compare (`"1.2.3"` split on `.`); a leading `v` is ignored on both sides; other non-numeric components compare as 0, so no semver prerelease. A mod that declares no `version` compares as `0.0.0`. |
 | `mod_info(mod_id: String) -> Dictionary` | `{mod_id, mod_name, version, file_name, priority, required_dependencies, optional_dependencies}`, or `{}` if not loaded | Returns a deep copy; safe to mutate. |
 | `loaded_mods() -> Array[String]` | all loaded mod ids | Order not guaranteed; sort it if you display it. |
 
