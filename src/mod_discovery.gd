@@ -1117,7 +1117,7 @@ func replace_mod_from_ref(target_path: String, ref: Dictionary) -> Dictionary:
 	var new_path := target_path.get_base_dir().path_join(new_file_name)
 
 	# Never clobber an unrelated archive at the derived path.
-	if new_file_name != old_file_name and FileAccess.file_exists(new_path):
+	if not _same_file_name(new_file_name, old_file_name) and FileAccess.file_exists(new_path):
 		DirAccess.remove_absolute(temp_path)
 		failure["error"] = "A different file named \"%s\" is already in the mods folder -- move or delete it and retry" % new_file_name
 		return failure
@@ -1141,6 +1141,15 @@ func replace_mod_from_ref(target_path: String, ref: Dictionary) -> Dictionary:
 		DirAccess.remove_absolute(backup_path)
 	_record_installed_mod_source(new_file_name, ref, str(file["version"]))
 	return {"ok": true, "new_path": new_path, "new_file_name": new_file_name}
+
+
+# True when two names in one folder are the same file: equal, or equal but for
+# case where the file system ignores it. file_exists() finds the installed
+# archive under a new name that differs only in case.
+func _same_file_name(a: String, b: String) -> bool:
+	if a == b:
+		return true
+	return a.to_lower() == b.to_lower() and OS.get_name() in ["Windows", "macOS"]
 
 
 # Fetch an archive and adopt it into mods/. Provider-neutral: the caller

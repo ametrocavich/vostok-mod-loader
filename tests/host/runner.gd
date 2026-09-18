@@ -90,6 +90,7 @@ func _run() -> void:
 	_t23_download_failure_text(ml)
 	_t24_pack_format_version(ml)
 	_t25_version_ordering(ml)
+	_t26_same_file_name(ml)
 
 	_finish()
 
@@ -1177,6 +1178,20 @@ func _t25_version_ordering(ml: Object) -> void:
 	_assert(int(summary["with_updates"]) == 1, "T25: a stable release is an update for its own prerelease (got %s)" % str(summary))
 	(ml.get("_mod_updates_state") as Dictionary).erase("m@1.0.0-beta.1")
 
+# --- T26: is a derived file name the installed archive itself ---------------------
+
+# An update can rename the archive. On a file system that ignores case, a new
+# name that differs only in case is the installed file, not a collision.
+func _t26_same_file_name(ml: Object) -> void:
+	_assert(ml.has_method("_same_file_name"), "T26: the loader has _same_file_name")
+	if not ml.has_method("_same_file_name"):
+		return
+	_assert(bool(ml._same_file_name("CoolMod.zip", "CoolMod.zip")), "T26: equal names are the same file")
+	_assert(not bool(ml._same_file_name("CoolMod.zip", "OtherMod.zip")), "T26: different names are not")
+	var ignores_case := OS.get_name() in ["Windows", "macOS"]
+	_assert(bool(ml._same_file_name("CoolMod.zip", "coolmod.zip")) == ignores_case,
+			"T26: a case-only difference is the same file exactly where the file system ignores case")
+
 # The update check in two pure halves: which installed mods are asked about,
 # and what the site's answers mean. A dev folder, a mod with no version, no
 # source, no readable mod.txt or a host that cannot serve files is skipped;
@@ -1359,7 +1374,7 @@ func _fail(msg: String) -> void:
 func _finish() -> void:
 	_done = true
 	if _failures.is_empty():
-		print("[host] PASS: %d assertion(s) across T1..T25" % _assertions)
+		print("[host] PASS: %d assertion(s) across T1..T26" % _assertions)
 		quit(0)
 		return
 	for m in _failures:
