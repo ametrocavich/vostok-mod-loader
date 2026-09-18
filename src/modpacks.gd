@@ -326,7 +326,7 @@ func _modpack_reconcile_profile_keys(profile_name: String, sources: Dictionary) 
 			by_id_ver[id_l + "@" + str(e.get("version", ""))] = pk
 		var rk := host_ref_key(_entry_host_ref(e, persisted))
 		if rk != "" and not by_ref.has(rk):
-			by_ref[rk] = pk
+			by_ref[rk] = e
 	var changed := 0
 	for suffix in [".enabled", ".priority", ".dep_ignore"]:
 		var sec := _profile_sec(profile_name, str(suffix))
@@ -341,9 +341,12 @@ func _modpack_reconcile_profile_keys(profile_name: String, sources: Dictionary) 
 			if at > 0:
 				target = str(by_id_ver.get(pack_key.substr(0, at).to_lower() + "@" + pack_key.substr(at + 1), ""))
 			if target == "":
-				var rk := host_ref_key(_source_host_ref(_normalize_source_record(sources.get(pack_key))))
-				if rk != "":
-					target = str(by_ref.get(rk, ""))
+				var src_rec := _normalize_source_record(sources.get(pack_key))
+				var rk := host_ref_key(_source_host_ref(src_rec))
+				if by_ref.has(rk):
+					var candidate: Dictionary = by_ref[rk]
+					if _modpack_source_installed(src_rec, {rk: [str(candidate.get("version", ""))]}):
+						target = str(candidate["profile_key"])
 			if target == "" or target == pack_key:
 				continue
 			var value: Variant = cfg.get_value(sec, pack_key)
@@ -476,6 +479,23 @@ func _modpack_source_installed(src_data: Variant, installed_refs: Dictionary) ->
 	return false
 
 
+# Discovery selects the newest installed copy. An older pin cannot become
+# active while a newer copy is present, even if its download succeeds.
+func _modpack_pin_conflict(entry: Dictionary) -> String:
+	var refs: Dictionary = _modpack_installed_index()["refs"]
+	var sources := _modpack_sources(entry)
+	for key in sources:
+		var rec := _normalize_source_record(sources[key])
+		var want := str(rec["version"]).strip_edges()
+		if want.is_empty():
+			continue
+		var rk := host_ref_key(_source_host_ref(rec))
+		for installed_version in refs.get(rk, []):
+			if compare_versions(str(installed_version), want) > 0:
+				return "This pack requires %s at %s. Remove the newer installed version %s before applying it." % [rk, want, str(installed_version)]
+	return ""
+
+
 ## The host ref a normalized source record names, or {} when it names none.
 func _source_host_ref(rec: Dictionary) -> Dictionary:
 	if str(rec.get("provider", "")) == "" or str(rec.get("id", "")) == "":
@@ -566,6 +586,10 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 	var current_active := get_active_modpack()
 	if current_active != "" and current_active != sanitized:
 		return _modpack_apply_failure("Unload " + current_active + " before applying another modpack")
+
+	var pin_conflict := _modpack_pin_conflict(entry)
+	if not pin_conflict.is_empty():
+		return _modpack_apply_failure(pin_conflict)
 
 	# Re-apply of the active pack skips backup, materialize and switch (each
 	# would clobber user state); it only re-downloads missing mods.

@@ -93,6 +93,7 @@ func _run() -> void:
 	_t26_same_file_name(ml)
 	_t27_download_file_names(ml)
 	_t28_dependency_lists_and_load_order(ml)
+	await _t29_pack_version_pins(ml)
 
 	_finish()
 
@@ -1257,6 +1258,46 @@ func _t27_download_file_names(ml: Object) -> void:
 
 # --- T28: mod.txt dependency lists and the load-order tie-break --------------------
 
+# A source pin must not enable another installed version, including after a
+# failed download. Older pins must fail before the newest-copy selector can
+# hide their download.
+func _t29_pack_version_pins(ml: Object) -> void:
+	_pack_setup(ml)
+	var pack := {"metroprofile": 1, "name": "Pinned", "enabled": {"vostokmods:foo": true},
+			"priority": {"vostokmods:foo": 8}, "dep_ignore": {"vostokmods:foo": true},
+			"sources": {"vostokmods:foo": {"provider": "vostokmods", "id": "foo", "version": "1.0"}}}
+	for version in ["1.0", "3.0", "v2.0", ""]:
+		pack["sources"]["vostokmods:foo"]["version"] = version
+		var entry := _pack_write(ml, pack, "1")
+		var result: Dictionary = ml._materialize_modpack_profile(entry, "modpack__Pinned")
+		_assert(bool(result["ok"]), "T29: pinned fixture materializes")
+		var cfg := ConfigFile.new()
+		cfg.load(str(ml.UI_CONFIG_PATH))
+		for suffix in [".enabled", ".priority", ".dep_ignore"]:
+			var sec: String = "profile.modpack__Pinned" + suffix
+			var match_pin: bool = version in ["v2.0", ""]
+			_assert(cfg.has_section_key(sec, "foo@2.0") == match_pin,
+					"T29: %s pin '%s' resolves only to its version" % [suffix, version])
+			_assert(cfg.has_section_key(sec, "vostokmods:foo") != match_pin,
+					"T29: %s keeps an unresolved pin as a missing row" % suffix)
+	_pack_setup(ml)
+	pack["sources"]["vostokmods:foo"]["version"] = "1.0"
+	var entry := _pack_write(ml, pack, "1")
+	_assert(ml.has_method("_modpack_pin_conflict"), "T29: apply has a version-conflict preflight")
+	if ml.has_method("_modpack_pin_conflict"):
+		var before := FileAccess.get_file_as_bytes(str(ml.UI_CONFIG_PATH))
+		var result: Dictionary = await ml.apply_modpack(entry, null, Callable())
+		_assert(not bool(result["ok"]) and str(result["error"]).contains("newer installed version"),
+				"T29: an older pin is refused with an actionable conflict")
+		_assert(int(result["downloaded"]) == 0 and int(result["failed_downloads"]) == 0,
+				"T29: conflict is refused before downloading")
+		_assert(before == FileAccess.get_file_as_bytes(str(ml.UI_CONFIG_PATH)),
+				"T29: conflict does not change the profile or backup state")
+		pack["sources"]["vostokmods:foo"]["version"] = "3.0"
+		_assert(str(ml._modpack_pin_conflict(_pack_write(ml, pack, "1"))).is_empty(),
+				"T29: a newer requested version can still be downloaded")
+	_pack_cleanup(ml)
+
 func _t28_dependency_lists_and_load_order(ml: Object) -> void:
 	var cases := [
 		['[dependencies]\nrequired=["a", "b"]\n', ["a", "b"]],
@@ -1461,7 +1502,7 @@ func _fail(msg: String) -> void:
 func _finish() -> void:
 	_done = true
 	if _failures.is_empty():
-		print("[host] PASS: %d assertion(s) across T1..T28" % _assertions)
+		print("[host] PASS: %d assertion(s) across T1..T29" % _assertions)
 		quit(0)
 		return
 	for m in _failures:
