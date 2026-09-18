@@ -129,7 +129,7 @@ Sections other than the two autoload ones (`[display]`, `[input]`, ...) survive 
 | Key | Purpose |
 |---|---|
 | `restart_count` | Incremented by `_write_pass_state`, read by `_check_crash_recovery`. The crash-loop breaker itself reads the streak file below, because the crashed-Pass-2 wipe deletes this file |
-| `mods_hash` | md5 of archive paths plus stable mtimes (folder mods hash the source tree, not the temp zip), prepend autoloads, enabled mods' declared versions, script overrides, `MODLOADER_VERSION` and `modloader.gd`'s own mtime. A mismatch forces a restart |
+| `mods_hash` | md5 of the archive paths in load order plus stable mtimes (folder mods hash the source tree, not the temp zip), prepend autoloads, enabled mods' declared versions, script overrides, `MODLOADER_VERSION` and `modloader.gd`'s own mtime. A mismatch forces a restart |
 | `archive_paths` | `PackedStringArray` replayed by static init's mount loop |
 | `modloader_version` | Version check at static init |
 | `exe_mtime` | Game-update detection |

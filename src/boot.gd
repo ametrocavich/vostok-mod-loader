@@ -691,9 +691,9 @@ func _compute_state_hash(archive_paths: PackedStringArray, prepend_autoloads: Ar
 	if archive_paths.is_empty() and prepend_autoloads.is_empty():
 		return ""
 	var parts := PackedStringArray()
-	var sorted_paths := Array(archive_paths)
-	sorted_paths.sort()
-	for p in sorted_paths:
+	# In load order, not sorted: static init mounts in this order and the last
+	# mount wins a shared file, so a priority change has to change the hash.
+	for p in archive_paths:
 		# Include mtime so replacing a file with the same name triggers a restart.
 		parts.append("a:%s@%d" % [p, _stable_path_mtime(p)])
 	for entry in prepend_autoloads:

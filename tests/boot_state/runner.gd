@@ -156,6 +156,7 @@ func _run() -> void:
 	_t11_removed_feature_state_is_swept()
 	_t12_game_update_is_seen_through_the_pck()
 	_t13_missing_config_recovers_from_backup()
+	_t14_state_hash_follows_load_order()
 
 	_finish()
 
@@ -605,6 +606,28 @@ func _t13_missing_config_recovers_from_backup() -> void:
 	_assert(FileAccess.file_exists(cfg_path), "T13: with no backup the persist creates the file as before")
 	_reset_user_state()
 
+# --- T14: the state hash follows the load order --------------------------------
+
+# Pass 1 skips the restart when the state hash matches the previous session's,
+# and static init then keeps that session's mount order. Mount order decides
+# which mod wins a file both ship, so a priority change that reorders the
+# archives has to change the hash, or it never takes effect.
+func _t14_state_hash_follows_load_order() -> void:
+	_reset_user_state()
+	_write_file("user://hash_a.zip", "a")
+	_write_file("user://hash_b.zip", "b")
+	var a := ProjectSettings.globalize_path("user://hash_a.zip")
+	var b := ProjectSettings.globalize_path("user://hash_b.zip")
+	var none: Array[Dictionary] = []
+	_ml.set("_ui_mod_entries", none)
+	var ab := str(_ml._compute_state_hash(PackedStringArray([a, b]), none))
+	var ba := str(_ml._compute_state_hash(PackedStringArray([b, a]), none))
+	_assert(ab != "" and ba != "", "T14: a non-empty archive list hashes to something")
+	_assert(ab == str(_ml._compute_state_hash(PackedStringArray([a, b]), none)), "T14: the same order hashes the same")
+	_assert(ab != ba, "T14: the same archives in another load order hash differently")
+	_assert(str(_ml._compute_state_hash(PackedStringArray(), none)) == "", "T14: nothing to mount hashes to the empty string")
+	_reset_user_state()
+
 # --- T9: Pass 2 keeps the applied-override map through load_all_mods --------
 
 # Pass 2 applies [script_extend] / [script_overrides] from pass state before
@@ -896,7 +919,7 @@ func _cleanup_exe_cfg() -> void:
 func _finish() -> void:
 	_cleanup_exe_cfg()
 	if _failures.is_empty():
-		print("[boot-state] PASS: %d assertion(s) across T1..T13" % _assertions)
+		print("[boot-state] PASS: %d assertion(s) across T1..T14" % _assertions)
 		quit(0)
 		return
 	for m in _failures:
