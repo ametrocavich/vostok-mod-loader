@@ -268,23 +268,31 @@ func _entry_from_config(read: Dictionary, file_name: String, full_path: String, 
 func _build_entry_warnings(entry: Dictionary, mod_txt_files: Dictionary) -> Array[String]:
 	var warnings: Array[String] = []
 	var ext: String = entry["ext"]
-	if ext == "pck" or ext == "folder":
+	if ext == "pck":
 		return warnings
 	var status: String = entry.get("mod_txt_status", "none")
+	if ext == "folder":
+		# A developer's own folder. The archive-shape checks do not apply, but a
+		# mod.txt that does not parse is what its author needs to see.
+		if status == "parse_error":
+			warnings.append(_mod_txt_parse_warning(entry))
+		return warnings
 	if status == "none":
 		warnings.append("Invalid mod -- may not work correctly. Try re-downloading.")
 	elif status == "parse_error":
-		# Name the line/section so authors can fix their own mod.txt typo.
-		var detail: String = entry.get("mod_txt_error", "")
-		if detail.is_empty():
-			warnings.append("Invalid mod -- mod.txt failed to parse. Try re-downloading.")
-		else:
-			warnings.append("mod.txt parse error at " + detail)
+		warnings.append(_mod_txt_parse_warning(entry))
 	elif status.begins_with("nested:"):
 		warnings.append("Invalid mod -- mod.txt is in a subfolder, not at the zip root. Re-zip so mod.txt is at the root.")
 	elif status == "ok":
 		warnings.append_array(_autoload_path_warnings(entry, mod_txt_files))
 	return warnings
+
+# Names the line and section so an author can fix their own mod.txt typo.
+func _mod_txt_parse_warning(entry: Dictionary) -> String:
+	var detail: String = entry.get("mod_txt_error", "")
+	if detail.is_empty():
+		return "Invalid mod -- mod.txt failed to parse. Try re-downloading."
+	return "mod.txt parse error at " + detail
 
 # Notes for the mod's author rather than its user: the mod loads, but its
 # mod.txt could be better. The Mods tab shows them only in developer mode.

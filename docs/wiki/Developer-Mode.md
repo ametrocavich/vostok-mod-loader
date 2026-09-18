@@ -16,7 +16,7 @@ Subdirectories of `<exe>/mods/` count as mods and are zipped to `user://vmz_moun
 
 The temp zip is rebuilt only when the folder's contents changed. A folder-state stamp (newest mtime, file count, a per-file `path@mtime` hash) is stored in a `.zip.src` sidecar at zip time and compared on every launch (`_folder_dev_zip_current`, fs_archive.gd). An unchanged folder reuses the cached zip; an edit, a deletion or a timestamp change forces a rebuild on the next launch.
 
-Folder entries show a red `[dev folder]` label in the Mods tab.
+Folder entries show a red `[dev folder]` label in the Mods tab. A folder whose `mod.txt` does not parse carries the same `mod.txt parse error at ...` row warning an archive gets; the archive-shape warnings do not apply to folders.
 
 Dev folders never get update downloads. The update check skips them, since a downloaded archive would land as a duplicate beside your folder. Your working copy on disk is always what loads.
 

@@ -1242,6 +1242,11 @@ func _t15_warnings_and_author_notes(ml: Object) -> void:
 	_assert(_has_line(rescued["notes"], "unrecognized [updates] source") and _has_line(rescued["notes"], "modworkshop=")
 			and not _has_line(rescued["notes"], "will not update"),
 			"T15: a bad source= beside a valid modworkshop= says which line is used, not that the mod cannot update (got %s)" % str(rescued["notes"]))
+	var dev_folder := _entry_from(ml, null, "parse_error", "line 3 [mod]: nam", {}, "folder")
+	_assert(_has_line(dev_folder["warnings"], "parse error at line 3"),
+			"T15: a developer folder with a broken mod.txt gets the parse warning too (got %s)" % str(dev_folder["warnings"]))
+	var bare_folder := _entry_from(ml, null, "none", "", {}, "folder")
+	_assert((bare_folder["warnings"] as Array).is_empty(), "T15: a developer folder with no mod.txt is not told to re-download")
 	var pck := _entry_from(ml, null, "pck", "", {}, "pck")
 	_assert((pck["warnings"] as Array).is_empty() and (pck["notes"] as Array).is_empty(),
 			"T15: a .pck gets neither list")
