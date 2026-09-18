@@ -469,9 +469,9 @@ static func _static_cleanup_orphan_hook_packs(keep_path: String, log_lines: Pack
 		log_lines.append("[FileScope] Cleaned %d orphan hook pack(s) from prior session(s)" % removed)
 
 # Recursive delete, refused for anything outside user:// and for user://
-# itself: a bad path join must never reach the saves or the game folder.
-# Keeps the root directory when keep_root is set. Static so static init can
-# use it.
+# itself: a bad path join must never reach the saves or the game folder. A
+# link inside the tree is removed, not followed. Keeps the root directory
+# when keep_root is set. Static so static init can use it.
 static func _remove_tree(dir_path: String, keep_root: bool) -> void:
 	var target := ProjectSettings.globalize_path(dir_path).simplify_path()
 	var user_root := ProjectSettings.globalize_path("user://").simplify_path()
@@ -491,7 +491,9 @@ static func _remove_tree(dir_path: String, keep_root: bool) -> void:
 		if entry == "." or entry == "..":
 			continue
 		var full: String = target.path_join(entry)
-		if dir.current_is_dir():
+		# A symlink or junction is removed as the link it is. Descending would
+		# empty a folder the textual user:// check above never saw.
+		if dir.current_is_dir() and not dir.is_link(full):
 			_remove_tree(full, false)
 		else:
 			DirAccess.remove_absolute(full)

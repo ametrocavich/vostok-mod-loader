@@ -164,6 +164,7 @@ func _run() -> void:
 	_t19_wrap_surface_counts_each_script_once()
 	_t20_lost_registry_target_names_its_declarers()
 	_t21_cfg_write_failure_names_its_step()
+	_t22_remove_tree_leaves_a_link_target_alone()
 
 	_finish()
 
@@ -828,6 +829,32 @@ func _t21_cfg_write_failure_names_its_step() -> void:
 			"T21: the failure names the step and the error code (got '%s')" % why)
 	DirAccess.remove_absolute(good)
 
+# --- T22: the recursive delete does not follow a link ----------------------------
+
+# _remove_tree refuses any path outside user://, but that check is on the
+# path's text. A symlink or junction inside the tree points somewhere else:
+# the link is removed, and what it points at is left alone.
+func _t22_remove_tree_leaves_a_link_target_alone() -> void:
+	var outside := ProjectSettings.globalize_path("user://t22_outside")
+	var tree := ProjectSettings.globalize_path("user://t22_tree")
+	DirAccess.make_dir_recursive_absolute(outside)
+	DirAccess.make_dir_recursive_absolute(tree)
+	_write_file("user://t22_outside/keep.txt", "keep")
+	_write_file("user://t22_tree/own.txt", "own")
+	var dir := DirAccess.open(tree)
+	var linked := dir != null and dir.create_link(outside, tree.path_join("link")) == OK
+	if not linked and OS.get_name() == "Windows":
+		# A symlink needs a privilege most accounts lack; a junction needs none
+		# and a recursive delete follows it the same way.
+		linked = OS.execute("cmd", ["/c", "mklink", "/J", tree.path_join("link").replace("/", "\\"), outside.replace("/", "\\")]) == 0
+	_ml._remove_tree("user://t22_tree", false)
+	_assert(not DirAccess.dir_exists_absolute(tree), "T22: the tree itself is removed")
+	if linked:
+		_assert(FileAccess.file_exists("user://t22_outside/keep.txt"), "T22: a file behind a link inside the tree survives")
+	else:
+		print("[boot-state] T22: this platform would not create a link; the link case was not exercised")
+	_ml._remove_tree("user://t22_outside", false)
+
 # --- T9: Pass 2 keeps the applied-override map through load_all_mods --------
 
 # Pass 2 applies [script_extend] / [script_overrides] from pass state before
@@ -1119,7 +1146,7 @@ func _cleanup_exe_cfg() -> void:
 func _finish() -> void:
 	_cleanup_exe_cfg()
 	if _failures.is_empty():
-		print("[boot-state] PASS: %d assertion(s) across T1..T21" % _assertions)
+		print("[boot-state] PASS: %d assertion(s) across T1..T22" % _assertions)
 		quit(0)
 		return
 	for m in _failures:
