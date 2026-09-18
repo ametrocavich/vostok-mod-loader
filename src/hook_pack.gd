@@ -655,9 +655,13 @@ func _hook_pack_mount_and_activate(pack_zip_rel: String, packed_paths: Array[Str
 		_log_info("[RTVCodegen] No scripts rewritten -- no pack mounted")
 	return pack_zip_rel
 
-# "ModA, ModB" for the mods that declared hooks on a path; empty for add_hook() callers.
+# Who declared a wrap target: "ModA, ModB" for [hooks] and .hook() declarers,
+# the loader for its own Menu.gd wrap, the [registry] declarers for a registry
+# target nobody hooked by name, and an add_hook() caller for anything else.
 func _hook_declarers_label(path: String) -> String:
 	var by: Dictionary = _hook_declared_by.get(path, {}) as Dictionary
+	if by.is_empty() and _any_mod_declared_registry and _is_registry_target(path.get_file()):
+		by = _registry_declared_by
 	if not by.is_empty():
 		var names := PackedStringArray()
 		for n in by:

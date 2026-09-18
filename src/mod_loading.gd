@@ -6,6 +6,9 @@
 # res_path -> {mod_name: true}. _hooked_methods cannot carry it, since an
 # empty inner dict is the wildcard mask. Diagnostic only.
 var _hook_declared_by: Dictionary = {}
+# Mods that declared [registry] (or made a B_Loader call that counts as one):
+# {mod_name: true}. The REGISTRY_TARGETS have no [hooks] declarer to name.
+var _registry_declared_by: Dictionary = {}
 var _database_replaced_by := ""
 
 # Every mod.txt section this loader reads anywhere. Feeds only the
@@ -29,6 +32,7 @@ func load_all_mods(pass_label: String = "") -> void:
 	_archive_zip_paths.clear()
 	_pending_script_overrides.clear()
 	_hook_declared_by.clear()
+	_registry_declared_by.clear()
 	# _hooks and _hooked_methods are left alone: a `!` early autoload has
 	# already run by now, and its hook() and add_hook() calls live there.
 	_any_mod_declared_registry = false
@@ -230,12 +234,14 @@ func _process_mod_candidate(c: Dictionary, load_index: int) -> void:
 	# transform; without it lib.register()/override() do not work. Presence suffices.
 	if cfg != null and cfg.has_section("registry"):
 		_any_mod_declared_registry = true
+		_registry_declared_by[mod_name] = true
 		_log_info("  Registry declared [%s]" % mod_name)
 
 	# B_Loader compat: mods calling Loader.add_shelter/add_map never declare
 	# [registry], but the shim needs the rewrite; treat the call sites as a declaration.
 	var analysis: Dictionary = _mod_script_analysis.get(mod_name, {})
 	if analysis.get("calls_bloader_api", false):
+		_registry_declared_by[mod_name] = true
 		if not _any_mod_declared_registry:
 			_any_mod_declared_registry = true
 			_log_info("  B_Loader-style call detected (Loader.add_shelter/add_map) [%s] -- treating as registry-declaring; compat shim activates" % mod_name)

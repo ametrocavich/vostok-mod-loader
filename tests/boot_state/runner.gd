@@ -162,6 +162,7 @@ func _run() -> void:
 	_t17_modlib_meta_registers_once()
 	_t18_pack_failures_reach_the_launcher()
 	_t19_wrap_surface_counts_each_script_once()
+	_t20_lost_registry_target_names_its_declarers()
 
 	_finish()
 
@@ -784,6 +785,29 @@ func _t19_wrap_surface_counts_each_script_once() -> void:
 	_ml.set("_any_mod_declared_registry", false)
 	lines.clear()
 
+# --- T20: a lost hook target names who declared it ------------------------------
+
+# The reconciliation report names the mods behind a target that did not make
+# it into the pack. A registry target has no [hooks] declarer; the mods that
+# declared [registry] are named, not an add_hook() call that never happened.
+func _t20_lost_registry_target_names_its_declarers() -> void:
+	_assert("_registry_declared_by" in _ml, "T20: the loader has _registry_declared_by")
+	if not ("_registry_declared_by" in _ml):
+		return
+	var by: Dictionary = _ml.get("_registry_declared_by")
+	by.clear()
+	by["Loot Overhaul"] = true
+	_ml.set("_any_mod_declared_registry", true)
+	var label := str(_ml._hook_declarers_label("res://Scripts/Loader.gd"))
+	_assert(label.contains("Loot Overhaul") and not label.contains("add_hook"),
+			"T20: a registry target is attributed to the mods that declared [registry] (got '%s')" % label)
+	_assert(str(_ml._hook_declarers_label("res://Scripts/Controller.gd")).contains("add_hook"),
+			"T20: a path nobody declared statically is still attributed to add_hook")
+	_assert(str(_ml._hook_declarers_label("res://Scripts/Menu.gd")).contains("the mod loader itself"),
+			"T20: the core Menu.gd wrap is attributed to the loader")
+	by.clear()
+	_ml.set("_any_mod_declared_registry", false)
+
 # --- T9: Pass 2 keeps the applied-override map through load_all_mods --------
 
 # Pass 2 applies [script_extend] / [script_overrides] from pass state before
@@ -1075,7 +1099,7 @@ func _cleanup_exe_cfg() -> void:
 func _finish() -> void:
 	_cleanup_exe_cfg()
 	if _failures.is_empty():
-		print("[boot-state] PASS: %d assertion(s) across T1..T19" % _assertions)
+		print("[boot-state] PASS: %d assertion(s) across T1..T20" % _assertions)
 		quit(0)
 		return
 	for m in _failures:
