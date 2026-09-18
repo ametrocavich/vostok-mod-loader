@@ -94,6 +94,7 @@ func _run() -> void:
 	_t27_download_file_names(ml)
 	_t28_dependency_lists_and_load_order(ml)
 	await _t29_pack_version_pins(ml)
+	await _t30_reimport_hosted_pack(ml)
 
 	_finish()
 
@@ -1258,6 +1259,50 @@ func _t27_download_file_names(ml: Object) -> void:
 
 # --- T28: mod.txt dependency lists and the load-order tie-break --------------------
 
+# Paste, Get and Refresh share the import boundary. A changed zip must not
+# reuse the slot from an earlier apply, and an active pack cannot be replaced.
+func _t30_reimport_hosted_pack(ml: Object) -> void:
+	_pack_setup(ml)
+	var previous_dir := str(ml.get("_mods_dir"))
+	var mods_dir := "user://t30_mods"
+	DirAccess.make_dir_recursive_absolute(mods_dir)
+	ml.set("_mods_dir", mods_dir)
+	var manifest := {"format": 2, "name": "Hosted Again", "slug": "hosted-again", "hash": "one",
+			"mods": [{"slug": "foo", "version": "2.0", "available": true, "loadOrder": 5}],
+			"mcmConfig": {"some-mod/config.ini": "[a]\nv=1\n"}}
+	var imported: Dictionary = ml._hosted_import_manifest(manifest)
+	_assert(bool(imported["ok"]), "T30: initial import succeeds")
+	var entry: Dictionary = ml._build_modpack_entry(str(imported["file_path"]))
+	var applied: Dictionary = await ml.apply_modpack(entry, null, Callable())
+	_assert(bool(applied["ok"]), "T30: initial hosted pack applies without downloads")
+	var before := FileAccess.get_file_as_bytes(str(imported["file_path"]))
+	var same: Dictionary = ml._hosted_import_manifest(manifest)
+	_assert(bool(same["ok"]), "T30: an unchanged import keeps the active pack")
+	manifest["hash"] = "two"
+	manifest["mods"][0]["loadOrder"] = 9
+	manifest["mcmConfig"]["some-mod/config.ini"] = "[a]\nv=2\n"
+	var refused: Dictionary = ml._hosted_import_manifest(manifest)
+	_assert(not bool(refused["ok"]) and str(refused["error"]).contains("Unload"),
+			"T30: a changed active pack must be unloaded before reimport")
+	_assert(before == FileAccess.get_file_as_bytes(str(imported["file_path"])),
+			"T30: refusing reimport leaves the active zip intact")
+	ml.unload_modpack(null)
+	var refreshed: Dictionary = ml._hosted_import_manifest(manifest)
+	_assert(bool(refreshed["ok"]), "T30: changed inactive pack imports")
+	entry = ml._build_modpack_entry(str(refreshed["file_path"]))
+	applied = await ml.apply_modpack(entry, null, Callable())
+	var cfg := ConfigFile.new()
+	cfg.load(str(ml.UI_CONFIG_PATH))
+	var sec := "profile.modpack__" + str(entry["sanitized_name"]) + ".priority"
+	_assert(bool(applied["ok"]) and int(cfg.get_value(sec, "foo@2.0", 0)) == 9,
+			"T30: reimport applies the new priority instead of the kept slot")
+	_assert(FileAccess.get_file_as_string("user://MCM/some-mod/config.ini").contains("v=2"),
+			"T30: reimport applies the new MCM settings")
+	ml.unload_modpack(null)
+	ml._remove_tree(mods_dir, false)
+	ml.set("_mods_dir", previous_dir)
+	_pack_cleanup(ml)
+
 # A source pin must not enable another installed version, including after a
 # failed download. Older pins must fail before the newest-copy selector can
 # hide their download.
@@ -1502,7 +1547,7 @@ func _fail(msg: String) -> void:
 func _finish() -> void:
 	_done = true
 	if _failures.is_empty():
-		print("[host] PASS: %d assertion(s) across T1..T29" % _assertions)
+		print("[host] PASS: %d assertion(s) across T1..T30" % _assertions)
 		quit(0)
 		return
 	for m in _failures:

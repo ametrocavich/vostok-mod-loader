@@ -18,7 +18,7 @@ A pack from the site lists VostokMods mods only. Each mod is downloaded by its s
 
 Packs published on the site carry their MCM settings, and applying one restores them the same way a local pack's `MCM/` folder is restored.
 
-A pack you got from the site shows `from VostokMods` in its row and a **Refresh** button. Refresh asks the site whether the pack changed (its mod list, pinned versions or settings); if it did, the local zip is rewritten and you apply it again to pick up the changes. A refresh that changed the pack also resets the edits you made to it, so the next apply is the author's new setup: mod list, load order and MCM settings. An active pack cannot be refreshed; unload it first. The pack's details dialog has an **Open page on VostokMods** button.
+A pack you got from the site shows `from VostokMods` in its row and a **Refresh** button. Refresh asks the site whether the pack changed (its mod list, pinned versions or settings); if it did, the local zip is rewritten and you apply it again to pick up the changes. A refresh that changed the pack also resets the edits you made to it, so the next apply is the author's new setup: mod list, load order and MCM settings. Pasting the link again or using **Get** for a changed pack resets the kept setup in the same way. Reimporting a pack with the same site hash keeps your edits. An active pack cannot be refreshed or replaced by a changed import; unload it first. The pack's details dialog has an **Open page on VostokMods** button.
 
 ## Apply
 

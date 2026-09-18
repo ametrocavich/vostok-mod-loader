@@ -207,7 +207,7 @@ func _hosted_write_pack_zip(profile: Dictionary, mcm: Dictionary, path: String) 
 
 
 ## Manifest -> pack zip in mods/. Returns {ok, error, file_path, name,
-## warnings}.
+## warnings, changed}.
 func _hosted_import_manifest(manifest: Dictionary) -> Dictionary:
 	var conv := _hosted_manifest_to_profile(manifest)
 	var profile: Dictionary = conv["profile"]
@@ -217,12 +217,23 @@ func _hosted_import_manifest(manifest: Dictionary) -> Dictionary:
 		return {"ok": false, "error": "The pack has no usable name.", "file_path": "", "name": "", "warnings": conv["warnings"]}
 	if str(profile["name"]).is_empty():
 		profile["name"] = slug
+	var previous := _build_modpack_entry(path) if FileAccess.file_exists(path) else {}
+	var previous_hosted: Dictionary = previous.get("hosted", {})
+	var next_hash := str((profile["hosted"] as Dictionary).get("hash", ""))
+	if next_hash != "" and next_hash == str(previous_hosted.get("hash", "")):
+		return {"ok": true, "error": "", "file_path": path, "name": str(profile["name"]), "warnings": conv["warnings"], "changed": false}
+	var old_slot := str(previous.get("sanitized_name", ""))
+	var active := get_active_modpack()
+	if active != "" and (active == old_slot or active == _sanitize_profile_name(str(profile["name"]))):
+		return {"ok": false, "error": "Unload " + active + " before replacing its modpack file.", "file_path": "", "name": str(profile["name"]), "warnings": conv["warnings"]}
 	var w := _hosted_write_pack_zip(profile, conv["mcm"], path)
 	if not w["ok"]:
 		return {"ok": false, "error": w["error"], "file_path": "", "name": str(profile["name"]), "warnings": conv["warnings"]}
+	# Every import path invalidates the slot built from the replaced zip.
+	_modpack_forget_slot(old_slot)
 	for line in (conv["warnings"] as PackedStringArray):
 		_log_warning("[Modpack] " + slug + ": " + line)
-	return {"ok": true, "error": "", "file_path": path, "name": str(profile["name"]), "warnings": conv["warnings"]}
+	return {"ok": true, "error": "", "file_path": path, "name": str(profile["name"]), "warnings": conv["warnings"], "changed": true}
 
 
 # ----- network entry points --------------------------------------------------
@@ -261,9 +272,7 @@ func _hosted_refresh_pack(entry: Dictionary) -> Dictionary:
 	var imp := _hosted_import_manifest(manifest)
 	if not imp["ok"]:
 		return {"ok": false, "error": imp["error"], "changed": false, "name": str(entry.get("raw_name", ""))}
-	# The slot kept from an earlier apply was built from the old zip.
-	_modpack_forget_slot(str(entry.get("sanitized_name", "")))
-	return {"ok": true, "error": "", "changed": true, "name": imp["name"]}
+	return {"ok": true, "error": "", "changed": bool(imp.get("changed", true)), "name": imp["name"]}
 
 
 ## Failure-row copy for a mod the site lists but cannot serve.
