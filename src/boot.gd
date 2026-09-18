@@ -700,7 +700,8 @@ func _compute_state_hash(archive_paths: PackedStringArray, prepend_autoloads: Ar
 		parts.append("p:%s=%s" % [entry["name"], entry["path"]])
 	for entry in _ui_mod_entries:
 		if entry["enabled"] and entry.get("cfg") != null:
-			var ver: String = (entry["cfg"] as ConfigFile).get_value("mod", "version", "")
+			# str(): an unquoted version arrives as a float.
+			var ver := str((entry["cfg"] as ConfigFile).get_value("mod", "version", ""))
 			if not ver.is_empty():
 				parts.append("v:%s=%s" % [entry["mod_id"], ver])
 	for entry in _pending_script_overrides:

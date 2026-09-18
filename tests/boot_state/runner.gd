@@ -157,6 +157,7 @@ func _run() -> void:
 	_t12_game_update_is_seen_through_the_pck()
 	_t13_missing_config_recovers_from_backup()
 	_t14_state_hash_follows_load_order()
+	_t15_state_hash_reads_an_unquoted_version()
 
 	_finish()
 
@@ -628,6 +629,30 @@ func _t14_state_hash_follows_load_order() -> void:
 	_assert(str(_ml._compute_state_hash(PackedStringArray(), none)) == "", "T14: nothing to mount hashes to the empty string")
 	_reset_user_state()
 
+# --- T15: the state hash reads any mod.txt version ------------------------------
+
+# ConfigFile reads an unquoted `version=1.5` as a float. The hash folds each
+# enabled mod's version in, and must do so whatever type the value arrived as.
+func _t15_state_hash_reads_an_unquoted_version() -> void:
+	_reset_user_state()
+	_write_file("user://hash_a.zip", "a")
+	var a := ProjectSettings.globalize_path("user://hash_a.zip")
+	var none: Array[Dictionary] = []
+	var unquoted := ConfigFile.new()
+	unquoted.parse("[mod]\nname=\"M\"\nid=\"m\"\nversion=1.5\n")
+	_assert(typeof(unquoted.get_value("mod", "version")) == TYPE_FLOAT, "T15: the fixture version arrives as a float")
+	var newer := ConfigFile.new()
+	newer.parse("[mod]\nname=\"M\"\nid=\"m\"\nversion=1.6\n")
+	var entries: Array[Dictionary] = [{"enabled": true, "mod_id": "m", "cfg": unquoted}]
+	_ml.set("_ui_mod_entries", entries)
+	var h15: Variant = _ml._compute_state_hash(PackedStringArray([a]), none)
+	_assert(h15 is String and str(h15) != "", "T15: an unquoted version does not abort the hash (got %s)" % str(h15))
+	entries[0]["cfg"] = newer
+	var h16: Variant = _ml._compute_state_hash(PackedStringArray([a]), none)
+	_assert(h16 is String and str(h16) != str(h15), "T15: the unquoted version is part of the hash")
+	_ml.set("_ui_mod_entries", none)
+	_reset_user_state()
+
 # --- T9: Pass 2 keeps the applied-override map through load_all_mods --------
 
 # Pass 2 applies [script_extend] / [script_overrides] from pass state before
@@ -919,7 +944,7 @@ func _cleanup_exe_cfg() -> void:
 func _finish() -> void:
 	_cleanup_exe_cfg()
 	if _failures.is_empty():
-		print("[boot-state] PASS: %d assertion(s) across T1..T14" % _assertions)
+		print("[boot-state] PASS: %d assertion(s) across T1..T15" % _assertions)
 		quit(0)
 		return
 	for m in _failures:
