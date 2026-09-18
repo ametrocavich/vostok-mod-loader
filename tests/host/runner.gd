@@ -1238,6 +1238,10 @@ func _t15_warnings_and_author_notes(ml: Object) -> void:
 			{"res://mod.txt": true, "res://BK/A.gd": true, "res://BK/A.gd.remap": true})
 	_assert(_has_line(baked["notes"], "unquoted") and _has_line(baked["notes"], "pre-compiled script") and (baked["warnings"] as Array).is_empty(),
 			"T15: an unquoted version and a stale bake are author notes only (got %s / %s)" % [str(baked["warnings"]), str(baked["notes"])])
+	var rescued := _entry_from(ml, _cfg_from_text('[mod]\nid="rs"\nversion="1.0"\n\n[updates]\nsource="12345"\nmodworkshop=777\n'), "ok", "", {"res://mod.txt": true})
+	_assert(_has_line(rescued["notes"], "unrecognized [updates] source") and _has_line(rescued["notes"], "modworkshop=")
+			and not _has_line(rescued["notes"], "will not update"),
+			"T15: a bad source= beside a valid modworkshop= says which line is used, not that the mod cannot update (got %s)" % str(rescued["notes"]))
 	var pck := _entry_from(ml, null, "pck", "", {}, "pck")
 	_assert((pck["warnings"] as Array).is_empty() and (pck["notes"] as Array).is_empty(),
 			"T15: a .pck gets neither list")

@@ -312,7 +312,11 @@ func _source_declaration_warnings(entry: Dictionary) -> Array[String]:
 	if cfg.has_section_key("updates", "source"):
 		var raw := str(cfg.get_value("updates", "source", "")).strip_edges()
 		if _parse_source_token(raw).is_empty():
-			warnings.append("mod.txt has an unrecognized [updates] source=\"%s\". Use \"<provider>:<id>\" with a known provider (%s), e.g. \"modworkshop:12345\". This mod will not update or show where it came from." % [raw, ", ".join(HOST_PROVIDERS_KNOWN)])
+			# _mod_source_from_cfg falls through to a valid legacy line.
+			var outcome := "This mod will not update or show where it came from."
+			if str(_mod_source_from_cfg(cfg)["provider"]) != "":
+				outcome = "The modworkshop= line below it is used instead."
+			warnings.append("mod.txt has an unrecognized [updates] source=\"%s\". Use \"<provider>:<id>\" with a known provider (%s), e.g. \"modworkshop:12345\". %s" % [raw, ", ".join(HOST_PROVIDERS_KNOWN), outcome])
 	elif cfg.has_section_key("updates", "modworkshop"):
 		var legacy := str(cfg.get_value("updates", "modworkshop", "")).strip_edges()
 		if not (legacy.is_valid_int() and legacy.to_int() > 0):
