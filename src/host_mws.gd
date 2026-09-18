@@ -195,14 +195,10 @@ func _mwsp_filename_hint(download_url: String) -> String:
 
 # ----- operations -----
 
-## Search / sort / filter the RTV catalog -> {data: [rows], meta}. The
-## search parameter is `query` (max 150; `search`, `q` and `name` are
-## silently ignored). limit caps at 50; larger values 422. Sort enum:
-## bumped_at (default), published_at, likes, downloads, views, score,
-## weekly_score, daily_score, random, best_match, name.
-func _mwsp_list_mods(q: Dictionary) -> Dictionary:
-	# MWS pages by number; the seam speaks cursors, so convert here.
-	var page := maxi(1, str(q.get("cursor", "")).to_int())
+## The query string of a listing request. `limit` in the seam's query is the
+## row count the caller wants; it is clamped to the host's cap, and absent
+## means a full page.
+func _mwsp_list_params(q: Dictionary, page: int) -> PackedStringArray:
 	var params := PackedStringArray()
 	var query := str(q.get("query", ""))
 	if query != "":
@@ -211,11 +207,24 @@ func _mwsp_list_mods(q: Dictionary) -> Dictionary:
 		params.append("query=" + query.substr(0, MWS_QUERY_MAX_LEN).uri_encode())
 	var sort_key := str(q.get("sort_key", ""))
 	params.append("sort=" + (sort_key if sort_key != "" else "bumped_at"))
-	params.append("limit=" + str(MWS_PAGE_LIMIT))
+	var limit := int(q.get("limit", 0))
+	params.append("limit=" + str(clampi(limit, 1, MWS_PAGE_LIMIT) if limit > 0 else MWS_PAGE_LIMIT))
 	params.append("page=" + str(page))
 	var category_id := str(q.get("category_ref", "")).to_int()
 	if category_id > 0:
 		params.append("category_id=" + str(category_id))
+	return params
+
+
+## Search / sort / filter the RTV catalog -> {data: [rows], meta}. The
+## search parameter is `query` (max 150; `search`, `q` and `name` are
+## silently ignored). limit caps at 50; larger values 422. Sort enum:
+## bumped_at (default), published_at, likes, downloads, views, score,
+## weekly_score, daily_score, random, best_match, name.
+func _mwsp_list_mods(q: Dictionary) -> Dictionary:
+	# MWS pages by number; the seam speaks cursors, so convert here.
+	var page := maxi(1, str(q.get("cursor", "")).to_int())
+	var params := _mwsp_list_params(q, page)
 	var res := await _hnet_get_json(HOST_MODWORKSHOP, _mwsp_games_url("/mods?" + "&".join(params)), _MWS_TTL_LIST_MS)
 	if not res["ok"]:
 		return res

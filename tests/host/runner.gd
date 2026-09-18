@@ -85,6 +85,7 @@ func _run() -> void:
 	await _t18_refreshed_pack_rebuilds_its_slot(ml)
 	_t19_apply_preview_is_read_only(ml)
 	_t20_rate_limit_headers(ml)
+	_t21_mws_list_params(ml)
 
 	_finish()
 
@@ -1063,6 +1064,21 @@ func _t20_rate_limit_headers(ml: Object) -> void:
 	_assert(int(ml.host_rate_cooldown_seconds("modworkshop")) == 0, "T20: and leaves the other host alone")
 	cooldowns.clear()
 
+# --- T21: the ModWorkshop listing request ---------------------------------------
+
+func _t21_mws_list_params(ml: Object) -> void:
+	_assert(ml.has_method("_mwsp_list_params"), "T21: the loader has _mwsp_list_params")
+	if not ml.has_method("_mwsp_list_params"):
+		return
+	var plain := "&".join(ml._mwsp_list_params({}, 1) as PackedStringArray)
+	_assert(plain == "sort=bumped_at&limit=50&page=1", "T21: an empty query asks for the default sort and a full page (got '%s')" % plain)
+	var landing := "&".join(ml._mwsp_list_params({"sort_key": "weekly_score", "limit": 10}, 1) as PackedStringArray)
+	_assert(landing == "sort=weekly_score&limit=10&page=1", "T21: a landing section's limit reaches the request (got '%s')" % landing)
+	var greedy := "&".join(ml._mwsp_list_params({"limit": 500}, 3) as PackedStringArray)
+	_assert(greedy == "sort=bumped_at&limit=50&page=3", "T21: a limit above the host's cap is clamped to it (got '%s')" % greedy)
+	var search := "&".join(ml._mwsp_list_params({"query": "night vision", "category_ref": "12"}, 1) as PackedStringArray)
+	_assert(search == "query=night%20vision&sort=bumped_at&limit=50&page=1&category_id=12", "T21: query and category are carried (got '%s')" % search)
+
 # The update check in two pure halves: which installed mods are asked about,
 # and what the site's answers mean. A dev folder, a mod with no version, no
 # source, no readable mod.txt or a host that cannot serve files is skipped;
@@ -1236,7 +1252,7 @@ func _fail(msg: String) -> void:
 func _finish() -> void:
 	_done = true
 	if _failures.is_empty():
-		print("[host] PASS: %d assertion(s) across T1..T20" % _assertions)
+		print("[host] PASS: %d assertion(s) across T1..T21" % _assertions)
 		quit(0)
 		return
 	for m in _failures:
