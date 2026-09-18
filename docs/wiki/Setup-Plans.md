@@ -194,9 +194,11 @@ func _ready() -> void:
         }],
 
         # --- patch: scalar field updates, multi-id, multi-registry --------
+        # ITEMS ids are ItemData.file strings ("AKM"), not .tres paths;
+        # RESOURCES ids are res:// paths.
         ["patch", _lib.Registry.ITEMS, {
-            "res://Items/Weapons/AKM/AKM.tres":  {"damage": 45.0, "weight": 3.2},
-            "res://Items/Weapons/AK74/AK74.tres": {"damage": 40.0},
+            "AKM":  {"damage": 45.0, "weight": 3.2},
+            "AK74": {"damage": 40.0},
         }],
         ["patch", _lib.Registry.RESOURCES, {
             "res://Resources/GameData.tres": {"walk_speed": 5.5},
@@ -205,28 +207,32 @@ func _ready() -> void:
         # --- append: add to an Array field, dedup default -----------------
         # Single value or Array on the right side; both forms work.
         ["append", _lib.Registry.ITEMS, "compatible", {
-            "res://Items/Weapons/AKM/AKM.tres":   [ak12_mag, aks74u_mag],
-            "res://Items/Weapons/AK-12/AK-12.tres": aks74u_mag,
+            "AKM":   [ak12_mag, aks74u_mag],
+            "AK_12": aks74u_mag,
         }],
 
         # --- append with allow_duplicates=true ----------------------------
         # Rare: when you genuinely want repeats (weighted lists, etc.).
         ["append", _lib.Registry.ITEMS, "compatible", {
-            "res://Items/Weapons/AK-12/AK-12.tres": ak12_mag,
+            "AK_12": ak12_mag,
         }, true],
 
         # --- prepend: insert at the front ---------------------------------
-        ["prepend", _lib.Registry.SOUNDS, "audio", {
-            "footsteps_dirt": preload("res://my_mod/sounds/squelch.ogg"),
+        # SOUNDS ids are AudioLibrary field names; audioClips is the Array field.
+        ["prepend", _lib.Registry.SOUNDS, "audioClips", {
+            "knifeSlash": preload("res://my_mod/sounds/squelch.ogg"),
         }],
 
         # --- remove_from: drop matching entries ---------------------------
         # Removes ALL occurrences. Idempotent if nothing matches.
         ["remove_from", _lib.Registry.ITEMS, "compatible", {
-            "res://Items/Weapons/AKM/AKM.tres": ak12_mag,
+            "AKM": ak12_mag,
         }],
 
         # --- hooks: batched hook registration -----------------------------
+        # The source scan that builds the wrap surface only sees literal
+        # .hook("...") calls. Names given as dictionary keys are not seen, so
+        # these four scripts also need a [hooks] line in mod.txt.
         ["hooks", {
             "interface-getmagazine":     _replace_get_mag,
             "ai-_physics_process-pre":   _on_phys_pre,
@@ -237,7 +243,7 @@ func _ready() -> void:
         # --- when: plain bool predicate -----------------------------------
         ["when", _hardcore_mode, [
             ["patch", _lib.Registry.ITEMS, {
-                "res://Items/Weapons/AKM/AKM.tres": {"damage": 30.0},
+                "AKM": {"damage": 30.0},
             }],
         ]],
 
@@ -260,15 +266,15 @@ func _ready() -> void:
         ["when", _has_global_economy, [
             ["when", _hardcore_mode, [
                 ["patch", _lib.Registry.ITEMS, {
-                    "res://Items/Misc/Sticks/Sticks.tres": {"value": 500},
+                    "Sticks": {"value": 500},
                 }],
             ]],
         ]],
 
         # --- revert: undo a previous patch (per-field or full) ------------
         ["revert", _lib.Registry.ITEMS, {
-            "res://Items/Weapons/AK74/AK74.tres":  ["damage"],   # one field only
-            "res://Items/Weapons/AKM/AKM.tres":    [],            # full revert
+            "AK74":  ["damage"],   # one field only
+            "AKM":    [],            # full revert
         }],
 
         # --- remove: undo a previous register() ---------------------------

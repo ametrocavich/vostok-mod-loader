@@ -213,7 +213,7 @@ Registering a hook does not wrap the vanilla method. The wrap surface is fixed o
 3. `add_hook()` calls that run early enough (see below)
 4. The loader's own core seed (`Menu.gd :: _ready`, for the main-menu Mods button)
 
-A `hook()` call whose name is built at runtime registers fine but never fires unless the target method was wrapped by one of those declarations. If you need dynamic hook names, declare the target in `[hooks]`.
+A `hook()` call whose name is built at runtime registers fine but never fires unless the target method was wrapped by one of those declarations. If you need dynamic hook names, declare the target in `[hooks]`. The same goes for `hook_many({...})` and a `["hooks", {...}]` entry in a [setup plan](Setup-Plans): their names are dictionary keys, not `.hook("...")` calls, so the scan does not see them.
 
 This is an opt-in model. When no user mod declares anything, vanilla scripts run byte-identical to vanilla, with no wrap and no dispatch overhead (boot log: `No user opt-in declarations ([hooks] / .hook() / [registry]) -- user mods' vanilla targets run unmodified`). Other constraints on the surface:
 
