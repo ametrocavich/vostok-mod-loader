@@ -164,6 +164,13 @@ status=$?
 show_log "$WORK/run.log"
 elapsed=$((SECONDS - start_s))
 
+# A script error inside a test function aborts that function without failing
+# the run, and the assertions after it never execute. A green run logs none.
+if [[ $status -eq 0 ]] && grep -q 'SCRIPT ERROR' "$WORK/run.log"; then
+    echo "FAILED: the run exited 0 but logged a SCRIPT ERROR, so a test function stopped part-way:" >&2
+    grep -m3 -A2 'SCRIPT ERROR' "$WORK/run.log" | sed 's/^/    /' >&2
+    status=1
+fi
 if [[ $status -eq 0 ]]; then
     echo "OK: boot-state harness passed in ${elapsed}s (full log: $WORK/run.log)"
 else
