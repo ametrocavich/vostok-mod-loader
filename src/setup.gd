@@ -156,11 +156,16 @@ func _setup_dispatch_when(arr: Array) -> Dictionary:
 	return {"verb": "when", "evaluated": true, "ok": inner.ok, "results": inner.results}
 
 
-# Predicate: bool, Callable, or bool()-coercible; anything else warns and
-# reads as false -- safer than running the sub-plan on a typo.
+# Predicate: bool, int, float, or a Callable returning one of those; anything
+# else warns and reads as false -- safer than running the sub-plan on a typo.
+# A Callable's return goes through the same checks: bool() on a null or a
+# String is a runtime error that would abort the plan.
 func _setup_evaluate_predicate(p: Variant) -> bool:
 	if p is Callable:
-		return bool((p as Callable).call())
+		if not (p as Callable).is_valid():
+			push_warning("[Registry] setup: when-predicate Callable is no longer valid; treating as false")
+			return false
+		p = (p as Callable).call()
 	if p is bool or p is int or p is float:
 		return bool(p)
 	if p == null:

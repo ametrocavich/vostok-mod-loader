@@ -54,7 +54,7 @@ A predicate is a bool or a Callable that returns one:
 ["when", func(): return OS.has_feature("debug"), [...]]  # lambda
 ```
 
-An int or float is coerced with `bool()`. `null` reads as false. Anything else (a String, a Dictionary) warns `when-predicate has unexpected type ...; treating as false` and skips the sub-plan; running it on a typo would be worse.
+An int or float is coerced with `bool()`. `null` reads as false. A Callable's return value is read by the same rules. Anything else (a String, a Dictionary) warns `when-predicate has unexpected type ...; treating as false` and skips the sub-plan; running it on a typo would be worse.
 
 Predicates are evaluated when `setup` traverses the entry, so a plan built in `_ready` can use runtime state freely. A `const PLAN = [...]` with non-Callable predicates evaluates them at script-parse time, which is fine for compile-time constants but wrong for runtime state. Prefer Callable predicates in `const` plans.
 

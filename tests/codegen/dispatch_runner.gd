@@ -58,6 +58,8 @@
 ##       reverted onto the object it changed
 ##   T17 registry scene_paths: get_entry returns an override, and a patch
 ##       cannot point a scene at a file that does not exist
+##   T18 setup(): a when-predicate returning null or a String reads as false
+##       and the rest of the plan still runs
 extends SceneTree
 
 const FIXTURE_PATH := "res://Scripts/FixtureDispatch.gd"
@@ -103,7 +105,7 @@ func _finish() -> void:
 	_done = true
 	var ms := Time.get_ticks_msec() - _t0
 	if _failures.is_empty():
-		print("[dispatch] PASS: %d assertion(s) across T1..T17, %d frame(s), %d ms in-engine" % [_checks, _frames, ms])
+		print("[dispatch] PASS: %d assertion(s) across T1..T18, %d frame(s), %d ms in-engine" % [_checks, _frames, ms])
 		quit(0)
 	else:
 		printerr("[dispatch] FAILED: %d of %d assertion(s) (%d ms in-engine); first: %s" % [_failures.size(), _checks, ms, _failures[0]])
@@ -241,6 +243,7 @@ func _run_tests() -> void:
 	_t15_scene_override_blocks_remove()
 	_t16_revert_reaches_the_patched_object()
 	_t17_scene_path_reads_and_checks()
+	_t18_when_predicate_cannot_abort_a_plan()
 
 func _t1_pre() -> void:
 	var id: int = _lib.hook("fixturedispatch-add-pre", func(x, y): _log.append("pre:add:%d:%d" % [x, y]))
@@ -646,3 +649,24 @@ func _t17_scene_path_reads_and_checks() -> void:
 	_lib.revert("scene_paths", "Cabin")
 	_lib.revert("scene_paths", "rtv_test_read")
 	_lib.remove("scene_paths", "rtv_test_read")
+
+func _t18_when_predicate_cannot_abort_a_plan() -> void:
+	var own := "rtv_dispatch_plan_action"
+	if InputMap.has_action(own):
+		InputMap.erase_action(own)
+	var plan: Array = [
+		["when", func(): return null, [["remove", "inputs", ["never_runs"]]]],
+		["when", func(): return "yes", [["remove", "inputs", ["never_runs"]]]],
+		["when", func(): return 1, [["register", "inputs", {own: {"default_event": _key_event(KEY_A)}}]]],
+	]
+	var res = _lib.setup(plan)
+	if not _expect(res is Dictionary, "T18", "setup() returns its result dict when a predicate returns null or a String (got %s)" % str(res)):
+		return
+	var results: Array = (res as Dictionary).get("results", [])
+	if not _expect_eq(results.size(), 3, "T18", "one result per entry"):
+		return
+	_expect_eq((results[0] as Dictionary).get("evaluated"), false, "T18", "a predicate returning null reads as false")
+	_expect_eq((results[1] as Dictionary).get("evaluated"), false, "T18", "a predicate returning a String reads as false")
+	_expect_eq((results[2] as Dictionary).get("evaluated"), true, "T18", "a predicate returning 1 reads as true")
+	_expect(InputMap.has_action(own), "T18", "the entry after the bad predicates still ran")
+	_lib.remove("inputs", own)
