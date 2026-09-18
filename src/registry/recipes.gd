@@ -149,6 +149,7 @@ func _override_recipe(id: String, data: Variant) -> bool:
 	}
 	_registry_overridden["recipes"] = ov
 	var reg: Dictionary = _registry_registered.get("recipes", {})
+	(ov[id] as Dictionary)["registered"] = reg.get(id)
 	reg[id] = {"recipe": new_recipe, "category": category}
 	_registry_registered["recipes"] = reg
 	_log_debug("[Registry] overrode recipe '%s' in %s" % [id, category])
@@ -274,9 +275,7 @@ func _revert_recipe(id: Variant, fields: Array) -> bool:
 						arr.append(entry["replaced"])
 			ov.erase(id)
 			_registry_overridden["recipes"] = ov
-			var reg2: Dictionary = _registry_registered.get("recipes", {})
-			reg2.erase(id)
-			_registry_registered["recipes"] = reg2
+			_restore_override_handle("recipes", id, entry)
 			did_something = true
 		if not did_something:
 			push_warning("[Registry] revert('recipes'): nothing to revert for that id")

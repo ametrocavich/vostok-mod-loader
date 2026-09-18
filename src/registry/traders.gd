@@ -236,6 +236,7 @@ func _override_trader_task(id: String, data: Variant) -> bool:
 	}
 	_registry_overridden["trader_tasks"] = ov
 	var reg: Dictionary = _registry_registered.get("trader_tasks", {})
+	(ov[id] as Dictionary)["registered"] = reg.get(id)
 	reg[id] = {"task": new_task, "trader": trader}
 	_registry_registered["trader_tasks"] = reg
 	_log_debug("[Registry] overrode trader_task '%s' in %s" % [id, trader])
@@ -357,9 +358,7 @@ func _revert_trader_task(id: Variant, fields: Array) -> bool:
 						arr.append(entry["replaced"])
 			ov.erase(id)
 			_registry_overridden["trader_tasks"] = ov
-			var reg2: Dictionary = _registry_registered.get("trader_tasks", {})
-			reg2.erase(id)
-			_registry_registered["trader_tasks"] = reg2
+			_restore_override_handle("trader_tasks", id, entry)
 			did_something = true
 		if not did_something:
 			push_warning("[Registry] revert('trader_tasks'): nothing to revert for that id")

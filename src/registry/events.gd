@@ -115,6 +115,7 @@ func _override_event(id: String, data: Variant) -> bool:
 	}
 	_registry_overridden["events"] = ov
 	var reg: Dictionary = _registry_registered.get("events", {})
+	(ov[id] as Dictionary)["registered"] = reg.get(id)
 	reg[id] = {"event": new_event}
 	_registry_registered["events"] = reg
 	_log_debug("[Registry] overrode event '%s'" % id)
@@ -240,9 +241,7 @@ func _revert_event(id: Variant, fields: Array) -> bool:
 						arr.append(entry["replaced"])
 			ov.erase(id)
 			_registry_overridden["events"] = ov
-			var reg2: Dictionary = _registry_registered.get("events", {})
-			reg2.erase(id)
-			_registry_registered["events"] = reg2
+			_restore_override_handle("events", id, entry)
 			did_something = true
 		if not did_something:
 			push_warning("[Registry] revert('events'): nothing to revert for that id")

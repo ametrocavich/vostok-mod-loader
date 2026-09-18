@@ -148,6 +148,17 @@ func _patch_source_forget(reg: String, key: Variant, field: String = "") -> void
 	if by_field.is_empty():
 		by_key.erase(key)
 
+# A `replaces:` override mirrors itself into the registered map under its
+# handle. Revert gives the handle back to the registration it named before
+# the override, if there was one; erasing it would orphan that registration.
+func _restore_override_handle(registry: String, id: String, override_entry: Dictionary) -> void:
+	var reg: Dictionary = _registry_registered.get(registry, {})
+	if override_entry.get("registered") is Dictionary:
+		reg[id] = override_entry["registered"]
+	else:
+		reg.erase(id)
+	_registry_registered[registry] = reg
+
 # Coerce a single value or Array into an Array.
 func _coerce_to_array(values: Variant) -> Array:
 	if values is Array:

@@ -148,6 +148,7 @@ func _override_loot(id: String, data: Variant) -> bool:
 	_registry_overridden["loot"] = ov
 	# Mirror into the registered map so get_entry() surfaces the override.
 	var reg: Dictionary = _registry_registered.get("loot", {})
+	(ov[id] as Dictionary)["registered"] = reg.get(id)
 	reg[id] = {"item": new_item, "table": data["table"], "table_res": table_res}
 	_registry_registered["loot"] = reg
 	_log_debug("[Registry] overrode loot '%s' in %s (%s -> %s)" \
@@ -198,8 +199,6 @@ func _revert_loot(id: String) -> bool:
 		table_res.items.append(old_item)
 	ov.erase(id)
 	_registry_overridden["loot"] = ov
-	var reg: Dictionary = _registry_registered.get("loot", {})
-	reg.erase(id)
-	_registry_registered["loot"] = reg
+	_restore_override_handle("loot", id, entry)
 	_log_debug("[Registry] reverted loot '%s'" % id)
 	return true
