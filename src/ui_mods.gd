@@ -321,9 +321,11 @@ func _mods_meta_fetch_enqueue(ref: Dictionary) -> void:
 	while not _mods_meta_fetch_queue.is_empty():
 		var next: Dictionary = _mods_meta_fetch_queue.pop_front()
 		var provider := str(next["provider"])
-		if host_rate_cooldown_seconds(provider) > 0:
-			continue
 		var key := host_ref_key(next)
+		if host_rate_cooldown_seconds(provider) > 0:
+			# Skipped, not fetched: the row still has to stop saying "loading...".
+			_mods_meta_fetch_failed(key)
+			continue
 		var res := await host_get_mod(next)
 		var fetch_ok := false
 		if res["ok"] and res["data"] is Dictionary and _mods_meta_record_complete(res["data"]):
@@ -332,11 +334,15 @@ func _mods_meta_fetch_enqueue(ref: Dictionary) -> void:
 			_mods_meta_sidecar_store(key)
 			_mods_apply_host_meta(key, res["data"])
 		if not fetch_ok:
-			# Cold-path failure: caption "load failed"; a failed soft refresh keeps its texture.
-			var memo_v: Variant = _mods_meta_by_key.get(key)
-			if not (memo_v is Dictionary) or (memo_v as Dictionary).is_empty():
-				_mods_paint_meta_failed(key)
+			_mods_meta_fetch_failed(key)
 	_mods_meta_fetch_active = false
+
+# A row with no memoized record is captioned "load failed"; a failed soft
+# refresh keeps the record and texture it already shows.
+func _mods_meta_fetch_failed(key: String) -> void:
+	var memo_v: Variant = _mods_meta_by_key.get(key)
+	if not (memo_v is Dictionary) or (memo_v as Dictionary).is_empty():
+		_mods_paint_meta_failed(key)
 
 # Populate an installed row's host thumbnail and author and stash the record
 # for the detail dialog: memo first, then the Browse snapshot, then a queued fetch.
