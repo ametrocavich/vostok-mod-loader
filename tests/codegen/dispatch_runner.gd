@@ -792,6 +792,10 @@ func _t23_autofix_leaves_valid_scripts_alone() -> void:
 	_expect(same_fixed.contains(dq + "base(delta) ' # data" + dq + "); super.Hunger(delta)"),
 			"T23", "code after a closed literal is fixed without changing the literal")
 
+	var outdented_close := "extends Node\nfunc Hunger(delta):\n\tvar text = " + dq + "\nbase(delta)\n" + dq + "\n\tbase(delta)\n"
+	var outdented_fixed := str(_ml._rtv_autofix_legacy_syntax(outdented_close)["source"])
+	_expect(outdented_fixed.contains("\nbase(delta)\n" + dq + "\n\tsuper.Hunger(delta)"),
+			"T23", "an outdented literal terminator does not end the enclosing method")
 	var parent_path := "user://t23_base_parent.gd"
 	var parent := FileAccess.open(parent_path, FileAccess.WRITE)
 	parent.store_string("extends Node\nfunc base(x: int) -> int:\n\treturn x * 2\n")

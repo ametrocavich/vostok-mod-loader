@@ -53,8 +53,10 @@ func _rtv_autofix_legacy_syntax(source: String, script_path: String = "", archiv
 			continue
 
 		var lead := _rtv_leading_indent(line)
-		if lead.is_empty() and not line.strip_edges().is_empty():
-			var stripped_top := code.strip_edges()
+		var stripped_top := code.strip_edges()
+		# A multiline literal may close at column zero inside a method.
+		if lead.is_empty() and not stripped_top.is_empty() \
+				and not stripped_top.begins_with("\"") and not stripped_top.begins_with("'"):
 			if stripped_top.begins_with("func "):
 				var open_paren := stripped_top.find("(")
 				if open_paren > 5:
