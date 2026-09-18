@@ -92,6 +92,8 @@ If Browse cannot reach the selected site when it opens, it shows the last landin
 | A failed download | `Could not download <mod name>. <reason>` |
 | An empty catalog | `No mods on <Site> yet. Pick <other site> in the source menu to browse there.` |
 
+If only some of the landing sections load, the ones that did are shown under a `Part of this page could not be loaded.` banner with a **Retry** button.
+
 When a site rate-limits the launcher, these messages read `<Site> rate limit reached. Try again in <N>s.` instead.
 
 ## Related

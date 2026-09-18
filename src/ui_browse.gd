@@ -717,7 +717,15 @@ func _browse_discover_fetch(state: Dictionary) -> void:
 	if cached_at > 0:
 		_browse_show_banner(state, "Showing cached results. " + _browse_fail_reason(state), cached_at, COL_ACCENT)
 	else:
-		_browse_clear_banner(state)
+		if ok_count < sections.size():
+			# The banner carries the Retry button; the host answered, so only a
+			# running cooldown is worth naming as the reason.
+			var partial := "Part of this page could not be loaded."
+			if host_rate_cooldown_seconds(provider) > 0:
+				partial += " " + _browse_fail_reason(state)
+			_browse_show_banner(state, partial, 0, COL_ACCENT)
+		else:
+			_browse_clear_banner(state)
 		# A live fetch proves connectivity: recover a category menu that failed to populate.
 		_browse_populate_categories(state)
 	if total == 0:
