@@ -243,14 +243,21 @@ func _parse_mod_txt(text: String) -> Dictionary:
 		# cfg.parse() doesn't report the offending line; locate it so the
 		# launcher can show the broken line instead of "re-download".
 		return {"cfg": null, "error": _diagnose_parse_failure(preprocessed)}
-	# ConfigFile drops empty sections, and a bare [registry] header -- the
-	# common legitimate form, since it's a presence signal -- would vanish.
-	# Stash a sentinel key so has_section works downstream.
+	# ConfigFile drops empty sections. A bare [registry] header -- the common
+	# legitimate form, since it's a presence signal -- would vanish, and so
+	# would a bare header this loader does not know, such as a [Registry]
+	# typo, before the unrecognized-section notice could name it. Stash a
+	# sentinel key in those. A known section with no keys stays absent: its
+	# reader would take the sentinel for an entry.
 	for line in text.split("\n"):
 		var stripped := line.strip_edges()
-		if stripped == "[registry]" and not cfg.has_section("registry"):
-			cfg.set_value("registry", "_modloader_header_present", true)
-			break
+		if not (stripped.begins_with("[") and stripped.ends_with("]")):
+			continue
+		var section := stripped.substr(1, stripped.length() - 2)
+		if cfg.has_section(section):
+			continue
+		if section == "registry" or not (section in MOD_TXT_KNOWN_SECTIONS):
+			cfg.set_value(section, "_modloader_header_present", true)
 	return {"cfg": cfg, "error": ""}
 
 # Wrap unquoted [hooks] values in double quotes so they parse as strings;

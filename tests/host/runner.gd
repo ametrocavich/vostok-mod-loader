@@ -417,6 +417,14 @@ func _t7_modtxt_reader(ml: Object) -> void:
 	var nullrec: Variant = ml._mod_source_from_cfg(null)
 	_assert(str(nullrec["provider"]) == "" and str(nullrec["id"]) == "",
 			"T7: a null ConfigFile reads as no-source, not a crash")
+	# ConfigFile drops a section with no keys. [registry] is kept because it is
+	# a presence signal; a header the loader does not know is kept so the
+	# unrecognized-section notice can name it; a known section stays absent.
+	var bare: Dictionary = ml._parse_mod_txt('[mod]\nid="b"\n\n[Registry]\n\n[hooks]\n\n[registry]\n')
+	var bare_cfg: ConfigFile = bare["cfg"]
+	_assert(bare_cfg != null and bare_cfg.has_section("registry"), "T7: a bare [registry] header survives the parse")
+	_assert(bare_cfg != null and bare_cfg.has_section("Registry"), "T7: a bare header the loader does not know survives too, so it can be reported")
+	_assert(bare_cfg != null and not bare_cfg.has_section("hooks"), "T7: a bare known section gets no placeholder key")
 
 # Ranking a mod.txt declaration against the [mod_sources] record the launcher
 # stored for the same mod. Files served by vostokmods.net carry only a legacy
