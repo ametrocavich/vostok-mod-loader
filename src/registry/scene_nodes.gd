@@ -208,7 +208,10 @@ func _revert_scene_node(id: String, fields: Array) -> bool:
 	var tree := get_tree()
 	if tree != null:
 		_collect_scene_roots(tree.root, scene_path, live_roots)
+	var reverted_any := false
 	for fname in targets:
+		if pat_entry.has(fname):
+			reverted_any = true
 		if stash_per_node.has(fname):
 			for root in live_roots:
 				var target: Node = _resolve_scene_target(root, node_path)
@@ -244,7 +247,7 @@ func _revert_scene_node(id: String, fields: Array) -> bool:
 		patched[id] = pat_entry
 	_registry_patched["scene_nodes"] = patched
 	_log_debug("[Registry] reverted scene_nodes '%s' (fields=%s)" % [id, targets])
-	return true
+	return reverted_any
 
 func _collect_scene_roots(node: Node, scene_path: String, out: Array[Node]) -> void:
 	if node.scene_file_path == scene_path:

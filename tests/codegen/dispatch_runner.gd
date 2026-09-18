@@ -64,6 +64,8 @@
 ##   T20 a hook whose owner was freed is dropped at dispatch, and a replace
 ##       slot it held can be taken
 ##   T21 hook_many, patch_many and find() report a bad value and carry on
+##   T22 registry scene_nodes: a per-field revert reports whether it reverted
+##       anything
 extends SceneTree
 
 const FIXTURE_PATH := "res://Scripts/FixtureDispatch.gd"
@@ -109,7 +111,7 @@ func _finish() -> void:
 	_done = true
 	var ms := Time.get_ticks_msec() - _t0
 	if _failures.is_empty():
-		print("[dispatch] PASS: %d assertion(s) across T1..T21, %d frame(s), %d ms in-engine" % [_checks, _frames, ms])
+		print("[dispatch] PASS: %d assertion(s) across T1..T22, %d frame(s), %d ms in-engine" % [_checks, _frames, ms])
 		quit(0)
 	else:
 		printerr("[dispatch] FAILED: %d of %d assertion(s) (%d ms in-engine); first: %s" % [_failures.size(), _checks, ms, _failures[0]])
@@ -251,6 +253,7 @@ func _run_tests() -> void:
 	_t19_has_mod_reads_a_v_prefix()
 	_t20_freed_hook_owner()
 	_t21_batch_verbs_survive_bad_values()
+	_t22_scene_node_revert_reports_what_it_did()
 
 func _t1_pre() -> void:
 	var id: int = _lib.hook("fixturedispatch-add-pre", func(x, y): _log.append("pre:add:%d:%d" % [x, y]))
@@ -734,3 +737,19 @@ func _t21_batch_verbs_survive_bad_values() -> void:
 	found = _lib.find("inputs", func(entry): return entry.get("display_label") == "Batch", false)
 	_expect(found is Array and (found as Array).size() == 1, "T21", "find() with a bool predicate still matches")
 	_lib.remove("inputs", own)
+
+func _t22_scene_node_revert_reports_what_it_did() -> void:
+	_registry_tree()
+	var scene_root := Node.new()
+	scene_root.name = "Fixture"
+	var packed := PackedScene.new()
+	packed.pack(scene_root)
+	scene_root.free()
+	var scene_path := "res://Scripts/rtv_test_scene.tscn"
+	if not _expect_eq(ResourceSaver.save(packed, scene_path), OK, "T22", "the fixture scene saves"):
+		return
+	var id := scene_path + "#."
+	_expect(_lib.patch("scene_nodes", id, {"process_priority": 7}), "T22", "patch of a real property succeeds")
+	_expect(not _lib.revert("scene_nodes", id, ["process_physics_priority"]), "T22", "reverting a field that was never patched reports false")
+	_expect(_lib.revert("scene_nodes", id, ["process_priority"]), "T22", "reverting the patched field reports true")
+	_expect(not _lib.revert("scene_nodes", id), "T22", "and nothing is left to revert")
