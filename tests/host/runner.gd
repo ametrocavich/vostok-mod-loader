@@ -954,7 +954,13 @@ func _t16_unload_leaves_no_pack_mcm_behind(ml: Object) -> void:
 	r = await ml.apply_modpack(entry, null, Callable())
 	_assert(bool(r.get("ok", false)) and not FileAccess.file_exists("user://MCM/mine/config.ini"),
 			"T16: while the pack is active its MCM replaces the player's")
+	var retained := "user://.profile_snapshots/_before_modpack_Round Trip/overrides/Preferences.tres"
+	DirAccess.make_dir_recursive_absolute(retained.get_base_dir())
+	var original := FileAccess.open(retained, FileAccess.WRITE)
+	original.store_string("player preferences")
+	original.close()
 	ml.unload_modpack(null)
+	_assert(FileAccess.file_exists(retained), "T16: unload preserves files outside the consumed MCM snapshot")
 	_assert(FileAccess.get_file_as_string("user://MCM/mine/config.ini").contains("v=own")
 			and not FileAccess.file_exists("user://MCM/some-mod/config.ini"),
 			"T16: unload restores the player's own MCM and nothing of the pack's")

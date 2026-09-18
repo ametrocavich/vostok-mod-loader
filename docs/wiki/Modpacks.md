@@ -35,7 +35,7 @@ Only one modpack can be active at a time. To apply a different pack, **Unload** 
 
 ## Unload
 
-Click **Unload** to go back to the setup you had before applying. Your profile and your MCM settings are restored.
+Click **Unload** to go back to the setup you had before applying. Your profile and your MCM settings are restored. Non-MCM overrides from packs applied in 3.3.1 are no longer restored automatically; any original files left beside the backup slot's `MCM/` directory remain on disk for manual recovery.
 
 Your edits to the pack are kept, so re-applying the same pack resumes where you left off instead of resetting to the author's defaults.
 

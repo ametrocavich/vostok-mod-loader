@@ -890,9 +890,11 @@ func unload_modpack(tabs: TabContainer) -> Dictionary:
 		if mcm_ok and pre_active != VANILLA_PROFILE:
 			_snapshot_mcm_to(pre_active)
 
-	# 5. Wipe the backup slot, only once the MCM restore consumed it.
+	# Remove the consumed MCM snapshot, then the slot only when it is empty.
+	# Files beside MCM are not consumed by unload and remain on disk.
 	if mcm_ok:
-		_remove_tree(MCM_SNAPSHOT_BASE.path_join(backup_profile), false)
+		_remove_tree(_mcm_snapshot_dir(backup_profile), false)
+		DirAccess.remove_absolute(MCM_SNAPSHOT_BASE.path_join(backup_profile))
 	else:
 		_log_warning("[Modpack] unload: MCM restore incomplete -- leaving " + MCM_SNAPSHOT_BASE.path_join(backup_profile) + " in place; it will be cleaned up by the next apply/unload")
 
