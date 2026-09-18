@@ -352,9 +352,11 @@ func _t10_missing_profile_falls_back_to_a_user_profile(ml: Object) -> void:
 		if FileAccess.file_exists(p):
 			DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
 
-# Renaming or creating a profile changes no mod state, so a launcher opened
-# in-game must not restart over it. A new profile starts from the default
-# view settings, which is what its stored state says after the next launch.
+# Renaming a profile, or creating one as a copy of the current selection,
+# changes nothing that loads, so a launcher opened in-game must not restart
+# over it. A new profile that starts empty or with everything enabled does
+# change what loads. A new profile starts from the default view settings,
+# which is what its stored state says after the next launch.
 func _t11_profile_bookkeeping_is_not_a_mod_change(ml: Object) -> void:
 	var cfg_path := str(ml.UI_CONFIG_PATH)
 	for p in [cfg_path, cfg_path + ".bak"]:
@@ -373,9 +375,12 @@ func _t11_profile_bookkeeping_is_not_a_mod_change(ml: Object) -> void:
 	_assert(not bool(ml.get("_dirty_since_boot")), "T11: a rename does not ask for a restart")
 	_assert(str(ml.get("_active_profile")) == "Renamed", "T11: the rename took effect")
 	ml.set("_mods_hide_disabled", true)
-	ml._create_profile("Fresh")
-	_assert(not bool(ml.get("_dirty_since_boot")), "T11: creating a profile does not ask for a restart")
+	ml._create_profile("Fresh", true)
+	_assert(not bool(ml.get("_dirty_since_boot")), "T11: a copy of the current selection does not ask for a restart")
 	_assert(not bool(ml.get("_mods_hide_disabled")), "T11: a new profile starts with Hide disabled off, as its stored state says")
+	ml._create_profile("Blank")
+	_assert(bool(ml.get("_dirty_since_boot")), "T11: a new profile with another selection asks for a restart")
+	ml.set("_dirty_since_boot", false)
 	ml.set("_boot_complete", false)
 	ml.set("_active_profile", "Default")
 	for p in [cfg_path, cfg_path + ".bak"]:

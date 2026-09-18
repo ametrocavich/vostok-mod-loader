@@ -527,7 +527,10 @@ func _mark_mod_set_changed() -> void:
 
 # Snapshot the in-memory state to a new profile and switch to it. Caller
 # validates `name`. Seeds the new profile's MCM slot from user://MCM/.
-func _create_profile(name: String) -> void:
+# `same_selection` is true when the new profile copies the active one's
+# selection: nothing that loads changes, so a running game need not restart.
+# The dialog's other initial states (empty, all enabled) change what loads.
+func _create_profile(name: String, same_selection: bool = false) -> void:
 	# Refresh the outgoing profile's MCM snapshot first, as _switch_profile does.
 	var old := _active_profile
 	if old != VANILLA_PROFILE and old != name:
@@ -535,12 +538,16 @@ func _create_profile(name: String) -> void:
 	_active_profile = name
 	# The new profile has no stored view settings; start from the defaults.
 	_mods_hide_disabled = false
-	_save_profile_bookkeeping()
+	if same_selection:
+		_save_profile_bookkeeping()
+	else:
+		_save_ui_config()
 	_snapshot_mcm_to(name)
 
-# _save_ui_config for a change that touches no mod state: a copy or a rename
-# of the active profile leaves the enabled set and the load order as they
-# were, so it must not flag the restart a post-boot mod change needs.
+# _save_ui_config for a change that touches no mod state: a rename of the
+# active profile, or a new profile copied from it, leaves the enabled set and
+# the load order as they were, so it must not flag the restart a post-boot
+# mod change needs.
 func _save_profile_bookkeeping() -> void:
 	var was_dirty := _dirty_since_boot
 	_save_ui_config()

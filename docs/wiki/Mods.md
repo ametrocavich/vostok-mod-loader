@@ -22,7 +22,7 @@ Priorities are saved per profile. A mod's own `mod.txt` can suggest a priority; 
 
 ## Profiles
 
-A profile is a saved set of on/off choices and load-order numbers. The **Profile** dropdown in the toolbar switches between them, and the three buttons beside it create a profile from the current selection (**+**), rename the active one (the pencil) and delete it (the trash can). The first profile is called **Default**. A mod you install lands enabled in Default and stays off in every other profile until you turn it on there.
+A profile is a saved set of on/off choices and load-order numbers. The **Profile** dropdown in the toolbar switches between them, and the three buttons beside it create a profile (**+**), rename the active one (the pencil) and delete it (the trash can). A new profile starts empty unless you pick **All enabled** or **Copy current selection** in its dialog. The first profile is called **Default**. A mod you install lands enabled in Default and stays off in every other profile until you turn it on there.
 
 Each profile also keeps its own copy of your in-game mod settings (the MCM folder), so switching profiles switches those too.
 
@@ -59,7 +59,7 @@ The **Developer mode** checkbox in the toolbar turns on verbose logging, a confl
 
 **UI scale** resizes the launcher. **Open mods folder** opens the `mods` folder in your file manager. The launch button reads **Launch modded** when at least one enabled mod will load, **Launch unmodded (N blocked)** when every enabled mod is blocked by a missing dependency, and **Launch** when nothing is enabled; closing the window does the same as clicking it. **Launch vanilla** starts the game once with no mods and leaves your profiles alone.
 
-Once the game is running, the **Mods** button on the main menu reopens this window. If you change which mods load there, closing it restarts the game into the new mod set. Renaming a profile or creating one from the current selection changes nothing that loads, so it does not restart.
+Once the game is running, the **Mods** button on the main menu reopens this window. If you change which mods load there, closing it restarts the game into the new mod set. Renaming a profile, or creating one with **Copy current selection**, changes nothing that loads, so it does not restart.
 
 ## Related
 

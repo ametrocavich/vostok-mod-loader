@@ -257,7 +257,7 @@ func _show_new_profile_dialog(tabs: TabContainer) -> void:
 			elif state_empty.button_pressed:
 				for entry in _ui_mod_entries:
 					entry["enabled"] = false
-			_create_profile(name)
+			_create_profile(name, state_copy.button_pressed)
 			_rebuild_mods_tab(tabs)
 
 	name_edit.text_submitted.connect(func(_t): try_create.call())
