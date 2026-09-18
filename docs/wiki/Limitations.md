@@ -132,6 +132,8 @@ It also rewrites `tool` to `@tool`, `onready var` to `@onready var`, `export var
 
 The autofix runs on script overrides, on mod sibling scripts packed into the hook pack, and on vanilla source before wrapping. It never renames or injects dispatch into a mod script.
 
+A script that is already valid Godot 4 comes back byte-identical. Text inside string literals is never rewritten, a triple-quoted block included, and `base(...)` is left alone in a script that declares its own `func base`: only where `base` has no meaning of its own is a bare call the legacy form.
+
 ### `super()` rewriting
 
 When the rewriter renames `func CheckVersion():` to `func _rtv_vanilla_CheckVersion():` and the body contains a bare `super()`, Godot's reload looks for `_rtv_vanilla_CheckVersion` on the parent, which does not exist, and the reload fails.

@@ -66,6 +66,8 @@
 ##   T21 hook_many, patch_many and find() report a bad value and carry on
 ##   T22 registry scene_nodes: a per-field revert reports whether it reverted
 ##       anything
+##   T23 the legacy-syntax autofix leaves a valid Godot 4 script byte-identical
+##       and still fixes tool, onready, export, base() and bodyless blocks
 extends SceneTree
 
 const FIXTURE_PATH := "res://Scripts/FixtureDispatch.gd"
@@ -111,7 +113,7 @@ func _finish() -> void:
 	_done = true
 	var ms := Time.get_ticks_msec() - _t0
 	if _failures.is_empty():
-		print("[dispatch] PASS: %d assertion(s) across T1..T22, %d frame(s), %d ms in-engine" % [_checks, _frames, ms])
+		print("[dispatch] PASS: %d assertion(s) across T1..T23, %d frame(s), %d ms in-engine" % [_checks, _frames, ms])
 		quit(0)
 	else:
 		printerr("[dispatch] FAILED: %d of %d assertion(s) (%d ms in-engine); first: %s" % [_failures.size(), _checks, ms, _failures[0]])
@@ -254,6 +256,7 @@ func _run_tests() -> void:
 	_t20_freed_hook_owner()
 	_t21_batch_verbs_survive_bad_values()
 	_t22_scene_node_revert_reports_what_it_did()
+	_t23_autofix_leaves_valid_scripts_alone()
 
 func _t1_pre() -> void:
 	var id: int = _lib.hook("fixturedispatch-add-pre", func(x, y): _log.append("pre:add:%d:%d" % [x, y]))
@@ -753,3 +756,34 @@ func _t22_scene_node_revert_reports_what_it_did() -> void:
 	_expect(not _lib.revert("scene_nodes", id, ["process_physics_priority"]), "T22", "reverting a field that was never patched reports false")
 	_expect(_lib.revert("scene_nodes", id, ["process_priority"]), "T22", "reverting the patched field reports true")
 	_expect(not _lib.revert("scene_nodes", id), "T22", "and nothing is left to revert")
+
+# --- the legacy-syntax autofix ---------------------------------------------------
+
+func _t23_autofix_leaves_valid_scripts_alone() -> void:
+	# A script that is valid Godot 4 goes through byte-identical: its own
+	# base() function, text inside string literals, and a triple-quoted block
+	# that merely looks like legacy code.
+	var modern := "extends Node\n\n" \
+			+ "func base(x: int) -> int:\n\treturn x * 2\n\n" \
+			+ "func run() -> int:\n\tprint(\"call base(3) # not a comment\")\n\treturn base(3)\n\n" \
+			+ "const HELP := \"\"\"\nonready var a\nexport var b\nif broken:\n\"\"\"\n"
+	var kept: Dictionary = _ml._rtv_autofix_legacy_syntax(modern)
+	_expect_eq(str(kept["source"]), modern, "T23", "a valid Godot 4 script")
+	_expect_eq(int(kept["base"]) + int(kept["bodyless"]) + int(kept["onready"]) + int(kept["export"]) + int(kept["tool"]), 0,
+			"T23", "fix count on a valid Godot 4 script")
+	var literal := "extends Node\n\nfunc Hunger(delta):\n\tprint(\"base(delta) is gone\")\n\tbase(delta)\n"
+	var mixed: Dictionary = _ml._rtv_autofix_legacy_syntax(literal)
+	_expect(str(mixed["source"]).contains("print(\"base(delta) is gone\")") and str(mixed["source"]).contains("\tsuper.Hunger(delta)"),
+			"T23", "base() is rewritten in code and left alone inside a string on the line before (got %s)" % str(mixed["source"]))
+
+	# The legacy forms real mods ship are still fixed.
+	var legacy := "tool\nextends \"res://Scripts/Character.gd\"\n\n" \
+			+ "onready var bar = $Bar\nexport var rate = 1.0\n\n" \
+			+ "func Hunger(delta):\n\tbase(delta)\n\tbase().Thirst(delta)\n\tif rate > 2.0:\n\t# nothing yet\n\tpass\n"
+	var fixed: Dictionary = _ml._rtv_autofix_legacy_syntax(legacy)
+	var out := str(fixed["source"])
+	_expect(out.begins_with("@tool\n"), "T23", "a leading tool becomes @tool")
+	_expect(out.contains("\n@onready var bar = $Bar\n") and out.contains("\n@export var rate = 1.0\n"), "T23", "onready and export become annotations")
+	_expect(out.contains("\tsuper.Hunger(delta)\n") and out.contains("\tsuper.Thirst(delta)\n"), "T23", "base(args) and base().Method(args) become super calls (got %s)" % out)
+	_expect_eq(int(fixed["bodyless"]), 1, "T23", "bodyless blocks given a pass")
+	_expect_eq(int(fixed["base"]), 2, "T23", "base() lines rewritten")

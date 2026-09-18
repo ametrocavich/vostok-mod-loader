@@ -14,7 +14,7 @@
 # CALLS the wrapped methods, and asserts on the recorded execution order.
 #
 # Behaviors covered (contract: docs/wiki/Hooks.md + src/hooks_api.gd; test
-# ids T1..T22 in tests/codegen/dispatch_runner.gd):
+# ids T1..T23 in tests/codegen/dispatch_runner.gd):
 #   T1  -pre fires before vanilla, with the vanilla arguments
 #   T2  replace: before vanilla; vanilla's return wins unless skip_super(),
 #       which suppresses vanilla and promotes the callback's return
@@ -46,6 +46,8 @@
 #   T21 hook_many, patch_many and find() report a bad value and carry on
 #   T22 registry scene_nodes: a per-field revert reports whether it reverted
 #       anything
+#   T23 the legacy-syntax autofix leaves a valid Godot 4 script alone and
+#       still fixes the legacy forms
 #
 # Unlike check_codegen.sh this needs NO decompiled vanilla source -- the
 # fixture is synthetic -- so it runs on every machine with a Godot binary

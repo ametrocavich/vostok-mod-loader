@@ -21,6 +21,11 @@ func _rtv_is_block_header(trimmed: String) -> bool:
 #   (4) `export var` -> `@export var`. `export(Type) var` is left alone:
 #       it needs a type-annotation transform that can break strict-typed
 #       references.
+#   (5) `base(args)` -> `super.<method>(args)`, only in a script that gives
+#       `base` no meaning of its own (no `func base`): there a bare base()
+#       call cannot compile, so it is the legacy form.
+# Text inside string literals is never touched, including every line of a
+# triple-quoted block. A script that is valid Godot 4 comes back byte-identical.
 # Source must be LF-normalized by the caller.
 func _rtv_autofix_legacy_syntax(source: String) -> Dictionary:
 	var lines: PackedStringArray = source.split("\n")
@@ -36,9 +41,18 @@ func _rtv_autofix_legacy_syntax(source: String) -> Dictionary:
 	# Godot 4) can be rewritten to `super.<method>(...)`.
 	var current_method: String = ""
 	var method_line_indent: String = ""
+	var declares_base := _rtv_declares_function(lines, "base")
+	# Lines inside a triple-quoted string are data: no rewrite, no header check.
+	var in_block_string := false
 
 	for i in lines.size():
 		var line: String = lines[i]
+		var starts_in_string := in_block_string
+		if _rtv_toggles_block_string(line):
+			in_block_string = not in_block_string
+		if starts_in_string:
+			out.append(line)
+			continue
 
 		var lead := _rtv_leading_indent(line)
 		if lead.is_empty() and not line.strip_edges().is_empty():
@@ -55,7 +69,7 @@ func _rtv_autofix_legacy_syntax(source: String) -> Dictionary:
 			else:
 				current_method = ""
 
-		if not current_method.is_empty() and "base" in line:
+		if not declares_base and not current_method.is_empty() and "base" in line:
 			var rewritten := _rtv_rewrite_bare_base(line, current_method)
 			if rewritten != line:
 				line = rewritten
@@ -117,12 +131,18 @@ func _rtv_autofix_legacy_syntax(source: String) -> Dictionary:
 # void return of the super call, so `base().<chained>(...)` is rewritten
 # to `super.<chained>(...)` instead.
 func _rtv_rewrite_bare_base(line: String, method_name: String) -> String:
-	var comment_start := line.find("#")
+	var comment_start := _rtv_comment_start(line)
 	var head: String = line if comment_start < 0 else line.substr(0, comment_start)
 	var tail: String = "" if comment_start < 0 else line.substr(comment_start)
 	var i := 0
 	var rewritten := ""
 	while i < head.length():
+		# A string literal is copied through whole.
+		if head[i] == "\"" or head[i] == "'":
+			var literal_end := _rtv_string_end(head, i)
+			rewritten += head.substr(i, literal_end - i)
+			i = literal_end
+			continue
 		if i + 4 <= head.length() and head.substr(i, 4) == "base":
 			var prev_ok := true
 			if i > 0:
@@ -166,6 +186,48 @@ func _rtv_rewrite_bare_base(line: String, method_name: String) -> String:
 		rewritten += head[i]
 		i += 1
 	return rewritten + tail
+
+# Index just past the string literal that opens at `start`, or the end of the
+# text when it never closes on this line.
+func _rtv_string_end(s: String, start: int) -> int:
+	var quote := s[start]
+	var i := start + 1
+	while i < s.length():
+		if s[i] == "\\":
+			i += 2
+			continue
+		if s[i] == quote:
+			return i + 1
+		i += 1
+	return s.length()
+
+# Index of the `#` that starts a comment, or -1. A `#` inside a string
+# literal is text.
+func _rtv_comment_start(line: String) -> int:
+	var i := 0
+	while i < line.length():
+		if line[i] == "\"" or line[i] == "'":
+			i = _rtv_string_end(line, i)
+			continue
+		if line[i] == "#":
+			return i
+		i += 1
+	return -1
+
+# True when the line opens or closes a triple-quoted string: an odd number
+# of triple quotes of either kind.
+func _rtv_toggles_block_string(line: String) -> bool:
+	return (line.count("\"".repeat(3)) + line.count("'".repeat(3))) % 2 == 1
+
+# True when the script declares a function with this name, at any depth.
+func _rtv_declares_function(lines: PackedStringArray, fn_name: String) -> bool:
+	for line in lines:
+		var text := line.strip_edges()
+		if text.begins_with("static "):
+			text = text.substr(7).strip_edges()
+		if text.begins_with("func " + fn_name) and text.substr(5 + fn_name.length()).strip_edges().begins_with("("):
+			return true
+	return false
 
 # Index of the paren matching the one at open_idx, or -1. Tracks string
 # literals so parens inside them don't affect depth.
