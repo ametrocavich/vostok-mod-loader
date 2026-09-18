@@ -551,7 +551,7 @@ func _browse_perform_download(state: Dictionary, item: Dictionary) -> void:
 		if is_instance_valid(tabs):
 			_rebuild_mods_tab(tabs)
 
-	# Sync rows in place, so the same mod's other rows flip to Installed. A
+	# Sync rows in place, so every installed row offers its profile toggle. A
 	# refetch would drop the pages loaded so far and the status line above.
 	if any_success and is_instance_valid(scroll):
 		_refresh_browse_installed_rows(scroll)
@@ -955,11 +955,20 @@ func _refresh_browse_installed_rows(root: Node) -> void:
 				cb.text = "Removed"
 				cb.tooltip_text = "This mod is no longer installed. Click its name and use Download to install it again."
 		elif node is Button and entry_v is Dictionary:
-			# A Download button whose mod arrived some other way; skip in-flight buttons.
 			var btn := node as Button
-			if not btn.disabled:
-				btn.text = "Installed"
-				btn.disabled = true
+			# Queued and downloading buttons still belong to the download loop.
+			if btn.disabled and btn.text != "Installed":
+				continue
+			var on_toggle: Callable = btn.get_meta("browse_on_toggle", Callable())
+			if not on_toggle.is_valid():
+				continue
+			var check := _browse_enable_checkbox(str(btn.get_meta("browse_ref_key")), entry_v, on_toggle)
+			var parent := btn.get_parent()
+			var index := btn.get_index()
+			parent.remove_child(btn)
+			parent.add_child(check)
+			parent.move_child(check, index)
+			btn.queue_free()
 
 
 # Title for a filtered, searched or category view, so "no results" still says
@@ -972,6 +981,20 @@ func _browse_results_header_text(query: String, sort_label: String, category_nam
 	if not cat.is_empty():
 		head += " in " + cat
 	return head
+
+
+# The same profile action is used for an installed row and a new download.
+func _browse_enable_checkbox(ref_key: String, entry: Dictionary, on_toggle: Callable) -> CheckBox:
+	var check := CheckBox.new()
+	check.text = "Enabled in " + _active_profile_label()
+	check.button_pressed = bool(entry.get("enabled", false))
+	check.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	check.set_meta("browse_ref_key", ref_key)
+	check.toggled.connect(func(on: bool):
+		on_toggle.call(ref_key, on, check)
+	)
+	_wire_hint(check, "Toggle this mod in profile: " + _active_profile_label() + ".")
+	return check
 
 
 # Render one Browse row from a ModSummary; every field is present by contract
@@ -1050,24 +1073,13 @@ func _browse_render_mod_row(summary: Dictionary, install_entry: Variant, on_get:
 	var can_download := bool(caps["resolve_file"]) \
 			and (not bool(caps["lists_downloadable"]) or str(summary["default_file_id"]) != "")
 	if install_entry is Dictionary:
-		var entry: Dictionary = install_entry as Dictionary
-		var enable_check := CheckBox.new()
-		enable_check.text = "Enabled in " + _active_profile_label()
-		enable_check.button_pressed = bool(entry.get("enabled", false))
-		enable_check.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		enable_check.set_meta("browse_ref_key", ref_key)
-		var captured_key := ref_key
-		var captured_check := enable_check
-		enable_check.toggled.connect(func(on: bool):
-			on_toggle.call(captured_key, on, captured_check)
-		)
-		row.add_child(enable_check)
-		_wire_hint(enable_check, "Toggle this mod in profile: " + _active_profile_label() + ".")
+		row.add_child(_browse_enable_checkbox(ref_key, install_entry, on_toggle))
 	elif can_download:
 		var get_btn := Button.new()
 		get_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		get_btn.text = "Download"
 		get_btn.set_meta("browse_ref_key", ref_key)
+		get_btn.set_meta("browse_on_toggle", on_toggle)
 		var captured := summary
 		var captured_btn := get_btn
 		get_btn.pressed.connect(func():
