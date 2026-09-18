@@ -4,6 +4,9 @@ Mod loader for Road to Vostok (Godot 4.6). Adds a pre-game window for installing
 
 Docs live on the [Wiki](https://github.com/ametrocavich/vostok-mod-loader/wiki): setup, Browse, modpacks, the mod format, hook internals, stability canaries, limitations.
 
+Changing the loader itself? Start with [CONTRIBUTING](CONTRIBUTING.md) and the
+[development map](docs/wiki/Development.md).
+
 ## Requirements
 
 - Road to Vostok (PC, Steam)

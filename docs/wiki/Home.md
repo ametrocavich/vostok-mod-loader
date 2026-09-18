@@ -33,7 +33,8 @@ Related, when you need them:
 
 You do not need any of this to write a mod. These pages cover how the loader itself works, for people modifying the loader or debugging an unfamiliar boot-log entry:
 
-- [Architecture](Architecture): launch flow, two-pass restart, static-init mount, override.cfg lifecycle
+- [Development](Development): task-to-code map, state ownership, edit recipes and source navigation
+- [Architecture](Architecture): launch flow, two-pass restart, early mounts, override.cfg lifecycle
 - [Modules](Modules): per-file tour of the `src/` tree
 - [Profile-Format](Profile-Format): the metroprofile v1 JSON inside a modpack's profile.json
 - [GDSC-Detokenizer](GDSC-Detokenizer): binary token format v100/v101, vanilla source cache

@@ -1,146 +1,112 @@
-# Build
+# Build and checks
 
-The installable file, `modloader.gd`, is built from the `src/` tree (`src/*.gd` plus `src/registry/*.gd`) and is not edited directly. Edit under `src/`, run `./build.sh`, then `./check.sh`.
+The editing surface is `src/`. The installed file, `modloader.gd`, is generated
+and ignored by Git. [CONTRIBUTING](https://github.com/ametrocavich/vostok-mod-loader/blob/development/CONTRIBUTING.md)
+is the first-build guide; [Development](Development) maps changes to source.
 
-## build.sh
+## Prerequisites and commands
 
-Source: [build.sh](https://github.com/ametrocavich/vostok-mod-loader/blob/development/build.sh).
-
-Concatenates the source files into one `modloader.gd` at the repo root, with a blank line between files. The order is the `FILES` array, not a filename sort:
-
-```bash
-FILES=(
-    # Fundamentals (header + module-scope state + log helpers)
-    "$SRC/header.gd"
-    "$SRC/constants.gd"
-    "$SRC/logging.gd"
-    # File + archive helpers (no game-specific logic)
-    "$SRC/fs_archive.gd"
-    # Static-init boot layer
-    "$SRC/boot.gd"
-    # Mod discovery + loading
-    "$SRC/security_scan.gd"
-    # Mod-host seam. types -> transport -> dispatch, then one file per host.
-    "$SRC/host_types.gd"
-    "$SRC/host_http.gd"
-    "$SRC/host_api.gd"
-    "$SRC/host_mws.gd"
-    "$SRC/host_vostokmods.gd"
-    "$SRC/mod_discovery.gd"
-    "$SRC/mod_dependencies.gd"
-    "$SRC/mod_identity.gd"
-    "$SRC/mod_downloads.gd"
-    "$SRC/mod_sources.gd"
-    "$SRC/modpacks.gd"
-    "$SRC/hosted_modpacks.gd"
-    "$SRC/mod_loading.gd"
-    "$SRC/conflict_report.gd"
-    # UI
-    "$SRC/profiles.gd"
-    "$SRC/profile_snapshots.gd"
-    "$SRC/ui.gd"
-    "$SRC/ui_images.gd"
-    "$SRC/ui_format.gd"
-    "$SRC/loader_update.gd"
-    "$SRC/ui_theme.gd"
-    "$SRC/ui_dialogs.gd"
-    "$SRC/ui_mods.gd"
-    "$SRC/ui_mods_rows.gd"
-    "$SRC/ui_mods_metadata.gd"
-    "$SRC/mod_updates.gd"
-    "$SRC/ui_browse.gd"
-    "$SRC/ui_modpacks.gd"
-    # Public API (hooks + registry)
-    "$SRC/hooks_api.gd"
-    # Registry dispatcher + per-section handlers
-    "$SRC/registry.gd"
-    "$SRC/registry/shared.gd"
-    "$SRC/registry/scenes.gd"
-    "$SRC/registry/items.gd"
-    "$SRC/registry/loot.gd"
-    "$SRC/registry/sounds.gd"
-    "$SRC/registry/recipes.gd"
-    "$SRC/registry/events.gd"
-    "$SRC/registry/traders.gd"
-    "$SRC/registry/inputs.gd"
-    "$SRC/registry/loader.gd"
-    "$SRC/registry/ai.gd"
-    "$SRC/registry/ai_loadouts.gd"
-    "$SRC/registry/fish.gd"
-    "$SRC/registry/resources.gd"
-    "$SRC/registry/scene_nodes.gd"
-    "$SRC/registry/aggregators.gd"
-    # Declarative setup() entry point
-    "$SRC/setup.gd"
-    "$SRC/framework_wrappers.gd"
-    # Codegen pipeline
-    "$SRC/gdsc_detokenizer.gd"
-    "$SRC/pck_enumeration.gd"
-    "$SRC/rewriter_parse.gd"
-    "$SRC/rewriter_rewrite.gd"
-    "$SRC/rewriter_registry_inject.gd"
-    "$SRC/rewriter_autofix.gd"
-    "$SRC/hook_pack.gd"
-    "$SRC/hook_status.gd"
-    # Orchestration
-    "$SRC/lifecycle.gd"
-    "$SRC/main_menu_hook.gd"
-    # Temporary debug scaffolding
-    "$SRC/debug.gd"
-)
-```
-
-Earlier files may not reference consts defined later, because GDScript resolves const initializers top to bottom. Function bodies can call anything; the whole file is one class. `host_api.gd` dispatches into adapters listed after it, the same shape `registry.gd` uses for its handlers.
-
-### What build.sh checks
-
-- Every listed file exists, before anything is written.
-- The output has exactly one `extends` line (the one in `header.gd`).
-- The output has at most one `class_name` (there is none; the loader is the `ModLoader` autoload).
-
-On a failure the `.tmp` is removed and nothing replaces the previous `modloader.gd`.
-
-### Running it
+Use Bash (Git Bash on Windows), Godot 4.6.1 and Python 3.9 or newer. Python
+uses its standard library; there are no packages to install. From the repo root:
 
 ```bash
 ./build.sh
+GODOT=/path/to/godot ./check.sh
 ```
 
-`modloader.gd` is listed in `.gitignore` and never committed. End users get it from GitHub Releases through the installer scripts:
+| Variable | Purpose |
+|---|---|
+| `GODOT` | Engine executable. If unset, scripts try `godot` on PATH, then a maintainer-specific Windows path. On Windows use the console executable, with a Git Bash path such as `/c/Tools/Godot/godot_console.exe`. |
+| `PYTHON` | Interpreter for documentation checks. If unset, `check.sh` tries `python` and `python3`, requiring version 3.9 or newer. |
+| `VANILLA_SRC` | Decompiled Road to Vostok project for the ten vanilla codegen fixtures. The codegen script has a maintainer-specific default; missing source leaves these fixtures out. The three synthetic fixtures always run. |
 
+Use a dedicated Godot test directory. The boot-state harness creates and
+removes `override.cfg` beside the engine executable and refuses to run if
+that file already exists. Harnesses also write their own `user://` test
+state. They do not open windows, run the game or use its save directory.
+
+## Assembly and source navigation
+
+Source: [build.sh](https://github.com/ametrocavich/vostok-mod-loader/blob/development/build.sh).
+The `FILES` array is the authoritative assembly order. Print it with:
+
+```bash
+./build.sh --list
 ```
-/releases/latest/download/modloader.gd
-/releases/latest/download/override.cfg
+
+Each fragment is preceded by a `# source: src/...` marker. To translate a
+line from a built-file error, use the matching build:
+
+```bash
+python tools/dev.py locate 12345
+python tools/dev.py find _save_ui_config
 ```
 
-## check.sh
+Every fragment shares one class. Constants used by other constant
+initializers must come first; function bodies can call functions later in
+the file. The build checks that every listed file exists, that the result
+has exactly one top-level `extends`, and that it has at most one top-level
+`class_name`. It writes a temporary file and replaces the artifact only on
+success. Parsing and behavior checks are the next step.
 
-Source: [check.sh](https://github.com/ametrocavich/vostok-mod-loader/blob/development/check.sh). Run it after `build.sh`. It needs a Godot 4.6.1 binary: `GODOT=/path/to/godot ./check.sh`, or `godot` on PATH, or the maintainer's local install path baked into the script.
+## The eight checks
 
-The script never opens a window and never touches the game. It copies `modloader.gd` into a throwaway project under the system temp dir and runs Godot with `--headless --check-only`, which parses and type-checks and then exits. A single-namespace file of more than 23,000 lines fails in ways review does not catch (two files defining the same function, a call to a renamed function, a merge joining halves that were never built together), and any of those is a parse error in an autoload, which means the game does not start.
+Source: [check.sh](https://github.com/ametrocavich/vostok-mod-loader/blob/development/check.sh).
+Run it after every build. Success prints eight lines starting with `OK:`:
 
-After the parse, `check.sh` runs two grep invariants and six harnesses. Every harness assembles its own throwaway project, loads a neutered copy of `modloader.gd` (the `_filescope_mounted` initializer replaced by `{}`, so static init cannot run), and exits non-zero on any failed assertion. The five runtime harnesses (every one but `check_codegen.sh`, where decompiled game scripts log errors of their own when loaded outside the game) also fail when the run logged a `SCRIPT ERROR`: a script error inside a test function stops that function without failing the run, so the assertions after it would silently never execute. Each `check_*.sh` also takes `--prove`: it breaks the code under test in the temp copy and requires the harness to fail, which is how you know the gate can fail at all.
-
-| Gate | Runner | What it pins |
+| Check | Runner | Coverage |
 |---|---|---|
-| await grep | inline in `check.sh` | No `out += ...` line in `src/rewriter*.gd` contains a literal `await`. An unconditional await makes every wrapped vanilla method a coroutine and breaks every caller at parse time; 3.3.0 shipped that. The only legal emission is the `aw` variable, set when the vanilla target is itself a coroutine |
-| docs grep | inline in `check.sh` | `docs/wiki/Hooks.md` does not describe the replace callback as always awaited. The 3.3.0 commit documented the bug as intended, in two places |
-| `check_codegen.sh` | `tests/codegen/runner.gd` | Runs the real rewriter over 13 fixtures (three synthetic `tests/codegen/Fixture*.gd`, ten decompiled vanilla scripts including `Database.gd`, `Loader.gd`, `Camera.gd`, `Character.gd`) and compiles the pristine source, the rewritten output at its canonical path, and a generated caller stub that invokes every wrapped method without `await`. Also asserts the wrapper signature is byte-identical and a masked rewrite renames only the masked methods. On a machine without the decompiled vanilla source (CI included) the ten vanilla fixtures are left out and the three synthetic ones still run, `--prove` included |
-| `check_dispatch.sh` | `tests/codegen/dispatch_runner.gd` | Rewrites a synthetic fixture, attaches it to real Nodes, registers hooks through the public API and asserts dispatch behavior: T1 to T12 cover pre, replace with and without `skip_super`, post result mutation and the legacy 2-arg form, deferred callbacks, ordering by priority, replace single-owner, `unhook`, `_caller` across nested calls, re-entrancy guard release, two instances, coroutine vanilla methods, defaulted parameters. T13 on reach the registry through the same meta: an input override applying its deadzone and revert restoring the one the action had, a reverted patch or override leaving the action with every event it had, `remove` refusing a scene id that carries an override, a patch made before an override being reverted onto the object it changed, `get_entry` returning a scene-path override, a scene-path patch refusing a file that does not exist, a `setup` plan surviving a `when` predicate that returns null or a String, `has_mod` reading a v-prefixed version, a hook whose owner was freed being unhooked at dispatch, `hook_many`, `patch_many` and `find` reporting a bad value without ending the batch, and a `scene_nodes` revert reporting whether it reverted anything. T23 runs the legacy-syntax autofix over a valid Godot 4 script (byte-identical out) and a legacy one (every form fixed), including mixed triple quotes, quote text in comments, code after literals and outdented literal terminators, and inherited `base()` methods while retaining the Cat Hunger Slow conversion. Never skips |
-| `check_detok.sh` | `tests/detok/runner.gd` | Builds the same token stream as a v101 buffer and as a v100 buffer (indices from 83 shifted down) and requires identical reconstruction; also that no `<tk?>` placeholder appears and `TK_EMPTY` is skipped, that a VFS read is never cached and the PCK wins over it, that an unstamped cache is dropped, that the `.gdc` fallback serves a path with no `.gd`, that canary C passes on any well-formed probe, and that a changed game PCK drops the cache. T1 to T11. Never skips |
-| `check_identity.sh` | `tests/identity/runner.gd` | Filename-stem normalization for mods without `id=`: an extension change or version bump collapses to one identity and the newest wins, distinct mods stay distinct, a declared id still wins, `.pck` never collapses; the mod.txt read record `{cfg, status, error, files}`; and that a profile storing no priority for a mod applies the mod's own default, not the previous profile's; that a re-packaged mod without `id=` drops the key it left under its old filename; where the launcher lands when the stored active profile is gone; that renaming or creating a profile is not a mod change; and the player-facing name of a modpack-managed slot. T1 to T12 |
-| `check_host.sh` | `tests/host/runner.gd` | The host seam's pure layer: ModWorkshop and VostokMods normalizers emit every field, the result envelope, the `provider:id` grammar rejects instead of guessing, on-disk source records of every era converge in one pass, the legacy `modworkshop_id` mirror is written only for ModWorkshop, every declared capability has a dispatch arm, hosted pack manifests convert and stray files beside `profile.json` never reach `user://`, the source-record precedence (explicit `source=`, then the stored record, then legacy `modworkshop=`), the apply failure shape and which dialog an apply result gets, the update check's skip rules and counts, a pack record's installed test, which mod.txt problems are player warnings and which are author notes, a pack apply and unload round trip that leaves no pack MCM behind and preserves unconsumed files beside the snapshot, pack keys following the installed mods on every path a mod can land, a refreshed pack rebuilding its kept slot, an apply preview that writes nothing and counts only what it can download, the rate-limit cooldown a response arms, the ModWorkshop listing request honoring a row limit, the update check's message for each outcome, the reason given for a failed download, a pack file with no format version not being blamed on an old loader, version ordering with prereleases, an update's new file name that differs only in case counting as the installed file, which server-supplied file names a download may land under, the mod.txt dependency list forms with the load-order tie-break, and pack pins refusing newer installed copies before apply and retaining missing rows when the requested version is absent, plus repeated hosted imports replacing kept priorities and MCM only after unload. T1 to T30 |
-| `check_boot_state.sh` | `tests/boot_state/runner.gd` | The crash-loop breaker: the streak survives the crashed-Pass-2 wipe, one crash does not trip it, `MAX_RESTART_COUNT` crashes do, a clean finish resets it to zero, and Pass 2 clears it after the crash window (checked against the built source text); plus the hook health record, coerced pass-state reads, the applied-override map surviving `load_all_mods`, deferred scripts staying out of the persisted wrapped-path list, the sweep of state nothing reads, game-update detection through the PCK stamp, a missing `mod_config.cfg` recovering from its backup, the state hash following the load order, the hash reading an unquoted mod.txt version, hooks registered by an early autoload surviving `load_all_mods`, the `RTVModLib` meta registering once, a hook pack that cannot be written or mounted leaving its own status record, the wrap surface counting each script once, a lost registry target naming the mods that declared `[registry]`, a failed override.cfg write naming its step and error code, and the recursive delete refusing anything outside `user://` and leaving a link's target alone, including a linked root or ancestor, plus unmodded cleanup refusing failed state deletion or override writes before a retry succeeds. T1 to T23 |
+| Parse | Inline in `check.sh` | Headless `--check-only` parses and type-checks the assembled loader in a throwaway project. Catches duplicate definitions, unresolved names and incompatible types. |
+| Static invariants and docs | Inline greps and `tools/dev.py check-docs` | Wrapper templates emit `await` only through the coroutine-gated variable; Hooks.md must describe that contract. Checks local/repository Markdown targets, source paths, linked definition ownership and module-index coverage. It does not verify prose, URL fragments or external sites. |
+| Code generation | `tests/codegen/runner.gd` | Three synthetic and, when available, ten vanilla fixtures. Compiles original source, rewritten source and caller stubs; checks signatures, coroutine behavior and masked rewrites. |
+| Dispatch | `tests/codegen/dispatch_runner.gd` | T1 to T23: hook ordering, replacement, post hooks, deferred calls, re-entrancy, defaults and coroutines; registry/setup operations; legacy syntax with mixed quotes, literal terminators and inherited `base()` calls. |
+| Detokenizer | `tests/detok/runner.gd` | T1 to T11: v100/v101 reconstruction, empty tokens, VFS/PCK precedence, cache stamps, `.gdc` fallback and the engine canary. |
+| Identity | `tests/identity/runner.gd` | T1 to T12: filename stems, duplicate winners, metadata read records, profile defaults, key migration, missing active profiles and profile rename/create behavior. |
+| Host and packs | `tests/host/runner.gd` | T1 to T30: complete host records, dispatch coverage, source migration, pack conversion/apply/unload, preserved original files, refreshed imports, exact-version pins, download names, cooldowns, update outcomes and dependency ordering. |
+| Boot state | `tests/boot_state/runner.gd` | T1 to T23: crash streak, state hash, game-update detection, hook health and early hooks, config recovery, failed writes, linked-root deletion guards and unmodded cleanup retry. |
 
-Each runner prints its assertion count on success (`[host] PASS: N assertion(s) across T1..T19`); the counts are computed at run time, not fixed.
+The six harness scripts are `check_codegen.sh`, `check_dispatch.sh`,
+`check_detok.sh`, `check_identity.sh`, `check_host.sh` and `check_boot_state.sh`.
+Each builds a throwaway project, replaces the loader's boot initializer with
+`{}` in the test copy, and calls loader functions explicitly. The five runtime
+harnesses fail on any `SCRIPT ERROR`. Codegen compares baseline and generated
+compilation because the decompiled game scripts can log errors outside the
+game. Assertion counts come from the runners' success output.
 
-Godot is pinned at 4.6.1-stable in `check.sh`, `ci.yml` and `release-please.yml`. Move all three together.
+A green run does not test the rendered launcher, live hosts, installers or a
+complete game restart. See [the release checklist](https://github.com/ametrocavich/vostok-mod-loader/blob/development/docs/RELEASE_CHECKLIST.md)
+for manual acceptance.
+
+## Diagnose and extend a check
+
+Run the failing harness directly to shorten the feedback loop:
+
+```bash
+./check_host.sh
+./check_host.sh --prove
+```
+
+`--prove` first runs the clean harness, then makes a targeted mutation in the
+temporary copy and requires failure. It leaves repository source unchanged.
+It tests the gate's failure detection, not every possible bug in its subject.
+Each check script defines its temporary `WORK` directory; inspect the runner
+output and that directory's generated files when a fixture fails.
+
+Add cases to the closest existing runner. When adding a T number, update its
+call list, `_finish` range and this page's coverage row. Dispatch also lists
+the case IDs at the top of its runner and check script. For codegen, add a
+fixture to `FIXTURES` in its runner; the script header explains masks and
+intentional body changes. Keep the eight top-level checks.
 
 ## Continuous integration
 
 Source: [.github/workflows/ci.yml](https://github.com/ametrocavich/vostok-mod-loader/blob/development/.github/workflows/ci.yml).
+CI runs on every PR and pushes to `master` and `refactor/**`. It downloads
+Godot, builds and runs the same checks. CI has no decompiled game corpus;
+synthetic codegen fixtures still run. Python is supplied by the Ubuntu runner.
 
-Runs on every pull request and on pushes to `master` and `refactor/**`. It downloads Godot 4.6.1 (cached by version), runs `./build.sh`, then `./check.sh`. The codegen harness runs its synthetic fixtures there and leaves out the ones that need the decompiled game source, so the rewriter's output is compiled in CI without shipping game files into it.
+Godot's current default is 4.6.1-stable. When changing it, update `check.sh`,
+all six `check_*.sh` scripts and both CI/release workflow pins together.
 
 ## release-please
 
@@ -158,7 +124,7 @@ Automates the version bump and the changelog from [Conventional Commits](https:/
 
 The draft step matters. From the moment a release is published, `/releases/latest/download/modloader.gd` resolves to it, and both installers fetch that URL. A build or upload failure on a published release left every new install failing on a 404.
 
-Normal pushes to `master` do not build anything; only a release creation does.
+Within this workflow, building and uploading assets only run when a release is created. The separate CI workflow still builds and checks normal pushes to `master`.
 
 ### Version-bump mapping
 

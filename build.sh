@@ -96,14 +96,26 @@ FILES=(
     "$SRC/debug.gd"
 )
 
+if [[ $# -gt 1 ]]; then
+    echo "Usage: ./build.sh [--list]" >&2
+    exit 2
+fi
+case "${1:-}" in
+    --list) printf '%s\n' "${FILES[@]}"; exit 0 ;;
+    "") ;;
+    *) echo "Usage: ./build.sh [--list]" >&2; exit 2 ;;
+esac
+
 # Validate every listed file exists before starting
 for f in "${FILES[@]}"; do
     [[ -f "$f" ]] || { echo "ERROR: missing source file: $f" >&2; exit 1; }
 done
 
 # Concatenate
+trap 'rm -f "$TMP"' EXIT
 : > "$TMP"
 for f in "${FILES[@]}"; do
+    printf '# source: %s\n' "$f" >> "$TMP"
     cat "$f" >> "$TMP"
     echo "" >> "$TMP"  # blank line between files
 done

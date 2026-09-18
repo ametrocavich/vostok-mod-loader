@@ -3,7 +3,7 @@
 # GDScript compiler, against real vanilla game source.
 #
 # Why this exists: the loader rewrites vanilla scripts by string manipulation
-# (src/rewriter.gd) and the result was historically never compiled outside a
+# (src/rewriter_rewrite.gd) and the result was historically never compiled outside a
 # running game. 3.3.0 shipped a one-character-class bug -- an unconditional
 # `await` in a wrapper template -- that made every wrapped vanilla method a
 # coroutine and broke every third-party mod calling them AT PARSE TIME.

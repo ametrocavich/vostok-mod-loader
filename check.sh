@@ -1,26 +1,14 @@
 #!/usr/bin/env bash
 # check.sh -- parse-check the built modloader.gd with the real GDScript compiler.
 #
-# Why this exists: modloader.gd is 24k+ lines assembled from 53 files that share
-# one namespace, and it only ever runs inside the game. Hand-reading catches
-# typos but not "this function does not exist" or "this type does not line up"
-# -- exactly the errors a refactor introduces. Godot's own front end catches
-# both in a couple of seconds.
+# Run the parse check, static invariants and six headless harnesses.
+# Harness copies replace the boot initializer before creating a loader.
+# The boot-state runner also creates and removes override.cfg beside the test
+# Godot binary; it refuses an existing file there. Use a dedicated engine.
+# No game process or editor is started. See docs/wiki/Build.md for coverage.
 #
-# This NEVER opens a window and NEVER touches the game: --headless, and the
-# script is copied into a throwaway project under the system temp dir so Godot
-# has no reason to look at this repo (which is not a Godot project) or at the
-# Road to Vostok install.
-#
-# What it does NOT do: run anything. --check-only parses and type-checks, then
-# exits. It cannot tell you whether mods actually mount -- that is still a
-# smoke test in the real game.
-#
-# Usage:
-#   ./check.sh                      # build.sh must have run first
-#   GODOT=/path/to/godot ./check.sh # override the engine binary
-#
-# Exit code is Godot's: 0 = clean parse, non-zero = errors printed above.
+# Usage: ./build.sh && ./check.sh
+# GODOT=/path/to/godot and PYTHON=/path/to/python3 override tool discovery.
 
 set -uo pipefail
 cd "$(dirname "$0")"
@@ -69,30 +57,7 @@ else
     exit $status
 fi
 
-# ---------------------------------------------------------------------------
-# Codegen invariants. These assert on the wrapper TEMPLATES in rewriter_*.gd,
-# not on a running loader: generating a wrapper for real would mean executing
-# modloader.gd, and its static-init runs the whole boot sequence against
-# whatever directory the engine lives in. Static assertions are the safe way
-# to pin a contract the compiler cannot see.
-# ---------------------------------------------------------------------------
-
-# INVARIANT: no emitted line may contain a literal `await`.
-#
-# In GDScript, ANY function whose body contains `await` is a coroutine. A
-# hardcoded await in a wrapper template therefore turns every wrapped vanilla
-# method into a coroutine, and every existing caller breaks at PARSE time
-# ("Function X is a coroutine, so it must be called with await") -- including
-# third-party mods calling vanilla correctly. Shipped in 3.3.0 and broke any
-# mod pairing with a wide enough hook surface.
-#
-# The only legitimate way to emit an await is via the `aw` variable, which is
-# "await " only when the vanilla target is itself a coroutine.
-#
-# Glob, not a single filename: rewriter.gd was split into rewriter_*.gd, and
-# a grep pinned to one path passes VACUOUSLY when the file is renamed away
-# (grep of a missing file matches nothing). The glob survives both layouts;
-# the guard below fails loudly if the glob itself ever stops matching.
+# Wrapper templates emit await only through the coroutine-gated aw variable.
 if ! ls src/rewriter*.gd >/dev/null 2>&1; then
     echo "FAILED: no src/rewriter*.gd found -- the await invariant has nothing to check (emitter files renamed?)" >&2
     exit 1
@@ -105,13 +70,7 @@ if [[ -n "$bad_await" ]]; then
     echo "$bad_await" >&2
     exit 1
 fi
-# INVARIANT: the docs must not re-bless the bug either.
-#
-# The commit that shipped the 3.3.0 await regression ALSO edited Hooks.md to
-# document the broken wrapper as intended behavior -- in two separate places.
-# That is worse than an undocumented bug: it made the fix look like a contract
-# change, and the first pass at correcting the docs missed the second block.
-# Pin both, so a future doc sync cannot quietly describe the bug as a feature.
+# The hook documentation must describe the same await contract.
 bad_doc=$(grep -n 'await _repl\[0\]' docs/wiki/Hooks.md || true)
 bad_doc+=$(grep -in 'replace callback is always awaited' docs/wiki/Hooks.md || true)
 if [[ -n "$bad_doc" ]]; then
@@ -121,94 +80,57 @@ if [[ -n "$bad_doc" ]]; then
     echo "$bad_doc" >&2
     exit 1
 fi
-echo "OK: codegen invariants hold (no unconditional await in templates or docs)"
+# Check documentation targets and source ownership with the build manifest.
+if [[ -z "${PYTHON:-}" ]]; then
+    for candidate in python python3; do
+        if command -v "$candidate" >/dev/null 2>&1 && \
+                "$candidate" -c 'import sys; sys.exit(sys.version_info < (3, 9))' >/dev/null 2>&1; then
+            PYTHON="$candidate"
+            break
+        fi
+    done
+fi
+if [[ -z "${PYTHON:-}" ]]; then
+    echo "FAILED: Python 3.9+ is required for documentation checks; set PYTHON." >&2
+    exit 1
+fi
+if ! "$PYTHON" tools/dev.py check-docs; then
+    echo "FAILED: documentation references (see above)" >&2
+    exit 1
+fi
+echo "OK: codegen and documentation invariants hold"
 
-# ---------------------------------------------------------------------------
-# Codegen compile harness: run the REAL rewriter over real vanilla scripts,
-# then compile both the rewritten output and a generated caller stub with the
-# real GDScript compiler. The grep invariant above pins the one template line
-# that broke 3.3.0; the harness fails the whole bug class (any wrapper
-# becoming a coroutine, signature drift, transform breakage) at build time.
-# Skips itself (exit 0, with a banner) on machines without the decompiled
-# vanilla source. Self-test: ./check_codegen.sh --prove
-# ---------------------------------------------------------------------------
+# Compile generated source and caller stubs; synthetic fixtures always run.
 if ! ./check_codegen.sh; then
     echo "FAILED: codegen compile harness (see above)" >&2
     exit 1
 fi
 
-# ---------------------------------------------------------------------------
-# Runtime dispatch harness: the layer above the compile harness. Loads the
-# neutered loader in-engine, rewrites a synthetic fixture with the real
-# rewriter, attaches it to real Nodes, registers hooks through the real
-# public API and asserts on actual dispatch behavior (ordering, skip_super,
-# post-result mutation, _caller, re-entrancy, coroutines, defaults).
-# Needs no vanilla corpus, so it never skips; ~1s. Self-test:
-# ./check_dispatch.sh --prove
-# ---------------------------------------------------------------------------
+# Exercise hook dispatch, registry operations and syntax compatibility.
 if ! ./check_dispatch.sh; then
     echo "FAILED: runtime dispatch harness (see above)" >&2
     exit 1
 fi
 
-# ---------------------------------------------------------------------------
-# GDSC detokenizer harness. Builds synthetic bytecode buffers -- the same
-# logical token stream under a v100 header with v100 indices and under a v101
-# header with v101 indices -- and requires both to reconstruct identically.
-# The detokenizer previously had NO coverage at all, which is how the v100
-# index shift (every index from 83 up sits one lower in v100) survived: the
-# version gate accepts v100, so a v100 .gdc decoded to garbage and was cached
-# as pristine vanilla. Needs no vanilla corpus, so it never skips; ~1s.
-# Self-test: ./check_detok.sh --prove
-# ---------------------------------------------------------------------------
+# Reconstruct v100/v101 tokens and check cache precedence.
 if ! ./check_detok.sh; then
     echo "FAILED: detokenizer harness (see above)" >&2
     exit 1
 fi
 
-# ---------------------------------------------------------------------------
-# Mod-identity harness. A mod with no id= in mod.txt is identified by its
-# filename, so re-packaging it under a different extension or version suffix
-# used to mint a second identity: both copies mounted and load order decided
-# which code ran. The fix normalizes the filename to a stem, which can fail in
-# both directions (merging distinct mods, or failing to merge one), so both
-# are pinned here. Needs no vanilla corpus; ~1s.
-# Self-test: ./check_identity.sh --prove
-# ---------------------------------------------------------------------------
+# Check duplicate selection and profile identity.
 if ! ./check_identity.sh; then
     echo "FAILED: mod-identity harness (see above)" >&2
     exit 1
 fi
 
-# ---------------------------------------------------------------------------
-# Host-seam harness: the provider-neutral host records, the "provider:id"
-# grammar shared by the wire key and mod.txt's source=, and the on-disk source
-# record of every era (legacy int/float/quoted/null modworkshop_id, and both
-# provider-qualified shapes). Pins the two rules a refactor breaks silently:
-# serialization converges in ONE pass so mod_config.cfg is not rewritten every
-# scan, and the legacy modworkshop_id mirror is emitted IFF provider ==
-# modworkshop -- the rule whose failure downloads a stranger's mod for a
-# different user. This is the first coverage the ~19k-line launcher side has
-# ever had. Needs no vanilla corpus, so it never skips; ~1s.
-# Self-test: ./check_host.sh --prove
-# ---------------------------------------------------------------------------
+# Check host records, downloads and pack/profile state transitions.
 if ! ./check_host.sh; then
     echo "FAILED: host-seam harness (see above)" >&2
     exit 1
 fi
 
-# ---------------------------------------------------------------------------
-# Boot-state harness: the crash-loop breaker. Pass 1 arms a restart, Pass 2
-# crashes, static init wipes and hands back to Pass 1, which regenerates from
-# the same mod list and restarts into the same crash -- an infinite loop the
-# player experiences as the game closing instantly, forever. The breaker only
-# works if the streak survives that wipe, so this pins: the counter lives
-# outside the file the wipe deletes, one crash does not trip it, MAX_RESTART_
-# COUNT crashes do, a clean finish resets it to zero, and the counter clear
-# stays OUT of Pass 2's crash window. Written test-first against the invariant
-# and red until the fix landed. No network, no corpus; ~1s.
-# Self-test: ./check_boot_state.sh --prove
-# ---------------------------------------------------------------------------
+# Check boot persistence, crash recovery and filesystem guards.
 if ! ./check_boot_state.sh; then
     echo "FAILED: boot-state harness (see above)" >&2
     exit 1
