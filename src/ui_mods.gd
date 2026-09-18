@@ -699,27 +699,10 @@ func _mods_build_filter_bar(left_col: VBoxContainer, tabs: TabContainer) -> Line
 			check_btn.text = "Check for updates"
 		if is_instance_valid(tabs):
 			_rebuild_mods_tab(tabs)
-		# Errored checks are reported, not counted as up to date.
-		var n := int(summary.get("with_updates", 0))
-		var ck := int(summary.get("checked", 0))
-		var er := int(summary.get("errors", 0))
-		var msg := ""
-		if ck == 0:
-			msg = "No installed mods say where they came from, so there is nothing to check."
-		elif er >= ck:
-			msg = "Could not check any mods. Check your connection and try again."
-		elif n == 0:
-			msg = "Everything is up to date. Checked %d mod(s)." % (ck - er)
-			if er > 0:
-				msg += " %d could not be checked." % er
-		else:
-			msg = "%d update(s) available." % n
-			if er > 0:
-				msg += " %d could not be checked." % er
 		# Only toast while the launcher exists: with _ui_window null the dialog
 		# would parent to the game's root and steal input mid-game.
 		if is_instance_valid(_ui_window):
-			_show_info_toast(msg)
+			_show_info_toast(_updates_check_message(summary, summary.get("providers", [])))
 	)
 
 	# Debounce the filter rebuild: each _rebuild_mods_tab is a full tear-down
@@ -1439,26 +1422,61 @@ func _mods_row_notes(name_col: VBoxContainer, entry: Dictionary) -> void:
 
 
 # Update check for every installed mod with a downloadable host and a version.
-# Populates _mod_updates_state. Returns {checked, with_updates, errors}.
+# Populates _mod_updates_state. Returns {checked, with_updates, errors,
+# no_version, providers}: the last two are the mods skipped for declaring no
+# version and the hosts that were asked.
 func _run_updates_check_for_mods() -> Dictionary:
 	if _mod_updates_check_in_progress:
 		return {"checked": 0, "with_updates": 0, "errors": 0}
 	_mod_updates_check_in_progress = true
-	var pending := _updates_check_candidates(_ui_mod_entries, _get_persisted_mod_sources())
+	var skipped := {}
+	var pending := _updates_check_candidates(_ui_mod_entries, _get_persisted_mod_sources(), skipped)
 	var summary := {"checked": 0, "with_updates": 0, "errors": 0}
+	var providers: Array = []
 	if not pending.is_empty():
 		var refs: Array = []
 		for p in pending:
-			refs.append((p as Dictionary)["ref"])
+			var ref: Dictionary = (p as Dictionary)["ref"]
+			refs.append(ref)
+			if not providers.has(str(ref["provider"])):
+				providers.append(str(ref["provider"]))
 		summary = _updates_check_apply(pending, await fetch_latest_versions(refs))
+	summary["no_version"] = int(skipped.get("no_version", 0))
+	summary["providers"] = providers
 	_mod_updates_check_in_progress = false
 	return summary
+
+# The toast for a finished update check. Errored checks are reported, not
+# counted as up to date; when every check failed while a host's rate-limit
+# cooldown is running, that is the reason given.
+func _updates_check_message(summary: Dictionary, providers: Array) -> String:
+	var n := int(summary.get("with_updates", 0))
+	var ck := int(summary.get("checked", 0))
+	var er := int(summary.get("errors", 0))
+	var no_version := int(summary.get("no_version", 0))
+	if ck == 0:
+		if no_version > 0:
+			return "Nothing to check: %d mod(s) name a site but no version, so there is nothing to compare." % no_version
+		return "No installed mods say where they came from, so there is nothing to check."
+	if er >= ck:
+		var msg := "Could not check any mods. Check your connection and try again."
+		for provider in providers:
+			msg = host_error_status(str(provider), msg)
+		return msg
+	var tail := ""
+	if er > 0:
+		tail += " %d could not be checked." % er
+	if no_version > 0:
+		tail += " %d skipped for having no version." % no_version
+	if n == 0:
+		return "Everything is up to date. Checked %d mod(s).%s" % [ck - er, tail]
+	return "%d update(s) available.%s" % [n, tail]
 
 # The installed mods an update check asks about, as {profile_key, ref,
 # version, full_path, mod_name}. Skipped: a mod with no readable mod.txt, a
 # developer folder (a downloaded archive would land beside it), a mod with no
 # host or a host that cannot serve files, and a mod with no declared version.
-func _updates_check_candidates(entries: Array[Dictionary], persisted_sources: Dictionary) -> Array:
+func _updates_check_candidates(entries: Array[Dictionary], persisted_sources: Dictionary, skipped: Dictionary = {}) -> Array:
 	var pending: Array = []
 	for entry in entries:
 		var cfg: ConfigFile = entry.get("cfg")
@@ -1471,6 +1489,8 @@ func _updates_check_candidates(entries: Array[Dictionary], persisted_sources: Di
 			continue
 		var version := str(cfg.get_value("mod", "version", "")).strip_edges()
 		if version == "":
+			# The one skip the player can act on; `skipped` lets the toast say so.
+			skipped["no_version"] = int(skipped.get("no_version", 0)) + 1
 			continue
 		pending.append({
 			"profile_key": str(entry.get("profile_key", "")),

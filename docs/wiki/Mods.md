@@ -12,7 +12,7 @@ Above the list:
 
 - **Filter mods...** narrows the list by name. **Enable all** and **Disable all** act on the visible rows only, so filter first to toggle a subset.
 - **Hide disabled** hides the rows of mods that are off in this profile.
-- **Check for updates** asks each mod's site for a newer version. Mods that do not say where they came from are skipped, and so are developer-mode folders. Mods with a newer version appear in an **Updates available** section, each with an **Update** button that downloads the new file and replaces the installed one.
+- **Check for updates** asks each mod's site for a newer version. Mods that do not say where they came from are skipped, and so are developer-mode folders and mods whose mod.txt has no `version`; the result message counts the last kind. If the site rate-limited the check, the message says so and when to try again. Mods with a newer version appear in an **Updates available** section, each with an **Update** button that downloads the new file and replaces the installed one.
 
 ## Load order
 

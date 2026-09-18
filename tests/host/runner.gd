@@ -86,6 +86,7 @@ func _run() -> void:
 	_t19_apply_preview_is_read_only(ml)
 	_t20_rate_limit_headers(ml)
 	_t21_mws_list_params(ml)
+	_t22_update_check_message(ml)
 
 	_finish()
 
@@ -1079,6 +1080,40 @@ func _t21_mws_list_params(ml: Object) -> void:
 	var search := "&".join(ml._mwsp_list_params({"query": "night vision", "category_ref": "12"}, 1) as PackedStringArray)
 	_assert(search == "query=night%20vision&sort=bumped_at&limit=50&page=1&category_id=12", "T21: query and category are carried (got '%s')" % search)
 
+# --- T22: what the update check tells the player --------------------------------
+
+func _t22_update_check_message(ml: Object) -> void:
+	_assert(ml.has_method("_updates_check_message"), "T22: the loader has _updates_check_message")
+	if not ml.has_method("_updates_check_message"):
+		return
+	var cooldowns: Dictionary = ml.get("_host_cooldown_until_ms")
+	cooldowns.clear()
+	var none := str(ml._updates_check_message({"checked": 0, "with_updates": 0, "errors": 0, "no_version": 0}, []))
+	_assert(none.contains("say where they came from"), "T22: nothing to check because no mod names a site (got '%s')" % none)
+	var unversioned := str(ml._updates_check_message({"checked": 0, "with_updates": 0, "errors": 0, "no_version": 2}, []))
+	_assert(unversioned.contains("version") and not unversioned.contains("say where they came from"),
+			"T22: mods skipped for having no version are not blamed on a missing site (got '%s')" % unversioned)
+	var offline := str(ml._updates_check_message({"checked": 3, "with_updates": 0, "errors": 3, "no_version": 0}, ["modworkshop"]))
+	_assert(offline.contains("connection"), "T22: every check failing with no cooldown running points at the connection (got '%s')" % offline)
+	ml.host_arm_cooldown("modworkshop", 30000)
+	var limited := str(ml._updates_check_message({"checked": 3, "with_updates": 0, "errors": 3, "no_version": 0}, ["modworkshop"]))
+	_assert(limited.contains("rate limit") and not limited.contains("connection"),
+			"T22: every check failing while the site's cooldown runs says rate limit (got '%s')" % limited)
+	cooldowns.clear()
+	var fine := str(ml._updates_check_message({"checked": 4, "with_updates": 0, "errors": 1, "no_version": 1}, ["modworkshop"]))
+	_assert(fine.contains("Checked 3 mod(s)") and fine.contains("1 could not be checked") and fine.contains("1 skipped"),
+			"T22: the up-to-date message counts failures and versionless mods (got '%s')" % fine)
+	var some := str(ml._updates_check_message({"checked": 4, "with_updates": 2, "errors": 0, "no_version": 0}, ["modworkshop"]))
+	_assert(some == "2 update(s) available.", "T22: updates are counted (got '%s')" % some)
+	var skipped := {}
+	var entries: Array[Dictionary] = [_installed_entry("q@", "q", "")]
+	var cfg := ConfigFile.new()
+	cfg.parse("[mod]\nname=\"Q\"\nid=\"q\"\n[updates]\nsource=\"vostokmods:q\"\n")
+	entries[0]["cfg"] = cfg
+	var pending: Array = ml._updates_check_candidates(entries, {}, skipped)
+	_assert(pending.is_empty() and int(skipped.get("no_version", 0)) == 1,
+			"T22: a mod with a site and no version is counted as skipped (got %s, %s)" % [str(pending), str(skipped)])
+
 # The update check in two pure halves: which installed mods are asked about,
 # and what the site's answers mean. A dev folder, a mod with no version, no
 # source, no readable mod.txt or a host that cannot serve files is skipped;
@@ -1252,7 +1287,7 @@ func _fail(msg: String) -> void:
 func _finish() -> void:
 	_done = true
 	if _failures.is_empty():
-		print("[host] PASS: %d assertion(s) across T1..T21" % _assertions)
+		print("[host] PASS: %d assertion(s) across T1..T22" % _assertions)
 		quit(0)
 		return
 	for m in _failures:
