@@ -854,6 +854,23 @@ func _t22_remove_tree_leaves_a_link_target_alone() -> void:
 	else:
 		print("[boot-state] T22: this platform would not create a link; the link case was not exercised")
 	_ml._remove_tree("user://t22_outside", false)
+	# The guard itself: nothing outside user://, and never user:// whole.
+	var exe_side := ProjectSettings.globalize_path("res://t22_must_survive")
+	DirAccess.make_dir_recursive_absolute(exe_side)
+	_ml._remove_tree(exe_side, false)
+	_assert(DirAccess.dir_exists_absolute(exe_side), "T22: a folder outside user:// is refused")
+	DirAccess.remove_absolute(exe_side)
+	_write_file("user://t22_canary.txt", "x")
+	_ml._remove_tree("user://", false)
+	_assert(FileAccess.file_exists("user://t22_canary.txt"), "T22: user:// itself is refused")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://t22_canary.txt"))
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("user://t22_keep/sub"))
+	_write_file("user://t22_keep/sub/f.txt", "x")
+	_ml._remove_tree("user://t22_keep", true)
+	_assert(DirAccess.dir_exists_absolute(ProjectSettings.globalize_path("user://t22_keep"))
+			and not DirAccess.dir_exists_absolute(ProjectSettings.globalize_path("user://t22_keep/sub")),
+			"T22: keep_root empties the folder and leaves it in place")
+	_ml._remove_tree("user://t22_keep", false)
 
 # --- T9: Pass 2 keeps the applied-override map through load_all_mods --------
 

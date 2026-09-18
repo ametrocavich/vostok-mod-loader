@@ -91,6 +91,8 @@ func _run() -> void:
 	_t24_pack_format_version(ml)
 	_t25_version_ordering(ml)
 	_t26_same_file_name(ml)
+	_t27_download_file_names(ml)
+	_t28_dependency_lists_and_load_order(ml)
 
 	_finish()
 
@@ -1220,6 +1222,57 @@ func _t26_same_file_name(ml: Object) -> void:
 	_assert(bool(ml._same_file_name("CoolMod.zip", "coolmod.zip")) == ignores_case,
 			"T26: a case-only difference is the same file exactly where the file system ignores case")
 
+# --- T27: where a download is allowed to land ---------------------------------------
+
+# The file name of a download comes from the server. Everything it can say is
+# untrusted: only a bare .vmz/.zip/.pck name may be joined onto the mods folder.
+func _t27_download_file_names(ml: Object) -> void:
+	for bad in ["", "../evil.zip", "..\\evil.zip", "sub/evil.zip", "C:evil.zip", ".hidden.zip", "evil.zip:stream", "readme.txt", "mod.exe"]:
+		_assert(not bool(ml._is_safe_mod_filename(bad)), "T27: '%s' is not a safe mod file name" % bad)
+	for good in ["CoolMod.vmz", "Cool Mod v1.2.zip", "pack.PCK"]:
+		_assert(bool(ml._is_safe_mod_filename(good)), "T27: '%s' is a safe mod file name" % good)
+	var cd := func(value: String) -> String:
+		return str(ml._filename_from_content_disposition(PackedStringArray(["Content-Type: application/zip", "Content-Disposition: " + value])))
+	_assert(cd.call('attachment; filename="CoolMod.vmz"') == "CoolMod.vmz", "T27: a quoted filename is read")
+	_assert(cd.call("attachment; filename=CoolMod.zip; size=3") == "CoolMod.zip", "T27: an unquoted filename is read")
+	_assert(cd.call("attachment; filename=\"Cool%20Mod.zip\"") == "Cool Mod.zip", "T27: a percent-encoded filename is decoded")
+	_assert(cd.call("attachment; filename=\"fallback.zip\"; filename*=UTF-8''Na%C3%AFve.zip") != "fallback.zip", "T27: filename* wins over filename")
+	_assert(cd.call('attachment; filename="../../evil.zip"') == "", "T27: a traversing filename is refused, not trimmed")
+	_assert(cd.call('attachment; filename="..%2F..%2Fevil.zip"') == "", "T27: an encoded traversal is refused after decoding")
+	_assert(cd.call('attachment; filename="notes.txt"') == "", "T27: a name that is not a mod archive is refused")
+	_assert(str(ml._filename_from_content_disposition(PackedStringArray(["X-Other: 1"]))) == "", "T27: no header, no name")
+	var none := PackedStringArray()
+	_assert(str(ml._derive_updated_filename("CoolMod_v1.0.vmz", none, "1.1")) == "CoolMod_v1.1.vmz", "T27: an update swaps the version suffix")
+	_assert(str(ml._derive_updated_filename("CoolMod.vmz", none, "v2.0")) == "CoolMod_v2.0.vmz", "T27: an update adds a version suffix")
+	_assert(str(ml._derive_updated_filename("CoolMod.vmz", none, "")) == "CoolMod.vmz", "T27: no version keeps the name")
+	_assert(str(ml._derive_updated_filename("CoolMod.vmz", none, "../../1.0")) == "CoolMod.vmz", "T27: a version that is not a file name keeps the old name")
+	_assert(str(ml._derive_updated_filename("CoolMod.vmz", PackedStringArray(['Content-Disposition: attachment; filename="Renamed.zip"']), "9")) == "Renamed.zip",
+			"T27: a safe server name wins over the derived one")
+
+# --- T28: mod.txt dependency lists and the load-order tie-break --------------------
+
+func _t28_dependency_lists_and_load_order(ml: Object) -> void:
+	var cases := [
+		['[dependencies]\nrequired=["a", "b"]\n', ["a", "b"]],
+		['[dependencies]\nrequired="a, b , c"\n', ["a", "b", "c"]],
+		['[dependencies]\nrequired="[a, \'b\']"\n', ["a", "b"]],
+		['[dependencies]\nrequired=["A", "a", " ", ""]\n', ["A"]],
+		['[mod]\nid="x"\n', []],
+	]
+	for c in cases:
+		var cfg := ConfigFile.new()
+		_assert(cfg.parse(str(c[0])) == OK, "T28: fixture parses: %s" % _oneline(str(c[0])))
+		var got: Array = ml._parse_dependency_list(cfg, "required")
+		_assert(got == Array(c[1]), "T28: required list of %s is %s (got %s)" % [_oneline(str(c[0])), str(c[1]), str(got)])
+	_assert((ml._parse_dependency_list(null, "required") as Array).is_empty(), "T28: a null ConfigFile has no dependencies")
+	var low := {"priority": 0, "mod_name": "Zeta", "file_name": "a.zip"}
+	var high := {"priority": 5, "mod_name": "Alpha", "file_name": "b.zip"}
+	_assert(bool(ml._compare_load_order(low, high)), "T28: a lower priority loads first whatever the names")
+	var alpha := {"priority": 0, "mod_name": "alpha", "file_name": "z.zip"}
+	_assert(bool(ml._compare_load_order(alpha, low)), "T28: equal priorities order by mod name, ignoring case")
+	var twin := {"priority": 0, "mod_name": "Alpha", "file_name": "a.zip"}
+	_assert(bool(ml._compare_load_order(twin, alpha)), "T28: equal names order by file name")
+
 # The update check in two pure halves: which installed mods are asked about,
 # and what the site's answers mean. A dev folder, a mod with no version, no
 # source, no readable mod.txt or a host that cannot serve files is skipped;
@@ -1402,7 +1455,7 @@ func _fail(msg: String) -> void:
 func _finish() -> void:
 	_done = true
 	if _failures.is_empty():
-		print("[host] PASS: %d assertion(s) across T1..T26" % _assertions)
+		print("[host] PASS: %d assertion(s) across T1..T28" % _assertions)
 		quit(0)
 		return
 	for m in _failures:
