@@ -22,12 +22,12 @@ func _rtv_is_block_header(trimmed: String) -> bool:
 #       it needs a type-annotation transform that can break strict-typed
 #       references.
 #   (5) `base(args)` -> `super.<method>(args)`, only in a script that gives
-#       `base` no meaning of its own (no `func base`): there a bare base()
-#       call cannot compile, so it is the legacy form.
+#       `base` no meaning of its own or in its parent chain: there a bare
+#       base() call cannot compile, so it is the legacy form.
 # Text inside string literals is never touched, including every line of a
 # triple-quoted block. A script that is valid Godot 4 comes back byte-identical.
 # Source must be LF-normalized by the caller.
-func _rtv_autofix_legacy_syntax(source: String) -> Dictionary:
+func _rtv_autofix_legacy_syntax(source: String, script_path: String = "", archive: ZIPReader = null) -> Dictionary:
 	var lines: PackedStringArray = source.split("\n")
 	var code_lines := _rtv_code_mask(source).split("\n")
 	var out: PackedStringArray = PackedStringArray()
@@ -42,6 +42,8 @@ func _rtv_autofix_legacy_syntax(source: String) -> Dictionary:
 	# Godot 4) can be rewritten to `super.<method>(...)`.
 	var current_method: String = ""
 	var declares_base := _rtv_declares_function(code_lines, "base")
+	if not declares_base and "base" in source:
+		declares_base = _rtv_inherits_base(source, script_path, archive)
 
 	for i in lines.size():
 		var line: String = lines[i]
@@ -246,15 +248,71 @@ func _rtv_code_mask(source: String) -> String:
 			i += 1
 	return out
 
-# True when the script declares a function with this name, at any depth.
+# True when the script itself declares a function with this name.
 func _rtv_declares_function(lines: PackedStringArray, fn_name: String) -> bool:
 	for line in lines:
+		if not _rtv_leading_indent(line).is_empty():
+			continue
 		var text := line.strip_edges()
 		if text.begins_with("static "):
 			text = text.substr(7).strip_edges()
 		if text.begins_with("func " + fn_name) and text.substr(5 + fn_name.length()).strip_edges().begins_with("("):
 			return true
 	return false
+
+# Read parents without compiling them. Unknown or cyclic parents preserve the
+# call: missing source is not evidence that base() is the legacy spelling.
+func _rtv_inherits_base(source: String, script_path: String, archive: ZIPReader) -> bool:
+	var visited: Dictionary = {}
+	while true:
+		var lines := source.split("\n")
+		var code := _rtv_code_mask(source).split("\n")
+		var parent_spec := ""
+		for i in code.size():
+			if code[i].begins_with("extends "):
+				parent_spec = lines[i].substr(8).strip_edges()
+				var comment := _rtv_comment_start(parent_spec)
+				if comment >= 0:
+					parent_spec = parent_spec.substr(0, comment).strip_edges()
+				break
+		if parent_spec.is_empty():
+			return false
+		var parent_path := ""
+		if parent_spec.begins_with("\"") or parent_spec.begins_with("'"):
+			var end := _rtv_string_end(parent_spec, 0)
+			if end != parent_spec.length():
+				return true  # An inner class needs its own declaration scope.
+			parent_path = parent_spec.substr(1, end - 2).c_unescape()
+			if not parent_path.is_absolute_path():
+				if script_path.is_empty():
+					return true
+				parent_path = script_path.get_base_dir().path_join(parent_path).simplify_path()
+		else:
+			if ClassDB.class_exists(parent_spec):
+				return ClassDB.class_has_method(parent_spec, "base")
+			for entry in ProjectSettings.get_global_class_list():
+				if str(entry.get("class", "")) == parent_spec:
+					parent_path = str(entry.get("path", ""))
+					break
+		if parent_path.is_empty() or visited.has(parent_path) or visited.size() >= 64:
+			return true
+		visited[parent_path] = true
+		var zip_entry := parent_path.trim_prefix("res://")
+		if archive != null and parent_path.begins_with("res://") and archive.file_exists(zip_entry):
+			source = archive.read_file(zip_entry).get_string_from_utf8()
+		elif parent_path.begins_with("res://Scripts/"):
+			source = _read_vanilla_source(parent_path)
+		elif FileAccess.file_exists(parent_path):
+			source = FileAccess.get_file_as_string(parent_path)
+		else:
+			return true
+		if source.is_empty():
+			return true
+		source = source.replace("\r\n", "\n").replace("\r", "\n")
+		if _rtv_declares_function(_rtv_code_mask(source).split("\n"), "base"):
+			return true
+		script_path = parent_path
+	return true
 
 # Index of the paren matching the one at open_idx, or -1. Tracks string
 # literals so parens inside them don't affect depth.

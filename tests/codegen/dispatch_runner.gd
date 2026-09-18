@@ -792,10 +792,53 @@ func _t23_autofix_leaves_valid_scripts_alone() -> void:
 	_expect(same_fixed.contains(dq + "base(delta) ' # data" + dq + "); super.Hunger(delta)"),
 			"T23", "code after a closed literal is fixed without changing the literal")
 
+	var parent_path := "user://t23_base_parent.gd"
+	var parent := FileAccess.open(parent_path, FileAccess.WRITE)
+	parent.store_string("extends Node\nfunc base(x: int) -> int:\n\treturn x * 2\n")
+	parent.close()
+	var inherited := "extends \"" + parent_path + "\"\nfunc run() -> int:\n\treturn base(3)\n"
+	_expect_eq(str(_ml._rtv_autofix_legacy_syntax(inherited)["source"]), inherited,
+			"T23", "a method inherited from a parent keeps its meaning")
+	var middle_path := "user://t23_base_middle.gd"
+	var middle := FileAccess.open(middle_path, FileAccess.WRITE)
+	middle.store_string("extends \"t23_base_parent.gd\"\n")
+	middle.close()
+	var grandchild := inherited.replace(parent_path, middle_path)
+	_expect_eq(str(_ml._rtv_autofix_legacy_syntax(grandchild)["source"]), grandchild,
+			"T23", "a relative grandparent method keeps its meaning")
+	var unknown := inherited.replace(parent_path, "user://t23_missing_parent.gd")
+	_expect_eq(str(_ml._rtv_autofix_legacy_syntax(unknown)["source"]), unknown,
+			"T23", "an unreadable parent cannot justify changing a call")
+	DirAccess.remove_absolute(parent_path)
+	DirAccess.remove_absolute(middle_path)
+
+	var zip_path := "user://t23_parents.zip"
+	var zip := ZIPPacker.new()
+	zip.open(zip_path)
+	var archived_child := "extends \"parent.gd\"\nfunc run() -> int:\n\treturn base(3)\n"
+	for item in [["T23/parent.gd", "extends Node\nfunc base(x):\n\treturn x * 2\n"], ["T23/child.gd", archived_child]]:
+		zip.start_file(item[0])
+		zip.write_file(str(item[1]).to_utf8_buffer())
+		zip.close_file()
+	zip.close()
+	var saved_sets: Dictionary = _ml.get("_archive_file_sets")
+	var saved_paths: Dictionary = _ml.get("_archive_zip_paths")
+	_ml.set("_archive_file_sets", {"t23.zip": {"res://T23/parent.gd": true, "res://T23/child.gd": true}})
+	_ml.set("_archive_zip_paths", {"t23.zip": zip_path})
+	var siblings: Dictionary = _ml._hook_pack_collect_siblings()
+	_expect_eq(str(siblings["res://T23/child.gd"]["fixed_src"]), archived_child,
+			"T23", "sibling rewriting reads a relative parent from the current archive")
+	_ml.set("_archive_file_sets", saved_sets)
+	_ml.set("_archive_zip_paths", saved_paths)
+	DirAccess.remove_absolute(zip_path)
+
 	# The legacy forms real mods ship are still fixed.
 	var legacy := "tool\nextends \"res://Scripts/Character.gd\"\n\n" \
 			+ "onready var bar = $Bar\nexport var rate = 1.0\n\n" \
 			+ "func Hunger(delta):\n\tbase(delta)\n\tbase().Thirst(delta)\n\tif rate > 2.0:\n\t# nothing yet\n\tpass\n"
+	var character := FileAccess.open("res://Scripts/Character.gd", FileAccess.WRITE)
+	character.store_string("extends Node\nfunc Hunger(_delta):\n\tpass\nfunc Thirst(_delta):\n\tpass\n")
+	character.close()
 	var fixed: Dictionary = _ml._rtv_autofix_legacy_syntax(legacy)
 	var out := str(fixed["source"])
 	_expect(out.begins_with("@tool\n"), "T23", "a leading tool becomes @tool")

@@ -302,7 +302,7 @@ func _hook_pack_collect_siblings() -> Dictionary:
 				if raw_vfs.is_empty():
 					continue
 				var norm_vfs := raw_vfs.replace("\r\n", "\n").replace("\r", "\n")
-				var af_vfs := _rtv_autofix_legacy_syntax(norm_vfs)
+				var af_vfs := _rtv_autofix_legacy_syntax(norm_vfs, p)
 				var fixed_vfs: String = af_vfs["source"]
 				var rl_vfs := _rtv_strip_helper_reload(fixed_vfs)
 				fixed_vfs = rl_vfs["source"]
@@ -323,7 +323,7 @@ func _hook_pack_collect_siblings() -> Dictionary:
 			if raw.is_empty():
 				continue
 			var norm := raw.replace("\r\n", "\n").replace("\r", "\n")
-			var af := _rtv_autofix_legacy_syntax(norm)
+			var af := _rtv_autofix_legacy_syntax(norm, p, zr)
 			var fixed_src: String = af["source"]
 			# Strip redundant .reload() in helpers that also take_over_path.
 			var rl := _rtv_strip_helper_reload(fixed_src)

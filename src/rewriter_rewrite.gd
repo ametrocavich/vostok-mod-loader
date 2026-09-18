@@ -49,7 +49,7 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask
 	var src: String = source.replace("\r\n", "\n").replace("\r", "\n")
 
 	# Repair Godot-3-era syntax first so every downstream step sees valid source.
-	var autofix := _rtv_autofix_legacy_syntax(src)
+	var autofix := _rtv_autofix_legacy_syntax(src, "res://Scripts/" + str(parsed.get("filename", "")))
 	src = autofix["source"]
 	var af_total: int = int(autofix["bodyless"]) + int(autofix["tool"]) \
 			+ int(autofix["onready"]) + int(autofix["export"]) + int(autofix.get("base", 0))
