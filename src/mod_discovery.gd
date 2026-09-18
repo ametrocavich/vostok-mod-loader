@@ -817,12 +817,28 @@ func _refresh_dependency_status() -> Dictionary:
 			entry["dependencies_satisfied"] = blockers.is_empty()
 	return pick
 
-# Returns -1/0/1 for version comparison (a < b, equal, a > b).
+# Returns -1/0/1 for version comparison (a < b, equal, a > b). Dotted numeric
+# components, a leading "v" ignored, "+build" metadata ignored. A "-suffix" is
+# a semver prerelease: it ranks below the same version without one, and two
+# suffixes compare by _compare_prerelease.
 func compare_versions(a: String, b: String) -> int:
 	if a.is_empty() or b.is_empty():
 		return 0 if a == b else (-1 if a.is_empty() else 1)
-	var pa := a.lstrip("vV").split(".")
-	var pb := b.lstrip("vV").split(".")
+	var core_a := a.lstrip("vV").get_slice("+", 0)
+	var core_b := b.lstrip("vV").get_slice("+", 0)
+	var cores := _compare_version_cores(core_a.get_slice("-", 0), core_b.get_slice("-", 0))
+	if cores != 0:
+		return cores
+	var pre_a := core_a.substr(core_a.get_slice("-", 0).length()).lstrip("-")
+	var pre_b := core_b.substr(core_b.get_slice("-", 0).length()).lstrip("-")
+	if pre_a == "" or pre_b == "":
+		return 0 if pre_a == pre_b else (1 if pre_a == "" else -1)
+	return _compare_prerelease(pre_a, pre_b)
+
+# The dotted numeric part of two versions; a missing or non-numeric component is 0.
+func _compare_version_cores(a: String, b: String) -> int:
+	var pa := a.split(".")
+	var pb := b.split(".")
 	var n: int = max(pa.size(), pb.size())
 	for i in n:
 		var sa := pa[i] if i < pa.size() else "0"

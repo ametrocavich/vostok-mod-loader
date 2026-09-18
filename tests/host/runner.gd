@@ -89,6 +89,7 @@ func _run() -> void:
 	_t22_update_check_message(ml)
 	_t23_download_failure_text(ml)
 	_t24_pack_format_version(ml)
+	_t25_version_ordering(ml)
 
 	_finish()
 
@@ -1155,6 +1156,27 @@ func _t24_pack_format_version(ml: Object) -> void:
 	_assert(bool((ml._validate_modpack(current) as Dictionary)["ok"]), "T24: format version 1 validates")
 	_pack_cleanup(ml)
 
+# --- T25: version ordering ---------------------------------------------------------
+
+# compare_versions decides whether the update check offers a file and which of
+# two copies of one mod loads. A prerelease ranks below its own release.
+func _t25_version_ordering(ml: Object) -> void:
+	var cases := [
+		["1.0.0", "1.0.0", 0], ["1.2", "1.10", -1], ["v2.0", "1.9.9", 1], ["1.0", "1.0.0", 0],
+		["1.0.0-beta.1", "1.0.0", -1], ["1.0.0", "1.0.0-rc.2", 1],
+		["1.0.0-beta.2", "1.0.0-beta.10", -1], ["1.0.0-alpha", "1.0.0-beta", -1],
+		["1.0.1-beta.1", "1.0.0", 1], ["1.0.0+build.5", "1.0.0", 0],
+		["", "1.0", -1], ["1.0", "", 1], ["", "", 0],
+	]
+	for c in cases:
+		var got := int(ml.compare_versions(str(c[0]), str(c[1])))
+		_assert(got == int(c[2]), "T25: compare_versions('%s', '%s') is %d (got %d)" % [c[0], c[1], c[2], got])
+	# The update check offers the stable release to a mod installed at its beta.
+	var pending := [{"profile_key": "m@1.0.0-beta.1", "ref": ml.host_ref("vostokmods", "m"), "version": "1.0.0-beta.1", "full_path": "", "mod_name": "M"}]
+	var summary: Dictionary = ml._updates_check_apply(pending, {"vostokmods:m": "1.0.0"})
+	_assert(int(summary["with_updates"]) == 1, "T25: a stable release is an update for its own prerelease (got %s)" % str(summary))
+	(ml.get("_mod_updates_state") as Dictionary).erase("m@1.0.0-beta.1")
+
 # The update check in two pure halves: which installed mods are asked about,
 # and what the site's answers mean. A dev folder, a mod with no version, no
 # source, no readable mod.txt or a host that cannot serve files is skipped;
@@ -1337,7 +1359,7 @@ func _fail(msg: String) -> void:
 func _finish() -> void:
 	_done = true
 	if _failures.is_empty():
-		print("[host] PASS: %d assertion(s) across T1..T24" % _assertions)
+		print("[host] PASS: %d assertion(s) across T1..T25" % _assertions)
 		quit(0)
 		return
 	for m in _failures:

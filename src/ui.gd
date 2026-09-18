@@ -1499,30 +1499,11 @@ func _check_modloader_update_async() -> void:
 	if page.begins_with("https://github.com/"):
 		_modloader_release_url = page
 	_modloader_latest_version = latest
-	# Exact match first: a running prerelease that is the latest release has
-	# nothing to update to; the base-version compare below would flag it.
-	if latest == MODLOADER_VERSION:
+	# compare_versions follows semver on prereleases: a stable release
+	# supersedes a prerelease of the same version, and between two prereleases
+	# only a strictly higher one is an update.
+	if compare_versions(latest, MODLOADER_VERSION) <= 0:
 		return
-	# Prerelease-aware gate. compare_versions() reads "3.3.0-beta.1" as 3.3.0.1,
-	# ranking it above the "3.3.0" stable and above an older beta. Semver: a
-	# prerelease precedes its release. Compare base versions first, then break
-	# equal-base ties on the prerelease tails: a stable supersedes any same-base
-	# prerelease; between two prereleases only a strictly higher one is an
-	# update. No-op on stable builds (no "-" in MODLOADER_VERSION).
-	var installed_base := MODLOADER_VERSION.split("-")[0]
-	var latest_base := latest.split("-")[0]
-	var base_cmp := compare_versions(latest_base, installed_base)
-	if base_cmp < 0:
-		return  # installed base is newer
-	if base_cmp == 0:
-		var installed_pre := MODLOADER_VERSION.substr(installed_base.length()).lstrip("-")
-		var latest_pre := latest.substr(latest_base.length()).lstrip("-")
-		if installed_pre == "":
-			return  # installed is the stable base; a same-base prerelease is not an upgrade
-		if latest_pre == "":
-			pass  # latest is the stable release of our prerelease -> offer it
-		elif _compare_prerelease(latest_pre, installed_pre) <= 0:
-			return  # latest prerelease is the same as or older than installed
 
 	if is_instance_valid(_ui_update_alert_btn):
 		_ui_update_alert_btn.text = "v%s available -- click to open the release page" % latest
