@@ -29,6 +29,7 @@ func _rtv_is_block_header(trimmed: String) -> bool:
 # Source must be LF-normalized by the caller.
 func _rtv_autofix_legacy_syntax(source: String) -> Dictionary:
 	var lines: PackedStringArray = source.split("\n")
+	var code_lines := _rtv_code_mask(source).split("\n")
 	var out: PackedStringArray = PackedStringArray()
 	var indent_unit := _detect_indent_style(source)
 	var fix_bodyless := 0
@@ -40,28 +41,22 @@ func _rtv_autofix_legacy_syntax(source: String) -> Dictionary:
 	# Track the enclosing method so Godot 3's `base(...)` (invalid in
 	# Godot 4) can be rewritten to `super.<method>(...)`.
 	var current_method: String = ""
-	var method_line_indent: String = ""
-	var declares_base := _rtv_declares_function(lines, "base")
-	# Lines inside a triple-quoted string are data: no rewrite, no header check.
-	var in_block_string := false
+	var declares_base := _rtv_declares_function(code_lines, "base")
 
 	for i in lines.size():
 		var line: String = lines[i]
-		var starts_in_string := in_block_string
-		if _rtv_toggles_block_string(line):
-			in_block_string = not in_block_string
-		if starts_in_string:
+		var code: String = code_lines[i]
+		if code.strip_edges().is_empty():
 			out.append(line)
 			continue
 
 		var lead := _rtv_leading_indent(line)
 		if lead.is_empty() and not line.strip_edges().is_empty():
-			var stripped_top := line.strip_edges()
+			var stripped_top := code.strip_edges()
 			if stripped_top.begins_with("func "):
 				var open_paren := stripped_top.find("(")
 				if open_paren > 5:
 					current_method = stripped_top.substr(5, open_paren - 5).strip_edges()
-					method_line_indent = ""
 			elif stripped_top.begins_with("static func ") or stripped_top.begins_with("@"):
 				# Static funcs and annotations don't open a "self" method
 				# where base() would resolve.
@@ -70,27 +65,28 @@ func _rtv_autofix_legacy_syntax(source: String) -> Dictionary:
 				current_method = ""
 
 		if not declares_base and not current_method.is_empty() and "base" in line:
-			var rewritten := _rtv_rewrite_bare_base(line, current_method)
+			var rewritten := _rtv_rewrite_bare_base(line, current_method, code)
 			if rewritten != line:
 				line = rewritten
 				fix_base += 1
 
 		lead = _rtv_leading_indent(line)
 		var body_text := line.substr(lead.length())
-		if i == 0 and body_text.strip_edges() == "tool":
+		var code_body := code.substr(lead.length())
+		if i == 0 and code_body.strip_edges() == "tool":
 			line = lead + "@tool"
 			fix_tool += 1
-		elif body_text.begins_with("onready var "):
+		elif code_body.begins_with("onready var "):
 			line = lead + "@onready var " + body_text.substr(12)  # len("onready var ")
 			fix_onready += 1
-		elif body_text.begins_with("export var "):
+		elif code_body.begins_with("export var "):
 			line = lead + "@export var " + body_text.substr(11)  # len("export var ")
 			fix_export += 1
 
 		out.append(line)
 
-		# Bodyless-block detection on post-annotation line.
-		var trimmed := line.strip_edges()
+		# Strings and comments cannot supply a block header.
+		var trimmed := code.strip_edges()
 		if not _rtv_is_block_header(trimmed):
 			continue
 		var header_indent := _rtv_leading_indent(line)
@@ -98,7 +94,7 @@ func _rtv_autofix_legacy_syntax(source: String) -> Dictionary:
 		var has_body := false
 		while j < lines.size():
 			var next_line: String = lines[j]
-			var next_trimmed := next_line.strip_edges()
+			var next_trimmed := code_lines[j].strip_edges()
 			if next_trimmed.is_empty():
 				j += 1
 				continue
@@ -130,19 +126,11 @@ func _rtv_autofix_legacy_syntax(source: String) -> Dictionary:
 # wrote `base().Foo(x)`. A plain substitution would chain .Foo(x) onto the
 # void return of the super call, so `base().<chained>(...)` is rewritten
 # to `super.<chained>(...)` instead.
-func _rtv_rewrite_bare_base(line: String, method_name: String) -> String:
-	var comment_start := _rtv_comment_start(line)
-	var head: String = line if comment_start < 0 else line.substr(0, comment_start)
-	var tail: String = "" if comment_start < 0 else line.substr(comment_start)
+func _rtv_rewrite_bare_base(line: String, method_name: String, code: String = "") -> String:
+	var head := _rtv_code_mask(line) if code.is_empty() else code
 	var i := 0
 	var rewritten := ""
 	while i < head.length():
-		# A string literal is copied through whole.
-		if head[i] == "\"" or head[i] == "'":
-			var literal_end := _rtv_string_end(head, i)
-			rewritten += head.substr(i, literal_end - i)
-			i = literal_end
-			continue
 		if i + 4 <= head.length() and head.substr(i, 4) == "base":
 			var prev_ok := true
 			if i > 0:
@@ -183,9 +171,9 @@ func _rtv_rewrite_bare_base(line: String, method_name: String) -> String:
 				rewritten += "super." + method_name
 				i += 4
 				continue
-		rewritten += head[i]
+		rewritten += line[i]
 		i += 1
-	return rewritten + tail
+	return rewritten
 
 # Index just past the string literal that opens at `start`, or the end of the
 # text when it never closes on this line.
@@ -214,10 +202,49 @@ func _rtv_comment_start(line: String) -> int:
 		i += 1
 	return -1
 
-# True when the line opens or closes a triple-quoted string: an odd number
-# of triple quotes of either kind.
-func _rtv_toggles_block_string(line: String) -> bool:
-	return (line.count("\"".repeat(3)) + line.count("'".repeat(3))) % 2 == 1
+# Hide literal contents and comments while preserving character positions,
+# newlines and quote delimiters. Only a matching, unescaped quote closes a
+# literal; comment text never opens one.
+func _rtv_code_mask(source: String) -> String:
+	var out := ""
+	var quote := ""
+	var comment := false
+	var i := 0
+	while i < source.length():
+		var c := source[i]
+		if c == "\n":
+			out += c
+			comment = false
+			i += 1
+			continue
+		if comment:
+			out += " "
+			i += 1
+			continue
+		if not quote.is_empty():
+			if c == "\\" and i + 1 < source.length():
+				out += " " + ("\n" if source[i + 1] == "\n" else " ")
+				i += 2
+			elif source.substr(i, quote.length()) == quote:
+				out += quote
+				i += quote.length()
+				quote = ""
+			else:
+				out += " "
+				i += 1
+			continue
+		if c == "#":
+			comment = true
+			out += " "
+			i += 1
+		elif c == "\"" or c == "'":
+			quote = c.repeat(3) if source.substr(i, 3) == c.repeat(3) else c
+			out += quote
+			i += quote.length()
+		else:
+			out += c
+			i += 1
+	return out
 
 # True when the script declares a function with this name, at any depth.
 func _rtv_declares_function(lines: PackedStringArray, fn_name: String) -> bool:

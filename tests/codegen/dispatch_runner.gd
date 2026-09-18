@@ -776,6 +776,22 @@ func _t23_autofix_leaves_valid_scripts_alone() -> void:
 	_expect(str(mixed["source"]).contains("print(\"base(delta) is gone\")") and str(mixed["source"]).contains("\tsuper.Hunger(delta)"),
 			"T23", "base() is rewritten in code and left alone inside a string on the line before (got %s)" % str(mixed["source"]))
 
+	var dq := "\"".repeat(3)
+	var sq := "'".repeat(3)
+	var comment := "extends Node\n# " + dq + " is only a comment\nonready var bar = $Bar\n"
+	var comment_fixed: Dictionary = _ml._rtv_autofix_legacy_syntax(comment)
+	_expect_eq(int(comment_fixed["onready"]), 1, "T23", "comment quotes do not hide later code")
+	var mixed_quotes := "extends Node\nconst HELP = " + dq + "\n" + sq + "\nif example:\n" + dq + "\n"
+	_expect_eq(str(_ml._rtv_autofix_legacy_syntax(mixed_quotes)["source"]), mixed_quotes,
+			"T23", "opposite triple quotes inside a literal are data")
+	var fake_func := "extends Node\nconst HELP = " + dq + "\nfunc base():\n" + dq + "\nfunc Hunger(delta):\n\tbase(delta)\n"
+	_expect_eq(int(_ml._rtv_autofix_legacy_syntax(fake_func)["base"]), 1,
+			"T23", "a declaration in a literal does not define a method")
+	var same_line := "extends Node\nfunc Hunger(delta):\n\tprint(" + dq + "base(delta) ' # data" + dq + "); base(delta)\n"
+	var same_fixed := str(_ml._rtv_autofix_legacy_syntax(same_line)["source"])
+	_expect(same_fixed.contains(dq + "base(delta) ' # data" + dq + "); super.Hunger(delta)"),
+			"T23", "code after a closed literal is fixed without changing the literal")
+
 	# The legacy forms real mods ship are still fixed.
 	var legacy := "tool\nextends \"res://Scripts/Character.gd\"\n\n" \
 			+ "onready var bar = $Bar\nexport var rate = 1.0\n\n" \
