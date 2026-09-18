@@ -62,8 +62,9 @@
 #
 # This NEVER opens a window and NEVER touches the game install: --headless
 # only, against the throwaway project. If the decompiled vanilla source is
-# not present on this machine the harness SKIPS (exit 0) with a banner, so
-# check.sh still works for contributors without it.
+# not present on this machine the ten vanilla fixtures are left out and the
+# three synthetic ones still run (--prove included), so contributors and CI
+# compile the rewriter's output without the game files.
 
 set -uo pipefail
 cd "$(dirname "$0")"
@@ -97,14 +98,15 @@ fi
 
 # Decompiled vanilla game source (plain .gd) -- the input corpus.
 VANILLA_SRC="${VANILLA_SRC:-/c/Users/ametr/Documents/Road to Vostok}"
+# Without the decompiled game source the ten vanilla fixtures cannot run. The
+# three synthetic fixtures need nothing but the engine, so they still do: the
+# rewriter's output gets compiled on every machine, CI included.
+SYNTHETIC_ONLY=0
 if [[ ! -d "$VANILLA_SRC/Scripts" ]]; then
-    echo "SKIPPED: codegen compile harness needs the decompiled vanilla source at:"
-    echo "         $VANILLA_SRC/Scripts  (override with VANILLA_SRC=...)"
-    echo "         Machines without it skip this check; the template grep invariants"
-    echo "         in check.sh still apply."
-    exit 0
-fi
-if [[ ! -f "$VANILLA_SRC/.godot/global_script_class_cache.cfg" ]]; then
+    SYNTHETIC_ONLY=1
+    echo "NOTE: no decompiled vanilla source at $VANILLA_SRC/Scripts"
+    echo "      (override with VANILLA_SRC=...); running the synthetic fixtures only."
+elif [[ ! -f "$VANILLA_SRC/.godot/global_script_class_cache.cfg" ]]; then
     echo "ERROR: $VANILLA_SRC/.godot/global_script_class_cache.cfg missing -- the" >&2
     echo "       harness reuses the game's own class_name cache verbatim." >&2
     exit 1
@@ -118,8 +120,13 @@ WORK="${TMPDIR:-/tmp}/modloader-codegen-check"
 rm -rf "$WORK"
 mkdir -p "$WORK/Scripts" "$WORK/.godot" "$WORK/callers"
 
-cp "$VANILLA_SRC"/Scripts/*.gd "$WORK/Scripts/"
-cp "$VANILLA_SRC/.godot/global_script_class_cache.cfg" "$WORK/.godot/"
+if [[ $SYNTHETIC_ONLY -eq 0 ]]; then
+    cp "$VANILLA_SRC"/Scripts/*.gd "$WORK/Scripts/"
+    cp "$VANILLA_SRC/.godot/global_script_class_cache.cfg" "$WORK/.godot/"
+else
+    # The runner reads this marker and leaves the vanilla fixtures out.
+    : > "$WORK/synthetic_only"
+fi
 cp tests/codegen/Fixture*.gd "$WORK/Scripts/"
 cp tests/codegen/runner.gd "$WORK/runner.gd"
 
@@ -133,6 +140,9 @@ config_version=5
 [application]
 
 config/name="modloader-codegen-check"
+EOF
+if [[ $SYNTHETIC_ONLY -eq 0 ]]; then
+    cat >> "$WORK/project.godot" <<'EOF'
 
 [autoload]
 
@@ -140,6 +150,7 @@ Loader="*res://Scripts/Loader.gd"
 Database="*res://Scripts/Database.gd"
 Simulation="*res://Scripts/Simulation.gd"
 EOF
+fi
 
 # Stub every preload() target so pristine vanilla compiles. The corpus only
 # preloads .tres and .tscn (both representable as text); anything else is a
@@ -213,7 +224,11 @@ if [[ $PROVE -eq 1 ]]; then
 fi
 
 if [[ $status -eq 0 ]]; then
-    echo "OK: codegen harness passed in ${elapsed}s (full log: $WORK/run.log)"
+    if [[ $SYNTHETIC_ONLY -eq 1 ]]; then
+        echo "OK: codegen harness passed in ${elapsed}s, synthetic fixtures only (full log: $WORK/run.log)"
+    else
+        echo "OK: codegen harness passed in ${elapsed}s (full log: $WORK/run.log)"
+    fi
 else
     echo "FAILED: codegen harness (exit $status, ${elapsed}s). Full log: $WORK/run.log" >&2
 fi

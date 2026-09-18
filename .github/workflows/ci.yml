@@ -57,9 +57,9 @@ jobs:
           ./build.sh
 
       # The gate. check.sh parses the built file with --check-only and then runs
-      # the harnesses. Harnesses that need the decompiled RTV corpus skip
-      # themselves with a banner rather than failing, so this is meaningful
-      # without shipping game files into CI.
+      # the harnesses. The codegen harness leaves out the fixtures that need
+      # the decompiled RTV corpus and still compiles its synthetic ones, so
+      # this is meaningful without shipping game files into CI.
       - name: Parse-check and run harnesses
         env:
           GODOT: /home/runner/godot/godot

@@ -92,6 +92,7 @@ var _saw_void := false
 var _saw_coroutine := false
 var _saw_defaults := false
 var _saw_validateshelter := false
+var _fixtures_run := 0
 
 func _process(_delta: float) -> bool:
 	if _done:
@@ -119,8 +120,14 @@ func _run() -> void:
 		ml.free()
 		_finish(t0)
 		return
+	# check_codegen.sh leaves this marker when the decompiled game source is
+	# absent; the synthetic fixtures need nothing but the engine.
+	var synthetic_only := FileAccess.file_exists("res://synthetic_only")
 	for fx in FIXTURES:
+		if synthetic_only and not str(fx["file"]).begins_with("Fixture"):
+			continue
 		_check_fixture(ml, fx)
+		_fixtures_run += 1
 	ml.free()
 	if not _saw_sync_value:
 		_fail("coverage", "no fixture exercised a synchronous value-returning method")
@@ -130,14 +137,14 @@ func _run() -> void:
 		_fail("coverage", "no fixture exercised a coroutine method")
 	if not _saw_defaults:
 		_fail("coverage", "no fixture exercised default parameter values")
-	if not _saw_validateshelter:
+	if not synthetic_only and not _saw_validateshelter:
 		_fail("coverage", "Loader.gd::ValidateShelter (the known-good 3.3.0 fixture) was not checked")
 	_finish(t0)
 
 func _finish(t0: int) -> void:
 	var ms := Time.get_ticks_msec() - t0
 	if _failures.is_empty():
-		print("[codegen] PASS: %d fixture(s), all rewritten outputs + caller stubs compile (%d ms in-engine)" % [FIXTURES.size(), ms])
+		print("[codegen] PASS: %d fixture(s), all rewritten outputs + caller stubs compile (%d ms in-engine)" % [_fixtures_run, ms])
 		quit(0)
 	else:
 		printerr("[codegen] FAILED: %d problem(s) (%d ms in-engine); first: %s" % [_failures.size(), ms, _failures[0]])
