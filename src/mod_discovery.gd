@@ -1058,14 +1058,16 @@ func replace_mod_from_ref(target_path: String, ref: Dictionary) -> Dictionary:
 
 	var temp_path   := target_path + ".download"
 	var backup_path := target_path + ".bak"
-	if FileAccess.file_exists(backup_path):
-		DirAccess.remove_absolute(backup_path)
 	var dl := await _http_download_to_temp(provider, str(file["download_url"]),
 			_host_download_headers(file), temp_path)
 	if not dl["ok"]:
 		failure["error"] = dl["error"]
 		return failure
 	var headers: PackedStringArray = dl["headers"]
+	# A .bak left by an interrupted update goes only now: until the new
+	# download has landed it may be the one copy of the old archive.
+	if FileAccess.file_exists(backup_path):
+		DirAccess.remove_absolute(backup_path)
 
 	var new_cfg: ConfigFile = read_mod_config(temp_path)["cfg"]
 	if new_cfg == null:
