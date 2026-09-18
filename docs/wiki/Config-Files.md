@@ -66,7 +66,7 @@ Godot's `ConfigFile` writes a blank line after every section header, quotes Stri
 
 | Section | Meaning |
 |---|---|
-| `[settings]` | `active_profile`: the selected profile. `developer_mode`: enables dev-only UI (folder mods, conflict report, extra diagnostics). `ui_scale`: launcher zoom, 1.0 to 2.0. `active_modpack`, `modpack_backup_profile`, `modpack_backup_valid`: modpack state, see below. `test_pack_precedence`: developer test flag for the static-init mount canary; leave it unset. |
+| `[settings]` | `active_profile`: the selected profile. `developer_mode`: enables dev-only UI (folder mods, conflict report, extra diagnostics). `ui_scale`: launcher zoom, 1.0 to 2.0. `browse_source`: the site the Browse tab last showed. `active_modpack`, `modpack_backup_profile`, `modpack_backup_valid`: modpack state, see below. `test_pack_precedence`: developer test flag for the static-init mount canary; leave it unset. |
 | `[profile.<name>.enabled]` | `profile_key -> true\|false`. The list you see checked in the UI under that profile. One section per named profile. |
 | `[profile.<name>.priority]` | `profile_key -> int` in `[-999, 999]`. A higher number loads later and wins file conflicts. |
 | `[profile.<name>.dep_ignore]` | `profile_key -> true`. The "Load anyway" dependency overrides for that profile. Sparse: only mods you told to load past a missing or disabled requirement appear, always as `=true`. |
@@ -164,8 +164,8 @@ hook_pack_wrapped_paths=PackedStringArray("res://Scripts/Menu.gd")
 | `pck_stamp` | The game `.pck`'s modification time and size at write. A change wipes the state the same way: a content patch can replace the `.pck` and leave the `.exe` untouched. |
 | `timestamp` | Unix epoch seconds when Pass 1 wrote the file. Informational. |
 | `restart_count` | Pass-2 restart counter. Max 2; cleared after a clean boot. Stops infinite restart loops. |
-| `mods_hash` | Content hash of the enabled mod list. Unchanged hash + matching state = skip hook pack regeneration. |
-| `script_overrides` | Dynamic `overrideScript()` targets declared by mods, used by the dev-mode conflict report. `[]` on most installs. |
+| `mods_hash` | Hash of the enabled archives in load order, their modification times and each enabled mod's version. When Pass 1 computes the same hash and static init already mounted that set, the restart is skipped; the hook pack is still regenerated. |
+| `script_overrides` | The `[script_extend]` / `[script_overrides]` declarations Pass 1 collected, as `{vanilla_path, mod_script_path, mod_name, priority}` records. Pass 2 replays them before hook generation. `[]` on most installs. |
 | `hook_pack_path` | `user://modloader_hooks/framework_pack_<millis>.zip` to mount at static init next boot. A fresh filename per generation sidesteps Godot's `load_resource_pack` path dedup. |
 | `hook_pack_wrapped_paths` | The `res://Scripts/<Name>.gd` paths in the pack that static init force-compiles with `CACHE_MODE_IGNORE`. Scripts with a module-scope scene preload are left off the list and compile lazily from the pack. Often just `["res://Scripts/Menu.gd"]` for loadouts that only use the core hook. |
 
@@ -175,7 +175,7 @@ Safe to delete. Next launch rebuilds it at the cost of a slower cold boot (the h
 
 This file lives in the game's install directory (next to the `.exe`), not `user://`. Godot reads it at engine startup to override `project.godot` autoload entries.
 
-The loader writes it during Pass 1 and restores it to a clean single-entry state after Pass 2 completes. Shape during an active mod session:
+The loader writes it during Pass 1, before the restart, and leaves it in place: the next launch needs the same entries at engine startup. It goes back to the clean single-entry state when there is nothing left to load, on a loader or game update, on a crashed Pass 2, and through the sentinel files below. Shape during an active mod session:
 
 ```ini
 [autoload_prepend]
@@ -183,8 +183,9 @@ SomeModEarly="*res://SomeMod/Early.gd"
 ModLoader="*res://modloader.gd"
 
 [autoload]
-SomeModRegular="*res://SomeMod/Main.gd"
 ```
+
+Only `!`-prefixed early autoloads are written here. A mod's regular `[autoload]` entries are not: the loader instantiates those itself in Pass 2, and `[autoload]` stays empty.
 
 Clean state (no mods queued):
 ```ini
@@ -196,7 +197,7 @@ ModLoader="*res://modloader.gd"
 
 `[autoload_prepend]` entries load before the game's built-in autoloads. ModLoader is always the last entry in `[autoload_prepend]` because Godot loads that section in reverse order (last listed = first loaded). Sections other than the two autoload ones are preserved across rewrites. See [Architecture](Architecture).
 
-Editing this file by hand is risky. If you corrupt it, the game fails to load autoloads and boots to a black screen. If that happens, delete it: Godot boots vanilla with no autoloads, and the loader regenerates a clean copy the next time you launch through Steam.
+Editing this file by hand is risky. If you corrupt it, the game fails to load autoloads and boots to a black screen. If that happens, replace its contents with the clean state above. Deleting it is not a fix: `override.cfg` is what loads the mod loader, so without it the game runs vanilla and the loader never starts to write a new one. Copy a fresh `override.cfg` from the release, or run the installer again.
 
 ## Sentinel files. Escape hatches
 
@@ -222,7 +223,7 @@ Everything here is regenerated on demand:
 | `user://modloader_hooks/vanilla/` | Cached vanilla script source, decoded from the game's own `.pck` (never from a mounted mod), wiped on a game update. Two stamp files sit at its root: `format` names the cache layout and `build` names the game `.pck` the text was read from. A mismatch on either rebuilds the cache. Speeds up later hook-pack generation. |
 | `user://vmz_mount_cache/` | `.vmz -> .zip` copies so Godot's `load_resource_pack` can mount them, plus `.zip.src` sidecars naming the source. |
 | `user://modloader_early/` | Extracted copies of `!`-prefixed early-autoload scripts that live inside archives. |
-| `user://modloader_heartbeat.txt` | Crash-detection sentinel. Written each launch, deleted at clean boot. Present on the next launch = the previous session crashed. |
+| `user://modloader_heartbeat.txt` | Crash-detection sentinel. Written right before the Pass 1 to Pass 2 restart and deleted by every finish path. Present on the next launch = the previous launch died in between. |
 | `user://modloader_pass2_dirty` | Pass-2-in-progress marker. Present on the next launch = Pass 2 was interrupted (crash, force-quit). Next launch wipes state and retries. |
 | `user://modloader_crash_streak` | Count of consecutive crashed two-pass restarts. At 2 the loader refuses the two-pass restart and finishes in a single pass instead: mods that can load still load, and the launcher stays reachable so you can disable the one that crashes. Cleared by a clean boot. |
 | `user://modloader_conflicts.txt` | Developer mode only. The conflict report (which mods claim the same `res://` paths). |
