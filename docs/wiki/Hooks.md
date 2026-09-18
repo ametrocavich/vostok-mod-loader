@@ -61,7 +61,7 @@ That is the whole mod. The scanner sees `.hook("controller-jump-pre", ...)`, res
 Two rules keep you out of trouble:
 
 1. Hook names must be a literal string, fully lowercase. A name built at runtime (concatenation, variable) registers fine but never fires, because the scanner can only enroll literal strings (see [Wrap surface](#wrap-surface----why-hook-alone-is-not-enough)). A mixed-case name enrolls the wrap, but the runtime key never matches; write it lowercase.
-2. Register from `_ready` or later using the readiness pattern above. Calling `hook()` from `_ready` directly also works (the API exists before mod autoloads run). Waiting for `frameworks_ready` also guarantees every other mod's autoload has finished, which you need for peer integration (`has_mod`) and registry-backed state. `await Engine.get_meta("RTVModLib").frameworks_ready` does the same job.
+2. Register from `_ready` or later using the readiness pattern above. Calling `hook()` from `_ready` directly also works: the loader registers the `RTVModLib` meta before any mod autoload's `_ready` runs, `!`-prefixed early autoloads included. An early autoload's `_init` runs before that, so reach the loader there through the `ModLoader` singleton instead. Waiting for `frameworks_ready` also guarantees every other mod's autoload has finished, which you need for peer integration (`has_mod`) and registry-backed state. `await Engine.get_meta("RTVModLib").frameworks_ready` does the same job.
 
 Working from an unpacked folder in [Developer Mode](Developer-Mode)? Use the same layout and the same `mod.txt`. A folder's contents mount at `res://` exactly like the zip you will ship, so `mods/BigJump/` holds `mod.txt` and `BigJump/Main.gd`, and no paths change when you zip it up.
 

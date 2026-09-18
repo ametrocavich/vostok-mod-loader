@@ -159,6 +159,7 @@ func _run() -> void:
 	_t14_state_hash_follows_load_order()
 	_t15_state_hash_reads_an_unquoted_version()
 	_t16_early_hooks_survive_load_all_mods()
+	_t17_modlib_meta_registers_once()
 
 	_finish()
 
@@ -675,6 +676,36 @@ func _t16_early_hooks_survive_load_all_mods() -> void:
 	_ml.unhook(hook_id)
 	mask.erase("res://Scripts/Controller.gd")
 
+# --- T17: the RTVModLib meta is registered once, by the loader ----------------
+
+# The meta is registered before the launcher opens so an early autoload's
+# _ready finds it, and every boot path registers it again on the way out.
+# Registering twice is silent; finding another object there is reported.
+func _t17_modlib_meta_registers_once() -> void:
+	if Engine.has_meta("RTVModLib"):
+		Engine.remove_meta("RTVModLib")
+	var lines: Array = _ml.get("_report_lines")
+	lines.clear()
+	_ml._register_rtv_modlib_meta()
+	_assert(Engine.has_meta("RTVModLib") and Engine.get_meta("RTVModLib") == _ml, "T17: the loader registers itself")
+	_ml._register_rtv_modlib_meta()
+	var complained := false
+	for line in lines:
+		if str(line).contains("already set"):
+			complained = true
+	_assert(not complained, "T17: registering again is silent when the meta is the loader itself")
+	var stranger := RefCounted.new()
+	Engine.set_meta("RTVModLib", stranger)
+	_ml._register_rtv_modlib_meta()
+	complained = false
+	for line in lines:
+		if str(line).contains("already set"):
+			complained = true
+	_assert(complained and Engine.get_meta("RTVModLib") == stranger,
+			"T17: another object under the meta is reported and left alone")
+	Engine.remove_meta("RTVModLib")
+	lines.clear()
+
 # --- T9: Pass 2 keeps the applied-override map through load_all_mods --------
 
 # Pass 2 applies [script_extend] / [script_overrides] from pass state before
@@ -966,7 +997,7 @@ func _cleanup_exe_cfg() -> void:
 func _finish() -> void:
 	_cleanup_exe_cfg()
 	if _failures.is_empty():
-		print("[boot-state] PASS: %d assertion(s) across T1..T16" % _assertions)
+		print("[boot-state] PASS: %d assertion(s) across T1..T17" % _assertions)
 		quit(0)
 		return
 	for m in _failures:

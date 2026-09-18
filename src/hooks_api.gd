@@ -34,9 +34,12 @@ static func minor_version() -> int:
 static func patch_version() -> int:
 	return int(MODLOADER_VERSION.split(".")[2])
 
+# Called before the launcher opens and again by every boot path; the second
+# call finds the loader itself and does nothing.
 func _register_rtv_modlib_meta() -> void:
 	if Engine.has_meta("RTVModLib"):
-		_log_warning("[RTVModLib] Engine.meta 'RTVModLib' already set -- not overwriting")
+		if Engine.get_meta("RTVModLib") != self:
+			_log_warning("[RTVModLib] Engine.meta 'RTVModLib' already set -- not overwriting")
 		return
 	Engine.set_meta("RTVModLib", self)
 	_log_info("[RTVModLib] modloader registered as Engine.meta('RTVModLib')")

@@ -18,6 +18,9 @@ func _ready() -> void:
 		else:
 			print("[ModLoader] disabled via sentinel file -- sitting idle")
 		return
+	# Before the first await: the engine runs the `!` early autoloads' _ready
+	# while this one is suspended, and they look the API up through this meta.
+	_register_rtv_modlib_meta()
 	await get_tree().process_frame
 	# Once per launch; both passes and the test scaffolding read the regexes.
 	_compile_regex()
