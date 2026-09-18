@@ -56,6 +56,8 @@
 ##   T15 registry scenes: remove() refuses an id that carries an override
 ##   T16 registry items and scene_paths: a patch made before an override is
 ##       reverted onto the object it changed
+##   T17 registry scene_paths: get_entry returns an override, and a patch
+##       cannot point a scene at a file that does not exist
 extends SceneTree
 
 const FIXTURE_PATH := "res://Scripts/FixtureDispatch.gd"
@@ -101,7 +103,7 @@ func _finish() -> void:
 	_done = true
 	var ms := Time.get_ticks_msec() - _t0
 	if _failures.is_empty():
-		print("[dispatch] PASS: %d assertion(s) across T1..T16, %d frame(s), %d ms in-engine" % [_checks, _frames, ms])
+		print("[dispatch] PASS: %d assertion(s) across T1..T17, %d frame(s), %d ms in-engine" % [_checks, _frames, ms])
 		quit(0)
 	else:
 		printerr("[dispatch] FAILED: %d of %d assertion(s) (%d ms in-engine); first: %s" % [_failures.size(), _checks, ms, _failures[0]])
@@ -238,6 +240,7 @@ func _run_tests() -> void:
 	_t14_input_action_comes_back_whole()
 	_t15_scene_override_blocks_remove()
 	_t16_revert_reaches_the_patched_object()
+	_t17_scene_path_reads_and_checks()
 
 func _t1_pre() -> void:
 	var id: int = _lib.hook("fixturedispatch-add-pre", func(x, y): _log.append("pre:add:%d:%d" % [x, y]))
@@ -624,3 +627,22 @@ func _t16_revert_reaches_the_patched_object() -> void:
 	var registered: Dictionary = _fake_loader.get("_rtv_mod_scene_paths").get("rtv_test_path", {})
 	_expect_eq(registered.get("shelter"), false, "T16", "the registered scene path has its own flag back")
 	_lib.remove("scene_paths", "rtv_test_path")
+
+func _t17_scene_path_reads_and_checks() -> void:
+	_registry_tree()
+	var path := "res://Scripts/FixtureDispatch.gd"
+	_expect(_lib.register("scene_paths", "rtv_test_read", {"path": path}), "T17", "register succeeds")
+	_expect(_lib.override("scene_paths", "rtv_test_read", {"path": path, "menu": true}), "T17", "override succeeds")
+	var entry = _lib.get_entry("scene_paths", "rtv_test_read")
+	_expect(entry is Dictionary and bool((entry as Dictionary).get("menu", false)), "T17",
+			"get_entry returns the override, which is what the game loads (got %s)" % str(entry))
+	_expect(_lib.override("scene_paths", "Cabin", {"path": path, "menu": true}), "T17", "override of a vanilla scene name succeeds")
+	entry = _lib.get_entry("scene_paths", "Cabin")
+	_expect(entry is Dictionary and bool((entry as Dictionary).get("menu", false)), "T17", "get_entry sees an override of a vanilla name")
+	_expect(not _lib.patch("scene_paths", "Cabin", {"path": "res://Scenes/NoSuchScene.tscn"}), "T17",
+			"a patch cannot point a scene path at a file that does not exist")
+	_expect_eq((_fake_loader.get("_rtv_override_scene_paths")["Cabin"] as Dictionary).get("path"), path, "T17", "the refused patch changed nothing")
+	_expect(_lib.patch("scene_paths", "Cabin", {"path": path, "tutorial": true}), "T17", "a patch to an existing file still applies")
+	_lib.revert("scene_paths", "Cabin")
+	_lib.revert("scene_paths", "rtv_test_read")
+	_lib.remove("scene_paths", "rtv_test_read")

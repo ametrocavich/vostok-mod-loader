@@ -40,11 +40,20 @@ func _vanilla_scene_const_exists(ldr: Node, id: String) -> bool:
 func _scene_path_exists(verb: String, kind: String, id: String, path: String) -> bool:
 	if ResourceLoader.exists(path):
 		return true
-	push_warning("[Registry] %s('%s', '%s'): scene '%s' does not exist -- not registered. A missing scene freezes the loading screen with no way back to the menu, so this is refused rather than deferred to runtime. Check the path and that the file shipped in your mod archive." \
+	push_warning("[Registry] %s('%s', '%s'): scene '%s' does not exist -- refused. A missing scene freezes the loading screen with no way back to the menu, so this is refused rather than deferred to runtime. Check the path and that the file shipped in your mod archive." \
 			% [verb, kind, id, path])
 	return false
 
 # -------- scene_paths --------
+
+# What get_entry returns: the override when there is one, since that is the
+# entry Loader.LoadScene reads, then the mod registration, else null.
+func _lookup_scene_path(id: String) -> Variant:
+	var ldr = get_tree().root.get_node_or_null("Loader")
+	if ldr != null and "_rtv_override_scene_paths" in ldr and ldr._rtv_override_scene_paths.has(id):
+		return ldr._rtv_override_scene_paths[id]
+	var reg: Dictionary = _registry_registered.get("scene_paths", {})
+	return reg.get(id)
 
 func _register_scene_path(id: String, data: Variant) -> bool:
 	if not (data is Dictionary):
@@ -135,6 +144,14 @@ func _patch_scene_path(id: String, fields: Dictionary) -> bool:
 	else:
 		push_warning("[Registry] patch('scene_paths', '%s'): no mod registration or override to patch" % id)
 		return false
+	# The same refusal register and override make: a path that does not
+	# resolve freezes the loading screen.
+	if fields.has("path"):
+		if not (fields["path"] is String):
+			push_warning("[Registry] patch('scene_paths', '%s'): 'path' must be a String" % id)
+			return false
+		if not _scene_path_exists("patch", "scene_paths", id, fields["path"]):
+			return false
 	var patched: Dictionary = _registry_patched.get("scene_paths", {})
 	var stash: Dictionary = patched.get(id, {})
 	for field in fields.keys():

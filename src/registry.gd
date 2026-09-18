@@ -671,8 +671,7 @@ func get_entry(registry: String, id: String) -> Variant:
 			var reg: Dictionary = _registry_registered.get("inputs", {})
 			return reg.get(id)
 		"scene_paths":
-			var reg: Dictionary = _registry_registered.get("scene_paths", {})
-			return reg.get(id)
+			return _lookup_scene_path(id)
 		"shelters":
 			var reg: Dictionary = _registry_registered.get("shelters", {})
 			var entry = reg.get(id)

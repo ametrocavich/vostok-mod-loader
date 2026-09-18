@@ -148,7 +148,7 @@ The aggregator-only registries (`WEAPONS`, `MAGAZINES`, `ATTACHMENTS`) reject `o
 | trader_pools | `{item: ItemData, trader: String}` | n/a | n/a; remove/revert restore the stashed flag |
 | trader_tasks | `{task: TaskData, trader: String}` | register shape + `replaces: TaskData` | patch by handle or `TaskData` ref |
 | inputs | `{display_label?, default_event: InputEvent, deadzone? = 0.5}`; the id is the action name | same shape | only `display_label` / `default_event` / `deadzone` |
-| scene_paths | `{path: String, menu?, shelter?, permadeath?, tutorial?}`; `path` must exist | same shape | open dict; any field accepted |
+| scene_paths | `{path: String, menu?, shelter?, permadeath?, tutorial?}`; `path` must exist | same shape | open dict; any field accepted, and a `path` must exist |
 | shelters / maps | `{path?, transition_text?, exit_spawn?, entrance_spawn?, connected_to?, connected_content?, shelter?}` | n/a | n/a |
 | random_scenes | `{path: String}`; `path` must exist | n/a | n/a |
 | ai_types | `{scene: PackedScene, zone: String}` (zone: Area05 / BorderZone / Vostok) | same shape (forcibly claims the zone) | no patch |
@@ -189,7 +189,7 @@ The `id` is a String for most registries. `recipes`, `events` and `trader_tasks`
 
 Registries without patch (`loot`, `scenes`, `trader_pools`, `shelters`, `maps`, `random_scenes`, `ai_types`, `ai_loadouts`, `fish_species`) return `false` with a pointer to the alternative.
 
-The return value drifts by registry. `items`, `sounds`, `recipes`, `events` and `trader_tasks` return `true` whenever the id resolves, even if every field was rejected as unknown (each bad field warns and is skipped). `resources` and `inputs` return `false` unless at least one field applied. `scene_nodes` validates up front and rejects the whole patch if any field is missing. `scene_paths` entries are open dicts, so any field name is accepted. Every handler returns `false` when the id doesn't resolve.
+The return value drifts by registry. `items`, `sounds`, `recipes`, `events` and `trader_tasks` return `true` whenever the id resolves, even if every field was rejected as unknown (each bad field warns and is skipped). `resources` and `inputs` return `false` unless at least one field applied. `scene_nodes` validates up front and rejects the whole patch if any field is missing. `scene_paths` entries are open dicts, so any field name is accepted; a `path` that does not exist rejects the whole patch. Every handler returns `false` when the id doesn't resolve.
 
 ### append / prepend / remove_from
 
@@ -1044,7 +1044,7 @@ for entry in weapons:
     print(entry["id"], " -> ", entry["entry"].get("name"))
 ```
 
-For the handle-based registries (`loot`, `recipes`, `events`, `trader_pools`, `trader_tasks`, `inputs`, `scene_paths`, `shelters`, `maps`, `random_scenes`, `ai_types`, `ai_loadouts`, `fish_species`) `get_entry` returns the mod-registered payload dict, or `null` if the id isn't a mod registration. It does not enumerate vanilla content. For `resources` the id is a `res://` path and it returns `load(id)`. `scene_nodes` and the aggregator-only registries warn and return `null`.
+For the handle-based registries (`loot`, `recipes`, `events`, `trader_pools`, `trader_tasks`, `inputs`, `scene_paths`, `shelters`, `maps`, `random_scenes`, `ai_types`, `ai_loadouts`, `fish_species`) `get_entry` returns the mod-registered payload dict, or `null` if the id isn't a mod registration. It does not enumerate vanilla content. `scene_paths` returns the override dict when the id is overridden, vanilla names included, since that is the entry the game loads. For `resources` the id is a `res://` path and it returns `load(id)`. `scene_nodes` and the aggregator-only registries warn and return `null`.
 
 Mod entries beat vanilla on id collision, so `list(ITEMS)` returns the mod's version when both exist.
 
@@ -1074,7 +1074,7 @@ The cross-cutting sharp edges. Per-registry edges are in the sections above.
 - `inputs` ids are InputMap action names. Namespace them, and remember registered actions don't appear in the vanilla rebind UI without an extra hook.
 - `events` with a bad `function` name are silent no-ops when they fire.
 - `ai_loadouts` `replace: true` wipes other mods' earlier weapon entries for the same agent types.
-- `scene_paths`, `shelters`, `maps` and `random_scenes` refuse a `path` that doesn't exist.
+- `scene_paths`, `shelters`, `maps` and `random_scenes` refuse a `path` that doesn't exist, on `register`, `override` and a `scene_paths` `patch` alike.
 - The `WEAPONS`, `MAGAZINES` and `ATTACHMENTS` constants only support `register` and collapse the granular result to a bool. Prefer `register_weapon(...)` and friends.
 - `when` predicates in `const` setup plans evaluate at parse time unless they are Callables. See [setup](#setup----declarative-plan).
 
