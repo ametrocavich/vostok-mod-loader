@@ -27,10 +27,10 @@ func load_all_mods(pass_label: String = "") -> void:
 	_mod_script_analysis.clear()
 	_archive_file_sets.clear()
 	_archive_zip_paths.clear()
-	_hooks.clear()
 	_pending_script_overrides.clear()
-	_hooked_methods.clear()
 	_hook_declared_by.clear()
+	# _hooks and _hooked_methods are left alone: a `!` early autoload has
+	# already run by now, and its hook() and add_hook() calls live there.
 	_any_mod_declared_registry = false
 
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(TMP_DIR))

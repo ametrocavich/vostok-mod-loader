@@ -158,6 +158,7 @@ func _run() -> void:
 	_t13_missing_config_recovers_from_backup()
 	_t14_state_hash_follows_load_order()
 	_t15_state_hash_reads_an_unquoted_version()
+	_t16_early_hooks_survive_load_all_mods()
 
 	_finish()
 
@@ -653,6 +654,27 @@ func _t15_state_hash_reads_an_unquoted_version() -> void:
 	_ml.set("_ui_mod_entries", none)
 	_reset_user_state()
 
+# --- T16: hooks registered before load_all_mods survive it ---------------------
+
+# A `!` early autoload is instantiated by the engine before the loader's
+# _ready resumes, so its hook() and add_hook() calls land before load_all_mods
+# runs. add_hook() also enrolls the vanilla path in the wrap mask, which pack
+# generation reads afterwards. Both have to survive load_all_mods.
+func _t16_early_hooks_survive_load_all_mods() -> void:
+	var cb := func(): pass
+	var hook_id: int = _ml.add_hook("Controller.gd", "Jump", cb, true)
+	_assert(hook_id > 0, "T16: add_hook registers (got %d)" % hook_id)
+	_assert(bool(_ml.has_hooks("controller-jump-pre")), "T16: the callback is registered under the native name")
+	var none: Array[Dictionary] = []
+	_ml.set("_ui_mod_entries", none)
+	_ml.load_all_mods("Pass 2")
+	_assert(bool(_ml.has_hooks("controller-jump-pre")), "T16: the callback survives load_all_mods")
+	var mask: Dictionary = _ml.get("_hooked_methods")
+	_assert(mask.has("res://Scripts/Controller.gd") and (mask["res://Scripts/Controller.gd"] as Dictionary).has("jump"),
+			"T16: the wrap-mask enrollment survives load_all_mods (got %s)" % str(mask))
+	_ml.unhook(hook_id)
+	mask.erase("res://Scripts/Controller.gd")
+
 # --- T9: Pass 2 keeps the applied-override map through load_all_mods --------
 
 # Pass 2 applies [script_extend] / [script_overrides] from pass state before
@@ -944,7 +966,7 @@ func _cleanup_exe_cfg() -> void:
 func _finish() -> void:
 	_cleanup_exe_cfg()
 	if _failures.is_empty():
-		print("[boot-state] PASS: %d assertion(s) across T1..T15" % _assertions)
+		print("[boot-state] PASS: %d assertion(s) across T1..T16" % _assertions)
 		quit(0)
 		return
 	for m in _failures:
