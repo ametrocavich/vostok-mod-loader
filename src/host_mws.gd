@@ -114,7 +114,7 @@ func _mwsp_games_url(tail: String) -> String:
 ## Full URL for an Image record ({file, has_thumb}); the smaller /thumbs/
 ## variant when wanted and available. The URL convention's one home.
 func mws_image_url(image_record: Dictionary, want_thumb: bool = false) -> String:
-	var fn: String = str(image_record.get("file", ""))
+	var fn: String = _host_str(image_record.get("file"))
 	if fn.is_empty():
 		return ""
 	var has_thumb: bool = bool(image_record.get("has_thumb", false))
@@ -130,7 +130,7 @@ func _mwsp_image(v: Variant) -> Dictionary:
 	if not (v is Dictionary):
 		return host_image("", "", "")
 	var rec: Dictionary = v
-	var fn := str(rec.get("file", ""))
+	var fn := _host_str(rec.get("file"))
 	if fn.is_empty():
 		return host_image("", "", "")
 	return host_image(mws_image_url(rec, false), mws_image_url(rec, true), fn)
@@ -145,22 +145,22 @@ func _mwsp_summary(v: Variant) -> Dictionary:
 	if id.is_empty():
 		return s
 	s["ref"] = host_ref(HOST_MODWORKSHOP, id)
-	s["name"] = str(row.get("name", ""))
+	s["name"] = _host_str(row.get("name"))
 	if s["name"] == "":
 		s["name"] = id
 	var user: Variant = row.get("user")
 	if user is Dictionary:
-		s["author_name"] = str((user as Dictionary).get("name", ""))
+		s["author_name"] = _host_str((user as Dictionary).get("name"))
 	var category: Variant = row.get("category")
 	if category is Dictionary:
-		s["category_name"] = str((category as Dictionary).get("name", ""))
-	s["version"] = str(row.get("version", "")).strip_edges()
+		s["category_name"] = _host_str((category as Dictionary).get("name"))
+	s["version"] = _host_str(row.get("version")).strip_edges()
 	s["downloads"] = _host_count(row.get("downloads"))
 	s["likes"] = _host_count(row.get("likes"))
 	s["views"] = _host_count(row.get("views"))
-	s["updated_at"] = str(row.get("bumped_at", ""))
-	s["published_at"] = str(row.get("published_at", ""))
-	s["short_description"] = str(row.get("short_desc", ""))
+	s["updated_at"] = _host_str(row.get("bumped_at"))
+	s["published_at"] = _host_str(row.get("published_at"))
+	s["short_description"] = _host_str(row.get("short_desc"))
 	s["thumbnail"] = _mwsp_image(row.get("thumbnail"))
 	s["default_file_id"] = _host_id_str(row.get("download_id", ""))
 	return s
@@ -172,12 +172,12 @@ func _mwsp_file(v: Variant) -> Dictionary:
 		return f
 	var rec: Dictionary = v
 	f["id"] = _host_id_str(rec.get("id", ""))
-	f["version"] = str(rec.get("version", "")).strip_edges()
+	f["version"] = _host_str(rec.get("version")).strip_edges()
 	# _host_str, not str: a null download_url must read as "" so
 	# _mwsp_file_result returns HOST_ERR_NO_FILE.
 	f["download_url"] = _host_str(rec.get("download_url"))
 	f["size"] = _host_count(rec.get("size"))
-	f["created_at"] = str(rec.get("created_at", ""))
+	f["created_at"] = _host_str(rec.get("created_at"))
 	f["filename_hint"] = _mwsp_filename_hint(f["download_url"])
 	return f
 
@@ -330,7 +330,7 @@ func _mwsp_list_categories() -> Dictionary:
 		# parent_id is null for top-level nodes; "" is the seam's sentinel.
 		var parent: Variant = rec.get("parent_id")
 		var parent_id := "" if parent == null else _host_id_str(parent)
-		out.append(host_category(id, str(rec.get("name", "")), parent_id))
+		out.append(host_category(id, _host_str(rec.get("name")), parent_id))
 	return host_ok(out)
 
 

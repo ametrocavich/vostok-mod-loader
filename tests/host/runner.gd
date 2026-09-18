@@ -264,6 +264,15 @@ func _t3_null_and_float_ids(ml: Object) -> void:
 			"T3: VostokMods row with null id -> invalid ref, empty key")
 	_assert(not ml.host_ref_valid(ml.host_ref("modworkshop", "")),
 			"T3: a ref with an empty id is invalid")
+	# ModWorkshop sends JSON null for a field a mod never filled in.
+	var sparse: Variant = ml._mwsp_summary(JSON.parse_string(
+			'{"id": 7, "name": null, "version": null, "short_desc": null, "bumped_at": null, "published_at": null, "user": {"name": null}, "category": {"name": null}}'))
+	for key in ["version", "short_description", "updated_at", "published_at", "author_name", "category_name"]:
+		_assert(str(sparse[key]) == "", "T3: a null MWS %s reads as '' (got '%s')" % [key, str(sparse[key])])
+	_assert(not str(sparse["name"]).contains("null"), "T3: a null MWS name does not read as '<null>' (got '%s')" % str(sparse["name"]))
+	var sparse_file: Variant = ml._mwsp_file(JSON.parse_string('{"id": 9, "version": null, "created_at": null, "file": null}'))
+	for key in ["version", "created_at"]:
+		_assert(str(sparse_file[key]) == "", "T3: a null MWS file %s reads as '' (got '%s')" % [key, str(sparse_file[key])])
 
 func _t4_result_envelope(ml: Object) -> void:
 	var want_keys := ["code", "data", "http", "message", "ok", "retry_after_s"]
