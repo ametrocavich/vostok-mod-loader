@@ -1,6 +1,6 @@
 # Build
 
-The installable file, `modloader.gd`, is built from the `src/` tree (`src/*.gd` plus `src/registry/*.gd`, 53 files) and is not edited directly. Edit under `src/`, run `./build.sh`, then `./check.sh`.
+The installable file, `modloader.gd`, is built from the `src/` tree (`src/*.gd` plus `src/registry/*.gd`) and is not edited directly. Edit under `src/`, run `./build.sh`, then `./check.sh`.
 
 ## build.sh
 
@@ -27,6 +27,10 @@ FILES=(
     "$SRC/host_mws.gd"
     "$SRC/host_vostokmods.gd"
     "$SRC/mod_discovery.gd"
+    "$SRC/mod_dependencies.gd"
+    "$SRC/mod_identity.gd"
+    "$SRC/mod_downloads.gd"
+    "$SRC/mod_sources.gd"
     "$SRC/modpacks.gd"
     "$SRC/hosted_modpacks.gd"
     "$SRC/mod_loading.gd"

@@ -88,18 +88,20 @@ ModWorkshop adapter (`_mwsp_*`). Declares the capabilities (browse, search, cate
 
 VostokMods adapter (`_vmp_*`), the default host. Talks to `https://vostokmods.net/api` through `host_http.gd`. A mod's identity is its slug, so a ref is `host_ref("vostokmods", "<slug>")` and mod.txt declares `source="vostokmods:<slug>"`. The host scans uploads and marks unscanned or dirty versions `downloadable: false`; the adapter reports those as having no file, so Browse shows "No file yet" instead of a Download button. Listing pages are 24 rows and the search query caps at 100 characters.
 
-### [mod_discovery.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd)
+### Mod discovery, dependencies and downloads
 
-Scans `<exe>/mods/`, parses mod.txt into entry Dictionaries, orders them, and owns the host-neutral install path. No mounting; that is `mod_loading.gd`. An entry is a plain Dictionary; its fields are listed in the comment above `_entry_from_config`.
+| File | Responsibility and entry points |
+|---|---|
+| [mod_discovery.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd) | `collect_mod_metadata` scans the mods folder without mounting. `_entry_from_config` builds the entry dictionary; its field contract is immediately above the function. `_build_entry_warnings` and `_build_entry_author_notes` distinguish player problems from developer notes. |
+| [mod_dependencies.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_dependencies.gd) | `_parse_dependency_list` reads declarations. `_loadable_enabled_entries` is the shared selection and ordering rule used by loading, boot and the launcher. `_refresh_dependency_status` produces the row diagnostics. |
+| [mod_identity.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_identity.gd) | `compare_versions`, `_dedupe_by_mod_id` and `_normalized_mod_stem` determine versions and which copy of a mod survives discovery. |
+| [mod_downloads.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_downloads.gd) | `download_mod_from_ref` installs a new archive; `replace_mod_from_ref` updates one with rollback. Both resolve through the host seam and download through `_http_download_to_temp`. Filename checks, archive validation and collision handling stay with these entry points. |
+| [mod_sources.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_sources.gd) | `_resolve_mod_source` ranks explicit `source=`, the stored download origin and legacy `modworkshop=`. `_normalize_source_record` and the persistence helpers keep all disk representations compatible. |
 
-- `collect_mod_metadata` is the scanner. Accepted extensions are `vmz`, `zip`, `pck`, plus folders in dev mode; a zip with `profile.json` at its root is a modpack and goes to `modpacks.gd`.
-- `_entry_from_config`, `_build_entry_warnings` and `_build_entry_author_notes` turn a mod.txt read record (`{cfg, status, error, files}`) into an entry, its row warnings (broken or misplaced mod.txt, bad autoload path) and the author notes developer mode shows (unquoted version, missing `id=`, stale bake, unrecognized source).
-- Dependency handling: `_parse_dependency_list`, `_apply_dependency_ordering`, `_loadable_enabled_entries`, `_refresh_dependency_status`.
-- Identity: `_dedupe_by_mod_id` and `_normalized_mod_stem`, which `check_identity.sh` covers.
-- `compare_versions`, semver-ish with a `v` prefix tolerance and prerelease ordering.
-- Downloads and updates: `download_mod_from_ref`, `replace_mod_from_ref`, `fetch_latest_versions` take a host ref and dispatch through the seam; `_http_download_to_temp` is the one place a response body is written to disk, under a temporary name; `_host_install_downloaded_archive` (a new install) and `replace_mod_from_ref` (an update) each validate that file and rename it into `mods/`.
-- Source records: `_parse_source_token`, `_mod_source_from_cfg` (reads `source="provider:id"` and the legacy `modworkshop=<id>`, and says which one it read), `_normalize_source_record`, `_resolve_mod_source` (an explicit `source=` wins, then the stored record, then the legacy line), `_persist_mod_sources_for_entries` (the `[mod_sources]` section of `mod_config.cfg`, so a Browse download is remembered even when mod.txt says nothing). The legacy `modworkshop_id` mirror is written only when the provider is ModWorkshop.
-- `_log_security_findings` writes the `[ModScan]` lines when an entry has findings.
+A new download surface calls the download entry point, then
+`_reload_entries_for_active_profile` and `_rebuild_mods_tab`. It does not
+implement another archive installation path. See [Build](Build) for the
+identity and host harnesses that cover these rules.
 
 ### [modpacks.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/modpacks.gd)
 

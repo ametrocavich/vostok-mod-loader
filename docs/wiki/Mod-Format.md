@@ -186,7 +186,7 @@ A mod downloaded through the Browse tab is remembered by the launcher (in `mod_c
 
 Quote your `[mod] version`. An unquoted `version = 1.10` is read as the number 1.1 and the trailing zero is lost, which corrupts the exact version a modpack pins. In developer mode the row notes when a sourced mod has an unquoted version.
 
-Version compare is [mod_discovery.gd `compare_versions`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd): strip a `v`/`V` prefix and any `+build` tail, split the part before the first `-` on `.`, pad the shorter side with `0`, and compare component by component as ints (a non-numeric component counts as 0). On a tie, a `-suffix` is a semver prerelease: `1.0.0-beta.1` ranks below `1.0.0`, and two suffixes compare identifier by identifier (`beta.2` below `beta.10`).
+Version compare is [mod_identity.gd `compare_versions`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_identity.gd): strip a `v`/`V` prefix and any `+build` tail, split the part before the first `-` on `.`, pad the shorter side with `0`, and compare component by component as ints (a non-numeric component counts as 0). On a tie, a `-suffix` is a semver prerelease: `1.0.0-beta.1` ranks below `1.0.0`, and two suffixes compare identifier by identifier (`beta.2` below `beta.10`).
 
 ### `[hooks]` section
 
@@ -317,4 +317,4 @@ CONFLICT: res://Scripts/SomeFile.gd
     [2] ModB via ModB.vmz <-- wins
 ```
 
-Within equal priority, load order is stable: lowercased mod name, then filename. See [mod_discovery.gd `_compare_load_order`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd).
+Within equal priority, load order is stable: lowercased mod name, then filename. See [mod_dependencies.gd `_compare_load_order`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_dependencies.gd).

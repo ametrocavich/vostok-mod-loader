@@ -18,7 +18,11 @@ src/
   host_api.gd              # the seam: one match per operation, per provider
   host_mws.gd              # ModWorkshop adapter
   host_vostokmods.gd       # VostokMods adapter (the default host)
-  mod_discovery.gd         # scan mods, parse metadata, ordering, downloads
+  mod_discovery.gd         # scan mods and parse entry metadata
+  mod_dependencies.gd      # dependency readiness and load order
+  mod_identity.gd          # versions and duplicate selection
+  mod_downloads.gd         # download, validate and replace archives
+  mod_sources.gd           # host identity and on-disk source records
   modpacks.gd              # modpack scan/apply/unload
   hosted_modpacks.gd       # packs published on VostokMods, turned into local pack zips
   mod_loading.gd           # mount + apply mods at runtime
@@ -47,7 +51,7 @@ src/
   debug.gd                 # developer-mode probes + test-pack scaffolding (config flag)
 ```
 
-53 files, in `build.sh`'s `FILES` order (the concat order).
+The files are assembled in `build.sh`'s `FILES` order.
 `docs/wiki/Modules.md` has the per-file tour.
 
 ### Building and checking locally
@@ -220,7 +224,7 @@ Existing surfaces: Browse "Download" (ui_browse.gd ->
 `download_mod_from_ref(ref, version, true)`), and modpack missing-mod fetch
 and retry (modpacks.gd, the same call).
 The authoritative map sits above the download entry points in
-`src/mod_discovery.gd`.
+`src/mod_downloads.gd`.
 
 - Both entry points take a host ref (`{provider, id}`, see `host_ref` in
   `src/host_types.gd`), resolve the file through `host_resolve_file` and
@@ -292,7 +296,7 @@ documented there.
 
 The accept set `["vmz", "zip", "pck"]` lives in two places that must not
 drift: the scan filter in `collect_mod_metadata` and the download-name gate
-`_is_safe_mod_filename` (both `src/mod_discovery.gd`). On the mount side,
+`_is_safe_mod_filename` (`src/mod_downloads.gd`). On the mount side,
 Godot's `load_resource_pack` only recognizes literal `.pck` / `.zip`, so any
 other extension needs the vmz-style cache-copy fallback in `_try_mount_pack`
 (fs_archive.gd) and in the static remount loop of `_mount_previous_session`
