@@ -163,6 +163,7 @@ func _run() -> void:
 	_t18_pack_failures_reach_the_launcher()
 	_t19_wrap_surface_counts_each_script_once()
 	_t20_lost_registry_target_names_its_declarers()
+	_t21_cfg_write_failure_names_its_step()
 
 	_finish()
 
@@ -808,6 +809,25 @@ func _t20_lost_registry_target_names_its_declarers() -> void:
 	by.clear()
 	_ml.set("_any_mod_declared_registry", false)
 
+# --- T21: a failed override.cfg write says which step failed ---------------------
+
+# The write is tmp file, park the live file, rename into place. A report from
+# a player whose game folder is read-only or locked by antivirus is only
+# useful when the log names the step and the engine's error code.
+func _t21_cfg_write_failure_names_its_step() -> void:
+	_assert("_static_cfg_write_error" in _ml, "T21: the loader has _static_cfg_write_error")
+	if not ("_static_cfg_write_error" in _ml):
+		return
+	var good := ProjectSettings.globalize_path("user://t21_override.cfg")
+	_assert(bool(_ml._static_write_cfg_atomic(good, "[autoload]\n")), "T21: a write into user:// succeeds")
+	_assert(str(_ml.get("_static_cfg_write_error")) == "", "T21: a success leaves no error text")
+	var bad := ProjectSettings.globalize_path("user://t21_no_such_dir/override.cfg")
+	_assert(not bool(_ml._static_write_cfg_atomic(bad, "[autoload]\n")), "T21: a write into a missing folder fails")
+	var why := str(_ml.get("_static_cfg_write_error"))
+	_assert(why.contains("override.cfg.tmp") and why.contains("error "),
+			"T21: the failure names the step and the error code (got '%s')" % why)
+	DirAccess.remove_absolute(good)
+
 # --- T9: Pass 2 keeps the applied-override map through load_all_mods --------
 
 # Pass 2 applies [script_extend] / [script_overrides] from pass state before
@@ -1099,7 +1119,7 @@ func _cleanup_exe_cfg() -> void:
 func _finish() -> void:
 	_cleanup_exe_cfg()
 	if _failures.is_empty():
-		print("[boot-state] PASS: %d assertion(s) across T1..T20" % _assertions)
+		print("[boot-state] PASS: %d assertion(s) across T1..T21" % _assertions)
 		quit(0)
 		return
 	for m in _failures:

@@ -102,34 +102,46 @@ static func _static_force_vanilla_state(reason: String, log_lines: PackedStringA
 static func _clean_override_cfg_content(preserved: String) -> String:
 	return "[autoload_prepend]\nModLoader=\"*" + MODLOADER_RES_PATH + "\"\n\n[autoload]\n\n" + preserved
 
+# Why the last _static_write_cfg_atomic failed: the step and the engine's
+# error code, for the caller's log line. Empty after a success.
+static var _static_cfg_write_error := ""
+
 # The one override.cfg writer: tmp, park .old, promote, restore on failure.
 # Losing override.cfg means the ModLoader autoload never loads again, so the
 # live file is never opened for write. Static so the reset paths at static
 # init can use it.
 static func _static_write_cfg_atomic(cfg_path: String, content: String) -> bool:
+	_static_cfg_write_error = ""
 	var tmp := cfg_path + ".tmp"
 	var f := FileAccess.open(tmp, FileAccess.WRITE)
 	if f == null:
+		_static_cfg_write_error = "could not create %s, error %d" % [tmp.get_file(), FileAccess.get_open_error()]
 		return false
 	var ok := f.store_string(content)
 	var werr := f.get_error()
 	f.close()
 	if not ok or werr != OK:
+		_static_cfg_write_error = "could not write %s, error %d" % [tmp.get_file(), werr]
 		DirAccess.remove_absolute(tmp)
 		return false
 	var bak := cfg_path + ".old"
 	var dir := DirAccess.open(cfg_path.get_base_dir())
 	if dir == null:
+		_static_cfg_write_error = "could not open the folder, error %d" % DirAccess.get_open_error()
 		DirAccess.remove_absolute(tmp)
 		return false
 	if FileAccess.file_exists(cfg_path):
 		if FileAccess.file_exists(bak):
 			DirAccess.remove_absolute(bak)
-		if dir.rename(cfg_path.get_file(), bak.get_file()) != OK:
+		var park_err := dir.rename(cfg_path.get_file(), bak.get_file())
+		if park_err != OK:
 			# Could not park the live cfg (AV lock?) -- leave it untouched.
+			_static_cfg_write_error = "could not move the current %s aside, error %d" % [cfg_path.get_file(), park_err]
 			DirAccess.remove_absolute(tmp)
 			return false
-	if dir.rename(tmp.get_file(), cfg_path.get_file()) != OK:
+	var place_err := dir.rename(tmp.get_file(), cfg_path.get_file())
+	if place_err != OK:
+		_static_cfg_write_error = "could not move %s into place, error %d" % [tmp.get_file(), place_err]
 		DirAccess.remove_absolute(tmp)
 		if FileAccess.file_exists(bak):
 			# If the rename back fails too, byte-copy so a live cfg always exists.
@@ -288,7 +300,7 @@ static func _mount_previous_session() -> Dictionary:
 		var cfg_path := exe_dir.path_join("override.cfg")
 		var preserved := _read_preserved_cfg_sections(cfg_path)
 		if not _static_write_cfg_atomic(cfg_path, _clean_override_cfg_content(preserved)):
-			log_lines.append("[FileScope] WARNING: could not rewrite override.cfg -- live file left untouched")
+			log_lines.append("[FileScope] WARNING: could not rewrite override.cfg (%s) -- live file left untouched" % _static_cfg_write_error)
 		var state_path := ProjectSettings.globalize_path(PASS_STATE_PATH)
 		if FileAccess.file_exists(state_path):
 			DirAccess.remove_absolute(state_path)
@@ -414,7 +426,7 @@ static func _static_reset_override_cfg(log_lines: PackedStringArray) -> void:
 		return
 	var preserved := _read_preserved_cfg_sections(cfg_path)
 	if not _static_write_cfg_atomic(cfg_path, _clean_override_cfg_content(preserved)):
-		log_lines.append("[FileScope] WARNING: could not rewrite override.cfg (read-only?) -- live file left untouched")
+		log_lines.append("[FileScope] WARNING: could not rewrite override.cfg (%s) -- live file left untouched" % _static_cfg_write_error)
 		return
 	log_lines.append("[FileScope] override.cfg reset to clean [autoload_prepend] state")
 
@@ -803,7 +815,7 @@ func _restore_clean_override_cfg() -> void:
 	var path := exe_dir.path_join("override.cfg")
 	var preserved := _read_preserved_cfg_sections(path)
 	if not _static_write_cfg_atomic(path, _clean_override_cfg_content(preserved)):
-		_log_critical("Cannot write override.cfg -- game dir may be read-only: " + exe_dir)
+		_log_critical("Cannot write override.cfg (%s) -- game dir may be read-only: %s" % [_static_cfg_write_error, exe_dir])
 
 func _clear_restart_counter() -> void:
 	# Clear the durable streak unconditionally: a clean finish after the crash

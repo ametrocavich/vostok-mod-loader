@@ -149,7 +149,7 @@ func _run_pass_1() -> void:
 		_generate_hook_pack(true)
 		_write_heartbeat()
 		if _write_override_cfg(sections.prepend) != OK:
-			_log_critical("Failed to write override.cfg -- single-pass fallback")
+			_log_critical("Failed to write override.cfg (%s) -- single-pass fallback" % _static_cfg_write_error)
 			await _finish_single_pass()
 			return
 		if _write_pass_state(archive_paths, new_hash) != OK:
