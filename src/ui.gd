@@ -203,6 +203,10 @@ func _apply_profile_to_entries(cfg: ConfigFile, profile: String) -> void:
 			entry["enabled"] = profile == "Default"
 		if resolved_key != "" and cfg.has_section_key(pr_sec, resolved_key):
 			entry["priority"] = int(str(cfg.get_value(pr_sec, resolved_key)))
+		else:
+			# This profile stores none: the mod's own default, not the value the
+			# previously applied profile left on the entry.
+			entry["priority"] = int(entry.get("priority_default", entry.get("priority", 0)))
 		# "Load anyway" overrides are sparse: only keys the user set are stored.
 		if is_vanilla:
 			entry["dependency_ignored"] = false

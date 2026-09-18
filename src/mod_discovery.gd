@@ -170,6 +170,8 @@ func _log_security_findings(entry: Dictionary) -> void:
 #   version, author       raw [mod] values, may be ""
 #   profile_key           identity in profile sections (contract at its construction)
 #   priority              clamped PRIORITY_MIN..PRIORITY_MAX; per profile
+#   priority_default      the mod.txt or filename-prefix priority, clamped; what
+#                         a profile that stores none for this mod applies
 #   enabled               per-profile, toggled in place by the UI
 #   required_dependencies, optional_dependencies, provides   Array[String]
 #   dependency_warnings, dependency_blockers (Array[String]) and
@@ -249,7 +251,7 @@ func _entry_from_config(read: Dictionary, file_name: String, full_path: String, 
 		"mod_name": mod_name, "mod_id": mod_id, "version": version,
 		"author": author,
 		"profile_key": profile_key,
-		"priority": priority, "enabled": true,
+		"priority": priority, "priority_default": priority, "enabled": true,
 		"required_dependencies": required_dependencies,
 		"optional_dependencies": optional_dependencies,
 		"provides": provides,

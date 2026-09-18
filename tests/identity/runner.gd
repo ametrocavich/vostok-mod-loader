@@ -86,6 +86,7 @@ func _run() -> void:
 	_t5_declared_id_still_wins(ml)
 	_t6_pck_never_collapses(ml)
 	_t7_mod_txt_read_record(ml)
+	_t8_priority_does_not_leak_between_profiles(ml)
 
 	_finish()
 
@@ -245,6 +246,33 @@ func _write_zip(user_path: String, entries: Dictionary) -> String:
 	zp.close()
 	return abs_path
 
+# Profile state follows the mod, not the profile that was applied before. A
+# profile that stores no priority for a mod applies the mod's own default
+# (mod.txt or the filename prefix), never the value the previous profile left
+# in memory, which the next save would otherwise write into the new profile.
+func _t8_priority_does_not_leak_between_profiles(ml: Object) -> void:
+	var mod_txt := ConfigFile.new()
+	_assert(mod_txt.parse("[mod]\nname=\"Leaky\"\nid=\"leaky\"\nversion=\"1.0\"\npriority=7\n") == OK,
+			"T8: fixture mod.txt parses")
+	var read := {"cfg": mod_txt, "status": "ok", "error": "", "files": {}}
+	var entry: Dictionary = ml._entry_from_config(read, "Leaky.zip", "/nonexistent/Leaky.zip", "zip")
+	_assert(int(entry.get("priority_default", -1)) == 7,
+			"T8: the entry records its mod.txt priority as priority_default (got %s)" % str(entry.get("priority_default")))
+	var entries: Array[Dictionary] = [entry]
+	ml.set("_ui_mod_entries", entries)
+	var cfg := ConfigFile.new()
+	cfg.set_value("profile.A.enabled", "leaky@1.0", true)
+	cfg.set_value("profile.A.priority", "leaky@1.0", 50)
+	cfg.set_value("profile.B.enabled", "other@1.0", true)
+	ml._apply_profile_to_entries(cfg, "A")
+	_assert(int(entry["priority"]) == 50, "T8: profile A's stored priority applies (got %d)" % int(entry["priority"]))
+	ml._apply_profile_to_entries(cfg, "B")
+	_assert(int(entry["priority"]) == 7,
+			"T8: profile B stores none, so the mod's own default applies, not A's 50 (got %d)" % int(entry["priority"]))
+	_assert(not bool(entry["enabled"]), "T8: a mod profile B never listed is off there")
+	var empty: Array[Dictionary] = []
+	ml.set("_ui_mod_entries", empty)
+
 func _entry(file_name: String, version: String) -> Dictionary:
 	return {
 		"file_name": file_name,
@@ -276,7 +304,7 @@ func _fail(msg: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("[identity] PASS: %d assertion(s) across T1..T7" % _assertions)
+		print("[identity] PASS: %d assertion(s) across T1..T8" % _assertions)
 		quit(0)
 		return
 	for m in _failures:
