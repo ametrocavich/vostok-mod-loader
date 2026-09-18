@@ -21,7 +21,7 @@ The download contains four files: `modloader.gd`, `override.cfg`, `windows-insta
 ## Automated (recommended)
 
 * **Windows**: double-click `windows-installer.bat`. It locates the game folder, installs `modloader.gd` and `override.cfg`, and creates the `mods` directory.
-* **Linux**: run `./linux-installer.sh` from a terminal. Same flow.
+* **Linux**: run `bash linux-installer.sh` from a terminal. Same flow.
 
 ## Manual
 
