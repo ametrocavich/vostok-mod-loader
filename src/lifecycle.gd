@@ -169,6 +169,14 @@ func _run_pass_1() -> void:
 	if DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(HOOK_PACK_DIR)):
 		_static_wipe_hook_cache()
 		_log_info("[Hooks] Cleaned up unused hook artifacts")
+	# Static init mounted the previous session's archives, and Godot ran its
+	# [autoload_prepend] mod autoloads, before the launcher opened. With nothing
+	# to load now, only a new process is free of them. Pass 2 of that process
+	# finds no pass state, mounts nothing and does not show the launcher again.
+	if not _filescope_mounted.is_empty():
+		_log_info("Nothing to load, but the previous mod set is mounted in this process -- restarting without it")
+		_modloader_restart(false)
+		return
 	await _finish_single_pass()
 
 # Pass 1 finish when the mod set matches the previous session: the archives

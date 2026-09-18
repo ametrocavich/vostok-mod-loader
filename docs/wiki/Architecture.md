@@ -72,7 +72,10 @@ if archive_paths not empty:
     _modloader_restart(false)          # relaunch with --modloader-restart
 else:
     delete pass state, restore clean override.cfg, wipe hook cache
-    _finish_single_pass()
+    if static init mounted anything:
+        _modloader_restart(false)      # a process without the previous mod set
+    else:
+        _finish_single_pass()
 ```
 
 `_generate_hook_pack(true)` on the pre-restart path is deliberate. Without `defer_activation`, activation would run against the PCK bytecode this engine process already pinned, log a misleading "hooks WILL NOT fire this session" alarm, and restart anyway. With it, the call writes the zip and the pass-state entry and lets Pass 2's fresh engine mount it at static init. The branch is at the end of `_generate_hook_pack` in [src/hook_pack.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd).
