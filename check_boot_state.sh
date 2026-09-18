@@ -19,9 +19,9 @@
 # Needs no decompiled vanilla corpus and no network, so it runs anywhere and
 # never skips. Never opens a window and never touches the game install:
 # --headless only, against a throwaway project under the system temp dir. The
-# harness writes only inside that project's own user:// dir, and it refuses
-# to start if an override.cfg already sits next to the Godot binary (the
-# breaker path writes that exact file).
+# harness writes its own user:// state and briefly writes override.cfg beside
+# the Godot binary. It refuses to start if that override.cfg already exists;
+# the breaker tests remove the file they create.
 #
 # Usage:
 #   ./check_boot_state.sh              # build.sh must have run first

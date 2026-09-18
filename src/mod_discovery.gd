@@ -179,7 +179,7 @@ func _log_security_findings(entry: Dictionary) -> void:
 # Added by _build_archive_entry / _build_folder_entry: warnings (Array[String]),
 # security_findings ({rule, file, line, preview}), risk_level (RISK_CLEAN | RISK_RED).
 # Added by _dedupe_by_mod_id on a winner: duplicates_hidden ({file_name, version}).
-# Added by ui.gd _apply_profile_to_entries: profile_version_mismatch {stored, current}.
+# Added by profiles.gd _apply_profile_to_entries: profile_version_mismatch {stored, current}.
 func _entry_from_config(read: Dictionary, file_name: String, full_path: String, ext: String) -> Dictionary:
 	var cfg: ConfigFile = read["cfg"]
 	var mod_name := file_name
@@ -229,10 +229,10 @@ func _entry_from_config(read: Dictionary, file_name: String, full_path: String, 
 	# Profile key identifies the mod across zip renames: "<id>@<version>" when
 	# mod.txt declares an id (empty version allowed), else "zip:<file_name>".
 	# Parsers live far from here; keep in sync when changing:
-	#   - the "@" split (first "@") in ui.gd _version_from_profile_key and
+	#   - the "@" split (first "@") in profiles.gd _version_from_profile_key and
 	#     _missing_mods_in_active_profile, modpacks.gd _get_missing_mods_for_modpack,
 	#     and the mod_id + "@" prefix match in _apply_profile_to_entries;
-	#   - the "zip:" prefix tests and trim_prefix("zip:") in ui.gd;
+	#   - the "zip:" prefix tests and trim_prefix("zip:") in profiles.gd;
 	#   - the [mod_sources] cache and per-profile sections keyed by it, so a
 	#     format change invalidates existing user configs.
 	var profile_key := ("zip:" + file_name) if not has_mod_id else (mod_id + "@" + version)

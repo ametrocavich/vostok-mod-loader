@@ -122,20 +122,22 @@ ${EDITOR:-nano} "$HOME/.local/share/Road to Vostok/mod_config.cfg"
 Find the `[profile.<active>.enabled]` section.
 
 **Back up / restore your setup**
-Copy `mod_config.cfg` somewhere safe. That one file holds every profile and setting. To restore, paste it back while the game isn't running.
+Close the game and copy `mod_config.cfg`, the live `MCM/` folder and the whole `.profile_snapshots/` directory from `user://`. The config holds profile selections and priorities; MCM files hold the mod settings themselves, including saved settings for inactive profiles and an active pack's pre-apply snapshot. Preserve the installed mod archives and pack zips from the game's `mods/` directory separately. Other mods may keep settings outside MCM; consult their documentation for those files.
+
+Restore these files as a matching set while the game is closed. Boot caches and `mod_pass_state.cfg` are generated, machine-specific state and are not part of this profile backup.
 
 **Copy your setup to another install**
 Two ways:
-1. Copy `mod_config.cfg` into the same path on the other machine. That carries every profile and setting.
-2. If your setup came from a VostokMods modpack, get and apply the same pack on the other machine. See [Modpacks](Modpacks).
+1. Copy the profile backup described above into the other machine's `user://` directory, and install the same mods and pack zips in its game `mods/` directory.
+2. For a published pack's original setup, get and apply the same pack from VostokMods. This does not transfer your local edits or unrelated profiles. See [Modpacks](Modpacks).
 
-**Reset one profile to empty**
-Delete all of its sections: `[profile.<name>.enabled]`, `[profile.<name>.priority]`, and, if present, `[profile.<name>.dep_ignore]` and `[profile.<name>.settings]`. Keep your other profiles.
+**Disable installed mods in one profile**
+Select the profile, clear the Mods-tab search filter and click **Disable all**. This disables the visible installed mods while retaining the profile and its settings. To start a separate empty selection, use **New profile** with **Empty**. Deleting a profile's sections removes its stored state; it does not create an empty profile, and a fresh `Default` enables installed mods.
 
 A `mod_config.cfg` the launcher cannot read is kept beside it as `mod_config.cfg.corrupt` before the `.bak` (or a fresh Default) takes its place, so nothing you typed by hand is lost. It is safe to delete once you have what you need from it.
 
-**Reset everything to fresh-install state**
-Delete `mod_config.cfg` (and `mod_config.cfg.bak`, or the launcher recovers from it). Next launch creates a new `Default` profile with every installed mod enabled.
+**Reset loader profiles and launcher preferences**
+Delete `mod_config.cfg` (and `mod_config.cfg.bak`, or the launcher recovers from it). Next launch creates a new `Default` profile with every installed mod enabled. This does not reset MCM files or uninstall mods.
 
 ## `mod_pass_state.cfg`. Boot state (implementation detail)
 
@@ -166,8 +168,8 @@ hook_pack_wrapped_paths=PackedStringArray("res://Scripts/Menu.gd")
 | `pck_stamp` | The game `.pck`'s modification time and size at write. A change wipes the state the same way: a content patch can replace the `.pck` and leave the `.exe` untouched. |
 | `timestamp` | Unix epoch seconds when Pass 1 wrote the file. Informational. |
 | `restart_count` | Pass-2 restart counter. Max 2; cleared after a clean boot. Stops infinite restart loops. |
-| `mods_hash` | Hash of the enabled archives in load order, their modification times and each enabled mod's version. When Pass 1 computes the same hash and static init already mounted that set, the restart is skipped; the hook pack is still regenerated. |
-| `script_overrides` | The `[script_extend]` / `[script_overrides]` declarations Pass 1 collected, as `{vanilla_path, mod_script_path, mod_name, priority}` records. Pass 2 replays them before hook generation. `[]` on most installs. |
+| `mods_hash` | Hash of archive order/content stamps, enabled mod versions, early autoloads, script overrides, loader version and loader-file mtime; see [Architecture](Architecture#pass-state) for the inputs. When Pass 1 computes the same hash and static init already mounted that set, the restart is skipped; the hook pack is still regenerated. |
+| `script_overrides` | The `[script_extend]` / `[script_overrides]` declarations Pass 1 collected, as `{vanilla_path, mod_script_path, mod_name, priority, seq}` records. Pass 2 replays them before hook generation. `[]` on most installs. |
 | `hook_pack_path` | `user://modloader_hooks/framework_pack_<millis>.zip` to mount at static init next boot. A fresh filename per generation sidesteps Godot's `load_resource_pack` path dedup. |
 | `hook_pack_wrapped_paths` | The `res://Scripts/<Name>.gd` paths in the pack that static init force-compiles with `CACHE_MODE_IGNORE`. Scripts with a module-scope scene preload are left off the list and compile lazily from the pack. Often just `["res://Scripts/Menu.gd"]` for loadouts that only use the core hook. |
 
@@ -236,10 +238,11 @@ Everything here is regenerated on demand:
 
 Deleting anything in that table is safe. Next launch regenerates whatever it needs; the cost is a slower cold boot while the hook pack rebuilds.
 
-Two more `user://` directories are deliberately not in that table:
+These `user://` directories contain settings that cannot be regenerated:
 
 | Path | Contents |
 |---|---|
+| `user://MCM/` | Live mod settings for the active profile. Back up alongside the profile snapshots. |
 | `user://.profile_snapshots/<profile>/` | Per-profile MCM snapshot (`MCM/` tree), restored when you switch into that profile. Not regenerable: deleting it discards saved per-profile MCM settings. Deleting the profile in the launcher removes the whole slot, including any `overrides/` tree and `overrides_manifest.json` an earlier loader version left beside `MCM/`. |
 
 Two leftovers that nothing reads are removed for you: `user://.modpack_backups/` (restore points written by an earlier loader version) is deleted at the next launch, and a `[settings] preferred_author` key in `mod_config.cfg` is dropped at the next save.
@@ -255,7 +258,7 @@ When to delete things:
 A: `mod_config.cfg`, section `[profile.<active_profile>.enabled]`. The name of your active profile is in `[settings] active_profile`. `true` = enabled, `false` = disabled.
 
 **Q: I edited `mod_config.cfg` by hand but the change didn't apply.**  
-A: The loader reads it at launch and overwrites it on exit. Edit while the game is closed.
+A: The loader reads it at launch and saves it when profile/mod choices change and when launching. Edit while the game is closed.
 
 **Q: I want to enable a mod without launching the UI.**  
 A: Add a line under `[profile.<active>.enabled]`: `<profile_key>=true`. The profile key is `<mod_id>@<version>` from the mod's `mod.txt`, or `zip:<filename>` if no `mod_id` is declared. Add it to `[profile.<active>.priority]` too, with a value (0 if you don't care).
@@ -271,7 +274,7 @@ A:
 4. If the game won't launch at all, create `modloader_disabled` in the install dir, launch vanilla, then remove the sentinel and relaunch. The loader rebuilds from scratch.
 
 **Q: What's the difference between the `user://` location and the game install dir?**  
-A: `user://` is per-user state (your profiles, generated caches), preserved across game updates. The game install dir is where the `.exe` and `.pck` live, and a game update overwrites it. Sentinel files and `override.cfg` live there because Godot has to see them before `user://` is even resolved.
+A: `user://` is per-user state (your profiles, generated caches), preserved across game updates. The game install dir contains the `.exe`, `.pck` and installed loader files. Godot reads `override.cfg` there before scripts run; the loader checks sentinels there during boot. Both locations are used during early boot.
 
 ## Related
 

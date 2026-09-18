@@ -2,7 +2,7 @@
 
 The mod loader runs in two stages:
 
-1. Static init, before `_ready`: mounts the archives from the previous session, preempts the `class_name` scripts Godot would otherwise pin to PCK bytecode, and checks the sentinel files.
+1. Autoload instance initialization, before `_ready`: checks sentinel files, mounts the previous session's archives and attempts to preempt cached `class_name` scripts. Logs call this phase "static init" or "FileScope"; the trigger is an instance variable initializer.
 2. `_ready`: dispatches to Pass 1 (show the launcher, optionally restart) or Pass 2 (post-restart finalization), based on a command-line argument.
 
 The header comment of [src/boot.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd) carries the short form of this sequence and the sentinel table; this page is the longer form. Function names are the anchors here, not line numbers.
@@ -11,14 +11,16 @@ The header comment of [src/boot.gd](https://github.com/ametrocavich/vostok-mod-l
 
 | Stage | Trigger | Code |
 |---|---|---|
-| Static init | Module-scope var initializer runs at script-load time | `var _filescope_mounted: Dictionary = _mount_previous_session()` at the top of [src/boot.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd) |
+| Early mounts | Instance variable initializer runs when the ModLoader autoload is constructed | `var _filescope_mounted: Dictionary = _mount_previous_session()` at the top of [src/boot.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd) |
 | `_ready` | Godot calls it once the autoload enters the tree | `_ready` in [src/lifecycle.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd) |
 
-Godot evaluates `var = <call>()` initializers while the script loads, so the mounts land in the VFS before any autoload scene graph resolves. A game autoload can `preload("res://ModPath/Foo.gd")` without the archive being mounted again in `_ready`.
+`_filescope_mounted` is an ordinary instance variable, not a `static var`. Loading or compiling the script alone does not call its initializer; constructing the autoload instance does. The loader's position in `[autoload_prepend]` puts these mounts before later autoload initialization. Godot may already have cached some scripts; the cache snapshot and activation checks report that condition.
 
-## Static init (`_mount_previous_session`)
+`_ready` registers the `RTVModLib` Engine meta before its first await, so early mod autoloads can find the API. After that await it compiles the regex helpers and selects the pass. A harness that instantiates the loader must disable the boot initializer in its test copy.
 
-Static function in `boot.gd`. It only has the static helpers and the constants to work with; the instance log helpers do not exist yet, so it collects lines and writes them to `user://modloader_filescope.log` through `_write_filescope_log`. The first line records the Godot version, the loader version and the OS. Sequence:
+## Early mounts (`_mount_previous_session`)
+
+Static function in `boot.gd`, called during instance initialization. It uses constants and static helpers rather than partially initialized instance state, and writes collected lines to `user://modloader_filescope.log` through `_write_filescope_log`. The first line records the Godot version, the loader version and the OS. Sequence:
 
 1. Disabled sentinel. If `<exe_dir>/modloader_disabled` or `<exe_dir>/modloader_disabled_once` exists (`_is_modloader_disabled`), call `_static_force_vanilla_state` and return with nothing mounted. See [Stability-Canaries](Stability-Canaries) for the escape hatches.
 2. Crashed Pass 2. If `user://modloader_pass2_dirty` exists, the previous Pass 2 died before cleanup; same full wipe, nothing mounted.
@@ -27,12 +29,12 @@ Static function in `boot.gd`. It only has the static helpers and the constants t
 5. Game update. If the exe mtime differs from the saved `exe_mtime`, or the game PCK's mtime and size differ from the saved `pck_stamp` (`_static_game_build_changed`), same wipe: vanilla scripts may have changed. A content patch can replace the PCK and leave the executable untouched, so both are checked.
 6. Missing archives. If any recorded archive is gone, write a clean `override.cfg` and delete pass state. A same-basename cache zip that survived does not count as present.
 7. Mount loop. Each archive goes through `ProjectSettings.load_resource_pack`, with the `.vmz -> .zip` cache fallback (`_static_vmz_to_zip`) and `.remap` resolution (`_static_resolve_remaps`).
-8. Orphan hook packs. `_static_cleanup_orphan_hook_packs` deletes every `framework_pack_*.zip` except the one pass state points at. Nothing is mounted yet, so Windows lets them go.
+8. Orphan hook packs. `_static_cleanup_orphan_hook_packs` deletes every `framework_pack_*.zip` except the one pass state points at. The hook pack has not been mounted in this process yet, so its unused generations can be deleted on Windows.
 9. Pre-init cache snapshot. For each path in `hook_pack_wrapped_paths`, record whether Godot's eager class-cache pass already compiled it (tokenized), whether it holds our source from a previous session, or whether it is not loaded yet. Diagnostic only; it answers "why didn't my hook fire".
 10. Hook pack mount. The path in `hook_pack_path` must be a `framework_pack_*.zip` directly inside `user://modloader_hooks` (`_static_hook_pack_path_sane`; pass state is user-editable, so anything else is refused). The pack is mounted with `replace_files=true`, then every entry listed in `hook_pack_wrapped_paths` is force-compiled from source via `ResourceLoader.load(..., CACHE_MODE_IGNORE)` plus `take_over_path`. Entries the pack carries but the list does not are left to lazy compile. With no mods loaded the pack file does not exist and this step is skipped. With mods loaded but none opting into the hook surface, the list holds only `res://Scripts/Menu.gd`, the core-owned wrap for the launcher's main-menu button.
 11. Test pack. `user://test_pack_precedence.zip` is mounted only when `[settings] test_pack_precedence` is set in `mod_config.cfg`; with the flag off, a leftover zip is deleted, never mounted.
 
-The static-init mount is the only way to rewire scripts Godot compiles while it populates `class_cache`. Once a script is pinned, `source_code + reload()` and `CACHE_MODE_IGNORE + take_over_path` both fail against autoload-backed scripts (see [Limitations](Limitations)).
+Mounting before later autoloads initialize gives the rewritten scripts an opportunity to take precedence. It does not guarantee that an already cached script can be replaced: activation checks and canaries detect engine-cache failures (see [Limitations](Limitations)).
 
 ## Pass 1 (normal launch)
 
@@ -48,6 +50,7 @@ _clean_stale_cache(); _remove_retired_state()
 _load_ui_config()
 await show_mod_ui()              # the user configures and clicks Launch
 _save_ui_config()
+_applied_script_overrides.clear()
 load_all_mods()                  # mount archives, scan, queue autoloads
 _apply_script_overrides()        # [script_extend] / [script_overrides]
 sections      = _build_autoload_sections()
@@ -119,7 +122,7 @@ ModLoader="*res://modloader.gd"
 
 Three invariants:
 
-- ModLoader is always the last entry in `[autoload_prepend]`. That section is reverse-insertion (last listed = first loaded), so ModLoader's static-init mount runs before any mod autoload's script references resolve. In plain `[autoload]` some game autoloads would pin their bytecode before static init could preempt them.
+- ModLoader is always the last entry in `[autoload_prepend]`. That section is reverse-insertion (last listed = first loaded), so the ModLoader instance mounts archives before later mod autoloads initialize. In plain `[autoload]` some game autoloads would pin their bytecode before static init could preempt them.
 - Late autoloads never appear in `override.cfg`. Godot would try to load them before the archives are mounted. `_finish_boot` instantiates them after the mounts land.
 - The write is atomic: `.tmp`, then park the live file as `override.cfg.old`, promote the `.tmp`, drop the `.old`. Windows `DirAccess.rename()` will not overwrite, hence the park step. On any failure the `.old` is restored (by byte copy if the rename back fails too). The live file is never deleted before its replacement is proven in place; losing it would un-load the ModLoader autoload with no way to self-heal. `_static_write_cfg_atomic` is the one writer, shared by `_write_override_cfg` and the static reset paths.
 

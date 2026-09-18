@@ -13,9 +13,9 @@ func _mcm_snapshot_dir(profile_name: String) -> String:
 func _has_mcm_snapshot(profile_name: String) -> bool:
 	return DirAccess.dir_exists_absolute(_mcm_snapshot_dir(profile_name))
 
-# Recursively copy src/ -> dst/, replacing dst/. Returns true when the source
-# had at least one entry; false if it didn't exist or was empty. Dot-prefixed
-# entries are skipped; the profile and MCM swaps rely on that.
+# Copy src/ into dst/, overwriting matching files. Callers remove stale trees.
+# Returns true after processing an entry, not proof that every copy succeeded.
+# Dot-prefixed entries are skipped; profile and MCM swaps rely on that.
 func _copy_dir_recursive(src: String, dst: String) -> bool:
 	if not DirAccess.dir_exists_absolute(src):
 		return false

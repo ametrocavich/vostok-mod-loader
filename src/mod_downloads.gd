@@ -118,7 +118,7 @@ func _derive_updated_filename(old_file_name: String, headers: PackedStringArray,
 #      the apply loop counts the "Already have" prefix as installed, not failed.
 # Each surface has its own busy state and error handling; only Browse
 # serializes, so two surfaces can race on the same file (hence the
-# _live_full_path re-resolution in ui.gd).
+# _live_full_path re-resolution in profiles.gd).
 
 # Returns {ok, new_path, new_file_name}; failures also carry "error". On
 # success new_path may differ from target_path (Content-Disposition or

@@ -3,7 +3,7 @@
 ## profile.json at the root; scan time routes it to the Modpacks tab. An
 ## applied modpack lives as a regular profile ("modpack__" prefix) so the
 ## profile lifecycle handles it; the zip is a template read on first apply,
-## and again after a Refresh that changed it (_modpack_forget_slot). Pre-apply
+## and again after a changed hosted import (_modpack_forget_slot). Pre-apply
 ## state is backed up in a "_before_modpack_" profile slot plus an MCM snapshot.
 ##
 ## Config conventions:
@@ -14,23 +14,23 @@
 ##   [settings] modpack_backup_valid   apply wrote a (possibly empty) backup
 ##
 ## States (owners: apply_modpack, unload_modpack and the boot reconciler in
-## ui.gd _load_ui_config):
+## profiles.gd _load_ui_config):
 ##   no pack      active_modpack is ""; stale backup sections are erased by the next apply.
-##   downloading  awaiting missing-mod downloads; no state touched yet. Serialized
+##   downloading  installs archives; profile switching has not begun. Serialized
 ##                by _modpack_apply_in_progress; Cancel sets _modpack_apply_cancelled.
 ##   mutating     _apply_modpack_inner's numbered steps, fresh apply only:
 ##                1. copy the active profile into the backup slot and set
 ##                active_modpack early (the crash trigger the reconciler keys off),
 ##                2. materialize the modpack__ profile from the zip if absent,
 ##                3. _switch_profile into the slot, 4. re-assert active_modpack.
-##                A failure after step 1 leaves the flag set; the next boot's
-##                reconciler clears it.
+##                A failed apply can leave the flag set; the next boot's
+##                reconciler handles an incomplete managed slot.
 ##   active       active_profile is the slot. Re-apply is downloads-only.
 ##   unloading    aborts untouched when the backup is gone; else restore backup
 ##                sections, clear flags, _switch_profile back, restore the
-##                pre-pack MCM, wipe the slot dir.
+##                pre-pack MCM, remove consumed MCM backup data.
 ##
-## Invariants: downloads strictly precede state mutation; reconciler recovery
+## Invariants: downloads precede profile switching; reconciler recovery
 ## never deletes the backup slot; at most one pack is active at a time.
 
 const MODPACK_PROFILE_PREFIX := "modpack__"

@@ -1,8 +1,8 @@
 ## ----- boot.gd -----
-## Static-init boot layer. _mount_previous_session runs while the ModLoader
-## script is loading (the var initializer below calls it), before any game
-## autoload compiles a class_name script. It mounts the previous
-## session's archives and the hook pack, rewrites override.cfg, and owns pass
+## Early-boot state and mounts. The instance variable initializer below calls
+## _mount_previous_session while the ModLoader autoload is constructed,
+## before _ready and later autoload initialization. It mounts the previous
+## session's archives and hook pack, rewrites override.cfg, and owns pass
 ## state, the heartbeat and crash recovery. docs/wiki/Architecture.md has the
 ## long form; the sequence is:
 ##   1. DISABLED_FILE or DISABLED_ONCE_FILE present: force vanilla state
@@ -19,8 +19,8 @@
 ##   4. Mount every recorded archive, then the hook pack on top with
 ##      replace_files=true, then preempt the wrapped class_name scripts with
 ##      CACHE_MODE_IGNORE + take_over_path.
-## Static init has no instance log helpers; it collects lines and writes them
-## through _write_filescope_log.
+## This path uses static helpers to avoid partially initialized instance
+## state. It collects log lines and writes them through _write_filescope_log.
 ##
 ## Sentinel and state files (who writes, who clears):
 ##   DISABLED_FILE       exe dir, user-created. Permanent vanilla mode.
@@ -42,8 +42,8 @@
 ##   PASS2_DIRTY_PATH    user://, written at Pass 2 entry, cleared at its end.
 ##                       A survivor makes the next static init force-wipe.
 
-# Static init starts here: the initializer runs while the script loads, before
-# _ready. Keyed by pass-state path; _process_mod_candidate skips these mounts.
+# Runs during autoload instance construction, before _ready.
+# Keyed by archive path; _process_mod_candidate skips these mounts.
 var _filescope_mounted: Dictionary = _mount_previous_session()
 
 static func _is_modloader_disabled() -> bool:

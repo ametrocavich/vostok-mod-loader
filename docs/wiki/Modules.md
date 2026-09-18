@@ -1,6 +1,6 @@
 # Modules
 
-A tour of the `src/` tree. The order follows the `FILES` array in `build.sh`, which is the order the files are concatenated into `modloader.gd`. Dependencies flow top-down: a const referenced by another const's initializer must come earlier, and everything shares one namespace. Function bodies can call anything anywhere. One section per file.
+A tour of the `src/` tree, grouped by responsibility. `build.sh --list` prints the assembly order. All fragments share one class: a constant used by another constant's initializer must come earlier, but function bodies can call across any fragment. [Development](Development) maps common tasks to entry points and explains state ownership.
 
 Links point at the file; function names are the anchors. Line numbers drift.
 
@@ -8,11 +8,11 @@ Links point at the file; function names are the anchors. Line numbers drift.
 
 ### [header.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/header.gd)
 
-Ten lines: the top-of-file doc comment plus `extends Node`. This is the only `extends` in the built `modloader.gd`; `build.sh` enforces that.
+The top-of-file doc comment plus `extends Node`. This is the only `extends` in the built `modloader.gd`; `build.sh` enforces that.
 
 ### [constants.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd)
 
-Shared `const`, `var` and `signal` declarations: anything read by more than one file. Subsystem-local consts stay with their subsystem. Residents worth knowing:
+Core shared `const`, `var` and `signal` declarations. State and constants with a narrower owner also live in that subsystem's fragment; all remain members of the same class. Residents worth knowing:
 
 - `MODLOADER_VERSION`, bumped by release-please between the `x-release-please-start-version` / `x-release-please-end` markers.
 - The persistent paths: `UI_CONFIG_PATH`, `PASS_STATE_PATH`, `HEARTBEAT_PATH`, `PASS2_DIRTY_PATH`, `CRASH_STREAK_PATH`, the three exe-dir sentinels (`SAFE_MODE_FILE`, `DISABLED_FILE`, `DISABLED_ONCE_FILE`), `HOOK_PACK_DIR` and `VANILLA_CACHE_DIR`. `MAX_RESTART_COUNT` is 2.
@@ -31,16 +31,16 @@ Shared `const`, `var` and `signal` declarations: anything read by more than one 
 
 Disk I/O with no game logic: `.vmz` to `.zip` cache copies (`_static_vmz_to_zip`, keyed by a `.src` sidecar holding the source mtime and size), the static-init log writer, `_read_preserved_cfg_sections`, `_try_mount_pack` plus `.remap` resolution after a mount, `read_mod_config` / `_parse_mod_txt` (ConfigFile syntax with the unquoted-`[hooks]` value repair and an empty-section workaround for `[registry]`), and the folder-mod zipper `zip_folder_to_temp` with its `_folder_dev_zip_current` staleness check.
 
-Static functions are the ones static init can call before an instance exists.
+The early-boot path uses static helpers to avoid reading partially initialized instance fields. The `_filescope_mounted` initializer runs during autoload construction, not when the script is merely compiled.
 
-## Static-init boot layer
+## Early-boot state and mounts
 
 ### [boot.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd)
 
 Owns the boot sequence; its header comment is the short form of [Architecture](Architecture).
 
 - `var _filescope_mounted: Dictionary = _mount_previous_session()` at the top of the file: a module-scope var with a call initializer, which is what runs static init before `_ready`.
-- `_mount_previous_session`, the static-init entry point.
+- `_mount_previous_session`, called by the autoload instance initializer before `_ready`.
 - Sentinel handling: `_is_modloader_disabled`, `_check_safe_mode`, the Pass 2 dirty marker branch.
 - The crash streak: `_static_read_crash_streak`, `_static_write_crash_streak`, `_crash_breaker_tripped`.
 - `override.cfg` reading and writing: `_write_override_cfg`, `_restore_clean_override_cfg`, `_static_reset_override_cfg`, `_static_write_cfg_atomic`, `_autoload_entry_writable`.
@@ -107,9 +107,9 @@ identity and host harnesses that cover these rules.
 
 Modpack discovery, apply, unload. A modpack is a `.zip` in `<game>/mods/` with `profile.json` at its root; scan time routes it to the Modpacks tab. Packs published on VostokMods arrive through `hosted_modpacks.gd` and become the same local zips.
 
-- An applied pack is a regular profile under the `modpack__<sanitized_name>` prefix, so profile switching, saving and MCM snapshots need no special cases. The zip is a template read on first apply, and again after a Refresh that changed it (`_modpack_forget_slot` drops the kept slot).
+- An applied pack uses ordinary profile sections under `modpack__<sanitized_name>`, with managed-slot guards that lock profile selection while it is active. The zip is read on first apply; later applies keep user edits until a changed hosted import invalidates the slot. `_modpack_forget_slot` drops that slot and its MCM snapshot only while the pack is inactive.
 - Pre-apply state goes to a `_before_modpack_<sanitized_name>` profile slot plus an MCM snapshot; `[settings] active_modpack` names the single active pack.
-- `apply_modpack` / `_apply_modpack_inner` download missing mods through the seam (`_get_missing_mods_for_modpack`, `retry_failed_downloads`), then `_modpack_reconcile_profile_keys` rewrites the pack's `.enabled` / `.priority` / `.dep_ignore` keys to the profile keys of the mods that actually landed. `unload_modpack` restores the backup slot.
+- `apply_modpack` / `_apply_modpack_inner` reject newer installed copies that would defeat an exact-version pin, then download missing mods through the seam (`_get_missing_mods_for_modpack`, `retry_failed_downloads`). `_modpack_reconcile_profile_keys` maps keys only to matching installed identities and pinned versions, leaving unresolved keys as missing rows. `unload_modpack` restores the pre-pack enabled/priority state and MCM snapshot. It removes consumed MCM backup data while preserving unconsumed files beside it; retired arbitrary-file restoration remains absent.
 - `_materialize_modpack_profile` is the live parser of `profile.json`. Its writer is `_hosted_manifest_to_profile` in `hosted_modpacks.gd`.
 
 
@@ -128,7 +128,7 @@ The runtime loading pipeline: mounts archives, scans `.gd` files, registers file
 
 ### [conflict_report.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/conflict_report.gd)
 
-Developer-mode diagnostics. `_print_conflict_summary` and `_write_conflict_report` run from every finish path when dev mode is on. `_verify_script_overrides` runs from `_emit_frameworks_ready` regardless, loads each dynamically overridden target and logs its `resource_path` and source head at debug level (the `load()` itself matters: it populates the cache as autoloads finish). There is no automatic stale/broken classification; mod source is never rewritten, so there is no marker to test against.
+Developer-mode diagnostics. `_print_conflict_summary` and `_write_conflict_report` run from every finish path when dev mode is on. `_verify_script_overrides` runs from `_emit_frameworks_ready` regardless, loads each dynamically overridden target and logs its `resource_path` and source head at debug level (the `load()` itself matters: it populates the cache as autoloads finish). This diagnostic reports the loaded resource; it does not classify overrides as stale or broken. Compatibility autofix can change the source compiled for an override or packed sibling, while the installed mod archive remains unchanged.
 
 ## UI
 
@@ -243,10 +243,10 @@ Given detokenized vanilla source, a parse structure and a per-method mask, the r
 - Renames each non-static method in the mask from `Foo` to `_rtv_vanilla_Foo`.
 - Appends a dispatch wrapper at the original name that runs pre, replace, post and callback hooks around the renamed body. The wrapper awaits the vanilla body only when that body is itself a coroutine; `check.sh` greps the templates for a literal `await` and `check_codegen.sh` compiles the output to keep it that way.
 - Rewrites bare `super()` inside renamed bodies to `super.<orig_name>()` so the parent's wrapper resolves.
-- Repairs Godot 3 syntax: a `pass` for bodyless blocks, `@tool` / `@onready var` / `@export var`, `base(args)` to `super.<enclosing>(args)`.
+- Repairs Godot 3 syntax: a `pass` for bodyless blocks, `@tool` / `@onready var` / `@export var`, and legacy `base(args)` to `super.<enclosing>(args)`. Literals and comments are masked. A declared or inherited `base` method keeps its call; an unresolved script parent is treated conservatively.
 - Applies the registry transforms: `Database.gd` gets its `const X = preload(...)` lines rewritten into a `_rtv_vanilla_scenes` dict plus `_rtv_mod_scenes` / `_rtv_override_scenes` and a `_get()`; `Loader.gd` gets `shelters` rewritten `const` to `var` with a snapshot, the `_rtv_mod_scene_paths` / `_rtv_override_scene_paths` / `_rtv_mod_shelters` dicts and a `LoadScene` prelude; `AISpawner.gd` gets each `agent = <Name>` routed through `_rtv_resolve_ai_type`, reading `Engine.get_meta("_rtv_ai_overrides")`; `AI.gd` gets a `SelectWeapon` prelude reading `_rtv_ai_loadouts`; `FishPool.gd` gets a `_ready` prelude reading `_rtv_fish_species`; `Compiler.gd` gets a `Spawn` prelude for shelters and maps. `REGISTRY_EXPECTED_MARKERS` in `hook_pack.gd` checks that each transform actually landed.
 
-Mod sources are not rewritten. A mod script that extends a wrapped vanilla sees the wrapper as its parent method through Godot's own resolution, so `super.foo(...)` lands on the wrapper.
+Hook wrappers are emitted for vanilla targets. A mod script extending a wrapped target reaches its wrapper through `super.foo(...)`. The compatibility autofix also processes compiled override sources and siblings copied into the generated hook pack; it does not edit the installed archive.
 
 ### [hook_pack.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd)
 
@@ -274,7 +274,7 @@ Mod sources are not rewritten. A mod script that extends a wrapped vanilla sees 
 The hook system's last outcome, written where the launcher can read it (`user://modloader_hook_status.json`). Generation and activation run after the launcher closes, so without this a game update that breaks the rewriter is visible only in the log. `_hook_status_write` is called from the canary B and C stops, the no-mods short-circuit, the pack write, mount and VFS-canary failures, and the end of activation; `_hook_status_problem` turns the record (and the static-init `modloader_game_updated` marker) into the banner `build_mods_tab` shows. Records from another loader version or another game build (executable mtime or PCK stamp) are ignored.
 ### [lifecycle.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd)
 
-`_ready` clears the one-shot vanilla sentinel or dispatches to `_run_pass_1` / `_run_pass_2`. `_modloader_restart` is the shared relaunch helper (keeps the Steam rendering flags, forwards user args). `reopen_mod_ui` is the post-boot entry from the main-menu button; it restarts into a clean Pass 1 when the session is dirty. Every boot path ends in `_finish_boot`, which registers the meta, generates the pack, instantiates queued autoloads, run the dev-mode diagnostics, emits `frameworks_ready`, clears the heartbeat and the streak, and reloads the current scene when asked; `_finish_with_existing_mounts` and `_finish_single_pass` are the Pass 1 entries that pick the reload rule, and Pass 2 calls it directly. See [Architecture](Architecture).
+`_ready` handles disabled sentinels, registers `RTVModLib` before its first await, compiles regex helpers afterward and dispatches to `_run_pass_1` / `_run_pass_2`. `_modloader_restart` is the shared relaunch helper (keeps the Steam rendering flags, forwards user args). `reopen_mod_ui` is the post-boot entry from the main-menu button; it restarts into a clean Pass 1 when the session is dirty. Every boot path ends in `_finish_boot`, which registers the meta, generates the pack, instantiates queued autoloads, run the dev-mode diagnostics, emits `frameworks_ready`, clears the heartbeat and the streak, and reloads the current scene when asked; `_finish_with_existing_mounts` and `_finish_single_pass` are the Pass 1 entries that pick the reload rule, and Pass 2 calls it directly. See [Architecture](Architecture).
 
 ### [main_menu_hook.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/main_menu_hook.gd)
 
@@ -284,7 +284,7 @@ Injects a "Mods" button into RTV's main menu (`res://Scripts/Menu.gd`) so the la
 - `_register_core_hooks` subscribes `_on_menu_ready` to `menu-_ready-post` through the public `hook()`, from `_emit_frameworks_ready`.
 - `_inject_mods_button` finds `Main/Buttons` on the menu root, inserts a button named `MetroMods` above `Quit`, and wires `pressed` to `reopen_mod_ui`.
 
-Mutations to `mod_config.cfg` while the reopened launcher is open flip `_dirty_since_boot`; on close the loader restarts into a clean Pass 1.
+Changes to the enabled set, load order or installed mods mark the reopened session dirty; closing it then restarts into a clean Pass 1. A profile rename or view-setting change alone does not require a restart.
 
 ## Developer probes and test scaffolding
 

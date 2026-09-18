@@ -29,11 +29,11 @@ Three tabs:
 
 - **Mods**: detected mods with checkboxes and a priority spinbox. Higher priority loads later and wins file conflicts. The load-order preview on the right updates as you edit. Profiles, the Developer Mode toggle, dependency handling and **Check for updates** live here too; a mod with a newer version on its site is listed under **Updates available** with an Update button. See the [Mods wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Mods).
 - **Browse**: search and install mods from [VostokMods](https://vostokmods.net), or switch the source menu to [ModWorkshop](https://modworkshop.net). Each site has a landing view plus search, sort and category filters. **Download** installs into your `mods/` folder; downloads queue and run one at a time. See the [Browse wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Browse).
-- **Modpacks**: apply a setup published on [VostokMods](https://vostokmods.net). A modpack is a small `.zip` listing which mods to enable (plus their settings), not the mod files themselves. Apply downloads any missing mods and switches you to the author's setup; Unload restores your prior state. Only one modpack can be active at a time. See the [Modpacks wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Modpacks).
+- **Modpacks**: apply a setup published on [VostokMods](https://vostokmods.net). A modpack is a small `.zip` listing which mods to enable (plus their settings), not the mod files themselves. Apply downloads any missing mods and switches you to the author's setup; Unload restores your prior profile and MCM settings. Only one modpack can be active at a time. See the [Modpacks wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Modpacks).
 
 Dependencies are handled inline on the Mods tab. A mod with `[dependencies] required=[...]` in `mod.txt` shows an orange `won't load -- needs ...` line when a requirement is missing or disabled, with **Enable dependency** and **Load anyway** buttons beside it, and the loader skips mods whose required dependencies are not loadable.
 
-Click the launch button or close the window to start. It reads **Launch modded** when at least one enabled mod will load, **Launch unmodded (N blocked)** when every enabled mod is blocked by a missing dependency, and **Launch** when nothing is enabled. If you reopen the window from the main menu's **Mods** button and change anything, closing it restarts the game into the new mod set.
+Click the launch button or close the window to start. It reads **Launch modded** when at least one enabled mod will load, **Launch unmodded (N blocked)** when every enabled mod is blocked by a missing dependency, and **Launch** when nothing is enabled. If you reopen the window from the main menu's **Mods** button and change the active mod selection, load order or installed mods, closing it restarts the game into the new mod set. Renaming a profile alone does not restart.
 
 ### Guardrails
 
@@ -76,7 +76,7 @@ optional=["some_soft_integration"]
 | Field | Description |
 |---|---|
 | `name` | Display name in the UI |
-| `id` | Unique ID. A second mod with the same id is skipped |
+| `id` | Unique ID. Duplicate IDs keep the newest version, then the newest file modification time. `.pck` files are exempt from deduplication; see [Mod-Format](docs/wiki/Mod-Format.md). |
 | `version` | Used by the update check to compare against the mod's site |
 | `priority` | Higher loads later, wins file conflicts. Default 0 |
 | `[autoload]` | `Name="res://path.gd"` (or `.tscn`). Prefix the value with `!` to load before the game's own autoloads |

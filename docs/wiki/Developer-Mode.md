@@ -6,7 +6,7 @@ Dev mode is a per-user setting. It turns on folder-mod loading, debug logging an
 
 Tick the **Developer mode** checkbox in the toolbar of the Mods tab ([ui_mods.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui_mods.gd)). Its tooltip reads "Enables verbose logging, conflict report, and loose folder loading", and the bottom-bar hint says the same. The toggle persists as `[settings] developer_mode` in `user://mod_config.cfg`; toggling it rescans the mods folder and keeps the active profile.
 
-`_load_developer_mode_setting` (ui.gd) reads the saved value at the start of both Pass 1 and Pass 2 (lifecycle.gd). If the live config is missing or corrupt it reads `developer_mode` from the rolling `.bak` instead, so a recoverable config error does not silently turn dev mode off and strand your folder mods for the session. When on, the log says `Developer mode: ON`.
+[`_load_developer_mode_setting`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/profiles.gd) reads the saved value at the start of both Pass 1 and Pass 2 (lifecycle.gd). If the live config is missing or corrupt it reads `developer_mode` from the rolling `.bak` instead, so a recoverable config error does not silently turn dev mode off and strand your folder mods for the session. When on, the log says `Developer mode: ON`.
 
 ## What it unlocks
 

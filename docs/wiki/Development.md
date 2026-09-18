@@ -93,15 +93,15 @@ guides; the scripts and runner output already provide them.
 
 ### Adding a mod.txt key or section (scan-time metadata)
 
-- `src/mod_discovery.gd: _entry_from_config` parses the key from the
+- [`_entry_from_config`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd) parses the key from the
   ConfigFile and stores it on the entry Dictionary.
-- `src/mod_discovery.gd: _build_entry_warnings` derives a row warning from it
+- [`_build_entry_warnings`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd) derives a row warning from it
   when the mod will not work; `_build_entry_author_notes` when only the
   author should hear about it. The Mods tab renders `entry["warnings"]` for
   everyone and `entry["author_notes"]` in developer mode, so no UI edit.
 - `docs/wiki/Mod-Format.md` documents the section.
 - If the section affects loading as well as scan-time metadata, also
-  `src/mod_loading.gd: _process_mod_candidate`, which is where `[hooks]`,
+  [`_process_mod_candidate`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_loading.gd), which is where `[hooks]`,
   `[registry]`, `[script_extend]` and `[autoload]` are consumed. Add the
   section name to `MOD_TXT_KNOWN_SECTIONS` there, or every mod using it gets
   the unrecognized-section notice.
@@ -192,9 +192,9 @@ so nothing else changes.
 
 The metroprofile v1 payload has one writer and one live reader:
 
-- writer: `src/hosted_modpacks.gd: _hosted_manifest_to_profile`, packed by
+- writer: [`_hosted_manifest_to_profile`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hosted_modpacks.gd), packed by
   `_hosted_write_pack_zip`.
-- reader: `src/modpacks.gd: _materialize_modpack_profile` (modpack apply).
+- reader: [`_materialize_modpack_profile`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/modpacks.gd) (modpack apply).
   `_validate_modpack` checks the schema before apply touches any state, and
   `_get_missing_mods_for_modpack` reads the zip's `sources` and `checksums`
   for the download loop, and `_modpack_sources` reads `sources` again for

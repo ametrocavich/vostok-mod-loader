@@ -1,13 +1,15 @@
 # Release checklist
 
-The pipeline automates the build and the version bump. Everything below is
-what it does not check. Work top to bottom; anything unchecked is a reason not
-to tag.
+The pipeline automates the build and version bump. Maintainers complete the
+checks and manual acceptance below before merging the release PR, because
+that merge creates and publishes the release automatically. Listing updates
+and published-asset checks happen afterward.
 
 ## Before merging to master
 
-- [ ] `./build.sh && ./check.sh` green locally. The parse and all six gates:
-      codegen, dispatch, detok, identity, host, boot_state. The codegen
+- [ ] `./build.sh && ./check.sh` prints all eight `OK:` lines: parse,
+      static/documentation invariants, codegen, dispatch, detok, identity,
+      host and boot_state. The codegen
       gate compiles its ten vanilla fixtures only on a machine with the
       decompiled game source, so run it here; CI compiles the three synthetic
       fixtures and leaves those ten out.
@@ -26,6 +28,37 @@ to tag.
       `docs/wiki/` changed in the same PR.
 - [ ] No new user-facing claim without an implementation behind it. Release
       notes promising a button that does not exist are a support burden.
+
+## Manual acceptance before the release PR merges
+
+Use a backed-up test setup and the release candidate. These are owner-run
+in-game checks, separate from the automated headless checks:
+
+- [ ] Launch cold, then launch the same mod set again. Confirm the two-pass
+      restart finishes and the same-state path reaches the game.
+- [ ] Reopen Mods from the main menu. Toggle a mod or change load order;
+      closing restarts into the selected set. Rename a profile without
+      changing its selection; closing does not restart.
+- [ ] Switch between VostokMods and ModWorkshop in Browse, download a mod,
+      and use its resulting profile checkbox. Check for updates on Mods.
+- [ ] Apply a pack, edit its managed selection, unload, and re-apply the
+      unchanged pack. Confirm pre-pack selection and MCM settings restore
+      on unload and the managed edits survive re-apply.
+- [ ] Import a changed hosted pack while inactive and confirm its new
+      selection, priorities and MCM settings materialize on apply. Confirm
+      an active pack must be unloaded before replacing its template.
+- [ ] Disable every mod after a modded session. Confirm the unmodded boot
+      finishes; if cleanup fails, the Retry/Quit dialog stays actionable.
+- [ ] Upgrade over 3.3.1 with existing profiles and an applied pack. Confirm
+      selection and MCM settings survive. Unload preserves unconsumed legacy
+      originals beside the backup MCM snapshot without restoring arbitrary
+      files. Retired `.modpack_backups/` restore points are removed at launch;
+      deleting a profile still removes its whole snapshot slot.
+- [ ] Release notes name removed flows: pack export, the Restore backup
+      picker and arbitrary `overrides/` payload application. No retired
+      feature is promised by the docs or listings.
+- [ ] Run each installer through an actual install/upgrade on its platform.
+      Check existing non-autoload override.cfg sections survive.
 
 ## Merging
 
@@ -58,14 +91,6 @@ new install until someone notices.
       in-launcher self-update check reads the GitHub release, so a stale
       listing no longer hides a fix from users, but people who install from a
       listing get whatever it hosts.
-- [ ] Smoke test in the real game: launch, toggle a mod, switch the Browse
-      source between VostokMods and ModWorkshop, download something, apply a
-      modpack, and click Check for updates on the Mods tab. No harness covers
-      the launcher end to end.
-- [ ] Upgrade over 3.3.1: start from a user folder that still holds
-      `.modpack_backups/` and a profile snapshot slot with `overrides/` and
-      `overrides_manifest.json` beside `MCM/`. After one launch the backups
-      directory is gone, and deleting that profile removes the whole slot.
 
 ## Known gaps in this process
 

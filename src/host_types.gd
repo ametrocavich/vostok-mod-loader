@@ -31,7 +31,7 @@ const HOST_ERR_BAD_RESPONSE := "bad_response"             # unparseable, or a ca
 const HOST_ERR_UNSUPPORTED := "unsupported"               # provider declares this capability off
 const HOST_ERR_UNWIRED := "unwired"                       # capability on but no dispatch arm: our bug
 
-# NO_FILE stays separate from NOT_FOUND: mod_discovery.gd distinguishes
+# NO_FILE stays separate from NOT_FOUND: mod_downloads.gd distinguishes
 # "no such mod" from "nothing to download" in its user-facing copy.
 
 
