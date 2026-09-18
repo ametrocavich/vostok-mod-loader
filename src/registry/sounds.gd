@@ -9,8 +9,9 @@
 ## patch() takes a subset of those three fields.
 ##
 ## Vanilla hardcodes property names, so a newly registered id isn't
-## reachable from vanilla code -- mods fetch it via get_entry or
-## audioLibrary.get(id). Use override to affect what vanilla plays.
+## reachable from vanilla code, and a registration never touches the
+## library itself -- mods fetch it via get_entry. Use override to affect
+## what vanilla plays.
 
 const _AUDIO_LIBRARY_PATH := "res://Resources/AudioLibrary.tres"
 

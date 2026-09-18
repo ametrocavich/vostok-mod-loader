@@ -101,7 +101,7 @@ func _source_has_indented_func_body(source: String) -> bool:
 # Build the framework pack: enumerate res://Scripts/*.gd, detokenize, parse,
 # generate wrappers, zip, mount. The zip mounts at res://: extends-chain
 # resolution for class_name parents breaks for scripts loaded from user://.
-# The steps are the five functions below, in order.
+# The steps are the six functions below, in order.
 func _generate_hook_pack(defer_activation: bool = false) -> String:
 	var pack_zip_rel := _hook_pack_preflight()
 	if pack_zip_rel == "":
@@ -393,7 +393,7 @@ func _hook_pack_write_zip(pack_zip_rel: String, script_paths: Array[String], nee
 		# Not in the wrap surface: stays pure vanilla, no dispatch overhead.
 		if not needed_paths.has(script_path):
 			surface_skipped += 1
-			_log_debug("[RTVCodegen] Surface-skip %s (no mod extends/hooks/overrides)" % filename)
+			_log_debug("[RTVCodegen] Surface-skip %s (no mod declared it)" % filename)
 			continue
 
 		# A mod's [script_extend] / [script_overrides] replacement at this path
@@ -413,7 +413,7 @@ func _hook_pack_write_zip(pack_zip_rel: String, script_paths: Array[String], nee
 			continue
 
 		var parsed := _rtv_parse_script(filename, source)
-		# A registry target has no mask entry, which reads as the wildcard.
+		# A registry target has no mask entry or an emptied one; both read as the wildcard.
 		var path_mask: Dictionary = hook_mask.get(script_path, {}) as Dictionary
 		var apply_mask: bool = not _mask_is_wildcard(path_mask)
 		# Track which declared methods matched so a partial miss is reported per method.
@@ -611,8 +611,9 @@ func _hook_pack_write_zip(pack_zip_rel: String, script_paths: Array[String], nee
 # Reconcile the ledger against what was packed, then either persist the pack
 # for the next session's static init (defer_activation, the Pass 1
 # pre-restart path) or mount it now, read the VFS canary back and activate
-# the rewritten scripts. Returns the pack path, or "" when nothing was
-# mounted.
+# the rewritten scripts. Returns the pack path, also when activation was
+# deferred to the next launch; "" means the pack failed its canary or would
+# not mount.
 func _hook_pack_mount_and_activate(pack_zip_rel: String, packed_paths: Array[String], hook_count: int,
 		reconcile: Dictionary, defer_activation: bool) -> String:
 	var zip_abs := ProjectSettings.globalize_path(pack_zip_rel)

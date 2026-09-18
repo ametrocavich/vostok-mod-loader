@@ -4,7 +4,7 @@
 ## nearly diagnostic of known malware (obfuscated decode + process spawn,
 ## anti-debug crashes). Not a virus scanner; a determined attacker can
 ## evade specific patterns. Loading is never blocked -- red findings get a
-## "suspicious code" tag in the launcher and a launch-time confirm dialog.
+## "suspicious code" tag in the launcher, and clicking it lists what matched.
 
 # Source files that get regex content scans (GDScript text plus text-form
 # Godot resources that can embed inline GDScript).

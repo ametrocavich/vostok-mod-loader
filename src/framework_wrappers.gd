@@ -1,6 +1,6 @@
 ## ----- framework_wrappers.gd -----
-## Scene-tree walk by class_name, used by hook_pack.gd's post-apply
-## verification.
+## Scene-tree walk by class_name, used by the developer-mode hook probes in
+## debug.gd.
 
 # Collect nodes whose attached script (or any ancestor in its extends chain)
 # has the given class_name. The base-chain walk matters: take_over_path mod

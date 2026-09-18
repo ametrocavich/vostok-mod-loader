@@ -2,8 +2,8 @@
 # build.sh -- concatenate src/*.gd into modloader.gd
 #
 # Explicit ordering (not filename-based sort): the FILES list below is the
-# source of truth for concat order. Dependencies flow top-down earlier
-# files may not reference code defined later.
+# source of truth for concat order. Only const initializers are ordered
+# (GDScript resolves them top to bottom); function bodies can call anything.
 
 set -euo pipefail
 cd "$(dirname "$0")"

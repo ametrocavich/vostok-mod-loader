@@ -1,6 +1,7 @@
 ## ----- conflict_report.gd -----
-## Developer-mode diagnostics: verify script overrides took effect and write
-## the conflict report to user://. Only runs when developer_mode=true.
+## Verify that script overrides took effect (every session, from
+## _emit_frameworks_ready) and, in developer mode, write the conflict report
+## to user://.
 ## Mod scripts are never rewritten, so there is no marker to test against;
 ## override effect is judged from resource_path and the extends chain.
 

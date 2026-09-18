@@ -957,7 +957,8 @@ func _compare_dedup_priority(a: Dictionary, b: Dictionary) -> bool:
 	return (a["file_name"] as String).to_lower() < (b["file_name"] as String).to_lower()
 
 ## Current version of many installed mods, grouped by host. Returns
-## {ref_key: version}; an absent mod could not be checked. Link-out hosts are skipped.
+## {ref_key: version}; an absent mod could not be checked. A host without the
+## resolve_file capability is skipped.
 func fetch_latest_versions(refs: Array) -> Dictionary:
 	var ids_by_provider: Dictionary = {}
 	for ref_v in refs:

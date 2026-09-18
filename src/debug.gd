@@ -264,9 +264,9 @@ func _test_pack_reapply() -> void:
 		else:
 			_log_warning("[TEST-REMAP] Pass 2: failed to copy test pack")
 
-# Temporary: pack-over-bytecode precedence test, gated behind a flag in
-# mod_config.cfg. Remove after verifying whether a mounted .gd + .gd.remap
-# beats the PCK's .gdc + .gd.remap for a given resource path.
+# Pack-over-bytecode precedence test, gated behind the test_pack_precedence
+# flag in mod_config.cfg: does a mounted .gd + .gd.remap beat the PCK's
+# .gdc + .gd.remap for a given resource path.
 
 # Static so the file-scope mount in boot.gd can read it before any instance
 # exists.

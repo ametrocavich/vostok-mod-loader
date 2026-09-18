@@ -185,8 +185,8 @@ var _pending_script_overrides: Array[Dictionary] = []  # {vanilla_path, mod_scri
 var _applied_script_overrides: Dictionary = {}         # vanilla_path -> true
 
 # Opt-in declarations from the [hooks] parser and .hook() scanning; drive the
-# wrap surface in _generate_hook_pack. All empty -> no hook pack, untouched
-# vanilla.
+# wrap surface in _generate_hook_pack. All empty -> the pack holds only the
+# loader's own Menu.gd wrap, and every other vanilla script runs untouched.
 var _hooked_methods: Dictionary = {}             # res_path -> {method_name: true}
 var _any_mod_declared_registry: bool = false     # set by [registry] parser
 
