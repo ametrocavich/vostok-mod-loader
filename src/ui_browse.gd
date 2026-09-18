@@ -461,6 +461,8 @@ func _browse_on_toggle(state: Dictionary, ref_key: String, enabled: bool, check:
 	_save_ui_config()
 	if is_instance_valid(tabs):
 		_rebuild_mods_tab(tabs)
+	# The landing can list one mod in two sections; bring its other row along.
+	_refresh_browse_installed_rows(state["scroll"])
 	_browse_set_status(state, ("Enabled " if enabled else "Disabled ") + str(live_entry.get("mod_name", "?")) + " in profile " + _active_profile, COL_TEXT_DIM)
 
 
