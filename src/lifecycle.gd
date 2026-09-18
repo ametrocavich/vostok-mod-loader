@@ -158,17 +158,23 @@ func _run_pass_1() -> void:
 		_modloader_restart(false)
 		return
 
-	# No archives enabled. Clean up stale two-pass state if present.
-	if FileAccess.file_exists(PASS_STATE_PATH):
-		DirAccess.remove_absolute(ProjectSettings.globalize_path(PASS_STATE_PATH))
-		_restore_clean_override_cfg()
-	else:
-		# override.cfg can carry stale mod entries even without pass state; rewrite only when it differs.
-		var cfg_path := OS.get_executable_path().get_base_dir().path_join("override.cfg")
-		if FileAccess.file_exists(cfg_path):
-			var cur := FileAccess.get_file_as_string(cfg_path)
-			if cur != _clean_override_cfg_content(_read_preserved_cfg_sections(cfg_path)):
-				_restore_clean_override_cfg()
+	# No archives enabled. A failed cleanup must not restart into old mounts.
+	while true:
+		var cleanup_error := _clear_unmodded_boot_state()
+		if cleanup_error.is_empty():
+			break
+		_log_critical("Could not launch without mods: " + cleanup_error)
+		var dialog := ConfirmationDialog.new()
+		dialog.title = "Could not launch without mods"
+		dialog.dialog_text = cleanup_error + "\n\nRetry after resolving the problem, or quit this launch."
+		dialog.ok_button_text = "Retry"
+		dialog.cancel_button_text = "Quit"
+		dialog.dialog_autowrap = true
+		dialog.min_size = Vector2i(520, 160)
+		_attach_ui_dialog(dialog)
+		if not await _await_dialog_choice(dialog):
+			get_tree().quit()
+			return
 	if DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(HOOK_PACK_DIR)):
 		_static_wipe_hook_cache()
 		_log_info("[Hooks] Cleaned up unused hook artifacts")

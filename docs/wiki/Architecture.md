@@ -71,7 +71,9 @@ if archive_paths not empty:
     _write_pass_state(archive_paths, new_hash)
     _modloader_restart(false)          # relaunch with --modloader-restart
 else:
-    delete pass state, restore clean override.cfg, wipe hook cache
+    delete pass state and restore clean override.cfg
+    on failure: offer Retry or Quit; do not restart
+    wipe hook cache
     if static init mounted anything:
         _modloader_restart(false)      # a process without the previous mod set
     else:

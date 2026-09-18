@@ -822,6 +822,29 @@ func _remove_retired_state() -> void:
 		_remove_tree(backups, false)
 		_log_info("Removed the unused directory user://.modpack_backups")
 
+# Remove every source of old mounts before an unmodded restart. The empty
+# string means the next process can start without the previous mod set.
+func _clear_unmodded_boot_state(state_path: String = PASS_STATE_PATH, cfg_path: String = "") -> String:
+	state_path = ProjectSettings.globalize_path(state_path)
+	if FileAccess.file_exists(state_path) or DirAccess.dir_exists_absolute(state_path):
+		var err := DirAccess.remove_absolute(state_path)
+		if err != OK:
+			return "Cannot remove %s (error %d). Check the file's permissions or whether another program has it open." % [state_path, err]
+	if cfg_path.is_empty():
+		cfg_path = OS.get_executable_path().get_base_dir().path_join("override.cfg")
+	cfg_path = ProjectSettings.globalize_path(cfg_path)
+	var current := ""
+	if FileAccess.file_exists(cfg_path):
+		var file := FileAccess.open(cfg_path, FileAccess.READ)
+		if file == null:
+			return "Cannot read %s (error %d). Check the game folder's permissions." % [cfg_path, FileAccess.get_open_error()]
+		current = file.get_as_text()
+		file.close()
+	var clean := _clean_override_cfg_content(_read_preserved_cfg_sections(cfg_path))
+	if current != clean and not _static_write_cfg_atomic(cfg_path, clean):
+		return "Cannot write %s (%s). Check the game folder's permissions or whether another program has it open." % [cfg_path, _static_cfg_write_error]
+	return ""
+
 func _restore_clean_override_cfg() -> void:
 	var exe_dir := OS.get_executable_path().get_base_dir()
 	var path := exe_dir.path_join("override.cfg")

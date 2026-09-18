@@ -37,4 +37,6 @@ The loader is registered through `override.cfg` in the game folder. If that file
 
 ## Where the loader writes
 
+If you disable all mods and see **Could not launch without mods**, the loader could not remove its old boot state or clean `override.cfg`. The dialog names the failed file. Check its permissions or close the program holding it, then choose **Retry**. **Quit** cancels the launch. The loader does not restart with stale mod state.
+
 The mounts that happen before the launcher opens are logged to `modloader_filescope.log` in the user folder. [Config-Files](Config-Files) lists the files the loader writes, what is safe to delete, and how to back up or reset your profiles. [Stability-Canaries](Stability-Canaries) explains the crash recovery in detail: the heartbeat, the restart counter and the sentinel files.

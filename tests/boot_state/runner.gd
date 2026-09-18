@@ -165,6 +165,7 @@ func _run() -> void:
 	_t20_lost_registry_target_names_its_declarers()
 	_t21_cfg_write_failure_names_its_step()
 	_t22_remove_tree_leaves_a_link_target_alone()
+	_t23_unmodded_cleanup_failures()
 
 	_finish()
 
@@ -829,6 +830,45 @@ func _t21_cfg_write_failure_names_its_step() -> void:
 			"T21: the failure names the step and the error code (got '%s')" % why)
 	DirAccess.remove_absolute(good)
 
+# Cleanup must report a failure before the caller can restart into stale
+# state. These paths are confined to the throwaway user folder.
+func _t23_unmodded_cleanup_failures() -> void:
+	_assert(_ml.has_method("_clear_unmodded_boot_state"), "T23: unmodded launch checks cleanup errors")
+	if not _ml.has_method("_clear_unmodded_boot_state"):
+		return
+	var state := "user://t23_state"
+	var cfg_path := "user://t23_override.cfg"
+	DirAccess.make_dir_recursive_absolute(state)
+	var canary := FileAccess.open(state + "/keep", FileAccess.WRITE)
+	canary.store_string("keep")
+	canary.close()
+	var cfg := FileAccess.open(cfg_path, FileAccess.WRITE)
+	var original := "[autoload_prepend]\nOldMod=\"*res://old.gd\"\n[rendering]\nrenderer/rendering_method=\"gl_compatibility\"\n"
+	cfg.store_string(original)
+	cfg.close()
+	var error := str(_ml._clear_unmodded_boot_state(state, cfg_path))
+	_assert(error.contains("Cannot remove") and error.contains("t23_state"),
+			"T23: failed state deletion is reported with its path")
+	_assert(FileAccess.get_file_as_string(cfg_path) == original,
+			"T23: a failed state deletion stops before editing override.cfg")
+	DirAccess.remove_absolute(state + "/keep")
+	DirAccess.remove_absolute(state)
+	var state_file := FileAccess.open(state, FileAccess.WRITE)
+	state_file.store_string("old state")
+	state_file.close()
+	error = str(_ml._clear_unmodded_boot_state(state, "user://t23_missing_dir/override.cfg"))
+	_assert(error.contains("override.cfg") and error.contains("Cannot write"),
+			"T23: failed override cleanup also blocks the restart")
+	error = str(_ml._clear_unmodded_boot_state(state, cfg_path))
+	_assert(error.is_empty() and not FileAccess.file_exists(state),
+			"T23: cleanup succeeds when retried after the failure is resolved")
+	var cleaned := ConfigFile.new()
+	_assert(cleaned.load(cfg_path) == OK and not cleaned.has_section_key("autoload_prepend", "OldMod"),
+			"T23: successful cleanup removes old mod autoloads")
+	_assert(str(cleaned.get_value("rendering", "renderer/rendering_method", "")) == "gl_compatibility",
+			"T23: cleanup preserves unrelated rendering settings")
+	DirAccess.remove_absolute(cfg_path)
+
 # --- T22: the recursive delete does not follow a link ----------------------------
 
 # _remove_tree refuses any path outside user://, but that check is on the
@@ -1178,7 +1218,7 @@ func _cleanup_exe_cfg() -> void:
 func _finish() -> void:
 	_cleanup_exe_cfg()
 	if _failures.is_empty():
-		print("[boot-state] PASS: %d assertion(s) across T1..T22" % _assertions)
+		print("[boot-state] PASS: %d assertion(s) across T1..T23" % _assertions)
 		quit(0)
 		return
 	for m in _failures:
