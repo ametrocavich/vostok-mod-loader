@@ -55,7 +55,7 @@ var _registry_patched: Dictionary = {}
 # for this verb, which is a loader bug nothing else flags.
 func _warn_unknown_registry(verb: String, registry: String) -> void:
 	if registry in Registry.values():
-		push_warning("[Registry] %s: '%s' is declared in the Registry const but has no match arm in %s -- unwired section (loader bug, see the NEW-SECTION CHECKLIST in registry.gd), not a mod typo" \
+		push_warning("[Registry] %s: '%s' is declared in the Registry const but has no match arm in %s -- unwired section (loader bug, see \"Adding a registry section\" in CONTRIBUTING.md), not a mod typo" \
 				% [verb, registry, verb])
 	else:
 		push_warning("[Registry] %s: unknown registry '%s'" % [verb, registry])
@@ -374,6 +374,9 @@ func _array_op_dispatch(registry: String, id: Variant, field: String, op: String
 			return false
 		"shelters":
 			push_warning("[Registry] %s: 'shelters' doesn't support array ops (entries are bare strings)" % op)
+			return false
+		"maps":
+			push_warning("[Registry] %s: 'maps' doesn't support array ops (entries are bare strings)" % op)
 			return false
 		"random_scenes":
 			push_warning("[Registry] %s: 'random_scenes' doesn't support array ops (entries are bare paths)" % op)

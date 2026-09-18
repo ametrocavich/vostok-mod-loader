@@ -237,8 +237,9 @@ The authoritative map sits above the download entry points in
    `override`, `patch`, `_array_op_dispatch` (covers append / prepend /
    remove_from), `remove`, `revert`, `get_entry` and `_enumerate_vanilla`
    (pure-mod sections join the shared `return {}` arm). An omitted arm does
-   not fail soft: the fallthrough warns "unknown registry", which reads as a
-   loader bug. Verbs the section rejects need explicit not-supported arms
+   not fail soft: the fallthrough warns that the section is declared but has
+   no match arm, and names it a loader bug. Verbs the section rejects need
+   explicit not-supported arms
    (see `resources` / `scene_nodes` in `register`).
 3. Create `src/registry/foo.gd` with the verb implementations. Copy the
    closest shape: `fish.gd` is the smallest (register/remove only),
