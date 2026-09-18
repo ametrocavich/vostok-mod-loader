@@ -44,7 +44,7 @@ src/
   hook_status.gd           # hook health record the launcher reads at boot
   lifecycle.gd             # _ready + pass orchestration
   main_menu_hook.gd        # in-game Mods button on the RTV main menu
-  debug.gd                 # test scaffolding (gated behind a config flag)
+  debug.gd                 # developer-mode probes + test-pack scaffolding (config flag)
 ```
 
 53 files, in `build.sh`'s `FILES` order (the concat order).
@@ -268,8 +268,9 @@ The metroprofile v1 payload has one writer and one live reader:
   `_hosted_write_pack_zip`.
 - reader: `src/modpacks.gd: _materialize_modpack_profile` (modpack apply).
   `_validate_modpack` checks the schema before apply touches any state, and
-  `_modpack_sources` reads the `sources` map for the download loop and the
-  key reconciliation.
+  `_get_missing_mods_for_modpack` reads the zip's `sources` and `checksums`
+  for the download loop, and `_modpack_sources` reads `sources` again for
+  the key reconciliation.
 
 A field the writer emits and the reader ignores silently drops. If the field
 is per-mod state stored in `mod_config.cfg` profile sections, also touch:

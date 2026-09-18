@@ -80,7 +80,7 @@ FILES=(
     # Orchestration
     "$SRC/lifecycle.gd"
     "$SRC/main_menu_hook.gd"
-    # Temporary debug scaffolding
+    # Developer-mode probes and the test-pack scaffolding
     "$SRC/debug.gd"
 )
 
