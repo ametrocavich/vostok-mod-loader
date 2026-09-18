@@ -53,6 +53,7 @@
 ##       restores the deadzone the action had
 ##   T14 registry inputs: revert brings back every event of a patched
 ##       action, and a reverted override leaves nothing for remove() to take
+##   T15 registry scenes: remove() refuses an id that carries an override
 extends SceneTree
 
 const FIXTURE_PATH := "res://Scripts/FixtureDispatch.gd"
@@ -71,6 +72,8 @@ var _ml = null          # neutered modloader instance
 var _lib = null         # Engine.get_meta("RTVModLib") -- same object, via the real lookup
 var _node_a: Node = null
 var _node_b: Node = null
+var _fake_db: Node = null      # stand-in Database autoload, see _registry_tree
+var _fake_loader: Node = null  # stand-in Loader autoload
 var _t0 := 0
 
 func _process(_delta: float) -> bool:
@@ -96,7 +99,7 @@ func _finish() -> void:
 	_done = true
 	var ms := Time.get_ticks_msec() - _t0
 	if _failures.is_empty():
-		print("[dispatch] PASS: %d assertion(s) across T1..T14, %d frame(s), %d ms in-engine" % [_checks, _frames, ms])
+		print("[dispatch] PASS: %d assertion(s) across T1..T15, %d frame(s), %d ms in-engine" % [_checks, _frames, ms])
 		quit(0)
 	else:
 		printerr("[dispatch] FAILED: %d of %d assertion(s) (%d ms in-engine); first: %s" % [_failures.size(), _checks, ms, _failures[0]])
@@ -206,6 +209,9 @@ func _teardown() -> void:
 		_node_a.queue_free()
 	if _node_b != null:
 		_node_b.queue_free()
+	for stand_in in [_fake_db, _fake_loader]:
+		if stand_in != null:
+			stand_in.queue_free()
 	if _ml != null:
 		if Engine.has_meta("RTVModLib"):
 			Engine.remove_meta("RTVModLib")
@@ -228,6 +234,7 @@ func _run_tests() -> void:
 	_t12_defaults()
 	_t13_input_deadzone()
 	_t14_input_action_comes_back_whole()
+	_t15_scene_override_blocks_remove()
 
 func _t1_pre() -> void:
 	var id: int = _lib.hook("fixturedispatch-add-pre", func(x, y): _log.append("pre:add:%d:%d" % [x, y]))
@@ -532,3 +539,49 @@ func _t14_input_action_comes_back_whole() -> void:
 	_expect(not InputMap.has_action(own), "T14", "and its action leaves InputMap")
 	if InputMap.has_action(action):
 		InputMap.erase_action(action)
+
+## The registry reaches the Database and Loader autoloads through the scene
+## tree. _has_loaded makes the loader's _ready return at once, so it can join
+## the tree without booting. The two stand-ins carry the fields the rewriter
+## injects into the real scripts.
+func _registry_tree() -> void:
+	if _ml.is_inside_tree():
+		return
+	_ml.set("_has_loaded", true)
+	root.add_child(_ml)
+	_fake_db = _stand_in("Database", "extends Node\n" \
+			+ "var _rtv_mod_scenes: Dictionary = {}\n" \
+			+ "var _rtv_override_scenes: Dictionary = {}\n" \
+			+ "var _rtv_vanilla_scenes: Dictionary = {}\n" \
+			+ "func _get(property: StringName):\n" \
+			+ "\tvar key := String(property)\n" \
+			+ "\tif _rtv_override_scenes.has(key):\n\t\treturn _rtv_override_scenes[key]\n" \
+			+ "\tif _rtv_mod_scenes.has(key):\n\t\treturn _rtv_mod_scenes[key]\n" \
+			+ "\tif _rtv_vanilla_scenes.has(key):\n\t\treturn _rtv_vanilla_scenes[key]\n" \
+			+ "\treturn null\n")
+	_fake_loader = _stand_in("Loader", "extends Node\n" \
+			+ "const Cabin = \"res://Scripts/FixtureDispatch.gd\"\n" \
+			+ "var _rtv_mod_scene_paths: Dictionary = {}\n" \
+			+ "var _rtv_override_scene_paths: Dictionary = {}\n")
+
+func _stand_in(node_name: String, source: String) -> Node:
+	var script := GDScript.new()
+	script.source_code = source
+	script.reload()
+	var node: Node = script.new()
+	node.name = node_name
+	root.add_child(node)
+	return node
+
+func _t15_scene_override_blocks_remove() -> void:
+	_registry_tree()
+	var mine := PackedScene.new()
+	var theirs := PackedScene.new()
+	_expect(_lib.register("scenes", "rtv_test_scene", mine), "T15", "register of a new scene id succeeds")
+	_expect(_lib.override("scenes", "rtv_test_scene", theirs), "T15", "override of that registration succeeds")
+	_expect(not _lib.remove("scenes", "rtv_test_scene"), "T15", "remove() refuses an id that carries an override")
+	_expect(_lib.get_entry("scenes", "rtv_test_scene") == theirs, "T15", "the override still resolves")
+	_expect(_lib.revert("scenes", "rtv_test_scene"), "T15", "revert drops the override")
+	_expect(_lib.get_entry("scenes", "rtv_test_scene") == mine, "T15", "the registration resolves again, it was not removed from under the override")
+	_expect(_lib.remove("scenes", "rtv_test_scene"), "T15", "remove() takes the registration once the override is gone")
+	_expect(_lib.get_entry("scenes", "rtv_test_scene") == null, "T15", "and the id no longer resolves")

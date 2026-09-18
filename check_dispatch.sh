@@ -14,7 +14,7 @@
 # CALLS the wrapped methods, and asserts on the recorded execution order.
 #
 # Behaviors covered (contract: docs/wiki/Hooks.md + src/hooks_api.gd; test
-# ids T1..T14 in tests/codegen/dispatch_runner.gd):
+# ids T1..T15 in tests/codegen/dispatch_runner.gd):
 #   T1  -pre fires before vanilla, with the vanilla arguments
 #   T2  replace: before vanilla; vanilla's return wins unless skip_super(),
 #       which suppresses vanilla and promotes the callback's return
@@ -34,6 +34,7 @@
 #       the deadzone the action had
 #   T14 registry inputs: revert brings back every event, and a reverted
 #       override leaves a vanilla action alone
+#   T15 registry scenes: remove() refuses an id that carries an override
 #
 # Unlike check_codegen.sh this needs NO decompiled vanilla source -- the
 # fixture is synthetic -- so it runs on every machine with a Godot binary

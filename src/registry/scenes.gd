@@ -79,6 +79,10 @@ func _remove_scene(id: String) -> bool:
 	if not db._rtv_mod_scenes.has(id):
 		push_warning("[Registry] remove('scenes', '%s'): not registered by a mod" % id)
 		return false
+	# An override on the registration has this scene as its revert target.
+	if db._rtv_override_scenes.has(id):
+		push_warning("[Registry] remove('scenes', '%s'): entry is an override, use revert instead" % id)
+		return false
 	db._rtv_mod_scenes.erase(id)
 	var reg: Dictionary = _registry_registered.get("scenes", {})
 	reg.erase(id)
