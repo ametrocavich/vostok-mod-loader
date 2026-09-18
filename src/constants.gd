@@ -84,9 +84,9 @@ const RTV_SKIP_LIST: Array[String] = [
 	"MuzzleFlash.gd",      # 50ms flash effect -- dispatch overhead breaks timing
 	"Hit.gd",              # per-shot instantiated -- overhead compounds under fire
 	"ParticleInstance.gd", # GPUParticles3D -- set_script corrupts draw_passes array
-	"Message.gd",          # await-based _ready -- dispatch wrapper doesn't await super, kills coroutine
+	"Message.gd",          # await-based _ready -- not verified in game under the coroutine-aware wrapper
 	"Mine.gd",             # queue_free after detonation -- wrapper lifecycle breaks timing
-	"Explosion.gd",        # await + @onready -- coroutine dies, particles don't emit
+	"Explosion.gd",        # await + @onready -- not verified in game under the coroutine-aware wrapper
 ]
 
 # Serialized to user:// -- ResourceSaver embeds the script path; wrapping breaks saves.

@@ -60,9 +60,9 @@ Runtime-sensitive scripts in `RTV_SKIP_LIST` ([src/constants.gd](https://github.
 | `MuzzleFlash.gd` | 50ms flash effect; dispatch overhead breaks the timing |
 | `Hit.gd` | Instantiated per shot; overhead compounds under fire |
 | `ParticleInstance.gd` | GPUParticles3D; `set_script` corrupts the draw_passes array |
-| `Message.gd` | await-based `_ready`; the wrapper does not await super, which kills the coroutine |
+| `Message.gd` | await-based `_ready`. The wrapper awaits a coroutine body, but this script has not been verified in game under it, so it stays off the wrap surface |
 | `Mine.gd` | `queue_free` after detonation; wrapper lifecycle breaks the timing |
-| `Explosion.gd` | await plus @onready; the coroutine dies and particles never emit |
+| `Explosion.gd` | await plus @onready; same as `Message.gd`, not verified under the coroutine-aware wrapper |
 
 Hooks on these scripts never fire. A mod that declares one gets a warning naming it at generation time. Hook another call site.
 
@@ -170,7 +170,7 @@ Fallback in `_activate_rewritten_scripts` ([src/hook_pack.gd](https://github.com
 `ProjectSettings.load_resource_pack(same_path, true)` called twice in one session is a no-op the second time. How the loader sidesteps it:
 
 - Each `_generate_hook_pack` call writes a new uniquely named zip, `framework_pack_<ticks>.zip`, so a fresh mount always has fresh file offsets. `modloader.gd`'s own mtime is also folded into the state hash (`_compute_state_hash`, [src/boot.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd)), so rebuilding the loader forces a restart even with the mod set unchanged.
-- The dev-mode test-pack re-apply copies the pack to a unique `user://test_pack_reapply_<ticks>.zip` each time ([src/lifecycle.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd)), and sweeps the previous copies first.
+- The dev-mode test-pack re-apply copies the pack to a unique `user://test_pack_reapply_<ticks>.zip` each time (`_test_pack_reapply` in [src/debug.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/debug.gd)), and sweeps the previous copies first.
 
 ### Class_name collision
 
