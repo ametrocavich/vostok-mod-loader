@@ -79,7 +79,7 @@ Godot's `ConfigFile` writes a blank line after every section header, quotes Stri
 The left-hand identifier for each mod. Two shapes:
 
 - `<mod_id>@<version>`: mods whose `mod.txt` declares `[mod] id=...`. This is the normal case. Stable across `.vmz` renames. The version segment may be empty (`scantest_clean@=false`) if `mod.txt` has an `id` but no `version`.
-- `zip:<file_name>`: fallback for mods without a declared `mod_id`. Identity is the archive filename, so renaming the `.vmz` orphans the profile entry.
+- `zip:<file_name>`: fallback for mods without a declared `mod_id`. Identity is the archive filename. A re-package that changes only the extension or a trailing version (`CoolMod_v1.0.zip` to `CoolMod_v1.1.vmz`) keeps its state, matched by normalized filename stem, and the old key is dropped at the next save; any other rename orphans the profile entry.
 
 See [Mod-Format](Mod-Format) for the mod.txt schema and [Profile-Format](Profile-Format) for the JSON format inside a modpack's `profile.json`.
 

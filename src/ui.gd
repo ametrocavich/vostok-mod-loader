@@ -329,31 +329,44 @@ func _schedule_priority_save() -> void:
 	_priority_save_pending = false
 	_save_ui_config()
 
-# Maps for the stored-key preservation pass: live profile_keys, and mod_ids
-# of installed non-zip-keyed entries (to drop stale versioned keys).
+# Maps for the stored-key preservation pass: "live" holds the live
+# profile_keys, "ids" the mod_ids of installed id-keyed entries (to drop stale
+# versioned keys) and "stems" the normalized filename stems of installed
+# filename-keyed entries (to drop the key a re-packaged mod left behind).
 func _collect_live_profile_key_maps() -> Dictionary:
 	var live_keys: Dictionary = {}
 	var installed_ids: Dictionary = {}
+	var installed_stems: Dictionary = {}
 	for entry in _ui_mod_entries:
 		var lk: String = str(entry["profile_key"])
 		live_keys[lk] = true
-		if not lk.begins_with("zip:"):
+		if lk.begins_with("zip:"):
+			installed_stems[_normalized_mod_stem(str(entry["file_name"]))] = true
+		else:
 			installed_ids[str(entry["mod_id"])] = true
-	return {"live": live_keys, "ids": installed_ids}
+	return {"live": live_keys, "ids": installed_ids, "stems": installed_stems}
 
 # True when a stored profile key must survive _save_ui_config's erase and
 # rewrite: keys with a live entry are rewritten from memory; everything else
-# (dev-hidden folder mods, missing mods) is kept, except a stale versioned
-# key whose id resolves to an installed mod, whose state already migrated.
-func _preserve_stored_profile_key(key: String, live_keys: Dictionary, installed_ids: Dictionary) -> bool:
-	if live_keys.has(key):
+# (dev-hidden folder mods, missing mods) is kept, except a key whose state
+# already migrated to a live entry (see _stored_key_migrated). key_maps is
+# _collect_live_profile_key_maps().
+func _preserve_stored_profile_key(key: String, key_maps: Dictionary) -> bool:
+	if (key_maps["live"] as Dictionary).has(key):
 		return false
 	if _hidden_folder_profile_keys.has(key):
 		return true
+	return not _stored_key_migrated(key, key_maps["ids"], key_maps["stems"])
+
+# True when a stored key with no live entry belongs to a mod that is
+# installed under another key, the two carry-overs _resolve_stored_key makes:
+# "<id>@<old version>" for an installed id, and "zip:<old file name>" whose
+# normalized stem matches an installed filename-keyed mod.
+func _stored_key_migrated(key: String, installed_ids: Dictionary, installed_stems: Dictionary) -> bool:
+	if key.begins_with("zip:"):
+		return installed_stems.has(_normalized_mod_stem(key.trim_prefix("zip:")))
 	var at := key.find("@")
-	if at > 0 and installed_ids.has(key.substr(0, at)):
-		return false
-	return true
+	return at > 0 and installed_ids.has(key.substr(0, at))
 
 func _save_ui_config() -> void:
 	# Only the active profile's sections are rebuilt; the rest are carried
@@ -403,7 +416,7 @@ func _rewrite_profile_section(cfg: ConfigFile, section: String, live: Dictionary
 	var preserved: Dictionary = {}
 	if cfg.has_section(section):
 		for key: String in cfg.get_section_keys(section):
-			if _preserve_stored_profile_key(key, key_maps["live"], key_maps["ids"]):
+			if _preserve_stored_profile_key(key, key_maps):
 				preserved[key] = cfg.get_value(section, key)
 		cfg.erase_section(section)
 	for k in live:
@@ -590,8 +603,6 @@ func _rename_profile(new_name: String) -> void:
 	# Stored keys with no live entry still live only under the old name;
 	# carry them across before erasing the old sections.
 	var key_maps := _collect_live_profile_key_maps()
-	var live_keys: Dictionary = key_maps["live"]
-	var installed_ids: Dictionary = key_maps["ids"]
 	for suffix: String in [".enabled", ".priority", ".dep_ignore"]:
 		var old_sec := _profile_sec(old, suffix)
 		if not cfg.has_section(old_sec):
@@ -600,7 +611,7 @@ func _rename_profile(new_name: String) -> void:
 		for key: String in cfg.get_section_keys(old_sec):
 			if cfg.has_section_key(new_sec, key):
 				continue
-			if _preserve_stored_profile_key(key, live_keys, installed_ids):
+			if _preserve_stored_profile_key(key, key_maps):
 				cfg.set_value(new_sec, key, cfg.get_value(old_sec, key))
 	for suffix: String in PROFILE_SUBSECTIONS:
 		var sec := _profile_sec(old, suffix)
@@ -720,12 +731,9 @@ func _missing_mods_in_active_profile() -> Array[String]:
 	var en_sec := _profile_sec(_active_profile, ".enabled")
 	if not cfg.has_section(en_sec):
 		return []
-	var present: Dictionary = {}
-	var ids_installed: Dictionary = {}
-	for entry in _ui_mod_entries:
-		present[entry["profile_key"]] = true
-		if not entry["profile_key"].begins_with("zip:"):
-			ids_installed[entry["mod_id"]] = true
+	var key_maps := _collect_live_profile_key_maps()
+	var present: Dictionary = key_maps["live"]
+	var ids_installed: Dictionary = key_maps["ids"]
 	# Dev-hidden folder mods are still on disk; not missing.
 	for key in _hidden_folder_profile_keys.keys():
 		present[key] = true
@@ -735,8 +743,7 @@ func _missing_mods_in_active_profile() -> Array[String]:
 	for key: String in cfg.get_section_keys(en_sec):
 		if present.has(key):
 			continue
-		var at := key.find("@")
-		if at > 0 and ids_installed.has(key.substr(0, at)):
+		if _stored_key_migrated(key, ids_installed, key_maps["stems"]):
 			continue
 		missing.append(key)
 	missing.sort()

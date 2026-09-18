@@ -50,14 +50,14 @@ This JSON has one writer (`_hosted_manifest_to_profile` in hosted_modpacks.gd) a
 Profile keys identify mods across installs. Two shapes:
 
 - `"<mod_id>@<version>"` for mods whose `mod.txt` declares `[mod] id=...`. The version segment may be empty (`"foo@"`). Identity survives a `.vmz` rename. See `_entry_from_config` in [mod_discovery.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd).
-- `"zip:<file_name>"` for mods without a declared `mod_id`. Identity is the archive filename, so renaming the `.vmz` orphans the profile entry.
+- `"zip:<file_name>"` for mods without a declared `mod_id`. Identity is the archive filename. A re-package that changes only the extension or a trailing version (`CoolMod_v1.0.zip` to `CoolMod_v1.1.vmz`) keeps its state, matched by normalized filename stem, and the old key is dropped at the next save; any other rename orphans the profile entry.
 - `"vostokmods:<slug>"` in a pack pulled from VostokMods, where the mod's `mod.txt` id is not known until the file is downloaded. After the downloads land, apply rewrites these keys to the installed mods' own keys by matching each pack entry's source record against the installed mod's source.
 
 ## Version-mismatch handling on apply
 
 When a stored profile key `foo@1.0` matches no installed mod exactly but `foo@2.0` is installed, id-prefix matching (the first `@` splits the key) applies the stored enabled / priority state to the installed version. The UI flags the entry as `profile_version_mismatch` so the carry-over is visible.
 
-Mods without a declared `mod_id` (`zip:*` keys) do not take part in id-prefix matching; only an exact filename match counts.
+Mods without a declared `mod_id` (`zip:*` keys) do not take part in id-prefix matching. They match on the exact filename first, then on the normalized filename stem (`_normalized_mod_stem`: lowercased, extension and one trailing version token removed). When two stored keys share a stem the match is refused and the mod is treated as new.
 
 ## What apply reproduces
 

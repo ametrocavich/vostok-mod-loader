@@ -87,6 +87,7 @@ func _run() -> void:
 	_t6_pck_never_collapses(ml)
 	_t7_mod_txt_read_record(ml)
 	_t8_priority_does_not_leak_between_profiles(ml)
+	_t9_repackaged_mod_drops_its_old_key(ml)
 
 	_finish()
 
@@ -273,6 +274,47 @@ func _t8_priority_does_not_leak_between_profiles(ml: Object) -> void:
 	var empty: Array[Dictionary] = []
 	ml.set("_ui_mod_entries", empty)
 
+# A mod with no id= is keyed by its filename, and a re-package carries its
+# state over by normalized stem. The old "zip:" key is then stale: it must not
+# be kept on save (two stored keys with one stem stop the next carry-over) and
+# must not show up as a missing mod.
+func _t9_repackaged_mod_drops_its_old_key(ml: Object) -> void:
+	var cfg_path := str(ml.UI_CONFIG_PATH)
+	for p in [cfg_path, cfg_path + ".bak"]:
+		if FileAccess.file_exists(p):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
+	var seed := ConfigFile.new()
+	seed.set_value("settings", "active_profile", "Default")
+	seed.set_value("profile.Default.enabled", "zip:CoolMod_v1.0.zip", false)
+	seed.set_value("profile.Default.priority", "zip:CoolMod_v1.0.zip", 12)
+	seed.set_value("profile.Default.enabled", "zip:Gone.zip", true)
+	_assert(seed.save(cfg_path) == OK, "T9: seeded mod_config.cfg in the throwaway user://")
+	var live := _entry("CoolMod_v1.1.zip", "")
+	var entries: Array[Dictionary] = [live]
+	ml.set("_ui_mod_entries", entries)
+	ml.set("_active_profile", "Default")
+	ml._apply_profile_to_entries(seed, "Default")
+	_assert(not bool(live["enabled"]) and int(live["priority"]) == 12,
+			"T9: the re-packaged mod picks up the state stored under its old filename")
+	var missing: Array = ml._missing_mods_in_active_profile()
+	_assert(not missing.has("zip:CoolMod_v1.0.zip"),
+			"T9: the old filename's key is not reported as a missing mod (got %s)" % str(missing))
+	_assert(missing.has("zip:Gone.zip"), "T9: a mod that really is gone is still reported")
+	ml._save_ui_config()
+	var saved := ConfigFile.new()
+	_assert(saved.load(cfg_path) == OK, "T9: the saved config loads")
+	_assert(saved.has_section_key("profile.Default.enabled", "zip:CoolMod_v1.1.zip")
+			and not saved.has_section_key("profile.Default.enabled", "zip:CoolMod_v1.0.zip")
+			and not saved.has_section_key("profile.Default.priority", "zip:CoolMod_v1.0.zip"),
+			"T9: the save writes the live key and drops the stale one")
+	_assert(saved.has_section_key("profile.Default.enabled", "zip:Gone.zip"),
+			"T9: a stored key with no live counterpart is kept")
+	var empty: Array[Dictionary] = []
+	ml.set("_ui_mod_entries", empty)
+	for p in [cfg_path, cfg_path + ".bak"]:
+		if FileAccess.file_exists(p):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
+
 func _entry(file_name: String, version: String) -> Dictionary:
 	return {
 		"file_name": file_name,
@@ -304,7 +346,7 @@ func _fail(msg: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("[identity] PASS: %d assertion(s) across T1..T8" % _assertions)
+		print("[identity] PASS: %d assertion(s) across T1..T9" % _assertions)
 		quit(0)
 		return
 	for m in _failures:
