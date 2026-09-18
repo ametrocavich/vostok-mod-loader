@@ -105,7 +105,7 @@ On a failure the `.tmp` is removed and nothing replaces the previous `modloader.
 
 Source: [check.sh](https://github.com/ametrocavich/vostok-mod-loader/blob/development/check.sh). Run it after `build.sh`. It needs a Godot 4.6.1 binary: `GODOT=/path/to/godot ./check.sh`, or `godot` on PATH, or the maintainer's local install path baked into the script.
 
-The script never opens a window and never touches the game. It copies `modloader.gd` into a throwaway project under the system temp dir and runs Godot with `--headless --check-only`, which parses and type-checks and then exits. A 27,000-line single-namespace file fails in ways review does not catch (two files defining the same function, a call to a renamed function, a merge joining halves that were never built together), and any of those is a parse error in an autoload, which means the game does not start.
+The script never opens a window and never touches the game. It copies `modloader.gd` into a throwaway project under the system temp dir and runs Godot with `--headless --check-only`, which parses and type-checks and then exits. A single-namespace file of more than 23,000 lines fails in ways review does not catch (two files defining the same function, a call to a renamed function, a merge joining halves that were never built together), and any of those is a parse error in an autoload, which means the game does not start.
 
 After the parse, `check.sh` runs two grep invariants and six harnesses. Every harness assembles its own throwaway project, loads a neutered copy of `modloader.gd` (the `_filescope_mounted` initializer replaced by `{}`, so static init cannot run), and exits non-zero on any failed assertion. Each `check_*.sh` also takes `--prove`: it breaks the code under test in the temp copy and requires the harness to fail, which is how you know the gate can fail at all.
 
@@ -140,7 +140,7 @@ Automates the version bump and the changelog from [Conventional Commits](https:/
 
 1. A PR merges to `master`.
 2. `release-please-action@v4` parses the Conventional Commits since the last tag (`release-please-config.json`, `.release-please-manifest.json`).
-3. It opens a release PR ("chore(master): release <version>") that bumps `MODLOADER_VERSION` in `src/constants.gd` and updates `CHANGELOG.md`. That constant is the only file release-please edits.
+3. It opens a release PR ("chore(master): release <version>") that bumps `MODLOADER_VERSION` in `src/constants.gd`, updates `CHANGELOG.md` and records the version in `.release-please-manifest.json`. `src/constants.gd` is the only source file it edits.
 4. Merging the release PR creates the tag and a draft GitHub Release.
 5. The same workflow then runs `./build.sh`, downloads Godot and runs `./check.sh` against the exact bytes about to ship (release-please rewrote `constants.gd` on the way in, so no PR compiled this file), uploads `modloader.gd`, `override.cfg`, `windows-installer.bat` and `linux-installer.sh` as release assets, and only then flips the release from draft to published.
 
