@@ -132,6 +132,8 @@ Two ways:
 **Reset one profile to empty**
 Delete all of its sections: `[profile.<name>.enabled]`, `[profile.<name>.priority]`, and, if present, `[profile.<name>.dep_ignore]` and `[profile.<name>.settings]`. Keep your other profiles.
 
+A `mod_config.cfg` the launcher cannot read is kept beside it as `mod_config.cfg.corrupt` before the `.bak` (or a fresh Default) takes its place, so nothing you typed by hand is lost. It is safe to delete once you have what you need from it.
+
 **Reset everything to fresh-install state**
 Delete `mod_config.cfg` (and `mod_config.cfg.bak`, or the launcher recovers from it). Next launch creates a new `Default` profile with every installed mod enabled.
 
@@ -227,6 +229,7 @@ Everything here is regenerated on demand:
 | `user://modloader_pass2_dirty` | Pass-2-in-progress marker. Present on the next launch = Pass 2 was interrupted (crash, force-quit). Next launch wipes state and retries. |
 | `user://modloader_crash_streak` | Count of consecutive crashed two-pass restarts. At 2 the loader refuses the two-pass restart and finishes in a single pass instead: mods that can load still load, and the launcher stays reachable so you can disable the one that crashes. Cleared by a clean boot. |
 | `user://modloader_conflicts.txt` | Developer mode only. The conflict report (which mods claim the same `res://` paths). |
+| `user://modloader_filescope.log` | What static init mounted and reset before the launcher opened, rewritten every launch. The first place to look when mods did not mount. |
 | `user://modloader_hook_status.json` | What happened to the hook system last session (whether the script rewrites took effect, or why generation stopped). The launcher reads it on the next start and shows a banner on the Mods tab when hooks did not work. Ignored once the loader, the game executable or the game `.pck` changes. |
 | `user://modloader_game_updated` | Written when the game executable or `.pck` changed since the last run. The Mods tab shows a "Road to Vostok was updated" notice while it exists; the next session in which the hook rewrites work removes it. |
 | `user://mws_cache/` | Browse-tab caches. `thumbs/` holds ModWorkshop thumbnail and banner images (VostokMods images stay in memory). `landing_<site>.json` holds each site's last successful Browse landing so the offline view survives a relaunch. `mods_meta_v2.json` caches the host detail each installed mod's row shows on the Mods tab. Search and filter responses are cached in memory only. |

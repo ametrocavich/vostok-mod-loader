@@ -37,4 +37,4 @@ The loader is registered through `override.cfg` in the game folder. If that file
 
 ## Where the loader writes
 
-The mounts that happen before the launcher opens are logged to `modloader_filescope.log` in the user folder. [Config-Files](Config-Files) lists every file the loader writes, what is safe to delete, and how to back up or reset your profiles. [Stability-Canaries](Stability-Canaries) explains the crash recovery in detail: the heartbeat, the restart counter and the sentinel files.
+The mounts that happen before the launcher opens are logged to `modloader_filescope.log` in the user folder. [Config-Files](Config-Files) lists the files the loader writes, what is safe to delete, and how to back up or reset your profiles. [Stability-Canaries](Stability-Canaries) explains the crash recovery in detail: the heartbeat, the restart counter and the sentinel files.
