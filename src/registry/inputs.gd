@@ -86,6 +86,7 @@ func _override_input(id: String, data: Variant) -> bool:
 		_registry_overridden["inputs"] = ov
 	InputMap.action_erase_events(id)
 	InputMap.action_add_event(id, payload["default_event"])
+	InputMap.action_set_deadzone(id, payload["deadzone"])
 	# Update the metadata dict too so get_entry/patch see the current label.
 	var reg: Dictionary = _registry_registered.get("inputs", {})
 	reg[id] = payload
@@ -111,7 +112,7 @@ func _patch_input(id: String, fields: Dictionary) -> bool:
 		reg[id] = {
 			"display_label": id,
 			"default_event": null,
-			"deadzone": _DEFAULT_DEADZONE,
+			"deadzone": InputMap.action_get_deadzone(id),
 			"vanilla_stub": true,
 		}
 	var current: Dictionary = reg[id]
@@ -149,7 +150,9 @@ func _patch_input(id: String, fields: Dictionary) -> bool:
 					push_warning("[Registry] patch('inputs', '%s'): deadzone must be a number" % id)
 					continue
 				if not stash.has(fname):
-					stash[fname] = current.get("deadzone", _DEFAULT_DEADZONE)
+					# The live value: the metadata of an action this registry
+					# did not add starts from a default, not from InputMap.
+					stash[fname] = InputMap.action_get_deadzone(id)
 				InputMap.action_set_deadzone(id, float(val))
 				current["deadzone"] = float(val)
 		any_applied = true

@@ -49,6 +49,8 @@
 ##   T11 a coroutine vanilla method still awaits and returns its value,
 ##       with pre/post dispatch intact
 ##   T12 defaulted parameters flow through when omitted at the call site
+##   T13 registry inputs: an override's deadzone reaches InputMap, and revert
+##       restores the deadzone the action had
 extends SceneTree
 
 const FIXTURE_PATH := "res://Scripts/FixtureDispatch.gd"
@@ -92,7 +94,7 @@ func _finish() -> void:
 	_done = true
 	var ms := Time.get_ticks_msec() - _t0
 	if _failures.is_empty():
-		print("[dispatch] PASS: %d assertion(s) across T1..T12, %d frame(s), %d ms in-engine" % [_checks, _frames, ms])
+		print("[dispatch] PASS: %d assertion(s) across T1..T13, %d frame(s), %d ms in-engine" % [_checks, _frames, ms])
 		quit(0)
 	else:
 		printerr("[dispatch] FAILED: %d of %d assertion(s) (%d ms in-engine); first: %s" % [_failures.size(), _checks, ms, _failures[0]])
@@ -222,6 +224,7 @@ func _run_tests() -> void:
 	_t10_two_instances()
 	await _t11_coroutine()
 	_t12_defaults()
+	_t13_input_deadzone()
 
 func _t1_pre() -> void:
 	var id: int = _lib.hook("fixturedispatch-add-pre", func(x, y): _log.append("pre:add:%d:%d" % [x, y]))
@@ -457,3 +460,38 @@ func _t12_defaults() -> void:
 	_expect_eq(r, 4, "T12", "WithDefaults(3,1) with the default overridden")
 	_expect_log("T12-explicit", ["pre:wd:3:1", "vanilla:WithDefaults:3:1"])
 	_unhook_all([id])
+
+# --- registry -----------------------------------------------------------------
+# T13 on reach the registry through the same Engine meta the hooks use.
+
+## An InputMap action the registry did not add, with two key events and a
+## deadzone that is not the engine default.
+func _vanilla_action(action: String) -> void:
+	if InputMap.has_action(action):
+		InputMap.erase_action(action)
+	InputMap.add_action(action, 0.2)
+	for code in [KEY_A, KEY_B]:
+		var ev := InputEventKey.new()
+		ev.keycode = code
+		InputMap.action_add_event(action, ev)
+
+func _key_event(code: Key) -> InputEventKey:
+	var ev := InputEventKey.new()
+	ev.keycode = code
+	return ev
+
+func _t13_input_deadzone() -> void:
+	var action := "rtv_dispatch_deadzone_action"
+	_vanilla_action(action)
+	_expect(_lib.override("inputs", action, {"default_event": _key_event(KEY_C), "deadzone": 0.8}), "T13", "override of an existing action succeeds")
+	_expect(is_equal_approx(InputMap.action_get_deadzone(action), 0.8), "T13",
+			"the deadzone an override asks for reaches InputMap (got %f)" % InputMap.action_get_deadzone(action))
+	_expect(_lib.revert("inputs", action), "T13", "revert of the override succeeds")
+	_expect(is_equal_approx(InputMap.action_get_deadzone(action), 0.2), "T13",
+			"reverting the override restores the action's own deadzone (got %f)" % InputMap.action_get_deadzone(action))
+	_expect(_lib.patch("inputs", action, {"deadzone": 0.9}), "T13", "a deadzone patch succeeds")
+	_expect(is_equal_approx(InputMap.action_get_deadzone(action), 0.9), "T13", "the patched deadzone reaches InputMap")
+	_expect(_lib.revert("inputs", action), "T13", "revert of the patch succeeds")
+	_expect(is_equal_approx(InputMap.action_get_deadzone(action), 0.2), "T13",
+			"reverting a deadzone patch restores the live value, not the engine default (got %f)" % InputMap.action_get_deadzone(action))
+	InputMap.erase_action(action)
