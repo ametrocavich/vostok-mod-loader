@@ -61,7 +61,7 @@ Downloads run one at a time. While one is in flight, clicking **Download** on ot
 
 If the site rate-limits the launcher mid-queue, the next download waits out the cooldown with a countdown (`Rate limited by <Site> -- resuming in <N>s`) instead of failing.
 
-Closing the launcher (Launch or the X) mid-download is safe: the in-flight download still finishes writing to disk, so you will not end up with a half-installed mod.
+Closing the launcher (Launch or the X) mid-download never leaves a half-installed mod: a download is written to the mods folder only once all of it has arrived. If Launch restarts the game to apply your mod changes before a download finishes, that download is dropped and nothing of it is kept; start it again next time.
 
 ## How dependencies surface
 

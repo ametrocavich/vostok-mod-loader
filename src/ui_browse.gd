@@ -549,17 +549,12 @@ func _browse_perform_download(state: Dictionary, item: Dictionary) -> void:
 		if is_instance_valid(tabs):
 			_rebuild_mods_tab(tabs)
 
-	if failures.is_empty():
-		if any_success:
-			# Re-render so duplicate rows flip to Installed, keeping the scroll position.
-			if is_instance_valid(scroll):
-				state["restore_scroll"] = int(scroll.scroll_vertical)
-			_browse_route(state)
-		return
-
-	# At least one failure: keep the report on screen, sync rows in place.
+	# Sync rows in place, so the same mod's other rows flip to Installed. A
+	# refetch would drop the pages loaded so far and the status line above.
 	if any_success and is_instance_valid(scroll):
 		_refresh_browse_installed_rows(scroll)
+	if failures.is_empty():
+		return
 	if batch_total > 1:
 		var fail_strs := PackedStringArray()
 		for f_v in failures:
@@ -642,7 +637,6 @@ func _browse_render_rows(state: Dictionary, rows: Array, append: bool) -> void:
 func _browse_discover_fetch(state: Dictionary) -> void:
 	var sort_dropdown: OptionButton = state["sort_dropdown"]
 	var status_lbl: Label = state["status_lbl"]
-	var scroll: ScrollContainer = state["scroll"]
 	var list: VBoxContainer = state["list"]
 	var load_more_btn: Button = state["load_more_btn"]
 	var provider := str(state["provider"])
@@ -653,10 +647,6 @@ func _browse_discover_fetch(state: Dictionary) -> void:
 		return
 	state["fetch_seq"] = int(state["fetch_seq"]) + 1
 	var my_seq := int(state["fetch_seq"])
-	var my_restore := -1
-	if state.has("restore_scroll"):
-		my_restore = int(state["restore_scroll"])
-		state.erase("restore_scroll")
 	v["featured"] = true
 	if sort_dropdown.visible and sort_dropdown.selected != 0:
 		sort_dropdown.select(0)
@@ -734,10 +724,6 @@ func _browse_discover_fetch(state: Dictionary) -> void:
 		_browse_set_status(state, _browse_empty_copy(state), COL_TEXT_DIM)
 	else:
 		_browse_set_status(state, "%d mods" % total, COL_TEXT_DIM)
-	if my_restore >= 0:
-		await get_tree().process_frame
-		if int(state["fetch_seq"]) == my_seq and is_instance_valid(scroll):
-			scroll.scroll_vertical = my_restore
 
 
 # The plain listing: search, sort and category, one page per call.
@@ -750,10 +736,6 @@ func _browse_filter_fetch(state: Dictionary, append: bool) -> void:
 	var v: Dictionary = _browse_view(state)
 	state["fetch_seq"] = int(state["fetch_seq"]) + 1
 	var my_seq := int(state["fetch_seq"])
-	var my_restore := -1
-	if state.has("restore_scroll"):
-		my_restore = int(state["restore_scroll"])
-		state.erase("restore_scroll")
 	var cursor := str(v["cursor"]) if append else ""
 	if not append:
 		v["cursor"] = ""
@@ -807,8 +789,8 @@ func _browse_filter_fetch(state: Dictionary, append: bool) -> void:
 	v["has_more"] = bool(page["has_more"])
 	_browse_clear_banner(state)
 	_browse_populate_categories(state)
-	if append and my_restore < 0 and is_instance_valid(scroll):
-		my_restore = int(scroll.scroll_vertical)
+	# Load more re-renders the whole list; keep the player where they were.
+	var my_restore := int(scroll.scroll_vertical) if append and is_instance_valid(scroll) else -1
 	_browse_render_rows(state, rows, false)
 	# Count from the data: queue_free() is deferred, so freed rows still count this frame.
 	v["shown_count"] = rows.size()
