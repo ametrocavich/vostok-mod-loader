@@ -4,7 +4,7 @@ The **Mods** tab is the first tab in the launcher window and the one you use mos
 
 ## The list
 
-Each row is one mod: a checkbox, the mod's name and author, and its load-order number. Click the name of a mod that came from VostokMods or ModWorkshop to see its site details without leaving the launcher. A mod that is off in the current profile shows dimmed.
+Each row is one mod: a checkbox, the mod's name, and its load-order number. A mod the launcher can match to a site also shows its thumbnail and `by <author>`. Click the name of a mod that came from VostokMods or ModWorkshop to see its site details without leaving the launcher. A mod that is off in the current profile shows dimmed.
 
 The **Load order** column on the right previews the order the game will load your enabled mods in. It updates as you edit.
 
@@ -16,7 +16,7 @@ Above the list:
 
 ## Load order
 
-The number beside each mod is its priority. A higher number loads later, and a mod that loads later wins when two mods ship the same file. The default is `0` and the range is -999 to 999. Mods with the same priority load in filename order.
+The number beside each mod is its priority. A higher number loads later, and a mod that loads later wins when two mods ship the same file. The default is `0` and the range is -999 to 999. Mods with the same priority load in order of mod name, then filename.
 
 Priorities are saved per profile. A mod's own `mod.txt` can suggest a priority; the number you set here overrides it.
 
@@ -38,7 +38,7 @@ A profile can name a mod that is no longer in your `mods` folder, for example af
 
 ## Removing a mod
 
-The **Remove** button at the right of a row deletes the mod's file from your `mods` folder after a confirmation, and its profile entries go with it. Developer-mode folders cannot be removed from here; use **Open mods folder**.
+The trash-can button at the right of a row (its hint reads `Permanently delete this mod`) deletes the mod's file from your `mods` folder after a confirmation, and its profile entries go with it. Developer-mode folders cannot be removed from here; use **Open mods folder**.
 
 ## Warnings and tags
 
@@ -55,9 +55,9 @@ A banner at the top of the tab appears when the hook system did not work last se
 
 The **Developer mode** checkbox in the toolbar turns on verbose logging, a conflict report, and loading of unpacked folder mods from the `mods` folder. It is meant for people writing mods; [Developer-Mode](Developer-Mode) lists everything it changes. Toggling it rescans the `mods` folder and keeps your active profile.
 
-## Bottom bar
+## Toolbar and bottom bar
 
-**UI scale** resizes the launcher. **Open mods folder** opens the `mods` folder in your file manager. The launch button reads **Launch modded** when at least one enabled mod will load, **Launch unmodded (N blocked)** when every enabled mod is blocked by a missing dependency, and **Launch** when nothing is enabled; closing the window does the same as clicking it. **Launch vanilla** starts the game once with no mods and leaves your profiles alone.
+In the toolbar at the top of the tab, **Open mods folder** opens the `mods` folder in your file manager and **UI scale** resizes the launcher. In the bottom bar, the launch button reads **Launch modded** when at least one enabled mod will load, **Launch unmodded (N blocked)** when every enabled mod is blocked by a missing dependency, and **Launch** when nothing is enabled; closing the window does the same as clicking it. **Launch vanilla** starts the game once with no mods and leaves your profiles alone.
 
 Once the game is running, the **Mods** button on the main menu reopens this window. If you change which mods load there, closing it restarts the game into the new mod set. Renaming a profile, or creating one with **Copy current selection**, changes nothing that loads, so it does not restart.
 
