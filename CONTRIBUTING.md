@@ -113,9 +113,12 @@ Triggers a version bump:
 |------|------|-------------|
 | `feat:` | minor (3.3.1 -> 3.4.0) | New feature or user-facing behavior |
 | `fix:` | patch (3.3.1 -> 3.3.2) | Bug fix, no new functionality |
+| `perf:` | patch | Performance improvement; listed under "Performance Improvements" |
 | `feat!:` or `fix!:` | major (3.3.1 -> 4.0.0) | Breaking change (API rename, removed feature) |
 
-No version bump (still listed in the changelog under "Miscellaneous"):
+No version bump, and not listed in the changelog: `release-please-config.json`
+sets no `changelog-sections`, so release-please hides these types. Work that
+players should read about in the release notes needs a `feat:` or `fix:` title.
 
 | Type | When to use |
 |------|-------------|
@@ -123,7 +126,6 @@ No version bump (still listed in the changelog under "Miscellaneous"):
 | `docs:` | Documentation only |
 | `refactor:` | Code restructure, no behavior change |
 | `test:` | Test changes only |
-| `perf:` | Performance improvement |
 | `build:` / `ci:` / `style:` | Build, CI, formatting |
 
 ### Examples
