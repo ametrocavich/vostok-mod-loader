@@ -81,6 +81,7 @@ func _run() -> void:
 	_t15_warnings_and_author_notes(ml)
 	await _t12_apply_failure_shape(ml)
 	await _t16_unload_leaves_no_pack_mcm_behind(ml)
+	await _t17_pack_keys_follow_the_installed_mods(ml)
 
 	_finish()
 
@@ -903,6 +904,56 @@ func _t16_unload_leaves_no_pack_mcm_behind(ml: Object) -> void:
 			"T16: unload restores the player's own MCM and nothing of the pack's")
 	_pack_cleanup(ml)
 
+# A pack keys a mod it has never seen installed by its host ("vostokmods:foo").
+# Once the mod is installed the slot's key is rewritten to the mod's own key.
+# That has to happen on every path a mod can land: an apply over a slot kept
+# from an earlier apply, and a download outside the apply loop (a missing-mod
+# row's Download, Retry).
+func _t17_pack_keys_follow_the_installed_mods(ml: Object) -> void:
+	_assert(ml.has_method("_modpack_reconcile_active"), "T17: the loader has _modpack_reconcile_active")
+	if not ml.has_method("_modpack_reconcile_active"):
+		return
+	_pack_setup(ml)
+	var cfg_path := str(ml.UI_CONFIG_PATH)
+	var pack := {"metroprofile": 1, "name": "Round Trip",
+			"enabled": {"a@1.0": true, "vostokmods:foo": true},
+			"sources": {"vostokmods:foo": {"provider": "vostokmods", "id": "foo"}}}
+	var entry := _pack_write(ml, pack, "1")
+	var slot := "modpack__" + str(entry.get("sanitized_name", ""))
+	# An earlier apply failed to download foo and left the slot keyed by the
+	# pack. The player unloaded, installed foo another way, and applies again.
+	var kept := ConfigFile.new()
+	kept.load(cfg_path)
+	kept.set_value("profile." + slot + ".enabled", "a@1.0", true)
+	kept.set_value("profile." + slot + ".enabled", "vostokmods:foo", true)
+	kept.set_value("profile." + slot + ".priority", "a@1.0", 77)
+	kept.save(cfg_path)
+	var r: Dictionary = await ml.apply_modpack(entry, null, Callable())
+	_assert(bool(r.get("ok", false)), "T17: the pack applies over its kept slot (got %s)" % str(r.get("error", "")))
+	var after_apply := ConfigFile.new()
+	after_apply.load(cfg_path)
+	_assert(int(after_apply.get_value("profile." + slot + ".priority", "a@1.0", 0)) == 77,
+			"T17: applying over a kept slot keeps the player's edit")
+	_assert(after_apply.has_section_key("profile." + slot + ".enabled", "foo@2.0")
+			and not after_apply.has_section_key("profile." + slot + ".enabled", "vostokmods:foo"),
+			"T17: applying over a kept slot reconciles its keys with the mods installed since")
+
+	# While the pack is active a download lands outside the apply loop.
+	var stub := ConfigFile.new()
+	stub.load(cfg_path)
+	stub.erase_section_key("profile." + slot + ".enabled", "foo@2.0")
+	stub.set_value("profile." + slot + ".enabled", "vostokmods:foo", true)
+	stub.save(cfg_path)
+	_assert(int(ml._modpack_reconcile_active()) == 1, "T17: the active pack's stub key is reconciled")
+	var resolved := ConfigFile.new()
+	resolved.load(cfg_path)
+	_assert(resolved.has_section_key("profile." + slot + ".enabled", "foo@2.0")
+			and not resolved.has_section_key("profile." + slot + ".enabled", "vostokmods:foo"),
+			"T17: the stub key moved to the key the mod is installed under")
+	ml.unload_modpack(null)
+	_assert(int(ml._modpack_reconcile_active()) == 0, "T17: with no pack active there is nothing to reconcile")
+	_pack_cleanup(ml)
+
 # The update check in two pure halves: which installed mods are asked about,
 # and what the site's answers mean. A dev folder, a mod with no version, no
 # source, no readable mod.txt or a host that cannot serve files is skipped;
@@ -1076,7 +1127,7 @@ func _fail(msg: String) -> void:
 func _finish() -> void:
 	_done = true
 	if _failures.is_empty():
-		print("[host] PASS: %d assertion(s) across T1..T16" % _assertions)
+		print("[host] PASS: %d assertion(s) across T1..T17" % _assertions)
 		quit(0)
 		return
 	for m in _failures:

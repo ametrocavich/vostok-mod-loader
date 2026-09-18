@@ -1064,6 +1064,8 @@ func _mods_build_missing_section(list: VBoxContainer, tabs: TabContainer) -> voi
 					_mod_update_in_flight.erase(captured_fn)
 					if bool(r.get("ok", false)):
 						_reload_entries_for_active_profile()
+						# A pack's missing row is keyed by the pack; move it to the key the mod landed under.
+						_modpack_reconcile_active()
 						if is_instance_valid(tabs):
 							_rebuild_mods_tab(tabs)
 					else:

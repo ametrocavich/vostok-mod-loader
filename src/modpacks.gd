@@ -357,6 +357,28 @@ func _modpack_reconcile_profile_keys(profile_name: String, sources: Dictionary) 
 	return changed
 
 
+## With a pack active, rewrite its slot's keys to the mods installed now and
+## re-apply the slot to the live entries when any key moved. For a download
+## that lands outside the apply loop: Retry, or a missing-mod row's Download.
+## Returns the number of keys rewritten.
+func _modpack_reconcile_active() -> int:
+	var active := get_active_modpack()
+	if active == "":
+		return 0
+	if _modpack_entries.is_empty():
+		_modpack_entries = collect_modpack_metadata()
+	for mp in _modpack_entries:
+		if str(mp.get("sanitized_name", "")) != active:
+			continue
+		var changed := _modpack_reconcile_profile_keys(MODPACK_PROFILE_PREFIX + active, _modpack_sources(mp))
+		if changed > 0:
+			var cfg := ConfigFile.new()
+			if cfg.load(UI_CONFIG_PATH) == OK:
+				_apply_profile_to_entries(cfg, _active_profile)
+		return changed
+	return 0
+
+
 ## The pack's source map, read from the zip so reconcile sees what the download loop used.
 func _modpack_sources(entry: Dictionary) -> Dictionary:
 	var file_path: String = str(entry.get("file_path", ""))
@@ -645,6 +667,9 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 			DirAccess.make_dir_recursive_absolute(_mcm_snapshot_dir(backup_profile))
 
 		# 2. Materialize the modpack profile from the zip unless the slot exists (user edits).
+		# ConfigFile.load merges into the object, so it is cleared before every
+		# reload: a key erased on disk since would come back from the stale copy.
+		cfg.clear()
 		var cfg2_err := cfg.load(UI_CONFIG_PATH)
 		if cfg2_err != OK:
 			# Same empty-cfg hazard as step 1; the reconciler clears the flag next boot.
@@ -658,12 +683,17 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 				_persist_ui_cfg(cfg)
 				return _modpack_apply_failure(str(mat_result.get("error", "")),
 						done_dl, failed_dl, failures)
+		else:
+			# The slot was kept from an earlier apply: match its keys to the mods
+			# installed since, whether this apply downloaded them or not.
+			_modpack_reconcile_profile_keys(modpack_profile, _modpack_sources(entry))
 
 		# 3. Switch to the modpack profile (handles the MCM swap).
 		_switch_profile(modpack_profile)
 
 		# 4. Re-assert active_modpack (the switch rewrote cfg), but only when the
 		# reload succeeded; the flag is already on disk from step 1.
+		cfg.clear()
 		var cfg5_err := cfg.load(UI_CONFIG_PATH)
 		if cfg5_err == OK:
 			cfg.set_value("settings", "active_modpack", sanitized)
@@ -879,16 +909,11 @@ func retry_failed_downloads(failures: Array, progress: Callable = Callable()) ->
 			_log_warning("[Modpack][Retry]   failed: " + pk + " -- " + err)
 	if newly_downloaded > 0:
 		_ui_mod_entries = collect_mod_metadata()
-		# The retried mods may have landed under names the pack did not use.
-		var active := get_active_modpack()
-		if active != "":
-			for mp in _modpack_entries:
-				if str((mp as Dictionary).get("sanitized_name", "")) == active:
-					_modpack_reconcile_profile_keys(MODPACK_PROFILE_PREFIX + active, _modpack_sources(mp))
-					break
 		var cfg := ConfigFile.new()
 		cfg.load(UI_CONFIG_PATH)
 		_apply_profile_to_entries(cfg, _active_profile)
+		# The retried mods may have landed under names the pack did not use.
+		_modpack_reconcile_active()
 		_mark_mod_set_changed()
 	_modpack_apply_in_progress = false
 	return {"downloaded": newly_downloaded, "failures": still_failed, "cancelled": _modpack_apply_cancelled}
