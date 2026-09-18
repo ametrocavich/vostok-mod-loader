@@ -200,6 +200,8 @@ Within one hook name, callbacks run in ascending `priority` (default 100). Ties 
 
 `hook()`/`unhook()` called from inside a callback affect only future dispatches. The in-flight dispatch iterates a snapshot, so a hook registered mid-dispatch joins the next dispatch, and an unhooked one still finishes the current pass.
 
+A callback whose owner was freed (a mod node that left the tree without calling `unhook`) is unhooked the next time its hook name dispatches, or when another mod asks for the replace slot it held. Calling `unhook` yourself is still the tidy way out.
+
 Hooks fire exactly once per logical call even across `extends` chains: if a mod script extends wrapped vanilla and calls `super()`, a re-entry guard prevents double dispatch. The flip side is that a mod override method that does not call `super()` suppresses hook dispatch for that method entirely. That is the documented contract.
 
 ## Wrap surface -- why `hook()` alone is not enough
@@ -438,7 +440,7 @@ Notes:
 
 - Void methods use a structurally similar template but fire `_dispatch("<hook_base>-post", ...)` (return ignored) instead of `_dispatch_post`.
 - Coroutines: `await` is prepended to the vanilla call and the replace-callback call only when the vanilla body itself contains `await`. In GDScript any function whose body contains `await` is a coroutine, so an unconditional `await` would turn every wrapped method into one and break every non-awaited call site at parse time; `check.sh` and `check_codegen.sh` lock the rule.
-- The dispatch helpers (`_dispatch`, `_dispatch_post`, `_dispatch_deferred` in `src/hooks_api.gd`) iterate a `.duplicate()` snapshot of the entry array. That is what makes mid-dispatch `hook()`/`unhook()` safe.
+- The dispatch helpers (`_dispatch`, `_dispatch_post`, `_dispatch_deferred` in `src/hooks_api.gd`) iterate the snapshot `_live_hook_entries` returns, which leaves out and unhooks any entry whose Callable is no longer valid. The snapshot is what makes mid-dispatch `hook()`/`unhook()` safe.
 - `_skip_super` is saved and restored around the replace call, so nested wrapped calls are safe.
 - The legacy-post deprecation warning is one-shot per (hook name, callback object, callback method), so hot-path methods do not spam the log.
 - The `_hooked_bases` refcount (maintained by `hook()`/`unhook()`) is why wrapped-but-unhooked methods cost almost nothing at runtime.

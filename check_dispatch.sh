@@ -14,7 +14,7 @@
 # CALLS the wrapped methods, and asserts on the recorded execution order.
 #
 # Behaviors covered (contract: docs/wiki/Hooks.md + src/hooks_api.gd; test
-# ids T1..T19 in tests/codegen/dispatch_runner.gd):
+# ids T1..T20 in tests/codegen/dispatch_runner.gd):
 #   T1  -pre fires before vanilla, with the vanilla arguments
 #   T2  replace: before vanilla; vanilla's return wins unless skip_super(),
 #       which suppresses vanilla and promotes the callback's return
@@ -41,6 +41,8 @@
 #       cannot point a scene at a missing file
 #   T18 setup(): a when-predicate returning null or a String reads as false
 #   T19 has_mod(id, min_version) reads a v-prefixed version
+#   T20 a hook whose owner was freed is unhooked at dispatch, and a replace
+#       slot it held can be taken
 #
 # Unlike check_codegen.sh this needs NO decompiled vanilla source -- the
 # fixture is synthetic -- so it runs on every machine with a Godot binary

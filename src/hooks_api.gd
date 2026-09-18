@@ -94,7 +94,8 @@ func hook(hook_name: String, callback: Callable, priority: int = 100) -> int:
 	if is_replace and hook_name.count("-") >= 2:
 		push_warning("[RTVModLib] hook('%s'): unrecognized suffix '-%s' -- registering as a REPLACE hook, which will never fire under that name. Did you mean -pre, -post, or -callback?" \
 				% [hook_name, hook_name.get_slice("-", hook_name.count("-"))])
-	if is_replace and _hooks.has(hook_name) and (_hooks[hook_name] as Array).size() > 0:
+	# _live_hook_entries first: an owner that was freed gives the slot up.
+	if is_replace and _hooks.has(hook_name) and _live_hook_entries(hook_name).size() > 0:
 		var owner_id: int = (_hooks[hook_name] as Array)[0]["id"]
 		# Debug-level, not warning: rejection is normal API behavior (replace
 		# slots are single-owner) and the caller checks the -1 return; a
@@ -271,14 +272,26 @@ func _to_version_int(s: String) -> int:
 
 # Internal dispatch -- called from the generated framework wrappers.
 
+# The entries of a registered hook name whose callback can still be called, in
+# dispatch order. An entry whose owner was freed (a mod node that went away
+# without unhook()) is unhooked here, which also frees a replace slot it held.
+# The result is a snapshot: hooks registered during dispatch join the next
+# dispatch, and a mid-dispatch hook()'s sort_custom on the live array cannot
+# re-enter the caller's iteration.
+func _live_hook_entries(hook_name: String) -> Array:
+	var live: Array = []
+	for entry in (_hooks[hook_name] as Array).duplicate():
+		if (entry["callback"] as Callable).is_valid():
+			live.append(entry)
+		else:
+			_log_debug("[RTVModLib] hook '%s' id=%d: its owner was freed, unhooking" % [hook_name, entry["id"]])
+			unhook(entry["id"])
+	return live
+
 func _dispatch(hook_name: String, args: Array) -> void:
 	if not _hooks.has(hook_name):
 		return
-	# Snapshot before iterating: hooks registered during dispatch join the
-	# next dispatch, and a mid-dispatch hook()'s sort_custom on the live
-	# array cannot re-enter this iteration.
-	var entries: Array = (_hooks[hook_name] as Array).duplicate()
-	for entry in entries:
+	for entry in _live_hook_entries(hook_name):
 		_seq += 1
 		var cb: Callable = entry["callback"]
 		cb.callv(args)
@@ -293,10 +306,8 @@ func _dispatch(hook_name: String, args: Array) -> void:
 func _dispatch_post(hook_name: String, args: Array, current_result: Variant) -> Variant:
 	if not _hooks.has(hook_name):
 		return current_result
-	# Snapshot: same rationale as _dispatch.
-	var entries: Array = (_hooks[hook_name] as Array).duplicate()
 	var expected_with_result: int = args.size() + 1
-	for entry in entries:
+	for entry in _live_hook_entries(hook_name):
 		_seq += 1
 		var cb: Callable = entry["callback"]
 		var argc: int = cb.get_argument_count()
@@ -319,8 +330,7 @@ func _dispatch_post(hook_name: String, args: Array, current_result: Variant) -> 
 func _dispatch_deferred(hook_name: String, args: Array) -> void:
 	if not _hooks.has(hook_name):
 		return
-	var entries: Array = (_hooks[hook_name] as Array).duplicate()
-	for entry in entries:
+	for entry in _live_hook_entries(hook_name):
 		_seq += 1
 		var cb: Callable = entry["callback"]
 		cb.bindv(args).call_deferred()
@@ -329,6 +339,6 @@ func _get_hooks(hook_name: String) -> Array:
 	if not _hooks.has(hook_name):
 		return []
 	var callbacks := []
-	for entry in _hooks[hook_name]:
+	for entry in _live_hook_entries(hook_name):
 		callbacks.append(entry["callback"])
 	return callbacks

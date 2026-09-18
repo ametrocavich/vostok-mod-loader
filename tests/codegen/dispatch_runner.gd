@@ -61,6 +61,8 @@
 ##   T18 setup(): a when-predicate returning null or a String reads as false
 ##       and the rest of the plan still runs
 ##   T19 has_mod(id, min_version) reads a v-prefixed version
+##   T20 a hook whose owner was freed is dropped at dispatch, and a replace
+##       slot it held can be taken
 extends SceneTree
 
 const FIXTURE_PATH := "res://Scripts/FixtureDispatch.gd"
@@ -106,7 +108,7 @@ func _finish() -> void:
 	_done = true
 	var ms := Time.get_ticks_msec() - _t0
 	if _failures.is_empty():
-		print("[dispatch] PASS: %d assertion(s) across T1..T19, %d frame(s), %d ms in-engine" % [_checks, _frames, ms])
+		print("[dispatch] PASS: %d assertion(s) across T1..T20, %d frame(s), %d ms in-engine" % [_checks, _frames, ms])
 		quit(0)
 	else:
 		printerr("[dispatch] FAILED: %d of %d assertion(s) (%d ms in-engine); first: %s" % [_failures.size(), _checks, ms, _failures[0]])
@@ -246,6 +248,7 @@ func _run_tests() -> void:
 	_t17_scene_path_reads_and_checks()
 	_t18_when_predicate_cannot_abort_a_plan()
 	_t19_has_mod_reads_a_v_prefix()
+	_t20_freed_hook_owner()
 
 func _t1_pre() -> void:
 	var id: int = _lib.hook("fixturedispatch-add-pre", func(x, y): _log.append("pre:add:%d:%d" % [x, y]))
@@ -683,3 +686,26 @@ func _t19_has_mod_reads_a_v_prefix() -> void:
 	_expect(_lib.has_mod("rtv_test_mod", "0"), "T19", "a mod with no version still satisfies min_version 0")
 	_expect(not _lib.has_mod("rtv_test_mod", "0.1"), "T19", "and nothing stricter")
 	loaded.erase("rtv_test_mod")
+
+class _HookOwner extends Node:
+	var seen: Array = []
+	func on_pre(x, y) -> void:
+		seen.append([x, y])
+	func on_replace(_x, _y) -> int:
+		return -1
+
+func _t20_freed_hook_owner() -> void:
+	var gone := _HookOwner.new()
+	var pre_id: int = _lib.hook("fixturedispatch-add-pre", gone.on_pre)
+	var replace_id: int = _lib.hook("fixturedispatch-add", gone.on_replace)
+	_expect(pre_id != -1 and replace_id != -1, "T20", "both hooks register")
+	gone.free()
+	_log.clear()
+	var r = _node_a.Add(2, 3)
+	_expect_eq(r, 5, "T20", "Add(2,3) with only a freed owner's hooks")
+	_expect_log("T20", ["vanilla:Add:2:3"])
+	_expect(not _lib.has_hooks("fixturedispatch-add-pre"), "T20", "the freed owner's pre hook is dropped at dispatch")
+	var other_id: int = _lib.hook("fixturedispatch-add", func(_x, _y): return 0)
+	_expect(other_id != -1, "T20", "a replace slot whose owner was freed can be taken")
+	_expect_eq(_lib.get_replace_owner("fixturedispatch-add"), other_id, "T20", "and reports its new owner")
+	_unhook_all([other_id])
