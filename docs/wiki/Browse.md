@@ -27,7 +27,7 @@ ModWorkshop ignores the sort while a search query is set, so Browse re-sorts sea
 
 ## A mod row
 
-Each row shows a thumbnail, name, author, version where the site reports one, quick stats (downloads, plus likes and views on ModWorkshop), category and last-updated date, and an action on the right:
+Each row shows a thumbnail, name, author, version where the site reports one, quick stats (downloads and views, plus likes on ModWorkshop), category and last-updated date, and an action on the right:
 
 - **Download**: the mod is not installed. Click to fetch it into your `mods/` folder.
 - **Enabled in <profile>**: the mod is already on disk. The checkbox toggles it in your active profile without a trip to the Mods tab.
@@ -78,7 +78,7 @@ See [Mod-Format](Mod-Format#dependencies-section) for how mod authors declare de
 - ModWorkshop thumbnails and banners are saved to `user://mws_cache/thumbs/` (its image names never change once uploaded). VostokMods images are kept in memory for the session only.
 - Search results and mod details are cached in memory: VostokMods listings for five minutes, details for thirty, categories for an hour. Each site's landing view is also saved to disk as `user://mws_cache/landing_<site>.json` so Browse can show your last results when you are offline.
 
-Both are safe to delete; see [Config-Files: Generated files](Config-Files#generated-files----safe-to-delete).
+Both are safe to delete; see [Config-Files: Generated files](Config-Files#generated-files-safe-to-delete).
 
 ## Offline / failure behavior
 
