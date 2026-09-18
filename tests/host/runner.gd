@@ -654,6 +654,27 @@ func _t9_caps_match_wiring(ml: Object) -> void:
 					"T9: %s cannot browse but advertises %d sort(s)" % [provider, sorts.size()])
 		_assert(str(ml.host_display_name(provider)) != "",
 				"T9: %s has no display name" % provider)
+	# Every provider has an arm in every dispatcher. The arms go to the network
+	# and cannot be called here, so they are read off the source: a provider
+	# missing from one match falls to the HOST_ERR_UNWIRED default at runtime.
+	var source := FileAccess.get_file_as_string(MODLOADER_PATH)
+	for provider in ml.host_providers():
+		var const_name := ""
+		for candidate in ["HOST_MODWORKSHOP", "HOST_VOSTOKMODS"]:
+			if str(ml.get(candidate)) == str(provider):
+				const_name = candidate
+		if const_name == "":
+			# A provider added later: find the constant that holds its id.
+			var decl := RegEx.create_from_string("(?m)^const (HOST_[A-Z_]+) := \"%s\"" % str(provider)).search(source)
+			const_name = decl.get_string(1) if decl != null else ""
+		_assert(const_name != "", "T9: no HOST_ constant holds the provider id '%s'" % provider)
+		for op in ["host_list_mods", "host_get_mod", "host_list_files", "host_resolve_file",
+				"host_list_categories", "host_latest_versions", "host_note_rate_headers", "host_caps"]:
+			var start := source.find("\nfunc %s(" % op)
+			_assert(start >= 0, "T9: dispatcher %s exists" % op)
+			var end := source.find("\nfunc ", start + 1)
+			var body := source.substr(start, (end if end > start else source.length()) - start)
+			_assert(body.contains("\t\t%s:" % const_name), "T9: %s has a match arm for %s" % [op, const_name])
 
 # A format-2 manifest shaped like the site's own reference doc: one
 # available mod with a checksum, one unavailable (scanning), one removed;

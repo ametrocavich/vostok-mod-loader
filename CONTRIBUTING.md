@@ -199,8 +199,10 @@ renames are not.
   `host_list_categories`, `host_latest_versions`, `host_display_name`,
   `host_caps`, `host_mod_page_url`, `host_note_rate_headers`,
   `_host_scalars`) and an entry in `host_providers()`, whose order is the
-  Browse source menu order. A capability declared without an arm returns
-  `HOST_ERR_UNWIRED`, and `check_host.sh` T9 fails on it.
+  Browse source menu order. A provider with no arm in a dispatcher gets
+  `HOST_ERR_UNWIRED` from its `_:` default; `check_host.sh` T9 reads the
+  dispatchers off the built source and fails when a provider is missing
+  from one.
 - `build.sh`: add the file after `host_api.gd`.
 - `tests/host/runner.gd`: a normalizer fixture for the host's payload shape.
 - `docs/wiki/Browse.md` and `docs/wiki/Mod-Format.md` (the `source=` value).
@@ -210,20 +212,24 @@ tail is shared (next section).
 
 ### Adding a download surface
 
-Existing surfaces: Browse "Download" (ui.gd -> `download_mod_from_ref`), the
-Mods-tab update badges (`replace_mod_from_ref`), the
-missing-mod stub Download (ui.gd -> `download_mod_from_ref(ref, version,
-true)`), and modpack missing-mod fetch and retry (modpacks.gd, the same call).
+Existing surfaces: Browse "Download" (ui_browse.gd ->
+`download_mod_from_ref`), the Mods-tab update badges
+(`replace_mod_from_ref`), the missing-mod stub Download (ui_mods.gd ->
+`download_mod_from_ref(ref, version, true)`), and modpack missing-mod fetch
+and retry (modpacks.gd, the same call).
 The authoritative map sits above the download entry points in
 `src/mod_discovery.gd`.
 
 - Both entry points take a host ref (`{provider, id}`, see `host_ref` in
-  `src/host_types.gd`), resolve the file through `host_resolve_file`, and
-  hand it to `_host_install_downloaded_archive`: Content-Disposition filename
-  derivation, `_is_safe_mod_filename`, collision rename, `.download` temp
-  file, zip/pck validation, rename-finalize, and the `[mod_sources]` record
-  (`_record_installed_mod_source`). A new surface calls one of the two entry
-  points and never touches the tail.
+  `src/host_types.gd`), resolve the file through `host_resolve_file` and
+  fetch it with `_http_download_to_temp`, the one place a response body is
+  written to disk. `download_mod_from_ref` then hands the temp file to
+  `_host_install_downloaded_archive`: Content-Disposition filename
+  derivation, `_is_safe_mod_filename`, collision rename, zip/pck validation,
+  rename-finalize. `replace_mod_from_ref` has its own tail, which parks the
+  installed archive as `.bak` and rolls back on failure. Both finish with the
+  `[mod_sources]` record (`_record_installed_mod_source`). A new surface
+  calls one of the two entry points and never touches either tail.
 - After a successful install: `_reload_entries_for_active_profile()` then
   `_rebuild_mods_tab(tabs)`. The Browse Download handler shows the pattern,
   including the `is_instance_valid` guards for a closed launcher window.

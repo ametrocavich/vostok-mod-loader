@@ -23,7 +23,7 @@ Shared `const`, `var` and `signal` declarations: anything read by more than one 
 
 ### [logging.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/logging.gd)
 
-`_log_info`, `_log_warning`, `_log_critical`, `_log_debug`. Each prefixes `[ModLoader][Level] `, prints or pushes, and appends to `_report_lines` through `_report_append`, which caps the buffer at `REPORT_LINES_MAX` (5000) so a per-frame logger cannot grow it forever. `_log_debug` is a no-op unless `_developer_mode` is on. Registry verbs called by mods use `push_warning` directly and never reach the report.
+`_log_info`, `_log_warning`, `_log_critical`, `_log_debug`. Each prefixes `[ModLoader][Level] `, prints or pushes, and appends to `_report_lines` through `_report_append`, which caps the buffer at `REPORT_LINES_MAX` (5000) so a per-frame logger cannot grow it forever. `_log_debug` is a no-op unless `_developer_mode` is on. Most registry verbs called by mods use `push_warning` directly and never reach the report; `scene_nodes` is the exception and logs through `_log_warning`.
 
 ## File + archive helpers
 
@@ -78,7 +78,7 @@ Shared HTTP transport: `_hnet_get_json` with the User-Agent, body cap, per-URL T
 
 ### [host_api.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/host_api.gd)
 
-The seam. `host_list_mods`, `host_get_mod`, `host_list_files`, `host_resolve_file`, `host_list_categories`, `host_latest_versions` (async) and `host_caps`, `host_display_name`, `host_mod_page_url`, `host_sorts`, `host_sections`, `host_limit`, `host_error_message` (synchronous). Dispatch is an explicit `match` on the provider, the same shape `registry.gd` uses, so the synchronous operations stay synchronous; a Callable table would turn each into a coroutine, and `host_mod_page_url` is called from code that has to return a Control. `host_providers()` lists the providers in display order (VostokMods first, so Browse opens on it); `host_browse_providers()` filters that by the `browse` capability, which is what the Browse source menu is built from. An adapter that declares a capability without a dispatch arm returns `HOST_ERR_UNWIRED`, which `check_host.sh` T9 pins.
+The seam. `host_list_mods`, `host_get_mod`, `host_list_files`, `host_resolve_file`, `host_list_categories`, `host_latest_versions` (async) and `host_caps`, `host_display_name`, `host_mod_page_url`, `host_sorts`, `host_sections`, `host_limit`, `host_error_message` (synchronous). Dispatch is an explicit `match` on the provider, the same shape `registry.gd` uses, so the synchronous operations stay synchronous; a Callable table would turn each into a coroutine, and `host_mod_page_url` is called from code that has to return a Control. `host_providers()` lists the providers in display order (VostokMods first, so Browse opens on it); `host_browse_providers()` filters that by the `browse` capability, which is what the Browse source menu is built from. A provider with no arm in a dispatcher gets `HOST_ERR_UNWIRED` from its `_:` default. `check_host.sh` T9 reads the dispatchers off the built source and fails when a provider is missing from one, and checks each host's `page_url` and sort claims against what it builds.
 
 ### [host_mws.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/host_mws.gd)
 
@@ -93,11 +93,11 @@ VostokMods adapter (`_vmp_*`), the default host. Talks to `https://vostokmods.ne
 Scans `<exe>/mods/`, parses mod.txt into entry Dictionaries, orders them, and owns the host-neutral install path. No mounting; that is `mod_loading.gd`. An entry is a plain Dictionary; its fields are listed in the comment above `_entry_from_config`.
 
 - `collect_mod_metadata` is the scanner. Accepted extensions are `vmz`, `zip`, `pck`, plus folders in dev mode; a zip with `profile.json` at its root is a modpack and goes to `modpacks.gd`.
-- `_entry_from_config`, `_build_entry_warnings` and `_build_entry_author_notes` turn a ConfigFile into an entry, its row warnings (broken or misplaced mod.txt, bad autoload path) and the author notes developer mode shows (unquoted version, missing `id=`, stale bake, unrecognized source).
+- `_entry_from_config`, `_build_entry_warnings` and `_build_entry_author_notes` turn a mod.txt read record (`{cfg, status, error, files}`) into an entry, its row warnings (broken or misplaced mod.txt, bad autoload path) and the author notes developer mode shows (unquoted version, missing `id=`, stale bake, unrecognized source).
 - Dependency handling: `_parse_dependency_list`, `_apply_dependency_ordering`, `_loadable_enabled_entries`, `_refresh_dependency_status`.
 - Identity: `_dedupe_by_mod_id` and `_normalized_mod_stem`, which `check_identity.sh` covers.
 - `compare_versions`, semver-ish with a `v` prefix tolerance and prerelease ordering.
-- Downloads and updates: `download_mod_from_ref`, `replace_mod_from_ref`, `fetch_latest_versions` take a host ref and dispatch through the seam; `_host_install_downloaded_archive` is the one place a downloaded body becomes a file in `mods/`.
+- Downloads and updates: `download_mod_from_ref`, `replace_mod_from_ref`, `fetch_latest_versions` take a host ref and dispatch through the seam; `_http_download_to_temp` is the one place a response body is written to disk, under a temporary name; `_host_install_downloaded_archive` (a new install) and `replace_mod_from_ref` (an update) each validate that file and rename it into `mods/`.
 - Source records: `_parse_source_token`, `_mod_source_from_cfg` (reads `source="provider:id"` and the legacy `modworkshop=<id>`, and says which one it read), `_normalize_source_record`, `_resolve_mod_source` (an explicit `source=` wins, then the stored record, then the legacy line), `_persist_mod_sources_for_entries` (the `[mod_sources]` section of `mod_config.cfg`, so a Browse download is remembered even when mod.txt says nothing). The legacy `modworkshop_id` mirror is written only when the provider is ModWorkshop.
 - `_log_security_findings` writes the `[ModScan]` lines when an entry has findings.
 
@@ -118,7 +118,7 @@ Modpacks published on vostokmods.net. Turns a pack manifest (`GET /api/modpacks/
 
 The runtime loading pipeline: mounts archives, scans `.gd` files, registers file claims, queues autoloads, applies `[script_extend]` / `[script_overrides]`.
 
-- `load_all_mods` is the entry point; `_process_mod_candidate` is the per-mod pipeline and the place `[hooks]`, `[registry]`, `[script_extend]` and `[autoload]` are consumed. `MOD_TXT_KNOWN_SECTIONS` feeds the unrecognized-section notice.
+- `load_all_mods` is the entry point; `_process_mod_candidate` is the per-mod pipeline. It reads `[registry]` itself and hands the other sections to `_apply_hooks_section`, `_apply_extend_sections` and `_apply_autoload_section`. `MOD_TXT_KNOWN_SECTIONS` feeds the unrecognized-section notice.
 - `_apply_script_overrides` sorts by priority (ties by declaration order), autofixes each source, compiles a fresh `GDScript`, and `take_over_path`s it onto the vanilla path. Each override's `extends` resolves to the previous occupant, so `ModB -> ModA -> vanilla` chains work.
 - `scan_and_register_archive_claims` detects Windows-backslash zip paths and `Database.gd` collisions, records `_archive_zip_paths` (the readable zip for each archive, used by the hook pack's sibling pre-read), and builds the per-file analysis through `_scan_gd_source`.
 - `_merge_hook_calls_into_wrap_mask` turns literal `.hook("...")` calls found in mod sources into wrap-mask entries.
@@ -240,7 +240,7 @@ Mod sources are not rewritten. A mod script that extends a wrapped vanilla sees 
 
 ### [hook_pack.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd)
 
-`_generate_hook_pack` runs the pipeline end to end:
+`_generate_hook_pack` runs the pipeline end to end, as six functions in order: `_hook_pack_preflight` (steps 1 to 4), `_hook_pack_script_paths`, `_hook_pack_wrap_surface` (5 and 6), `_hook_pack_collect_siblings` (7), `_hook_pack_write_zip` (8 to 10) and `_hook_pack_mount_and_activate` (11).
 
 1. Clear `_scripts_with_scene_preloads`, pick a fresh `user://modloader_hooks/framework_pack_<ticks>.zip` name (a same-path remount is a no-op in Godot, and Windows will not let a mounted zip be deleted).
 2. Canary B: `_probe_gdsc_version` must return 100, 101 or -1.
@@ -270,7 +270,7 @@ The hook system's last outcome, written where the launcher can read it (`user://
 
 Injects a "Mods" button into RTV's main menu (`res://Scripts/Menu.gd`) so the launcher can be reopened without restarting. It uses the same machinery mods use:
 
-- `_seed_core_hooks` puts `_ready` into `_hooked_methods["res://Scripts/Menu.gd"]` so the rewriter wraps it even when no mod asked. Called from `_generate_hook_pack` after the no-mods short-circuit, so every generated pack includes the wrap and a pure-vanilla session generates nothing.
+- `_seed_core_hooks` puts `_ready` into `_hooked_methods["res://Scripts/Menu.gd"]` so the rewriter wraps it even when no mod asked. Called from `_hook_pack_wrap_surface`, which runs after the no-mods short-circuit in `_hook_pack_preflight`, so every generated pack includes the wrap and a pure-vanilla session generates nothing.
 - `_register_core_hooks` subscribes `_on_menu_ready` to `menu-_ready-post` through the public `hook()`, from `_emit_frameworks_ready`.
 - `_inject_mods_button` finds `Main/Buttons` on the menu root, inserts a button named `MetroMods` above `Quit`, and wires `pressed` to `reopen_mod_ui`.
 
