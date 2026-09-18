@@ -120,10 +120,16 @@ func _load_ui_config() -> void:
 		stored = ""
 	if stored in profiles:
 		_active_profile = stored
-	elif not profiles.is_empty():
-		_active_profile = profiles[0]
 	else:
-		_active_profile = "Default"
+		# The stored name is gone. An active pack's own slot keeps the pack and
+		# its MCM settings consistent; otherwise land on a profile the player
+		# made, never on another modpack-managed slot.
+		var pack := str(cfg.get_value("settings", "active_modpack", ""))
+		var users := _list_user_profiles_in_cfg(cfg)
+		if pack != "" and (MODPACK_PROFILE_PREFIX + pack) in profiles:
+			_active_profile = MODPACK_PROFILE_PREFIX + pack
+		else:
+			_active_profile = users[0] if not users.is_empty() else "Default"
 
 	# Reconcile modpack state. A managed slot (modpack__X) is a legitimate
 	# active profile only while active_modpack names it; a mismatch means a

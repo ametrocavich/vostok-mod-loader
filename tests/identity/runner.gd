@@ -88,6 +88,7 @@ func _run() -> void:
 	_t7_mod_txt_read_record(ml)
 	_t8_priority_does_not_leak_between_profiles(ml)
 	_t9_repackaged_mod_drops_its_old_key(ml)
+	_t10_missing_profile_falls_back_to_a_user_profile(ml)
 
 	_finish()
 
@@ -315,6 +316,40 @@ func _t9_repackaged_mod_drops_its_old_key(ml: Object) -> void:
 		if FileAccess.file_exists(p):
 			DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
 
+# The stored active profile can be gone (deleted by hand, a restored backup).
+# With a pack active the fallback is that pack's slot, which keeps the pack
+# and its MCM settings consistent; otherwise it is a profile the player made,
+# never a slot a modpack manages.
+func _t10_missing_profile_falls_back_to_a_user_profile(ml: Object) -> void:
+	var cfg_path := str(ml.UI_CONFIG_PATH)
+	for p in [cfg_path, cfg_path + ".bak"]:
+		if FileAccess.file_exists(p):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
+	var seed := ConfigFile.new()
+	seed.set_value("settings", "active_profile", "Gone")
+	seed.set_value("settings", "active_modpack", "Pack")
+	seed.set_value("profile._before_modpack_Pack.enabled", "a@1.0", true)
+	seed.set_value("profile.modpack__Pack.enabled", "a@1.0", true)
+	seed.set_value("profile.zed.enabled", "a@1.0", true)
+	_assert(seed.save(cfg_path) == OK, "T10: seeded mod_config.cfg")
+	var none: Array[Dictionary] = []
+	ml.set("_ui_mod_entries", none)
+	ml._load_ui_config()
+	_assert(str(ml.get("_active_profile")) == "modpack__Pack",
+			"T10: with a pack active, a missing stored profile falls back to the pack's slot (got '%s')" % str(ml.get("_active_profile")))
+	var after := ConfigFile.new()
+	after.load(cfg_path)
+	_assert(str(after.get_value("settings", "active_modpack", "")) == "Pack", "T10: and the pack stays active")
+	seed.set_value("settings", "active_modpack", "")
+	seed.erase_section("profile.modpack__Pack.enabled")
+	_assert(seed.save(cfg_path) == OK, "T10: seeded mod_config.cfg with no pack active")
+	ml._load_ui_config()
+	_assert(str(ml.get("_active_profile")) == "zed",
+			"T10: with no pack active it falls back to the player's own profile (got '%s')" % str(ml.get("_active_profile")))
+	for p in [cfg_path, cfg_path + ".bak"]:
+		if FileAccess.file_exists(p):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
+
 func _entry(file_name: String, version: String) -> Dictionary:
 	return {
 		"file_name": file_name,
@@ -346,7 +381,7 @@ func _fail(msg: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("[identity] PASS: %d assertion(s) across T1..T9" % _assertions)
+		print("[identity] PASS: %d assertion(s) across T1..T10" % _assertions)
 		quit(0)
 		return
 	for m in _failures:
