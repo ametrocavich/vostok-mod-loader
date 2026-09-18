@@ -837,7 +837,7 @@ func _mods_build_order_panel(split: HSplitContainer) -> Callable:
 			# Manual line break; never autowrap here (see below).
 			order_list.add_child(_make_sub_label(
 					"%d enabled, none will load\n(missing dependencies)" % enabled_count,
-					COL_ACCENT,
+					COL_WARN,
 					"Every enabled mod is missing a required dependency.\nFix it from the orange row warnings, or use Load anyway."))
 			return
 		for i in loadable.size():
@@ -861,7 +861,7 @@ func _mods_build_order_panel(split: HSplitContainer) -> Callable:
 			_wire_hint(reorder_lbl, "A required mod was moved up so it loads before the mod that needs it. Your load-order numbers are unchanged.")
 		var blocked_count := enabled_count - loadable.size()
 		if blocked_count > 0:
-			var blocked_lbl := _make_sub_label("%d blocked by dependencies" % blocked_count, COL_ACCENT)
+			var blocked_lbl := _make_sub_label("%d blocked by dependencies" % blocked_count, COL_WARN)
 			order_list.add_child(blocked_lbl)
 			_wire_hint(blocked_lbl, "Blocked mods stay checked but don't load. See the orange row warnings for fixes.")
 	return refresh_order
@@ -1293,7 +1293,7 @@ func _mods_row_dependency_lines(name_col: VBoxContainer, name_ctrl: Control, ent
 			and not (entry.get("dependency_blockers", []) as Array).is_empty()
 	if dep_blocked:
 		# The green "enabled" tint would lie. This mod won't load.
-		name_ctrl.add_theme_color_override("font_color", COL_ACCENT)
+		name_ctrl.add_theme_color_override("font_color", COL_WARN)
 	if required_deps.size() > 0 or optional_deps.size() > 0:
 		var named := PackedStringArray()
 		for d in required_deps:
@@ -1312,13 +1312,14 @@ func _mods_row_dependency_lines(name_col: VBoxContainer, name_ctrl: Control, ent
 		for d in optional_deps:
 			tip.append("optional: %s (%s)" % [_dependency_display_for_id(str(d), dep_names_by_id), str(d)])
 		name_col.add_child(_make_sub_label(dep_line, COL_TEXT_DIM, "\n".join(tip)))
+	# Red: every entry warning is a mod that will not work as packaged.
 	for warn_text: String in entry.get("warnings", []):
-		name_col.add_child(_make_sub_label(warn_text, COL_ACCENT, warn_text))
+		name_col.add_child(_make_sub_label(warn_text, COL_ERR, warn_text))
 	if _developer_mode:
 		for note_text: String in entry.get("author_notes", []):
 			name_col.add_child(_make_sub_label(note_text, COL_TEXT_DIM, note_text))
 	for warn_text: String in entry.get("dependency_warnings", []):
-		name_col.add_child(_make_sub_label(warn_text, COL_ACCENT, warn_text))
+		name_col.add_child(_make_sub_label(warn_text, COL_WARN, warn_text))
 
 	# Blocked: one orange line naming the cause plus buttons that fix it.
 	if dep_blocked and not blockers_info.is_empty():
@@ -1337,7 +1338,7 @@ func _mods_row_dependency_lines(name_col: VBoxContainer, name_ctrl: Control, ent
 					_dependency_status_label(str(b.get("status", "")))])
 			if str(b.get("status", "")) == "hidden_folder":
 				btip.append("  (turn on Developer mode to load folder mods)")
-		var bl := _make_sub_label("won't load -- needs " + why, COL_ACCENT, "\n".join(btip))
+		var bl := _make_sub_label("won't load -- needs " + why, COL_WARN, "\n".join(btip))
 		bl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		block_row.add_child(bl)
 		var fixable_count := 0
@@ -1394,7 +1395,7 @@ func _mods_row_notes(name_col: VBoxContainer, entry: Dictionary) -> void:
 		var dup_v_raw: String = str(dup.get("version", ""))
 		var dup_v: String = ("v" + dup_v_raw) if dup_v_raw != "" else "(unversioned)"
 		var hide_text := "older version hidden: " + str(dup["file_name"]) + " (" + dup_v + ")"
-		name_col.add_child(_make_sub_label(hide_text, COL_ACCENT, hide_text))
+		name_col.add_child(_make_sub_label(hide_text, COL_WARN, hide_text))
 
 	# The profile was saved with another version of this mod; show that the
 	# enabled/priority state was carried over rather than re-defaulted.

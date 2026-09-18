@@ -328,7 +328,7 @@ func _modpacks_row_info(row: HBoxContainer, entry: Dictionary, is_hosted: bool) 
 				dup_names.append(str((d_v as Dictionary).get("file_name", "?")))
 		var dup_lbl := Label.new()
 		dup_lbl.text = "Duplicate file(s) hidden: " + ", ".join(dup_names)
-		dup_lbl.add_theme_color_override("font_color", COL_ACCENT)
+		dup_lbl.add_theme_color_override("font_color", COL_WARN)
 		dup_lbl.add_theme_font_size_override("font_size", FS_BODY)
 		dup_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		info_col.add_child(dup_lbl)

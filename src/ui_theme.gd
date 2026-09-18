@@ -2,7 +2,8 @@
 ## Launcher palette tokens, the Theme, the style_* voices and the code-drawn glyphs.
 
 # -- Design tokens ------------------------------------------------------------
-# Matches the VostokMods site palette: one accent green, one success green, one red.
+# Matches the VostokMods site palette: one accent green, one success green,
+# one red, and one amber so a warning does not read as the brand color.
 
 # Base surfaces
 const COL_BG         := Color("1b1d1d")  # window/panel floor -- VostokMods --ui-bg
@@ -21,7 +22,8 @@ const COL_ACCENT_DIM := Color("008b07")  # accent borders/washes, banner edges -
 
 const COL_OK         := Color("00e604")  # enabled, success -- brand green 500
 const COL_OK_DIM     := Color("0b5c12")  # brand green 900
-const COL_ERR        := Color("ef4444")  # errors, blocked, danger
+const COL_ERR        := Color("ef4444")  # errors, broken mods, danger
+const COL_WARN       := Color("f59e0b")  # warnings: a mod that won't load, stale or partial data -- amber 500, "orange" in the copy
 
 # Type scale
 const FS_META  := 11   # timestamps, counts, fine print

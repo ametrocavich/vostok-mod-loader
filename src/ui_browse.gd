@@ -717,7 +717,7 @@ func _browse_discover_fetch(state: Dictionary) -> void:
 			list.add_child(HSeparator.new())
 			total += 1
 	if cached_at > 0:
-		_browse_show_banner(state, "Showing cached results. " + _browse_fail_reason(state), cached_at, COL_ACCENT)
+		_browse_show_banner(state, "Showing cached results. " + _browse_fail_reason(state), cached_at, COL_WARN)
 	else:
 		if ok_count < sections.size():
 			# The banner carries the Retry button; the host answered, so only a
@@ -725,7 +725,7 @@ func _browse_discover_fetch(state: Dictionary) -> void:
 			var partial := "Part of this page could not be loaded."
 			if host_rate_cooldown_seconds(provider) > 0:
 				partial += " " + _browse_fail_reason(state)
-			_browse_show_banner(state, partial, 0, COL_ACCENT)
+			_browse_show_banner(state, partial, 0, COL_WARN)
 		else:
 			_browse_clear_banner(state)
 		# A live fetch proves connectivity: recover a category menu that failed to populate.
