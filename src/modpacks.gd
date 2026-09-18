@@ -463,6 +463,19 @@ func _modpack_apply_failure(error: String, downloaded: int = 0, failed_downloads
 		"failures": failures,
 	}
 
+## Which dialog an apply result gets: "cancelled"; "failed" when the apply
+## itself did not complete, which wins over the download counts because a
+## failure after the downloads carries them too; "partial" when the pack
+## applied and some downloads failed; "applied" otherwise.
+func _modpack_apply_outcome(result: Dictionary) -> String:
+	if bool(result.get("cancelled", false)):
+		return "cancelled"
+	if not bool(result.get("ok", false)):
+		return "failed"
+	if int(result.get("failed_downloads", 0)) > 0:
+		return "partial"
+	return "applied"
+
 # Apply a discovered modpack: back up, download missing mods, materialize,
 # switch, mark active. progress is Callable(info) with {current, total, mod_name,
 # action}, action one of downloading | skipped | applying | rate_wait.

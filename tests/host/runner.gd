@@ -802,6 +802,20 @@ func _t12_apply_failure_shape(ml: Object) -> void:
 			"T12: the apply-in-progress refusal returns the apply shape (got %s)" % str(busy_keys))
 	_assert(not bool(busy.get("ok", true)) and str(busy.get("error", "")).contains("in progress"),
 			"T12: the apply-in-progress refusal says so (got %s)" % str(busy.get("error", "")))
+	# Which dialog a result gets. A failed apply is a failure even when it
+	# carries failed downloads: the counts describe what ran before it failed.
+	_assert(ml.has_method("_modpack_apply_outcome"), "T12: the loader has _modpack_apply_outcome")
+	if not ml.has_method("_modpack_apply_outcome"):
+		return
+	var failed_after_downloads: Dictionary = ml._modpack_apply_failure("cannot read settings", 2, 1, [{"profile_key": "a@1"}])
+	_assert(str(ml._modpack_apply_outcome(failed_after_downloads)) == "failed",
+			"T12: a failed apply with a failed download is 'failed', not 'partial'")
+	_assert(str(ml._modpack_apply_outcome({"ok": true, "failed_downloads": 1})) == "partial",
+			"T12: an applied pack with a failed download is 'partial'")
+	_assert(str(ml._modpack_apply_outcome({"ok": true, "failed_downloads": 0})) == "applied",
+			"T12: an applied pack with no failed download is 'applied'")
+	_assert(str(ml._modpack_apply_outcome({"ok": false, "cancelled": true, "failed_downloads": 1})) == "cancelled",
+			"T12: a cancelled apply is 'cancelled' whatever else it carries")
 
 # The update check in two pure halves: which installed mods are asked about,
 # and what the site's answers mean. A dev folder, a mod with no version, no

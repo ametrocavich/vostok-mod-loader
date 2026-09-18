@@ -450,13 +450,13 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 					pd_status.text = "%s..." % prefix
 
 			var result := await apply_modpack(entry, tabs, progress_cb)
-			var was_cancelled: bool = bool(result.get("cancelled", false))
+			var outcome := _modpack_apply_outcome(result)
 			var dl: int = int(result.get("downloaded", 0))
 			var dl_failed: int = int(result.get("failed_downloads", 0))
 			var failures: Array = result.get("failures", [])
 
 			# Cancelled before any state mutation; say so rather than "Applied with Issues".
-			if was_cancelled:
+			if outcome == "cancelled":
 				if is_instance_valid(pd):
 					pd.queue_free()
 				if is_instance_valid(tabs):
@@ -468,18 +468,23 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 					cancel_msg += "\n%d download(s) had already failed before the cancel." % dl_failed
 				_show_accept_dialog("Apply cancelled", cancel_msg)
 				return
-			# Partial: tear down progress, route to the failure dialog.
-			if dl_failed > 0:
+			# The apply itself did not complete. Checked before the download
+			# counts, which a failure after the downloads carries too.
+			if outcome == "failed":
+				if is_instance_valid(pd):
+					pd.queue_free()
+				var fail_msg := str(result.get("error", "unknown"))
+				if dl_failed > 0:
+					fail_msg += "\n\n%d mod download(s) had also failed." % dl_failed
+				_show_error_dialog("Could not apply modpack", fail_msg)
+				return
+			# Applied with failed downloads: tear down progress, route to the failure dialog.
+			if outcome == "partial":
 				if is_instance_valid(pd):
 					pd.queue_free()
 				if is_instance_valid(tabs):
 					_rebuild_modpacks_tab(tabs)
 				_show_modpack_failure_dialog(dl, failures, tabs)
-				return
-			if not bool(result.get("ok", false)):
-				if is_instance_valid(pd):
-					pd.queue_free()
-				_show_error_dialog("Could not apply modpack", str(result.get("error", "unknown")))
 				return
 			if is_instance_valid(tabs):
 				_rebuild_modpacks_tab(tabs)
