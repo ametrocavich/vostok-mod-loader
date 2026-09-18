@@ -463,7 +463,7 @@ func _browse_on_toggle(state: Dictionary, ref_key: String, enabled: bool, check:
 		_rebuild_mods_tab(tabs)
 	# The landing can list one mod in two sections; bring its other row along.
 	_refresh_browse_installed_rows(state["scroll"])
-	_browse_set_status(state, ("Enabled " if enabled else "Disabled ") + str(live_entry.get("mod_name", "?")) + " in profile " + _active_profile, COL_TEXT_DIM)
+	_browse_set_status(state, ("Enabled " if enabled else "Disabled ") + str(live_entry.get("mod_name", "?")) + " in profile " + _active_profile_label(), COL_TEXT_DIM)
 
 
 # Download one queued item, then drain the rest of the queue.
@@ -944,8 +944,8 @@ func _refresh_browse_installed_rows(root: Node) -> void:
 			var cb := node as CheckBox
 			if entry_v is Dictionary:
 				cb.disabled = false
-				cb.text = "Enabled in " + _active_profile
-				cb.tooltip_text = "Toggle this mod in profile: " + _active_profile + "."
+				cb.text = "Enabled in " + _active_profile_label()
+				cb.tooltip_text = "Toggle this mod in profile: " + _active_profile_label() + "."
 				# Display sync, not a user toggle: no signal, no profile save.
 				cb.set_pressed_no_signal(bool((entry_v as Dictionary).get("enabled", false)))
 			else:
@@ -1052,7 +1052,7 @@ func _browse_render_mod_row(summary: Dictionary, install_entry: Variant, on_get:
 	if install_entry is Dictionary:
 		var entry: Dictionary = install_entry as Dictionary
 		var enable_check := CheckBox.new()
-		enable_check.text = "Enabled in " + _active_profile
+		enable_check.text = "Enabled in " + _active_profile_label()
 		enable_check.button_pressed = bool(entry.get("enabled", false))
 		enable_check.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		enable_check.set_meta("browse_ref_key", ref_key)
@@ -1062,7 +1062,7 @@ func _browse_render_mod_row(summary: Dictionary, install_entry: Variant, on_get:
 			on_toggle.call(captured_key, on, captured_check)
 		)
 		row.add_child(enable_check)
-		_wire_hint(enable_check, "Toggle this mod in profile: " + _active_profile + ".")
+		_wire_hint(enable_check, "Toggle this mod in profile: " + _active_profile_label() + ".")
 	elif can_download:
 		var get_btn := Button.new()
 		get_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER

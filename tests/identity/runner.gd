@@ -90,6 +90,7 @@ func _run() -> void:
 	_t9_repackaged_mod_drops_its_old_key(ml)
 	_t10_missing_profile_falls_back_to_a_user_profile(ml)
 	_t11_profile_bookkeeping_is_not_a_mod_change(ml)
+	_t12_active_profile_label(ml)
 
 	_finish()
 
@@ -384,6 +385,19 @@ func _t11_profile_bookkeeping_is_not_a_mod_change(ml: Object) -> void:
 		if DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(d)):
 			ml._remove_tree(d, false)
 
+# Text shown to the player names the active profile the way the Profile
+# dropdown does; the internal key of a modpack-managed slot never shows.
+func _t12_active_profile_label(ml: Object) -> void:
+	_assert(ml.has_method("_active_profile_label"), "T12: the loader has _active_profile_label")
+	if not ml.has_method("_active_profile_label"):
+		return
+	ml.set("_active_profile", "Default")
+	_assert(str(ml._active_profile_label()) == "Default", "T12: a user profile is shown by its name")
+	ml.set("_active_profile", str(ml.MODPACK_PROFILE_PREFIX) + "Night Ops")
+	var label := str(ml._active_profile_label())
+	_assert(label == "[Modpack: Night Ops]", "T12: a pack-managed slot reads as the dropdown shows it (got '%s')" % label)
+	ml.set("_active_profile", "Default")
+
 func _entry(file_name: String, version: String) -> Dictionary:
 	return {
 		"file_name": file_name,
@@ -415,7 +429,7 @@ func _fail(msg: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("[identity] PASS: %d assertion(s) across T1..T11" % _assertions)
+		print("[identity] PASS: %d assertion(s) across T1..T12" % _assertions)
 		quit(0)
 		return
 	for m in _failures:

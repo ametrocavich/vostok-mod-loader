@@ -147,7 +147,7 @@ func _show_remove_mod_confirm(entry: Dictionary, tabs: TabContainer) -> void:
 		str(entry.get("mod_name", "?")),
 		str(entry.get("file_name", "?")),
 		size_line,
-		_active_profile,
+		_active_profile_label(),
 	]
 	d.ok_button_text = "Delete mod"
 	style_dialog_danger_button(d.get_ok_button())
@@ -987,7 +987,7 @@ func _mods_build_missing_section(list: VBoxContainer, tabs: TabContainer) -> voi
 			var d := ConfirmationDialog.new()
 			d.title = "Remove missing-mod entries"
 			d.dialog_text = "Remove %d missing-mod entr%s from \"%s\"?\n\nOnly the active profile is affected -- other profiles still list these mods." % [
-				n, ("y" if n == 1 else "ies"), _active_profile,
+				n, ("y" if n == 1 else "ies"), _active_profile_label(),
 			]
 			d.ok_button_text = "Remove"
 			_attach_ui_dialog(d)

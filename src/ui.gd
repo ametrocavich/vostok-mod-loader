@@ -316,6 +316,13 @@ func _list_profiles() -> Array[String]:
 		return []
 	return _list_profiles_in_cfg(cfg)
 
+# The active profile as player-facing text. A modpack-managed slot reads the
+# way the Profile dropdown shows it, never as its internal "modpack__" key.
+func _active_profile_label() -> String:
+	if _active_profile.begins_with(MODPACK_PROFILE_PREFIX):
+		return "[Modpack: %s]" % _active_profile.trim_prefix(MODPACK_PROFILE_PREFIX)
+	return _active_profile
+
 # User-selectable profiles only, excluding modpack-managed slots. Any code
 # that picks a profile for the user to land on must use this, or the user
 # can be switched into a pack-managed slot and corrupt it.
