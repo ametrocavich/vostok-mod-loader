@@ -78,8 +78,8 @@ func _vmp_mod_page_url(slug: String) -> String:
 
 
 ## The host announces no rate-limit dialect (no Retry-After, no
-## X-RateLimit-*); the shared transport's default cooldown on 429 is all
-## there is.
+## X-RateLimit-*); the default cooldown host_note_rate_headers arms on a 429
+## is all there is.
 func _vmp_note_rate_headers(_status: int, _headers: PackedStringArray) -> void:
 	pass
 

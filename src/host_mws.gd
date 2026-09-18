@@ -82,11 +82,14 @@ func _mwsp_mod_page_url(id: String) -> String:
 ## Laravel dialect: 429 + Retry-After in seconds, X-RateLimit-Remaining on
 ## every response.
 func _mwsp_note_rate_headers(status: int, headers: PackedStringArray) -> void:
-	var wait_s := _hnet_header_value(headers, "Retry-After").to_int()
+	# Seconds only. to_int() on the HTTP-date form would string its digits
+	# together into a huge number, so that form reads as absent.
+	var retry_after := _hnet_header_value(headers, "Retry-After").strip_edges()
+	var wait_s := retry_after.to_int() if retry_after.is_valid_int() else 0
 	if status == 429:
-		# An absent or HTTP-date Retry-After gives wait_s == 0; pass 0 through
-		# so host_arm_cooldown applies its 60s default. Clamping 0 up to 1
-		# would arm a 1s cooldown the transport waits out and retries into.
+		# An absent Retry-After gives wait_s == 0; pass 0 through so
+		# host_arm_cooldown applies its 60s default. Clamping 0 up to 1 would
+		# arm a 1s cooldown the transport waits out and retries into.
 		host_arm_cooldown(HOST_MODWORKSHOP, clampi(wait_s, 1, 900) * 1000 if wait_s > 0 else 0)
 		return
 	var remaining := _hnet_header_value(headers, "X-RateLimit-Remaining")

@@ -150,6 +150,10 @@ func host_note_rate_headers(provider: String, status: int, headers: PackedString
 	match provider:
 		HOST_MODWORKSHOP: _mwsp_note_rate_headers(status, headers)
 		HOST_VOSTOKMODS: _vmp_note_rate_headers(status, headers)
+	# A 429 the adapter read no wait from still arms the default window, for
+	# every caller: the JSON transport and the file download alike.
+	if status == 429 and _hnet_cooldown_ms(provider) <= 0:
+		host_arm_cooldown(provider, 0)
 
 
 ## Non-boolean provider policy: sorts, landing sections, and limits.

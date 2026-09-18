@@ -135,11 +135,8 @@ func _hnet_get_json(provider: String, url: String, ttl_ms: int = 0,
 	host_note_rate_headers(provider, status, headers)
 
 	if status == 429:
-		# A host whose rate-limit dialect we cannot read leaves the cooldown
-		# unarmed ("0ms left"), which would send the retry below straight back
-		# out after 100ms. Arm the default window before deciding anything.
-		if _hnet_cooldown_ms(provider) <= 0:
-			host_arm_cooldown(provider, 0)
+		# host_note_rate_headers armed a window even when the host named none,
+		# so the retry below never goes straight back out.
 		var wait_s := host_rate_cooldown_seconds(provider)
 		if allow_rate_wait and _hnet_cooldown_ms(provider) <= _HOST_RATE_WAIT_MAX_MS and get_tree() != null:
 			await get_tree().create_timer(float(_hnet_cooldown_ms(provider) + 100) / 1000.0).timeout

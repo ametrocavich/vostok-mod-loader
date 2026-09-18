@@ -74,7 +74,7 @@ The provider-neutral vocabulary. Provider ids (`HOST_MODWORKSHOP`, `HOST_VOSTOKM
 
 ### [host_http.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/host_http.gd)
 
-Shared HTTP transport: `_hnet_get_json` with the User-Agent, body cap, per-URL TTL cache (`_host_cache`), transport retry, and the per-provider cooldown table (`host_arm_cooldown`, `host_rate_cooldown_seconds`). A cooldown with under two seconds left is waited out inside the call; longer ones fail fast with `rate_limited`. Host-specific rate-limit header dialects stay in the adapters. The loader's own update check also uses this transport, under the provider id `"github"`.
+Shared HTTP transport: `_hnet_get_json` with the User-Agent, body cap, per-URL TTL cache (`_host_cache`), transport retry, and the per-provider cooldown table (`host_arm_cooldown`, `host_rate_cooldown_seconds`). A cooldown with under two seconds left is waited out inside the call; longer ones fail fast with `rate_limited`. Host-specific rate-limit header dialects stay in the adapters; `host_note_rate_headers` (in `host_api.gd`) runs the adapter and then arms the default window on a 429 that named no wait, so a file download is covered the same as a JSON call. The loader's own update check also uses this transport, under the provider id `"github"`.
 
 ### [host_api.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/host_api.gd)
 

@@ -84,6 +84,7 @@ func _run() -> void:
 	await _t17_pack_keys_follow_the_installed_mods(ml)
 	await _t18_refreshed_pack_rebuilds_its_slot(ml)
 	_t19_apply_preview_is_read_only(ml)
+	_t20_rate_limit_headers(ml)
 
 	_finish()
 
@@ -1039,6 +1040,29 @@ func _t19_apply_preview_is_read_only(ml: Object) -> void:
 			"T19: nothing missing counts as nothing")
 	_pack_cleanup(ml)
 
+# --- T20: what a response says about the rate limit ----------------------------
+
+# The cooldown is per provider and armed from a response's status and headers.
+# Every caller goes through host_note_rate_headers, the download path included.
+func _t20_rate_limit_headers(ml: Object) -> void:
+	var cooldowns: Dictionary = ml.get("_host_cooldown_until_ms")
+	cooldowns.clear()
+	ml.host_note_rate_headers("modworkshop", 200, PackedStringArray(["X-RateLimit-Remaining: 12"]))
+	_assert(int(ml.host_rate_cooldown_seconds("modworkshop")) == 0, "T20: a 2xx with budget left arms nothing")
+	ml.host_note_rate_headers("modworkshop", 429, PackedStringArray(["Retry-After: 30"]))
+	var secs := int(ml.host_rate_cooldown_seconds("modworkshop"))
+	_assert(secs >= 29 and secs <= 30, "T20: Retry-After in seconds is honored (got %d)" % secs)
+	cooldowns.clear()
+	ml.host_note_rate_headers("modworkshop", 429, PackedStringArray(["Retry-After: Wed, 21 Oct 2026 07:28:00 GMT"]))
+	secs = int(ml.host_rate_cooldown_seconds("modworkshop"))
+	_assert(secs >= 59 and secs <= 60, "T20: an HTTP-date Retry-After falls back to the default window (got %d)" % secs)
+	cooldowns.clear()
+	ml.host_note_rate_headers("vostokmods", 429, PackedStringArray())
+	secs = int(ml.host_rate_cooldown_seconds("vostokmods"))
+	_assert(secs >= 59 and secs <= 60, "T20: a 429 from a host with no rate dialect arms the default window (got %d)" % secs)
+	_assert(int(ml.host_rate_cooldown_seconds("modworkshop")) == 0, "T20: and leaves the other host alone")
+	cooldowns.clear()
+
 # The update check in two pure halves: which installed mods are asked about,
 # and what the site's answers mean. A dev folder, a mod with no version, no
 # source, no readable mod.txt or a host that cannot serve files is skipped;
@@ -1212,7 +1236,7 @@ func _fail(msg: String) -> void:
 func _finish() -> void:
 	_done = true
 	if _failures.is_empty():
-		print("[host] PASS: %d assertion(s) across T1..T19" % _assertions)
+		print("[host] PASS: %d assertion(s) across T1..T20" % _assertions)
 		quit(0)
 		return
 	for m in _failures:
