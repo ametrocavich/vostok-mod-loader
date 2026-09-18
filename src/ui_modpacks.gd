@@ -1049,7 +1049,12 @@ func _hosted_add_from_paste(hp: Dictionary) -> void:
 	_hosted_after_import(hp, r, null)
 	if bool(r.get("ok", false)) and is_instance_valid(paste):
 		paste.text = ""
-		_hosted_fetch(hp, false)
+		# The list refresh rewrites the status line; put the confirmation back after it.
+		var added_text: String = status.text
+		await _hosted_fetch(hp, false)
+		if is_instance_valid(status):
+			status.text = added_text
+			status.add_theme_color_override("font_color", COL_OK)
 
 
 # Mirror of _rebuild_mods_tab. _rebuilding_modpacks_tab guards against
