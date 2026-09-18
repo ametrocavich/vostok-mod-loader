@@ -478,6 +478,16 @@ static func _remove_tree(dir_path: String, keep_root: bool) -> void:
 	if target == user_root or not target.begins_with(user_root + "/"):
 		push_warning("[ModLoader] Refusing to delete outside user://: " + dir_path)
 		return
+	# Check every component before opening it: the root or an ancestor can
+	# redirect outside user:// just as an enumerated child can.
+	var component := user_root
+	for part in target.trim_prefix(user_root + "/").split("/"):
+		var parent := DirAccess.open(component)
+		component = component.path_join(part)
+		if parent != null and parent.is_link(component):
+			if component == target and not keep_root:
+				DirAccess.remove_absolute(target)
+			return
 	if not DirAccess.dir_exists_absolute(target):
 		return
 	var dir := DirAccess.open(target)

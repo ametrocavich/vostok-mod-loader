@@ -853,6 +853,21 @@ func _t22_remove_tree_leaves_a_link_target_alone() -> void:
 		_assert(FileAccess.file_exists("user://t22_outside/keep.txt"), "T22: a file behind a link inside the tree survives")
 	else:
 		print("[boot-state] T22: this platform would not create a link; the link case was not exercised")
+	var root_link := ProjectSettings.globalize_path("user://t22_root_link")
+	DirAccess.make_dir_recursive_absolute(outside.path_join("sub"))
+	_write_file("user://t22_outside/sub/keep.txt", "keep")
+	var user_dir := DirAccess.open("user://")
+	var root_linked := user_dir.create_link(outside, root_link) == OK
+	if not root_linked and OS.get_name() == "Windows":
+		root_linked = OS.execute("cmd", ["/c", "mklink", "/J", root_link.replace("/", "\\"), outside.replace("/", "\\")]) == 0
+	if root_linked:
+		_ml._remove_tree(root_link.path_join("sub"), false)
+		_assert(FileAccess.file_exists("user://t22_outside/sub/keep.txt"), "T22: a linked ancestor is not traversed")
+		_ml._remove_tree(root_link, true)
+		_assert(FileAccess.file_exists("user://t22_outside/keep.txt"), "T22: keeping a linked root does not empty its target")
+		_ml._remove_tree(root_link, false)
+		_assert(FileAccess.file_exists("user://t22_outside/keep.txt"), "T22: removing a linked root preserves its target")
+		_assert(not user_dir.is_link(root_link), "T22: removing a linked root removes only the link")
 	_ml._remove_tree("user://t22_outside", false)
 	# The guard itself: nothing outside user://, and never user:// whole.
 	var exe_side := ProjectSettings.globalize_path("res://t22_must_survive")
