@@ -103,7 +103,7 @@ All calls on `Engine.get_meta("RTVModLib")`. Source: `src/hooks_api.gd`.
 | Method | Purpose |
 |---|---|
 | `hook(name, callback, priority=100) -> int` | Register a callback, return its id. Returns -1 if `name` is a bare replace name that already has an owner (any earlier registration, even your own). The rejection is logged at debug level only, so check the return value. Callbacks run in ascending priority order; ties are not guaranteed to run in registration order (`sort_custom` is not stable), so use distinct priorities when ordering matters |
-| `hook_many({name: callback, ...}, priority=100) -> Dictionary` | Batched register. Returns `{ok, results}` where `results[name]` is the hook id or -1; `ok` is false if any registration failed |
+| `hook_many({name: callback, ...}, priority=100) -> Dictionary` | Batched register. Returns `{ok, results}` where `results[name]` is the hook id or -1; `ok` is false if any registration failed. A value that is not a Callable warns, reports -1 and does not stop the batch |
 | `unhook(id) -> void` | Remove a hook by id |
 | `add_hook(path, method, cb, is_before=true) -> int` | godot-mod-loader compat shim; see [add_hook compat](#modloaderadd_hook-compat) for its timing and path caveats |
 | `has_hooks(name) -> bool` | Any callbacks registered at this exact name? |

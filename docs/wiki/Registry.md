@@ -1068,7 +1068,8 @@ The cross-cutting sharp edges. Per-registry edges are in the sections above.
 - `remove` only undoes a mod `register`; it refuses vanilla entries and override-backed ids. `revert` undoes overrides and patches. On the append-only registries (`shelters`, `maps`, `random_scenes`, `fish_species`, `trader_pools`) `revert` is an alias for `remove`.
 - `patch` return values drift by registry (see [patch](#patch)). On `items`, `sounds`, `recipes`, `events` and `trader_tasks`, `true` does not mean every field applied.
 - Resource-ref ids work only for `recipes`, `events` and `trader_tasks`. Passing a `RecipeData`, `EventData` or `TaskData` to `patch`, `revert` or the array verbs is how you touch vanilla entries without a handle. Every other registry needs String ids.
-- `revert_many` values must be Arrays (`[]` for full revert); bare strings are rejected, not coerced.
+- `revert_many` values must be Arrays (`[]` for full revert); bare strings are rejected, not coerced. `patch_many` values must be Dictionaries. Either way the bad entry warns, reports `false` and the rest of the batch runs.
+- A `find` predicate that returns something other than a bool or a number counts as no match.
 - A full `revert` restores patches first, then drops the override. Each patched value goes back onto the entry it was read from, so a patch made before an override is undone on the entry under the override, not on the override.
 - `sounds` registrations are invisible to vanilla. Only `override` or `patch` of real `AudioLibrary` field names changes what the game plays.
 - `inputs` ids are InputMap action names. Namespace them, and remember registered actions don't appear in the vanilla rebind UI without an extra hook.

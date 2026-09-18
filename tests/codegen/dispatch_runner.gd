@@ -63,6 +63,7 @@
 ##   T19 has_mod(id, min_version) reads a v-prefixed version
 ##   T20 a hook whose owner was freed is dropped at dispatch, and a replace
 ##       slot it held can be taken
+##   T21 hook_many, patch_many and find() report a bad value and carry on
 extends SceneTree
 
 const FIXTURE_PATH := "res://Scripts/FixtureDispatch.gd"
@@ -108,7 +109,7 @@ func _finish() -> void:
 	_done = true
 	var ms := Time.get_ticks_msec() - _t0
 	if _failures.is_empty():
-		print("[dispatch] PASS: %d assertion(s) across T1..T20, %d frame(s), %d ms in-engine" % [_checks, _frames, ms])
+		print("[dispatch] PASS: %d assertion(s) across T1..T21, %d frame(s), %d ms in-engine" % [_checks, _frames, ms])
 		quit(0)
 	else:
 		printerr("[dispatch] FAILED: %d of %d assertion(s) (%d ms in-engine); first: %s" % [_failures.size(), _checks, ms, _failures[0]])
@@ -249,6 +250,7 @@ func _run_tests() -> void:
 	_t18_when_predicate_cannot_abort_a_plan()
 	_t19_has_mod_reads_a_v_prefix()
 	_t20_freed_hook_owner()
+	_t21_batch_verbs_survive_bad_values()
 
 func _t1_pre() -> void:
 	var id: int = _lib.hook("fixturedispatch-add-pre", func(x, y): _log.append("pre:add:%d:%d" % [x, y]))
@@ -709,3 +711,26 @@ func _t20_freed_hook_owner() -> void:
 	_expect(other_id != -1, "T20", "a replace slot whose owner was freed can be taken")
 	_expect_eq(_lib.get_replace_owner("fixturedispatch-add"), other_id, "T20", "and reports its new owner")
 	_unhook_all([other_id])
+
+func _t21_batch_verbs_survive_bad_values() -> void:
+	var hooked = _lib.hook_many({"fixturedispatch-add-pre": null, "fixturedispatch-add-post": func(_x, _y, res): return res})
+	if _expect(hooked is Dictionary, "T21", "hook_many returns its result dict when a value is not a Callable (got %s)" % str(hooked)):
+		var results: Dictionary = (hooked as Dictionary).get("results", {})
+		_expect_eq(results.get("fixturedispatch-add-pre"), -1, "T21", "the entry that is not a Callable reports -1")
+		_expect(int(results.get("fixturedispatch-add-post", -1)) != -1, "T21", "the entry after it still registers")
+		_expect_eq((hooked as Dictionary).get("ok"), false, "T21", "and ok is false")
+		_unhook_all([int(results.get("fixturedispatch-add-post", -1))])
+	var own := "rtv_dispatch_batch_action"
+	if InputMap.has_action(own):
+		InputMap.erase_action(own)
+	_lib.register("inputs", own, {"default_event": _key_event(KEY_A)})
+	var patched = _lib.patch_many("inputs", {"rtv_no_such_action": "display_label", own: {"display_label": "Batch"}})
+	if _expect(patched is Dictionary, "T21", "patch_many returns its result dict when a value is not a Dictionary (got %s)" % str(patched)):
+		var presults: Dictionary = (patched as Dictionary).get("results", {})
+		_expect_eq(presults.get("rtv_no_such_action"), false, "T21", "the entry that is not a Dictionary reports false")
+		_expect_eq(presults.get(own), true, "T21", "the entry after it still applies")
+	var found = _lib.find("inputs", func(_entry): return null, false)
+	_expect(found is Array and (found as Array).is_empty(), "T21", "find() with a predicate returning null matches nothing (got %s)" % str(found))
+	found = _lib.find("inputs", func(entry): return entry.get("display_label") == "Batch", false)
+	_expect(found is Array and (found as Array).size() == 1, "T21", "find() with a bool predicate still matches")
+	_lib.remove("inputs", own)

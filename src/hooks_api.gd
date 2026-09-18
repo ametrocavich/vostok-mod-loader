@@ -157,7 +157,16 @@ func hook_many(entries: Dictionary, priority: int = 100) -> Dictionary:
 	var results: Dictionary = {}
 	var all_ok := true
 	for hook_name in entries.keys():
-		var id: int = hook(String(hook_name), entries[hook_name], priority)
+		var callback: Variant = entries[hook_name]
+		# hook() takes a Callable; passing anything else is a script error
+		# that would end the batch at this entry.
+		if not (callback is Callable):
+			push_warning("[RTVModLib] hook_many('%s'): value must be a Callable, got %s. Skipping." \
+					% [str(hook_name), type_string(typeof(callback))])
+			results[hook_name] = -1
+			all_ok = false
+			continue
+		var id: int = hook(str(hook_name), callback, priority)
 		results[hook_name] = id
 		if id == -1:
 			all_ok = false

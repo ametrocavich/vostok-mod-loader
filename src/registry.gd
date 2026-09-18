@@ -558,7 +558,16 @@ func patch_many(registry: String, entries: Dictionary) -> Dictionary:
 	var results: Dictionary = {}
 	var all_ok := true
 	for id in entries.keys():
-		var ok: bool = patch(registry, id, entries[id])
+		var fields: Variant = entries[id]
+		# Same guard as revert_many: patch() takes a Dictionary, and a script
+		# error on a bad value would end the batch at this entry.
+		if not (fields is Dictionary):
+			push_warning("[Registry] patch_many('%s', '%s'): value must be a Dictionary of fields; got %s. Skipping." \
+					% [registry, str(id), type_string(typeof(fields))])
+			results[id] = false
+			all_ok = false
+			continue
+		var ok: bool = patch(registry, id, fields)
 		results[id] = ok
 		if not ok:
 			all_ok = false
@@ -790,7 +799,8 @@ func find(registry: String, predicate: Callable, include_vanilla: bool = true) -
 		var entry = entries[id]
 		if entry == null:
 			continue
-		if bool(predicate.call(entry)):
+		# _json_truthy: bool() on a predicate that returned null is a script error.
+		if _json_truthy(predicate.call(entry)):
 			out.append({"id": String(id), "entry": entry})
 	return out
 
