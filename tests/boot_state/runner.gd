@@ -160,6 +160,7 @@ func _run() -> void:
 	_t15_state_hash_reads_an_unquoted_version()
 	_t16_early_hooks_survive_load_all_mods()
 	_t17_modlib_meta_registers_once()
+	_t18_pack_failures_reach_the_launcher()
 
 	_finish()
 
@@ -706,6 +707,42 @@ func _t17_modlib_meta_registers_once() -> void:
 	Engine.remove_meta("RTVModLib")
 	lines.clear()
 
+# --- T18: a hook pack that cannot be built or mounted is reported ---------------
+
+# The hook status record is how the next launcher learns hooks did not work.
+# A pack that cannot be written, or that will not mount, must leave its own
+# record: without one the record of the last healthy session stays in place
+# and the launcher says nothing.
+func _t18_pack_failures_reach_the_launcher() -> void:
+	var status_path := str(_ml.HOOK_STATUS_PATH)
+	_assert("HOOK_STATE_PACK_FAILED" in _ml, "T18: the loader has HOOK_STATE_PACK_FAILED")
+	if not ("HOOK_STATE_PACK_FAILED" in _ml):
+		return
+	var healthy := func():
+		_ml._hook_status_write({"state": "ok", "attempted": 5, "ok": 5})
+	var no_paths: Array[String] = []
+
+	# The zip cannot be created: its directory does not exist.
+	healthy.call()
+	var packed: Array[String] = []
+	var wrote: int = _ml._hook_pack_write_zip("user://no_such_dir/framework_pack_1.zip", no_paths, {}, {}, {}, {}, packed)
+	_assert(wrote == -1, "T18: a zip that cannot be created returns -1 (got %d)" % wrote)
+	var problem: Dictionary = _ml._hook_status_problem()
+	_assert(str(problem.get("severity", "")) == "error" and str(problem.get("text", "")).contains("hook pack"),
+			"T18: a pack that cannot be written is an error notice (got %s)" % str(problem))
+
+	# The zip will not mount: there is no such file.
+	healthy.call()
+	_assert((_ml._hook_status_problem() as Dictionary).is_empty(), "T18: a healthy record shows nothing")
+	var wrapped: Array[String] = ["res://Scripts/Controller.gd"]
+	var mounted := str(_ml._hook_pack_mount_and_activate("user://framework_pack_missing.zip", wrapped, 4, {}, false))
+	_assert(mounted == "", "T18: a pack that will not mount returns no path")
+	problem = _ml._hook_status_problem()
+	_assert(str(problem.get("severity", "")) == "error" and str(problem.get("text", "")).contains("hook pack"),
+			"T18: a pack that will not mount is an error notice (got %s)" % str(problem))
+	if FileAccess.file_exists(status_path):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(status_path))
+
 # --- T9: Pass 2 keeps the applied-override map through load_all_mods --------
 
 # Pass 2 applies [script_extend] / [script_overrides] from pass state before
@@ -997,7 +1034,7 @@ func _cleanup_exe_cfg() -> void:
 func _finish() -> void:
 	_cleanup_exe_cfg()
 	if _failures.is_empty():
-		print("[boot-state] PASS: %d assertion(s) across T1..T17" % _assertions)
+		print("[boot-state] PASS: %d assertion(s) across T1..T18" % _assertions)
 		quit(0)
 		return
 	for m in _failures:

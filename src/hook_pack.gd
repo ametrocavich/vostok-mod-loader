@@ -351,6 +351,7 @@ func _hook_pack_write_zip(pack_zip_rel: String, script_paths: Array[String], nee
 	var zp := ZIPPacker.new()
 	if zp.open(zip_abs) != OK:
 		_log_critical("[RTVCodegen] Failed to create framework pack zip at %s" % zip_abs)
+		_hook_status_write({"state": HOOK_STATE_PACK_FAILED, "attempted": needed_paths.size()})
 		return -1
 	var pack_write_failed := false
 
@@ -592,6 +593,7 @@ func _hook_pack_write_zip(pack_zip_rel: String, script_paths: Array[String], nee
 	if pack_write_failed:
 		DirAccess.remove_absolute(zip_abs)
 		_log_critical("[RTVCodegen] Hook pack write failed (disk full / I/O error?) at %s -- pack discarded, hooks disabled this session, running vanilla" % zip_abs)
+		_hook_status_write({"state": HOOK_STATE_PACK_FAILED, "attempted": needed_paths.size()})
 		return -1
 
 	if zero_byte_skipped > 0:
@@ -635,6 +637,7 @@ func _hook_pack_mount_and_activate(pack_zip_rel: String, packed_paths: Array[Str
 				# Activating anyway would leave a half-modded state; not persisting means
 				# the next launch regenerates instead of remounting this broken pack.
 				_log_critical("[STABILITY] VFS canary FAILED (got '%s', expected '%s') -- hook pack mounted but files aren't served. Skipping activation: script hooks will not fire this session, vanilla scripts run. Pack state not persisted; next launch regenerates." % [canary_got.substr(0, 40), canary_content])
+				_hook_status_write({"state": HOOK_STATE_PACK_FAILED, "attempted": packed_paths.size()})
 				return ""
 			_log_info("[STABILITY] VFS canary OK: hook pack mount precedence verified (%s)" % canary_got.strip_edges())
 			_log_info("[RTVCodegen] Generated %d rewritten vanilla script(s), %d hook points -- pack mounted at res:// (%s)" \
@@ -642,6 +645,7 @@ func _hook_pack_mount_and_activate(pack_zip_rel: String, packed_paths: Array[Str
 			_activate_rewritten_scripts(packed_paths, pack_zip_rel)
 		else:
 			_log_critical("[RTVCodegen] Failed to mount hook pack at %s -- script hooks will not fire this session, vanilla scripts run. Next launch regenerates the pack." % zip_abs)
+			_hook_status_write({"state": HOOK_STATE_PACK_FAILED, "attempted": packed_paths.size()})
 			return ""
 	else:
 		_log_info("[RTVCodegen] No scripts rewritten -- no pack mounted")

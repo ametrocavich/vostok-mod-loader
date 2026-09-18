@@ -49,7 +49,7 @@ Some rows carry extra lines:
 - A red `suspicious code` tag when the built-in scanner matched patterns seen in malicious mods. Click it to see what matched. The tag never blocks loading.
 - `[dev folder]` on an unpacked folder mod in developer mode.
 
-A banner at the top of the tab appears when the hook system did not work last session, usually after a game update. It reads `Last time the game ran, hooks did not work on ...` or `The loader could not read this version of Road to Vostok's scripts correctly ...`. Mods still load, but mods that change vanilla scripts do nothing until a loader update fixes it; the banner's **Check for loader update** button opens the release page. A quieter notice, `Road to Vostok was updated ...`, means the loader rebuilt its script cache and hooks should keep working.
+A banner at the top of the tab appears when the hook system did not work last session, usually after a game update. It starts with `Last time the game ran, ...` (hooks did not work on the named scripts, none of the script rewrites took effect, or the loader could not build or mount its hook pack), `The loader could not read this version of Road to Vostok's scripts correctly ...` or `This version of Road to Vostok stores its scripts in a format ...`. Mods still load, but mods that change vanilla scripts do nothing until a loader update fixes it; the banner's **Check for loader update** button opens the release page. A quieter notice, `Road to Vostok was updated ...`, means the loader rebuilt its script cache and hooks should keep working.
 
 ## Developer mode
 

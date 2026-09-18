@@ -17,6 +17,7 @@ const HOOK_STATE_UNSUPPORTED_GDSC := "unsupported_gdsc"
 const HOOK_STATE_DETOK_FAILED := "detok_failed"
 const HOOK_STATE_ALL_FAILED := "all_failed"
 const HOOK_STATE_CRITICAL_FAILED := "critical_failed"
+const HOOK_STATE_PACK_FAILED := "pack_failed"
 
 
 ## Record the outcome of this session's hook work. `fields` carries at least
@@ -93,6 +94,9 @@ func _hook_status_problem() -> Dictionary:
 				shown.append(str(n).get_file())
 			return {"severity": "error", "text":
 					"Last time the game ran, hooks did not work on %s. Mods that change those scripts did nothing. This usually follows a game update; check for a loader update." % ", ".join(shown)}
+		HOOK_STATE_PACK_FAILED:
+			return {"severity": "error", "text":
+					"Last time the game ran, the loader could not build or mount its hook pack, so hook-based mods did nothing. Check the free space on your disk; if it keeps happening, check for a loader update."}
 	if FileAccess.file_exists(GAME_UPDATED_MARKER_PATH):
 		return {"severity": "notice", "text":
 				"Road to Vostok was updated. The loader rebuilt its script cache for the new version. If hook-based mods stop working, check for a loader update."}

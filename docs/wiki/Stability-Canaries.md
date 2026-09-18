@@ -98,7 +98,7 @@ The mount and write steps fail the same way:
 - `load_resource_pack` returns false: critical `[RTVCodegen] Failed to mount hook pack at <path> -- script hooks will not fire this session, vanilla scripts run. Next launch regenerates the pack.`
 - Writing the zip fails (disk full, I/O error): the partial zip is deleted, critical `[RTVCodegen] Hook pack write failed (disk full / I/O error?) at <path> -- pack discarded, hooks disabled this session, running vanilla.`
 
-In all three cases nothing is persisted, so the next launch starts from scratch.
+In all three cases nothing is persisted, so the next launch starts from scratch, and a `pack_failed` hook status record is written so the Mods tab shows its banner on the next start.
 
 ## DEFER-VERIFY watchdog
 
