@@ -161,6 +161,7 @@ func _run() -> void:
 	_t16_early_hooks_survive_load_all_mods()
 	_t17_modlib_meta_registers_once()
 	_t18_pack_failures_reach_the_launcher()
+	_t19_wrap_surface_counts_each_script_once()
 
 	_finish()
 
@@ -743,6 +744,46 @@ func _t18_pack_failures_reach_the_launcher() -> void:
 	if FileAccess.file_exists(status_path):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(status_path))
 
+# --- T19: the wrap surface and its ledger --------------------------------------
+
+# The wrap surface is every vanilla script some mod declared, through [hooks],
+# a .hook() call or [registry]. A registry target a mod also hooks by method
+# is widened to a whole-script wrap, is counted once, and its ledger entry
+# says both declarations reached it.
+func _t19_wrap_surface_counts_each_script_once() -> void:
+	var hooked: Dictionary = _ml.get("_hooked_methods")
+	hooked.clear()
+	hooked["res://Scripts/Database.gd"] = {"_ready": true}
+	hooked["res://Scripts/Controller.gd"] = {"jump": true}
+	_ml.set("_any_mod_declared_registry", true)
+	var lines: Array = _ml.get("_report_lines")
+	lines.clear()
+	var scripts: Array[String] = ["res://Scripts/Menu.gd", "res://Scripts/Controller.gd"]
+	for rt in _ml.REGISTRY_TARGETS:
+		scripts.append("res://Scripts/" + str(rt))
+	var needed: Dictionary = {}
+	var mask: Dictionary = {}
+	var ledger: Dictionary = _ml._hook_pack_wrap_surface(scripts, needed, mask)
+	# Controller and Menu by method, Database by method and by [registry], five more by [registry].
+	_assert(needed.size() == 8, "T19: eight scripts are in the wrap surface (got %d)" % needed.size())
+	var surface_line := ""
+	for line in lines:
+		if str(line).contains("Wrap surface:"):
+			surface_line = str(line)
+	_assert(surface_line.contains("8 vanilla script(s) declared (3 via [hooks]/.hook(), 5 more via [registry])"),
+			"T19: the summary counts a script declared both ways once (got '%s')" % surface_line)
+	_assert((mask.get("res://Scripts/Database.gd", {"x": true}) as Dictionary).is_empty(),
+			"T19: a registry target hooked by method is widened to the whole script")
+	_assert((mask.get("res://Scripts/Controller.gd", {}) as Dictionary).has("jump"),
+			"T19: a script hooked by method only keeps its method mask")
+	_assert(str((ledger.get("res://Scripts/Database.gd", {}) as Dictionary).get("declared", "")) == "[hooks]+[registry]",
+			"T19: the ledger records both declarations")
+	_assert(str((ledger.get("res://Scripts/Loader.gd", {}) as Dictionary).get("declared", "")) == "[registry]",
+			"T19: a registry-only target is recorded as such")
+	hooked.clear()
+	_ml.set("_any_mod_declared_registry", false)
+	lines.clear()
+
 # --- T9: Pass 2 keeps the applied-override map through load_all_mods --------
 
 # Pass 2 applies [script_extend] / [script_overrides] from pass state before
@@ -1034,7 +1075,7 @@ func _cleanup_exe_cfg() -> void:
 func _finish() -> void:
 	_cleanup_exe_cfg()
 	if _failures.is_empty():
-		print("[boot-state] PASS: %d assertion(s) across T1..T18" % _assertions)
+		print("[boot-state] PASS: %d assertion(s) across T1..T19" % _assertions)
 		quit(0)
 		return
 	for m in _failures:

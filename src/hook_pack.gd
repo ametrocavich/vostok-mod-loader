@@ -254,10 +254,14 @@ func _hook_pack_wrap_surface(script_paths: Array[String], needed_paths: Dictiona
 			if not vanilla_path_set.has(rt_path):
 				(reconcile[rt_path] as Dictionary)["status"] = "lost"
 				(reconcile[rt_path] as Dictionary)["detail"] = "registry target not found among enumerated vanilla scripts"
-	_log_info("[RTVCodegen] Wrap surface: %d vanilla script(s) declared (%d via [hooks]/.hook(), %d via [registry])" % [
+	var via_hooks := 0
+	for needed_path: String in needed_paths:
+		if _hooked_methods.has(needed_path):
+			via_hooks += 1
+	_log_info("[RTVCodegen] Wrap surface: %d vanilla script(s) declared (%d via [hooks]/.hook(), %d more via [registry])" % [
 		needed_paths.size(),
-		_hooked_methods.size(),
-		REGISTRY_TARGETS.size() if _any_mod_declared_registry else 0,
+		via_hooks,
+		needed_paths.size() - via_hooks,
 	])
 	_log_debug("[RTVCodegen] Skip lists: %d runtime-sensitive, %d data, %d serialized (total %d skipped from rewrite)" % [
 		RTV_SKIP_LIST.size(),
