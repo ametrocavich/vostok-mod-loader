@@ -22,7 +22,7 @@ A pack you got from the site shows `from VostokMods` in its row and a **Refresh*
 
 ## Apply
 
-Click **Apply** on a modpack row. A confirmation names the pack, how many mods it activates, and how many it will download, then the launcher downloads the missing mods, backs up your current setup, and switches you to the pack's setup. A malformed pack fails before anything changes.
+Click **Apply** on a modpack row. A confirmation names the pack, how many mods it activates, how many it will download, and how many it cannot download and will list for a manual install; then the launcher downloads the missing mods, backs up your current setup, and switches you to the pack's setup. A malformed pack fails before anything changes.
 
 Mods that fail to download show up in a summary you can retry from. A mod the pack has no download link for gets an explicit reason instead of vanishing:
 

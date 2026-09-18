@@ -207,7 +207,9 @@ func get_active_modpack() -> String:
 	return str(cfg.get_value("settings", "active_modpack", ""))
 
 # Mods the pack declares that are not installed at the pinned version.
-# Returns [{profile_key, ref, version, source}]; ref is {} when no host is named.
+# Returns [{profile_key, ref, version, source, sha256}]; ref is {} when no host
+# is named, and an item nothing can download carries unreachable and
+# unreachable_reason. Reads only, so the Apply confirmation can preview it.
 func _get_missing_mods_for_modpack(entry: Dictionary) -> Array:
 	var missing: Array = []
 	var file_path: String = str(entry.get("file_path", ""))
@@ -273,7 +275,6 @@ func _get_missing_mods_for_modpack(entry: Dictionary) -> Array:
 			continue
 		if unavailable.has(src_key):
 			var reason := str(unavailable[src_key])
-			_log_warning("[Modpack] " + src_key + " is listed but unavailable (" + reason + ")")
 			missing.append({"profile_key": src_key, "ref": {}, "version": "", "source": _normalize_source_record(null),
 					"unreachable": true, "unreachable_reason": _hosted_unavailable_copy(reason)})
 			continue
@@ -285,8 +286,6 @@ func _get_missing_mods_for_modpack(entry: Dictionary) -> Array:
 		# profile_key would strict-pin legacy packs against replaced versions.
 		var src_rec := _normalize_source_record(src_data)
 		var version: String = str(src_rec["version"])
-		# Cache the source so a missing-mod stub can offer Download.
-		_persist_single_mod_source(src_key, src_rec)
 		var ref := _source_host_ref(src_rec)
 		var item := {"profile_key": src_key, "ref": ref, "version": version, "source": src_rec,
 				"sha256": str(checksums.get(src_key, ""))}
@@ -355,6 +354,16 @@ func _modpack_reconcile_profile_keys(profile_name: String, sources: Dictionary) 
 		_log_info("[Modpack] reconciled %d profile key(s) with the installed mods" % changed)
 		_persist_ui_cfg(cfg)
 	return changed
+
+
+## How many of the missing mods an apply downloads and how many it can only
+## report: {download, blocked}. `missing` is _get_missing_mods_for_modpack().
+func _modpack_download_counts(missing: Array) -> Dictionary:
+	var blocked := 0
+	for item_v in missing:
+		if item_v is Dictionary and bool((item_v as Dictionary).get("unreachable", false)):
+			blocked += 1
+	return {"download": missing.size() - blocked, "blocked": blocked}
 
 
 ## Drop a pack's kept profile slot and its MCM snapshot, so the next apply
@@ -567,6 +576,9 @@ func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Calla
 	var failures: Array = []
 	if not missing.is_empty():
 		_log_info("[Modpack] applying " + sanitized + ": " + str(missing.size()) + " mod(s) to install")
+		# Cache each source so a mod that fails to download can offer it from its missing-mod row.
+		for missing_item: Dictionary in missing:
+			_persist_single_mod_source(str(missing_item.get("profile_key", "")), missing_item.get("source", {}))
 		var total := missing.size()
 		for i in range(total):
 			var item_ref: Dictionary = (missing[i] as Dictionary).get("ref", {})

@@ -83,6 +83,7 @@ func _run() -> void:
 	await _t16_unload_leaves_no_pack_mcm_behind(ml)
 	await _t17_pack_keys_follow_the_installed_mods(ml)
 	await _t18_refreshed_pack_rebuilds_its_slot(ml)
+	_t19_apply_preview_is_read_only(ml)
 
 	_finish()
 
@@ -1000,6 +1001,35 @@ func _t18_refreshed_pack_rebuilds_its_slot(ml: Object) -> void:
 	ml.unload_modpack(null)
 	_pack_cleanup(ml)
 
+# The Apply confirmation previews what an apply would download. The preview
+# writes nothing, and it counts only what can be downloaded: a mod the site
+# cannot serve, or one the pack names no source for, is listed after the
+# apply for a manual install, not downloaded.
+func _t19_apply_preview_is_read_only(ml: Object) -> void:
+	_assert(ml.has_method("_modpack_download_counts"), "T19: the loader has _modpack_download_counts")
+	if not ml.has_method("_modpack_download_counts"):
+		return
+	_pack_setup(ml)
+	var cfg_path := str(ml.UI_CONFIG_PATH)
+	var pack := {"metroprofile": 1, "name": "Preview",
+			"enabled": {"a@1.0": true, "vostokmods:new-mod": true, "vostokmods:scanning": true, "nosource@1.0": true},
+			"sources": {"vostokmods:new-mod": {"provider": "vostokmods", "id": "new-mod", "version": "1.0"}},
+			"unavailable": {"vostokmods:scanning": "scanning"}}
+	var entry := _pack_write(ml, pack, "1")
+	_remove_user_file(cfg_path + ".bak")
+	var before := FileAccess.get_file_as_string(cfg_path)
+	var missing: Array = ml._get_missing_mods_for_modpack(entry)
+	_assert(missing.size() == 3, "T19: three of the four listed mods are not installed (got %d)" % missing.size())
+	_assert(FileAccess.get_file_as_string(cfg_path) == before and not FileAccess.file_exists(cfg_path + ".bak"),
+			"T19: previewing an apply writes nothing to mod_config.cfg")
+	var counts: Dictionary = ml._modpack_download_counts(missing)
+	_assert(int(counts.get("download", -1)) == 1 and int(counts.get("blocked", -1)) == 2,
+			"T19: one mod downloads, two are listed for a manual install (got %s)" % str(counts))
+	var nothing: Dictionary = ml._modpack_download_counts([])
+	_assert(int(nothing.get("download", -1)) == 0 and int(nothing.get("blocked", -1)) == 0,
+			"T19: nothing missing counts as nothing")
+	_pack_cleanup(ml)
+
 # The update check in two pure halves: which installed mods are asked about,
 # and what the site's answers mean. A dev folder, a mod with no version, no
 # source, no readable mod.txt or a host that cannot serve files is skipped;
@@ -1173,7 +1203,7 @@ func _fail(msg: String) -> void:
 func _finish() -> void:
 	_done = true
 	if _failures.is_empty():
-		print("[host] PASS: %d assertion(s) across T1..T18" % _assertions)
+		print("[host] PASS: %d assertion(s) across T1..T19" % _assertions)
 		quit(0)
 		return
 	for m in _failures:

@@ -391,11 +391,14 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 	var apply_enabled := int(validation.get("enabled_count", 0))
 	var apply_total := int(validation.get("total_count", 0))
 	var name_str := str(entry.get("raw_name", "?"))
-	var missing_preview := _get_missing_mods_for_modpack(entry)
-	var dl_count := missing_preview.size()
+	var preview_counts := _modpack_download_counts(_get_missing_mods_for_modpack(entry))
+	var dl_count := int(preview_counts["download"])
+	var blocked_count := int(preview_counts["blocked"])
 	var msg := "Apply \"%s\"?\n\nActivates %d of %d mods and replaces your mod settings (MCM)." % [name_str, apply_enabled, apply_total]
 	if dl_count > 0:
 		msg += "\nWill download %d mod(s)." % dl_count
+	if blocked_count > 0:
+		msg += "\n%d mod(s) cannot be downloaded and will be listed for a manual install." % blocked_count
 	msg += "\n\nYour current state is backed up -- click Unload to restore."
 	var cd := ConfirmationDialog.new()
 	cd.title = "Apply modpack"
