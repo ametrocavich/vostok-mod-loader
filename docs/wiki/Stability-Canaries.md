@@ -15,10 +15,10 @@ Alarm levels:
 - Zero of N rewrites active, critical:
   ```
   [STABILITY] ALL N rewrites failed to take effect -- VFS mount, hook pack, or cache eviction is broken.
-  Mods will NOT work this session. Click 'Reset to Vanilla' in the UI
+  Mods will NOT work this session. Click 'Launch vanilla' in the launcher
   or create modloader_disabled in the game folder.
   ```
-  ("Reset to Vanilla" is the string in the code; the button is labeled "Launch vanilla", see the escape hatches below.)
+  (The button is described under the escape hatches below.)
 - A critical script failed, critical. The set is `Controller.gd, Camera.gd, WeaponRig.gd, Door.gd, Trader.gd, Hitbox.gd, LootContainer.gd, Pickup.gd`:
   ```
   [STABILITY] Hook rewrites missing on critical scripts: <list>.
@@ -34,7 +34,7 @@ Why: activation has a fallback (`CACHE_MODE_IGNORE + take_over_path`) for script
 
 ## Canary B: GDSC tokenizer version
 
-Location: the start of `_generate_hook_pack` in hook_pack.gd, using `_probe_gdsc_version` in [gdsc_detokenizer.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/gdsc_detokenizer.gd).
+Location: `_hook_pack_preflight` in hook_pack.gd, the first step of `_generate_hook_pack`, using `_probe_gdsc_version` in [gdsc_detokenizer.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/gdsc_detokenizer.gd).
 
 Probe: read the header of the first readable script among `Camera`, `Controller`, `Audio`, `AI` (`.gd`, then `.gdc`), confirm the `GDSC` magic in the first four bytes, return the u32 version at offset 4. Returns -1 when none of the four is readable.
 
@@ -54,7 +54,7 @@ Why: a future Godot with a v102 tokenizer would otherwise produce an "Empty deto
 
 ## Canary C: detokenizer round-trip
 
-Location: `_canary_detokenizer_roundtrip_ok` in hook_pack.gd, called from `_generate_hook_pack` right after the no-mods short-circuit.
+Location: `_canary_detokenizer_roundtrip_ok` in hook_pack.gd, called from `_hook_pack_preflight` right after the no-mods short-circuit.
 
 Probe: with mods loaded and canary B passed, detokenize the probe scripts that carry GDSC bytes (same four as canary B) through `_detokenize_script` directly, not `_read_vanilla_source`, so a pristine on-disk cache from an earlier session cannot mask a detokenizer that is broken against the current build. The canary passes on the first probe whose reconstruction has a colon-terminated `func` line followed by a tab-indented body line, and fails only when some probe produced source and none passed, so one unusual script cannot disable hooks for the session.
 
@@ -71,13 +71,13 @@ Alarm levels:
   Update the ModLoader to a version that supports this game build.
   ```
 
-Why: the engine can keep the version at 101 while changing what the column map means, and a game update that reindents the scripts breaks `col / 4` without touching the version. Canary B only reads the integer. On failure `_generate_hook_pack` returns empty and vanilla runs.
+Why: the engine can keep the version at 101 while changing what the column map means, and a game update that reindents the scripts breaks `col / 4` without touching the version. Canary B only reads the integer. On failure `_hook_pack_preflight` returns no pack path, `_generate_hook_pack` returns empty and vanilla runs.
 
 `check_detok.sh` covers the reader against synthetic buffers; canary C is still the only check against a real `.gdc` from the shipped PCK.
 
 ## VFS-precedence canary
 
-Location: `_generate_hook_pack`, a file written just before the pack zip closes and read back right after `load_resource_pack`.
+Location: a file `_hook_pack_write_zip` writes just before the pack zip closes, read back by `_hook_pack_mount_and_activate` right after `load_resource_pack`.
 
 Probe: the pack carries `__modloader_canary__.txt` with the content `MODLOADER-VFS-CANARY-<pack zip filename>`. The filename is the per-call ticks-stamped one, so a stale previous-session mount cannot satisfy the readback. After mounting, `FileAccess.get_file_as_string("res://__modloader_canary__.txt")` must match exactly.
 

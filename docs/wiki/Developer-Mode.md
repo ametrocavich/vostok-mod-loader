@@ -146,6 +146,6 @@ Dev mode changes what loads in exactly one way: folder mods are discovered and l
 - Hook pack generation, mount and activation.
 - The `RTVModLib` API.
 - `override.cfg` writing.
-- Canaries B and C, the VFS-precedence canary and the DEFER-VERIFY watchdog all fire at their critical levels in every mode. Canary A (the COMPILE-PROOF summary) is dev-only.
+- Canaries A, B and C, the VFS-precedence canary and the DEFER-VERIFY watchdog all fire at their critical levels in every mode. Only canary A's per-script `[COMPILE-PROOF]` detail lines and the end-to-end hook probes are dev-only.
 
 Apart from folder mods, dev mode only adds logging and probes.
