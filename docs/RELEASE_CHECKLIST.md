@@ -8,8 +8,9 @@ to tag.
 
 - [ ] `./build.sh && ./check.sh` green locally. The parse and all six gates:
       codegen, dispatch, detok, identity, host, boot_state. The codegen
-      gate only runs on a machine with the decompiled vanilla source, so run
-      it here; CI skips it.
+      gate compiles its ten vanilla fixtures only on a machine with the
+      decompiled game source, so run it here; CI compiles the three synthetic
+      fixtures and leaves those ten out.
 - [ ] `./check_host.sh --prove`, `./check_detok.sh --prove`,
       `./check_identity.sh --prove`, `./check_dispatch.sh --prove`,
       `./check_boot_state.sh --prove` and `./check_codegen.sh --prove` still
