@@ -10,8 +10,8 @@ Pre-game launcher. Mod profiles. In-launcher browser and installer for VostokMod
 
 The launcher has three tabs: **Mods**, **Browse** and **Modpacks**.
 
-* **Mods** -- every detected mod with a checkbox and a priority spinbox; a higher priority loads later and wins file conflicts. Profiles, Developer Mode and **Check for updates** live here; a mod with a newer version on its site gets an Update button on its row. Mods that declare required dependencies get a clear "won't load -- needs X" line with one-click **Enable dependency** and **Load anyway** buttons, and mods whose requirements aren't met are skipped instead of crashing.
-* **Browse** -- search VostokMods, or switch the source menu to ModWorkshop, and install mods without leaving the launcher. Downloads land in your mods folder and show up enabled, ready to launch. Multiple installs queue and run one at a time.
+* **Mods** -- every detected mod with a checkbox and a priority spinbox; a higher priority loads later and wins file conflicts. Profiles, Developer Mode and **Check for updates** live here; a mod with a newer version on its site is listed under Updates available with an Update button. Mods that declare required dependencies get a clear "won't load -- needs X" line with one-click **Enable dependency** and **Load anyway** buttons, and mods whose requirements aren't met are skipped instead of crashing.
+* **Browse** -- search VostokMods, or switch the source menu to ModWorkshop, and install mods without leaving the launcher. Downloads land in your mods folder and show up enabled in the Default profile (off in any other profile until you tick them). Multiple installs queue and run one at a time.
 * **Modpacks** -- apply a setup published on VostokMods: a mod selection with load order, MCM settings and download sources, shipped as one small `.zip`. Apply pulls down any mods you're missing and switches you to the author's exact setup; Unload puts your previous setup back.
 
 # Installation
