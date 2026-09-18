@@ -104,7 +104,7 @@ Managed profile sections. The launcher creates these and the Mods-tab profile dr
 
 | Section prefix | Meaning |
 |---|---|
-| `[profile.modpack__<name>.enabled]` / `.priority` / `.dep_ignore` | Live state of the applied modpack `<name>`. Edits you make while it is active save here. Kept on unload so a re-apply resumes your edits. |
+| `[profile.modpack__<name>.enabled]` / `.priority` / `.dep_ignore` | Live state of the applied modpack `<name>`. Edits you make while it is active save here. Kept on unload so a re-apply resumes your edits, and dropped when **Refresh** rewrites the pack from VostokMods. |
 | `[profile._before_modpack_<name>.enabled]` / `.priority` | Backup of your profile taken at apply time. Unload restores from here, then removes it. If these are gone and `modpack_backup_valid` is unset, unload aborts and your real profile survives. |
 
 `<name>` is the modpack's sanitized name (letters, digits, space, hyphen, underscore). Don't name your own profiles `modpack__*` or `_before_modpack_*`; the launcher treats those prefixes as reserved and filters them out of the dropdown.

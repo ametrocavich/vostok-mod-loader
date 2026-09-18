@@ -261,6 +261,8 @@ func _hosted_refresh_pack(entry: Dictionary) -> Dictionary:
 	var imp := _hosted_import_manifest(manifest)
 	if not imp["ok"]:
 		return {"ok": false, "error": imp["error"], "changed": false, "name": str(entry.get("raw_name", ""))}
+	# The slot kept from an earlier apply was built from the old zip.
+	_modpack_forget_slot(str(entry.get("sanitized_name", "")))
 	return {"ok": true, "error": "", "changed": true, "name": imp["name"]}
 
 

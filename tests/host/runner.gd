@@ -82,6 +82,7 @@ func _run() -> void:
 	await _t12_apply_failure_shape(ml)
 	await _t16_unload_leaves_no_pack_mcm_behind(ml)
 	await _t17_pack_keys_follow_the_installed_mods(ml)
+	await _t18_refreshed_pack_rebuilds_its_slot(ml)
 
 	_finish()
 
@@ -954,6 +955,51 @@ func _t17_pack_keys_follow_the_installed_mods(ml: Object) -> void:
 	_assert(int(ml._modpack_reconcile_active()) == 0, "T17: with no pack active there is nothing to reconcile")
 	_pack_cleanup(ml)
 
+# The slot is kept on unload, so a plain second apply reads the slot and not
+# the zip. When Refresh rewrote the zip from the site the slot is dropped, and
+# the next apply is built from the new zip: mod list, priorities and MCM.
+func _t18_refreshed_pack_rebuilds_its_slot(ml: Object) -> void:
+	_assert(ml.has_method("_modpack_forget_slot"), "T18: the loader has _modpack_forget_slot")
+	if not ml.has_method("_modpack_forget_slot"):
+		return
+	_pack_setup(ml)
+	var cfg_path := str(ml.UI_CONFIG_PATH)
+	var entry := _pack_write(ml, {"metroprofile": 1, "name": "Round Trip", "enabled": {"a@1.0": true}, "priority": {"a@1.0": 5}}, "1")
+	var sanitized := str(entry.get("sanitized_name", ""))
+	var slot := "modpack__" + sanitized
+	var r: Dictionary = await ml.apply_modpack(entry, null, Callable())
+	_assert(bool(r.get("ok", false)), "T18: the pack applies (got %s)" % str(r.get("error", "")))
+	_assert(not bool(ml._modpack_forget_slot(sanitized)), "T18: the active pack's slot is never dropped")
+	ml.unload_modpack(null)
+
+	var v2 := {"metroprofile": 1, "name": "Round Trip", "enabled": {"a@1.0": true, "foo@2.0": true}, "priority": {"a@1.0": 9}}
+	entry = _pack_write(ml, v2, "2")
+	r = await ml.apply_modpack(entry, null, Callable())
+	var kept := ConfigFile.new()
+	kept.load(cfg_path)
+	_assert(bool(r.get("ok", false)) and int(kept.get_value("profile." + slot + ".priority", "a@1.0", 0)) == 5,
+			"T18: a second apply reads the kept slot, not the zip")
+	ml.unload_modpack(null)
+
+	_assert(bool(ml._modpack_forget_slot(sanitized)), "T18: a kept slot can be dropped")
+	var dropped := ConfigFile.new()
+	dropped.load(cfg_path)
+	_assert(not dropped.has_section("profile." + slot + ".enabled") and not dropped.has_section("profile." + slot + ".priority"),
+			"T18: dropping a slot erases its sections")
+	_assert(not DirAccess.dir_exists_absolute(ProjectSettings.globalize_path("user://.profile_snapshots/" + slot)),
+			"T18: dropping a slot removes its MCM snapshot")
+	_assert(dropped.has_section("profile.Default.enabled"), "T18: the player's own profile is untouched")
+	r = await ml.apply_modpack(entry, null, Callable())
+	var rebuilt := ConfigFile.new()
+	rebuilt.load(cfg_path)
+	_assert(bool(r.get("ok", false)) and int(rebuilt.get_value("profile." + slot + ".priority", "a@1.0", 0)) == 9
+			and rebuilt.has_section_key("profile." + slot + ".enabled", "foo@2.0"),
+			"T18: the rebuilt slot carries the new zip's mod list and priorities")
+	_assert(FileAccess.get_file_as_string("user://MCM/some-mod/config.ini").contains("v=2"),
+			"T18: the rebuilt slot carries the new zip's MCM")
+	ml.unload_modpack(null)
+	_pack_cleanup(ml)
+
 # The update check in two pure halves: which installed mods are asked about,
 # and what the site's answers mean. A dev folder, a mod with no version, no
 # source, no readable mod.txt or a host that cannot serve files is skipped;
@@ -1127,7 +1173,7 @@ func _fail(msg: String) -> void:
 func _finish() -> void:
 	_done = true
 	if _failures.is_empty():
-		print("[host] PASS: %d assertion(s) across T1..T17" % _assertions)
+		print("[host] PASS: %d assertion(s) across T1..T18" % _assertions)
 		quit(0)
 		return
 	for m in _failures:

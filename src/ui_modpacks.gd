@@ -375,7 +375,7 @@ func _modpacks_row_refresh_button(row: HBoxContainer, entry: Dictionary, tabs: T
 		elif bool(r.get("changed", false)):
 			if is_instance_valid(tabs):
 				_rebuild_modpacks_tab(tabs)
-			_show_accept_dialog("Modpack updated", "\"" + str(r.get("name", "")) + "\" was updated from VostokMods. Apply it to get the changes.")
+			_show_accept_dialog("Modpack updated", "\"" + str(r.get("name", "")) + "\" was updated from VostokMods. Apply it to get the changes. Edits you made to this pack are reset to the author's new setup.")
 		else:
 			_show_info_toast("\"" + str(r.get("name", "")) + "\" is up to date with VostokMods.")
 	)

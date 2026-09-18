@@ -105,7 +105,7 @@ Scans `<exe>/mods/`, parses mod.txt into entry Dictionaries, orders them, and ow
 
 Modpack discovery, apply, unload. A modpack is a `.zip` in `<game>/mods/` with `profile.json` at its root; scan time routes it to the Modpacks tab. Packs published on VostokMods arrive through `hosted_modpacks.gd` and become the same local zips.
 
-- An applied pack is a regular profile under the `modpack__<sanitized_name>` prefix, so profile switching, saving and MCM snapshots need no special cases. The zip is a template read on first apply or reset.
+- An applied pack is a regular profile under the `modpack__<sanitized_name>` prefix, so profile switching, saving and MCM snapshots need no special cases. The zip is a template read on first apply, and again after a Refresh that changed it (`_modpack_forget_slot` drops the kept slot).
 - Pre-apply state goes to a `_before_modpack_<sanitized_name>` profile slot plus an MCM snapshot; `[settings] active_modpack` names the single active pack.
 - `apply_modpack` / `_apply_modpack_inner` download missing mods through the seam (`_get_missing_mods_for_modpack`, `retry_failed_downloads`), then `_modpack_reconcile_profile_keys` rewrites the pack's `.enabled` / `.priority` / `.dep_ignore` keys to the profile keys of the mods that actually landed. `unload_modpack` restores the backup slot.
 - `_materialize_modpack_profile` is the live parser of `profile.json`. Its writer is `_hosted_manifest_to_profile` in `hosted_modpacks.gd`.

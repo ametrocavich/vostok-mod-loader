@@ -2,9 +2,9 @@
 ## Modpack discovery, apply, unload. A modpack is a .zip in <game>/mods/ with
 ## profile.json at the root; scan time routes it to the Modpacks tab. An
 ## applied modpack lives as a regular profile ("modpack__" prefix) so the
-## profile lifecycle handles it; the zip is a template read on first apply or
-## reset. Pre-apply state is backed up in a "_before_modpack_" profile slot
-## plus an MCM snapshot.
+## profile lifecycle handles it; the zip is a template read on first apply,
+## and again after a Refresh that changed it (_modpack_forget_slot). Pre-apply
+## state is backed up in a "_before_modpack_" profile slot plus an MCM snapshot.
 ##
 ## Config conventions:
 ##   modpack__<name>         live state of an applied modpack
@@ -355,6 +355,31 @@ func _modpack_reconcile_profile_keys(profile_name: String, sources: Dictionary) 
 		_log_info("[Modpack] reconciled %d profile key(s) with the installed mods" % changed)
 		_persist_ui_cfg(cfg)
 	return changed
+
+
+## Drop a pack's kept profile slot and its MCM snapshot, so the next apply
+## builds the slot from the zip again. Called when Refresh rewrote the zip
+## from the site; the player's edits to the old slot go with it. Refuses the
+## active pack's slot. False when nothing was dropped.
+func _modpack_forget_slot(sanitized: String) -> bool:
+	if sanitized.is_empty() or get_active_modpack() == sanitized:
+		return false
+	var cfg := ConfigFile.new()
+	var cfg_err := cfg.load(UI_CONFIG_PATH)
+	if cfg_err != OK and cfg_err != ERR_FILE_NOT_FOUND:
+		return false
+	var slot := MODPACK_PROFILE_PREFIX + sanitized
+	var erased := false
+	for suffix: String in PROFILE_SUBSECTIONS:
+		var sec := _profile_sec(slot, suffix)
+		if cfg.has_section(sec):
+			cfg.erase_section(sec)
+			erased = true
+	if erased:
+		_persist_ui_cfg(cfg)
+	var had_snapshot := DirAccess.dir_exists_absolute(MCM_SNAPSHOT_BASE.path_join(slot))
+	_delete_mcm_snapshot(slot)
+	return erased or had_snapshot
 
 
 ## With a pack active, rewrite its slot's keys to the mods installed now and
