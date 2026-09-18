@@ -88,6 +88,7 @@ func _run() -> void:
 	_t21_mws_list_params(ml)
 	_t22_update_check_message(ml)
 	_t23_download_failure_text(ml)
+	_t24_pack_format_version(ml)
 
 	_finish()
 
@@ -1130,6 +1131,22 @@ func _t23_download_failure_text(ml: Object) -> void:
 	var refused := str(ml._download_failure_text("modworkshop", HTTPRequest.RESULT_SUCCESS, 404))
 	_assert(refused.contains("HTTP 404"), "T23: an HTTP failure carries its status (got '%s')" % refused)
 
+# --- T24: a pack file's format version ---------------------------------------------
+
+func _t24_pack_format_version(ml: Object) -> void:
+	_pack_cleanup(ml)
+	var newer := _pack_write(ml, {"metroprofile": 2, "name": "Newer", "enabled": {}}, "1")
+	var res: Dictionary = ml._validate_modpack(newer)
+	_assert(not bool(res["ok"]) and str(res["error"]).contains("newer version of the mod loader"),
+			"T24: a pack with a higher format version asks for a loader update (got '%s')" % str(res["error"]))
+	var unmarked := _pack_write(ml, {"name": "Unmarked", "enabled": {}}, "1")
+	res = ml._validate_modpack(unmarked)
+	_assert(not bool(res["ok"]) and not str(res["error"]).contains("newer version"),
+			"T24: a pack with no format version is not blamed on an old loader (got '%s')" % str(res["error"]))
+	var current := _pack_write(ml, {"metroprofile": 1, "name": "Current", "enabled": {}}, "1")
+	_assert(bool((ml._validate_modpack(current) as Dictionary)["ok"]), "T24: format version 1 validates")
+	_pack_cleanup(ml)
+
 # The update check in two pure halves: which installed mods are asked about,
 # and what the site's answers mean. A dev folder, a mod with no version, no
 # source, no readable mod.txt or a host that cannot serve files is skipped;
@@ -1303,7 +1320,7 @@ func _fail(msg: String) -> void:
 func _finish() -> void:
 	_done = true
 	if _failures.is_empty():
-		print("[host] PASS: %d assertion(s) across T1..T23" % _assertions)
+		print("[host] PASS: %d assertion(s) across T1..T24" % _assertions)
 		quit(0)
 		return
 	for m in _failures:

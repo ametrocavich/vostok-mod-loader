@@ -69,7 +69,7 @@ Parsers written against v1 will exist in the wild indefinitely. To keep them par
 
 - v1 parsers ignore unknown top-level JSON keys, so future additions can ship new optional fields without breaking them.
 - v1 parsers tolerate missing optional keys (`priority`, `modloader_version`, `exported_at`, `description`, `author`, `sources`, `dep_ignore`). A missing required key is rejected with an error.
-- Adding a required key, renaming a key, or changing a key's value type means bumping `metroprofile` to `2`. Old parsers then reject the pack (`_validate_modpack` reports `This modpack was made for a newer version of the mod loader -- update the mod loader and try again`) instead of mis-applying it.
+- Adding a required key, renaming a key, or changing a key's value type means bumping `metroprofile` to `2`. Old parsers then reject the pack (`_validate_modpack` reports `This modpack was made for a newer version of the mod loader -- update the mod loader and try again`) instead of mis-applying it. A `metroprofile` that is missing or below 1 is reported as a damaged file, not as a newer format.
 - Additive changes to optional fields stay on `metroprofile: 1`.
 
 ## Defensive handling on apply

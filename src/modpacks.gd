@@ -81,6 +81,8 @@ func _validate_modpack(entry: Dictionary) -> Dictionary:
 	# Present-but-null in a hand-edited pack; int(null) is a constructor error.
 	var mp_raw = pd.get("metroprofile", 0)
 	var mp_ver: int = int(mp_raw) if (mp_raw is int or mp_raw is float) else 0
+	if mp_ver < 1:
+		return {"ok": false, "error": "This modpack file is damaged (it has no format version). Get a fresh copy and try again."}
 	if mp_ver != 1:
 		return {"ok": false, "error": "This modpack was made for a newer version of the mod loader -- update the mod loader and try again"}
 	if not (pd.get("name") is String):
