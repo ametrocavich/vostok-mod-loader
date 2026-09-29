@@ -309,16 +309,12 @@ static func _mount_previous_session() -> Dictionary:
 
 	for path in paths:
 		if ProjectSettings.load_resource_pack(path):
-			var remaps := _static_resolve_remaps(path)
-			log_lines.append("[FileScope]   MOUNTED: " + path
-					+ (" (%d remaps)" % remaps if remaps > 0 else ""))
+			log_lines.append("[FileScope]   MOUNTED: " + path)
 			mounted[path] = true
 		elif path.get_extension().to_lower() == "vmz":
 			var zip_path := _static_vmz_to_zip(path)
 			if not zip_path.is_empty() and ProjectSettings.load_resource_pack(zip_path):
-				var remaps := _static_resolve_remaps(zip_path)
-				log_lines.append("[FileScope]   MOUNTED (vmz->zip): " + path
-						+ (" (%d remaps)" % remaps if remaps > 0 else ""))
+				log_lines.append("[FileScope]   MOUNTED (vmz->zip): " + path)
 				mounted[path] = true
 			else:
 				log_lines.append("[FileScope]   MOUNT FAILED (vmz): " + path + " zip_path=" + zip_path)
@@ -377,6 +373,7 @@ static func _mount_previous_session() -> Dictionary:
 						wrapped_set[wp] = true
 					var preloaded := 0
 					var preload_failed := 0
+					var failed_names := PackedStringArray()
 					var skipped_lenient := 0
 					for f: String in hzr.get_files():
 						if not f.begins_with("Scripts/") or not f.ends_with(".gd"):
@@ -387,36 +384,35 @@ static func _mount_previous_session() -> Dictionary:
 							skipped_lenient += 1
 							continue
 						var scr := ResourceLoader.load(rpath, "", ResourceLoader.CACHE_MODE_IGNORE) as GDScript
-						if scr == null or scr.source_code.is_empty():
+						# A script that fails to compile still loads, non-null and
+						# with its source: only the method list tells.
+						if scr == null or not _static_script_has_rewrite(scr):
 							preload_failed += 1
+							failed_names.append(f.get_file())
 							continue
 						scr.take_over_path(rpath)
 						preloaded += 1
 					hzr.close()
 					log_lines.append("[FileScope] HOOK PACK preempted %d wrapped script(s) at static init (%d failed, %d other vanilla left to lenient lazy-compile)" \
 							% [preloaded, preload_failed, skipped_lenient])
+					if failed_names.size() > 0:
+						log_lines.append("[FileScope] HOOK PACK: did not compile, left alone: " + ", ".join(failed_names))
 			else:
 				log_lines.append("[FileScope] HOOK PACK mount FAILED: " + hook_pack)
 		else:
 			log_lines.append("[FileScope] HOOK PACK path in pass_state but file missing: " + hook_abs)
 
-	# Test pack: mounted before any autoload runs, gated on the same [settings]
-	# flag that builds it. With the flag off a leftover zip (or one planted by a
-	# mod, since user:// is writable once a mod has run) is deleted, never mounted.
-	var test_pack_path := ProjectSettings.globalize_path("user://test_pack_precedence.zip")
-	if FileAccess.file_exists(test_pack_path):
-		if _load_test_pack_flag():
-			if ProjectSettings.load_resource_pack(test_pack_path, true):
-				log_lines.append("[FileScope] TEST: mounted test_pack_precedence.zip at static init")
-			else:
-				log_lines.append("[FileScope] TEST: FAILED to mount test_pack_precedence.zip")
-		else:
-			DirAccess.remove_absolute(test_pack_path)
-			log_lines.append("[FileScope] removed a stale test_pack_precedence.zip (test flag is off)")
-
 	log_lines.append("[FileScope] Done -- %d archive(s) mounted" % mounted.size())
 	_write_filescope_log(log_lines)
 	return mounted
+
+# True when the compiled script carries a renamed vanilla method, which is
+# what a rewrite that compiled looks like.
+static func _static_script_has_rewrite(scr: GDScript) -> bool:
+	for m in scr.get_script_method_list():
+		if str(m["name"]).begins_with("_rtv_vanilla_"):
+			return true
+	return false
 
 # Reset override.cfg to the clean baseline (stale [autoload_prepend] entries).
 static func _static_reset_override_cfg(log_lines: PackedStringArray) -> void:
@@ -641,6 +637,8 @@ func _persist_hook_pack_state(pack_path: String, wrapped_paths: PackedStringArra
 	cfg.load(PASS_STATE_PATH)  # OK if missing; we populate below
 	cfg.set_value("state", "hook_pack_path", pack_path)
 	cfg.set_value("state", "hook_pack_wrapped_paths", wrapped_paths)
+	# The probe's verdicts, for the generations that must not probe (see _hook_pack_begin_vetting).
+	cfg.set_value("state", "hook_pack_demotions", _hook_pack_demotions)
 	# Seed the game-build keys only when missing; _write_pass_state's values are authoritative.
 	if _state_int(cfg, "exe_mtime", 0) == 0:
 		cfg.set_value("state", "exe_mtime", FileAccess.get_modified_time(OS.get_executable_path()))
@@ -648,7 +646,7 @@ func _persist_hook_pack_state(pack_path: String, wrapped_paths: PackedStringArra
 		cfg.set_value("state", "pck_stamp", _game_pck_stamp())
 	if _state_str(cfg, "modloader_version", "") == "":
 		cfg.set_value("state", "modloader_version", MODLOADER_VERSION)
-	if cfg.save(PASS_STATE_PATH) == OK:
+	if cfg.save(PASS_STATE_PATH) == OK and pack_path != "":
 		_log_info("[RTVCodegen] Persisted hook pack path for next-session static-init mount: %s (%d wrapped path(s))" \
 				% [pack_path.get_file(), wrapped_paths.size()])
 

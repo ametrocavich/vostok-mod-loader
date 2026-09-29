@@ -117,59 +117,16 @@ func _normalize_to_res_path(zip_path: String) -> String:
 	return ""
 
 # Mount a .pck or .vmz via ProjectSettings.load_resource_pack (with vmz->zip
-# caching), then resolve .remap entries: load_resource_pack doesn't follow
-# remaps, so preload()/load() of original .tscn/.tres paths would fail.
+# caching). Nothing is loaded here: the engine follows a mounted .remap by
+# itself, and a load() at mount time compiles every script the target pulls
+# in before the hook pack is mounted, which pins them as vanilla.
 func _try_mount_pack(path: String) -> bool:
 	if ProjectSettings.load_resource_pack(path):
-		_resolve_remaps(path)
 		return true
 	if path.get_extension().to_lower() != "vmz":
 		return false
 	var zip_path := _static_vmz_to_zip(path)
-	if not zip_path.is_empty() and ProjectSettings.load_resource_pack(zip_path):
-		_resolve_remaps(zip_path)
-		return true
-	return false
-
-func _resolve_remaps(archive_path: String) -> void:
-	var remap_count := _static_resolve_remaps(archive_path)
-	if remap_count > 0:
-		_log_debug("  Resolved %d .remap file(s)" % remap_count)
-
-# Static so _mount_previous_session can call it at static-init time.
-static func _static_resolve_remaps(archive_path: String) -> int:
-	var zr := ZIPReader.new()
-	if zr.open(archive_path) != OK:
-		return 0
-
-	var count := 0
-	for f: String in zr.get_files():
-		if not f.ends_with(".remap"):
-			continue
-		var remap_bytes := zr.read_file(f)
-		if remap_bytes.is_empty():
-			continue
-		var cfg := ConfigFile.new()
-		if cfg.parse(remap_bytes.get_string_from_utf8()) != OK:
-			continue
-		var target: String = cfg.get_value("remap", "path", "")
-		if target.is_empty():
-			continue
-		# Skip remaps into res://.godot/exported/ bakes: mods like MCM ship
-		# their own .godot cache, and eagerly taking those paths over breaks
-		# UID resolution. Godot resolves them lazily via the .remap when
-		# needed. Credit: tetrahydroc.
-		if target.begins_with("res://.godot/exported/"):
-			continue
-		var original_path := f.trim_suffix(".remap")
-		if not original_path.begins_with("res://"):
-			original_path = "res://" + original_path
-		var res: Resource = load(target)
-		if res != null:
-			res.take_over_path(original_path)
-			count += 1
-	zr.close()
-	return count
+	return not zip_path.is_empty() and ProjectSettings.load_resource_pack(zip_path)
 
 # mod.txt parser
 

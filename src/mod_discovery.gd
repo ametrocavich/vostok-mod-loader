@@ -344,7 +344,7 @@ func _missing_id_warnings(entry: Dictionary) -> Array[String]:
 
 # An archive shipping Godot's export bake beside its sources: .gd.remap
 # redirects each script to compiled .gdc, so edits to the .gd do nothing.
-# _static_resolve_remaps leaves these alone (MCM ships a real baked cache).
+# The engine follows those remaps itself (MCM ships a real baked cache).
 func _stale_bake_warnings(mod_txt_files: Dictionary) -> Array[String]:
 	var warnings: Array[String] = []
 	var baked := 0
