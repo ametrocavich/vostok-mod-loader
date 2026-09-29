@@ -84,6 +84,9 @@ func _show_modpack_failure_dialog(downloaded: int, failures: Array, tabs: TabCon
 		style_primary_button(retry_btn)
 		var captured_failures := failures
 		retry_btn.pressed.connect(func():
+			# Hide first, as the stock OK does: a visible exclusive dialog
+			# freed in place took the launcher window down with it.
+			d.hide()
 			d.queue_free()
 			_run_modpack_retry(captured_failures, tabs)
 		)
@@ -763,6 +766,7 @@ func _modpack_detail_buttons(d: AcceptDialog, entry: Dictionary, tabs: TabContai
 		var unload_btn := d.add_button("Unload", true, "")
 		style_danger_button(unload_btn)
 		unload_btn.pressed.connect(func():
+			d.hide()
 			d.queue_free()
 			_unload_modpack_with_feedback(tabs)
 		)
@@ -774,6 +778,7 @@ func _modpack_detail_buttons(d: AcceptDialog, entry: Dictionary, tabs: TabContai
 			apply_btn_d.tooltip_text = "Unload \"" + active_modpack + "\" first"
 		var captured_entry := entry
 		apply_btn_d.pressed.connect(func():
+			d.hide()
 			d.queue_free()
 			_apply_modpack_with_ui_flow(captured_entry, tabs)
 		)
@@ -782,10 +787,13 @@ func _modpack_detail_buttons(d: AcceptDialog, entry: Dictionary, tabs: TabContai
 # Modpacks published on VostokMods: paste a pack link or search the list.
 # "Get" writes the pack into mods/ as a local modpack zip.
 func _show_hosted_packs_dialog(tabs: TabContainer) -> void:
+	# Built like the launcher window, not like a message box: black floor,
+	# header plate, content panel, bottom action bar. The title is cleared
+	# (AcceptDialog defaults it to "Alert!") so _attach_ui_dialog adds no
+	# title label of its own; the header plate carries the name.
 	var d := AcceptDialog.new()
-	d.title = "Modpacks on VostokMods"
-	d.ok_button_text = "Close"
-	d.min_size = _dialog_fit_size(Vector2i(680, 560))
+	d.title = ""
+	d.min_size = _dialog_fit_size(Vector2i(720, 560))
 
 	# Everything the handlers share: the dialog's widgets, the paging cursor
 	# and the busy flag, in one record passed to every _hosted_* helper.
@@ -810,74 +818,197 @@ func _show_hosted_packs_dialog(tabs: TabContainer) -> void:
 	(hp["add_btn"] as Button).pressed.connect(func(): _hosted_add_from_paste(hp))
 	(hp["paste"] as LineEdit).text_submitted.connect(func(_t: String): _hosted_add_from_paste(hp))
 
+	# Close and X press the hidden stock OK, so the dialog leaves by the same
+	# path every other launcher dialog does: AcceptDialog hides itself, emits
+	# confirmed, and _wire_accept_dismiss frees it.
+	var press_stock_ok := func():
+		var ok := d.get_ok_button()
+		if ok != null:
+			ok.pressed.emit()
+	(hp["close_btn"] as Button).pressed.connect(press_stock_ok)
+	(hp["close_x"] as Button).pressed.connect(press_stock_ok)
+
 	_attach_ui_dialog(d)
+	var floor_panel := _make_dialog_panel_stylebox()
+	floor_panel.bg_color = Color(0.0, 0.0, 0.0, 1.0)
+	floor_panel.content_margin_left = SP_L
+	floor_panel.content_margin_right = SP_L
+	floor_panel.content_margin_top = SP_M
+	floor_panel.content_margin_bottom = SP_L
+	d.add_theme_stylebox_override("panel", floor_panel)
+	# The bottom bar carries Close; the stock OK row would be a second one.
+	var stock_ok := d.get_ok_button()
+	if stock_ok != null:
+		stock_ok.visible = false
 	_wire_accept_dismiss(d)
 	d.popup_centered()
 	_hosted_fetch(hp, false)
 
 
-# Paste row, status line, search and sort, the pack list and Load more.
+# The three bands of the launcher window: a header plate (title, beta chip,
+# close), a content panel laid out like the Browse tab (search and sort,
+# status, the pack list, Load more) and a bottom bar (paste a link, Add,
+# Close). No autowrap anywhere: a wrapping Label inflates the dialog height.
 # Returns the record the _hosted_* helpers share.
 func _hosted_dialog_widgets(d: AcceptDialog, tabs: TabContainer) -> Dictionary:
 	var outer := VBoxContainer.new()
 	outer.add_theme_constant_override("separation", SP_M)
+	outer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	outer.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	d.add_child(outer)
 
-	var paste_row := HBoxContainer.new()
-	paste_row.add_theme_constant_override("separation", SP_M)
-	outer.add_child(paste_row)
-	var paste := LineEdit.new()
-	paste.placeholder_text = "Paste a modpack link from vostokmods.net"
-	paste.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	paste.custom_minimum_size.y = CTRL_H
-	paste_row.add_child(paste)
-	var add_btn := Button.new()
-	add_btn.text = "Add"
-	paste_row.add_child(add_btn)
+	# -- Header plate, as _ui_build_header draws it --
+	var header := PanelContainer.new()
+	var header_s := StyleBoxFlat.new()
+	header_s.bg_color = COL_SURFACE
+	header_s.border_color = COL_ACCENT_DIM
+	header_s.border_width_bottom = 1
+	header_s.content_margin_left = SP_L
+	header_s.content_margin_right = SP_L
+	header_s.content_margin_top = SP_M
+	header_s.content_margin_bottom = SP_M
+	header.add_theme_stylebox_override("panel", header_s)
+	outer.add_child(header)
+	var header_row := HBoxContainer.new()
+	header_row.add_theme_constant_override("separation", SP_M)
+	header.add_child(header_row)
+	var plate_title := Label.new()
+	plate_title.text = "MODPACKS ON VOSTOKMODS"
+	plate_title.add_theme_font_size_override("font_size", FS_HEAD)
+	plate_title.add_theme_color_override("font_color", COL_TEXT_HI)
+	header_row.add_child(plate_title)
+	var beta := Label.new()
+	beta.text = "BETA"
+	beta.add_theme_font_size_override("font_size", FS_META)
+	beta.add_theme_color_override("font_color", COL_TEXT_HI)
+	beta.add_theme_stylebox_override("normal", _make_badge_stylebox())
+	beta.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	header_row.add_child(beta)
+	var header_spacer := Control.new()
+	header_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header_row.add_child(header_spacer)
+	var close_x := Button.new()
+	close_x.flat = true
+	close_x.icon = _make_close_icon(COL_TEXT_DIM)
+	close_x.custom_minimum_size = Vector2(28, 28)
+	close_x.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	header_row.add_child(close_x)
 
-	var status := Label.new()
-	status.add_theme_font_size_override("font_size", FS_BODY)
-	status.add_theme_color_override("font_color", COL_TEXT_DIM)
-	status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	status.text = "Loading packs..."
-	outer.add_child(status)
+	# -- Content panel, the tab floor --
+	var body := PanelContainer.new()
+	var body_s := StyleBoxFlat.new()
+	body_s.bg_color = COL_BG
+	body_s.content_margin_left = 10
+	body_s.content_margin_right = 10
+	body_s.content_margin_top = 8
+	body_s.content_margin_bottom = 8
+	body.add_theme_stylebox_override("panel", body_s)
+	body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	outer.add_child(body)
+	var content := VBoxContainer.new()
+	content.add_theme_constant_override("separation", SP_M)
+	body.add_child(content)
 
 	var search_row := HBoxContainer.new()
 	search_row.add_theme_constant_override("separation", SP_M)
-	outer.add_child(search_row)
+	content.add_child(search_row)
 	var search := LineEdit.new()
 	search.placeholder_text = "Search packs..."
 	search.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	search.custom_minimum_size.x = 200
 	search.custom_minimum_size.y = CTRL_H
 	search_row.add_child(search)
 	var sort_dropdown := OptionButton.new()
 	for opt in [["updated", "Recently updated"], ["newest", "Newest"], ["name", "Name"]]:
 		sort_dropdown.add_item(str(opt[1]))
 		sort_dropdown.set_item_metadata(sort_dropdown.item_count - 1, str(opt[0]))
+	sort_dropdown.custom_minimum_size.y = CTRL_H
+	# The popup is its own sub-Window: raise it and hand it the theme.
 	var sort_popup := sort_dropdown.get_popup()
 	sort_popup.always_on_top = true
 	sort_popup.transient = true
+	if _ui_window != null and _ui_window.theme != null:
+		sort_popup.theme = _ui_window.theme
 	search_row.add_child(sort_dropdown)
+
+	var status := Label.new()
+	status.add_theme_font_size_override("font_size", FS_BODY)
+	status.add_theme_color_override("font_color", COL_TEXT_DIM)
+	status.clip_text = true
+	status.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	status.text = "Loading packs..."
+	content.add_child(status)
+
+	content.add_child(HSeparator.new())
 
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	scroll.custom_minimum_size = Vector2(0, 320)
-	outer.add_child(scroll)
+	scroll.custom_minimum_size = Vector2(0, 260)
+	content.add_child(scroll)
+	# Right margin clears the overlay scrollbar, as on the tabs.
+	var list_wrap := MarginContainer.new()
+	list_wrap.add_theme_constant_override("margin_right", SP_XL)
+	list_wrap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(list_wrap)
 	var list := VBoxContainer.new()
 	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(list)
+	list.add_theme_constant_override("separation", SP_S)
+	list_wrap.add_child(list)
 
 	var load_more := Button.new()
 	load_more.text = "Load more"
 	load_more.visible = false
-	outer.add_child(load_more)
+	content.add_child(load_more)
+
+	# -- Bottom bar, where the launcher keeps its actions --
+	var bottom := HBoxContainer.new()
+	bottom.add_theme_constant_override("separation", SP_M)
+	outer.add_child(bottom)
+	var paste_lbl := Label.new()
+	paste_lbl.text = "Have a pack link?"
+	paste_lbl.add_theme_font_size_override("font_size", FS_BODY)
+	paste_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
+	bottom.add_child(paste_lbl)
+	var paste := LineEdit.new()
+	paste.placeholder_text = "Paste it here (vostokmods.net/modpack/...)"
+	paste.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	paste.custom_minimum_size.y = CTRL_H
+	bottom.add_child(paste)
+	var add_btn := Button.new()
+	add_btn.text = "Add"
+	add_btn.custom_minimum_size = Vector2(70, 36)
+	style_primary_button(add_btn)
+	bottom.add_child(add_btn)
+	var bar_gap := Control.new()
+	bar_gap.custom_minimum_size.x = SP_XL
+	bottom.add_child(bar_gap)
+	var close_btn := Button.new()
+	close_btn.text = "Close"
+	close_btn.custom_minimum_size = Vector2(90, 36)
+	bottom.add_child(close_btn)
 	return {
 		"d": d, "tabs": tabs,
 		"paste": paste, "add_btn": add_btn, "status": status, "search": search,
 		"sort_dropdown": sort_dropdown, "list": list, "load_more": load_more,
+		"close_btn": close_btn, "close_x": close_x,
 		"cursor": "", "seq": 0, "busy": false,
 	}
+
+
+# The list's empty state, in the voice the tabs use. Newlines in `text`
+# break the lines; no autowrap inside the ScrollContainer.
+func _hosted_render_empty(hp: Dictionary, text: String) -> void:
+	var list = hp["list"]
+	for c in list.get_children():
+		c.queue_free()
+	var empty := Label.new()
+	empty.text = text
+	empty.clip_text = true
+	empty.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	empty.add_theme_color_override("font_color", COL_TEXT_DIM)
+	list.add_child(empty)
 
 
 # Local hosted packs by slug, so a row can read "Added" instead of "Get".
@@ -954,9 +1085,7 @@ func _hosted_render_row(hp: Dictionary, row_v: Variant, local: Dictionary) -> vo
 		parts.append("updated " + when)
 	col.add_child(_make_sub_label(" - ".join(parts), COL_TEXT_DIM, ""))
 	if str(row["summary"]) != "":
-		var sum_lbl := _make_sub_label(str(row["summary"]), COL_TEXT, "")
-		sum_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		col.add_child(sum_lbl)
+		col.add_child(_make_sub_label(str(row["summary"]), COL_TEXT, str(row["summary"])))
 	var page_btn := Button.new()
 	page_btn.text = "Page"
 	page_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
@@ -974,6 +1103,7 @@ func _hosted_render_row(hp: Dictionary, row_v: Variant, local: Dictionary) -> vo
 		get_btn.disabled = true
 	else:
 		get_btn.text = "Get"
+		style_primary_button(get_btn)
 	line.add_child(get_btn)
 	var captured_manifest := str(row["manifest_url"])
 	get_btn.pressed.connect(func():
@@ -1021,7 +1151,12 @@ func _hosted_fetch(hp: Dictionary, append: bool) -> void:
 	load_more.disabled = not bool(page["has_more"])
 	var total := int(page["total"])
 	if (page["rows"] as Array).is_empty() and not append:
-		status.text = "No packs match." if search.text.strip_edges() != "" else "No modpacks on VostokMods yet."
+		if search.text.strip_edges() != "":
+			status.text = "No packs match."
+			_hosted_render_empty(hp, "No pack matches that search.")
+		else:
+			status.text = "No modpacks on VostokMods yet."
+			_hosted_render_empty(hp, "Nobody has published a modpack on VostokMods yet; pack pages on the site are new.\n\nPublished packs will be listed here. If someone sent you a pack link, paste it below.")
 	elif total >= 0:
 		status.text = "%d pack(s) on VostokMods" % total
 	else:

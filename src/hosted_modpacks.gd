@@ -215,7 +215,9 @@ func _hosted_import_manifest(manifest: Dictionary) -> Dictionary:
 	var path := _hosted_pack_file_path(slug)
 	if path.is_empty():
 		return {"ok": false, "error": "The pack has no usable name.", "file_path": "", "name": "", "warnings": conv["warnings"]}
-	if str(profile["name"]).is_empty():
+	# The slot is the sanitized name; a name with no cased letters or digits
+	# (CJK, Arabic, emoji) sanitizes to nothing and the pack could never apply.
+	if _sanitize_profile_name(str(profile["name"])).strip_edges().is_empty():
 		profile["name"] = slug
 	var previous := _build_modpack_entry(path) if FileAccess.file_exists(path) else {}
 	var previous_hosted: Dictionary = previous.get("hosted", {})
@@ -238,6 +240,16 @@ func _hosted_import_manifest(manifest: Dictionary) -> Dictionary:
 
 # ----- network entry points --------------------------------------------------
 
+## Copy for a failed manifest fetch. A manifest the validator refused carries
+## its reason (a too-new format says to update the loader); the shared copy
+## for that code would hide it.
+func _hosted_fetch_error_copy(res: Dictionary) -> String:
+	var reason := str(res.get("message", "")).strip_edges()
+	if str(res.get("code", "")) == HOST_ERR_BAD_RESPONSE and reason != "":
+		return "VostokMods sent a modpack the loader cannot use: " + reason
+	return host_error_message(HOST_VOSTOKMODS, res)
+
+
 ## Fetch a manifest from a pasted link (or a slug) and import it. Returns
 ## {ok, error, file_path, name}.
 func _hosted_pack_from_link(text: String) -> Dictionary:
@@ -248,7 +260,7 @@ func _hosted_pack_from_link(text: String) -> Dictionary:
 	if not res["ok"]:
 		if str(res["code"]) == HOST_ERR_NOT_FOUND:
 			return {"ok": false, "error": "VostokMods has no modpack at that link.", "file_path": "", "name": ""}
-		return {"ok": false, "error": host_error_message(HOST_VOSTOKMODS, res), "file_path": "", "name": ""}
+		return {"ok": false, "error": _hosted_fetch_error_copy(res), "file_path": "", "name": ""}
 	return _hosted_import_manifest(res["data"])
 
 
@@ -265,7 +277,7 @@ func _hosted_refresh_pack(entry: Dictionary) -> Dictionary:
 	if not res["ok"]:
 		if str(res["code"]) == HOST_ERR_NOT_FOUND:
 			return {"ok": false, "error": "This pack is no longer on VostokMods.", "changed": false, "name": str(entry.get("raw_name", ""))}
-		return {"ok": false, "error": host_error_message(HOST_VOSTOKMODS, res), "changed": false, "name": str(entry.get("raw_name", ""))}
+		return {"ok": false, "error": _hosted_fetch_error_copy(res), "changed": false, "name": str(entry.get("raw_name", ""))}
 	var manifest: Dictionary = res["data"]
 	if str(manifest.get("hash", "")) != "" and str(manifest.get("hash", "")) == str(hosted.get("hash", "")):
 		return {"ok": true, "error": "", "changed": false, "name": str(manifest.get("name", entry.get("raw_name", "")))}

@@ -194,7 +194,7 @@ func build_mods_tab(tabs: TabContainer) -> Control:
 
 	if _ui_mod_entries.is_empty():
 		var empty := Label.new()
-		empty.text = "No mods found.\n\nPlace .vmz or .pck files in:\n" \
+		empty.text = "No mods installed yet.\n\nOpen the Browse tab to download mods,\nor place .vmz, .zip or .pck files in:\n" \
 				+ ProjectSettings.globalize_path(_mods_dir)
 		# No autowrap inside the ScrollContainer (oscillation bug); newlines still break.
 		empty.clip_text = true
@@ -378,6 +378,13 @@ func _mods_build_toolbar(outer: VBoxContainer, tabs: TabContainer, active_modpac
 	scale_opt.add_theme_font_size_override("font_size", FS_BODY)
 	toolbar.add_child(scale_opt)
 	_wire_hint(scale_opt, "Scale the launcher window. Applies immediately.")
+	# Same popup setup as the profile dropdown: without it the list opens
+	# stranded behind the always_on_top launcher and unthemed.
+	var scale_popup := scale_opt.get_popup()
+	scale_popup.always_on_top = true
+	scale_popup.transient = true
+	if _ui_window != null and _ui_window.theme != null:
+		scale_popup.theme = _ui_window.theme
 
 	scale_opt.item_selected.connect(func(idx: int):
 		var sv: float = scale_values[idx] if idx >= 0 and idx < scale_values.size() else 1.0
