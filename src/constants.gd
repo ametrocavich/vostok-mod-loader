@@ -154,7 +154,6 @@ var _registered_autoload_names: Dictionary = {}
 var _override_registry: Dictionary = {}
 var _mod_script_analysis: Dictionary = {}
 var _archive_file_sets: Dictionary = {}
-var _archive_zip_paths: Dictionary = {}  # bare file_name -> readable zip path
 
 # Hook registry. Hook names are "<scriptname>-<methodname>[-pre|-post|-callback]",
 # lowercase. A bare name (no suffix) is a replace hook (first-wins).
@@ -192,10 +191,7 @@ var _any_mod_declared_registry: bool = false     # set by [registry] parser
 
 var _re_take_over: RegEx
 var _re_extends: RegEx
-var _re_extends_classname: RegEx
 var _re_class_name: RegEx
-var _re_func: RegEx
-var _re_preload: RegEx
 var _re_filename_priority: RegEx
 var _re_hook_call: RegEx
 var _re_mod_stem_version: RegEx

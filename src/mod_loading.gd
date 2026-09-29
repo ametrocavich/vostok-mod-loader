@@ -29,7 +29,6 @@ func load_all_mods(pass_label: String = "") -> void:
 	_database_replaced_by = ""
 	_mod_script_analysis.clear()
 	_archive_file_sets.clear()
-	_archive_zip_paths.clear()
 	_pending_script_overrides.clear()
 	_hook_declared_by.clear()
 	_registry_declared_by.clear()
@@ -409,7 +408,7 @@ func _register_claim(res_path: String, mod_name: String, archive: String,
 
 # Apply [script_overrides] / [script_extend] via take_over_path, lowest
 # priority first so each override's extends resolves to the previous one:
-# ModB -> ModA -> vanilla. Legacy-syntax autofix runs on each source first.
+# ModB -> ModA -> vanilla.
 func _apply_script_overrides() -> void:
 	if _pending_script_overrides.is_empty():
 		return
@@ -434,18 +433,8 @@ func _apply_script_overrides() -> void:
 			_log_critical("[Overrides] Empty source: %s [%s]" % [mod_path, mod_name])
 			continue
 
-		# Normalize line endings and autofix legacy syntax; no-op for clean source.
-		var normalized: String = source.replace("\r\n", "\n").replace("\r", "\n")
-		var af := _rtv_autofix_legacy_syntax(normalized)
-		var fixed_src: String = af["source"]
-		var af_total: int = int(af["bodyless"]) + int(af["tool"]) + int(af["onready"]) \
-				+ int(af["export"]) + int(af.get("base", 0))
-		if af_total > 0:
-			_log_info("[Overrides] Autofix %s: %d bodyless, %d tool, %d onready, %d export, %d base() -> super" \
-					% [mod_path, af["bodyless"], af["tool"], af["onready"], af["export"], af.get("base", 0)])
-
 		var new_script := GDScript.new()
-		new_script.source_code = fixed_src
+		new_script.source_code = source
 		var err := new_script.reload()
 		if err != OK:
 			_log_critical("[Overrides] Compile failed for %s (error %d) [%s]" % [mod_path, err, mod_name])
@@ -484,13 +473,6 @@ func scan_and_register_archive_claims(archive_path: String, mod_name: String,
 		"take_over_literal_paths": [],
 		"extends_paths":           [],
 		"uses_dynamic_override":   false,
-		"lifecycle_no_super":      [],
-		"calls_update_tooltip":    false,
-		"class_names":             [],
-		"extends_class_names":     [],
-		"override_methods":        {},   # extends_path -> Array[method_name]
-		"preload_paths":           [],
-		"calls_base":              false, # uses base() instead of super() -- Godot 3 or removed method
 		"total_gd_files":          0,
 		# .hook() declarations found in source; {prefix, method} feed the wrap mask.
 		"hook_calls":              [],  # Array of {prefix, method}
@@ -536,7 +518,6 @@ func scan_and_register_archive_claims(archive_path: String, mod_name: String,
 	else:
 		_mod_script_analysis[mod_name] = gd_analysis
 	_archive_file_sets[archive_file] = path_set
-	_archive_zip_paths[archive_file] = archive_path
 
 	_log_debug("  " + str(tracked_count) + " resource path(s)")
 
@@ -550,9 +531,8 @@ func scan_and_register_archive_claims(archive_path: String, mod_name: String,
 # GDScript source analysis
 
 # Merge one archive's analysis record into another's, by the value type each
-# key holds: arrays union, bools or, ints add, and the override_methods map
-# unions its per-target method lists. The record's keys are declared once, in
-# scan_and_register_archive_claims.
+# key holds: arrays union, bools or, ints add. The record's keys are declared
+# once, in scan_and_register_archive_claims.
 func _merge_gd_analysis(into: Dictionary, add: Dictionary) -> void:
 	for k: String in add:
 		var v: Variant = add[k]
@@ -560,15 +540,6 @@ func _merge_gd_analysis(into: Dictionary, add: Dictionary) -> void:
 			for item in (v as Array):
 				if item not in (into[k] as Array):
 					(into[k] as Array).append(item)
-		elif v is Dictionary:
-			var targets: Dictionary = into[k]
-			for target: String in (v as Dictionary):
-				if not targets.has(target):
-					targets[target] = (v as Dictionary)[target]
-					continue
-				for m in ((v as Dictionary)[target] as Array):
-					if m not in (targets[target] as Array):
-						(targets[target] as Array).append(m)
 		elif v is bool:
 			into[k] = bool(into[k]) or v
 		elif v is int:
@@ -586,41 +557,14 @@ func _scan_gd_source(text: String, analysis: Dictionary) -> void:
 		if path not in (analysis["extends_paths"] as Array):
 			(analysis["extends_paths"] as Array).append(path)
 
-	# Detect extends via class_name (e.g. "extends Weapon") -- breaks override chains.
-	var m_ext_cn := _re_extends_classname.search(text)
-	if m_ext_cn:
-		var cn := m_ext_cn.get_string(1)
-		if cn not in (analysis["extends_class_names"] as Array):
-			(analysis["extends_class_names"] as Array).append(cn)
-
-	# Detect class_name declarations -- Godot bug #83542: can only be overridden once.
-	for m_cn in _re_class_name.search_all(text):
-		var cn := m_cn.get_string(1)
-		if cn not in (analysis["class_names"] as Array):
-			(analysis["class_names"] as Array).append(cn)
-
 	if not analysis["uses_dynamic_override"]:
 		# Any take_over_path() call counts (RTVCoop uses the literal-path form).
 		analysis["uses_dynamic_override"] = "take_over_path(" in text
-
-	# UpdateTooltip() is inventory-UI only; world-item tooltips come from HUD._physics_process.
-	if not analysis["calls_update_tooltip"]:
-		analysis["calls_update_tooltip"] = "UpdateTooltip" in text
 
 	# Substring match: a false positive only over-treats the mod as registry-declaring.
 	if not analysis["calls_bloader_api"]:
 		if "Loader.add_shelter(" in text or "Loader.add_map(" in text:
 			analysis["calls_bloader_api"] = true
-
-	# Detect base() calls -- Godot 3 pattern or removed parent method.
-	if not analysis["calls_base"]:
-		analysis["calls_base"] = "base(" in text
-
-	# preload() paths -- used for stale-cache detection.
-	for m_pl in _re_preload.search_all(text):
-		var pl_path := m_pl.get_string(1)
-		if pl_path not in (analysis["preload_paths"] as Array):
-			(analysis["preload_paths"] as Array).append(pl_path)
 
 	# .hook("<prefix>-<method>[-suffix]") calls: prefix is the lowercase script
 	# stem, method drops the -pre/-post/-callback suffix.
@@ -634,37 +578,6 @@ func _scan_gd_source(text: String, analysis: Dictionary) -> void:
 				break
 		if not already:
 			(analysis["hook_calls"] as Array).append({"prefix": prefix, "method": method})
-
-	var func_matches := _re_func.search_all(text)
-
-	var ext_target := ""
-	if m_ext:
-		ext_target = m_ext.get_string(1)
-
-	for i in func_matches.size():
-		var func_name := func_matches[i].get_string(1)
-
-		if ext_target != "":
-			if not (analysis["override_methods"] as Dictionary).has(ext_target):
-				(analysis["override_methods"] as Dictionary)[ext_target] = []
-			var method_list: Array = (analysis["override_methods"] as Dictionary)[ext_target]
-			if func_name not in method_list:
-				method_list.append(func_name)
-
-		# Warn if lifecycle methods lack super() in scripts that extend game scripts.
-		if ext_target == "":
-			continue
-		const _LIFECYCLE := ["_ready", "_process", "_physics_process",
-				"_input", "_unhandled_input", "_unhandled_key_input"]
-		if func_name not in _LIFECYCLE:
-			continue
-		var body_start := func_matches[i].get_end()
-		var body_end := text.length() if i + 1 >= func_matches.size() \
-				else func_matches[i + 1].get_start()
-		var body := text.substr(body_start, body_end - body_start)
-		if "super(" not in body and "super." not in body:
-			if func_name not in (analysis["lifecycle_no_super"] as Array):
-				(analysis["lifecycle_no_super"] as Array).append(func_name)
 
 func _check_class_name_safety(text: String, file_path: String, mod_name: String) -> void:
 	for m_cn in _re_class_name.search_all(text):

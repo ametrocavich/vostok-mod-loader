@@ -40,14 +40,8 @@ func _compile_regex() -> void:
 	_re_take_over.compile('take_over_path\\s*\\(\\s*"(res://[^"]+)"')
 	_re_extends = RegEx.new()
 	_re_extends.compile('(?m)^extends\\s+"(res://[^"]+)"')
-	_re_extends_classname = RegEx.new()
-	_re_extends_classname.compile('(?m)^extends\\s+([A-Z]\\w+)\\s*$')
 	_re_class_name = RegEx.new()
 	_re_class_name.compile('(?m)^class_name\\s+(\\w+)')
-	_re_func = RegEx.new()
-	_re_func.compile('(?m)^(?:static\\s+)?func\\s+(\\w+)\\s*\\(')
-	_re_preload = RegEx.new()
-	_re_preload.compile('preload\\s*\\(\\s*"(res://[^"]+)"\\s*\\)')
 	# VostokMods compat: "100-ModName.vmz" encodes priority in the filename.
 	_re_filename_priority = RegEx.new()
 	_re_filename_priority.compile('^(-?\\d+)-(.*)')
@@ -301,7 +295,8 @@ func _rtv_parse_script(filename: String, source: String) -> Dictionary:
 			# Never let comment lines set the await/return flags.
 			if body_line.begins_with("#"):
 				continue
-			if "await " in body_line:
+			# Masked, so `await` in a string or a trailing comment is not code.
+			if "await " in body_line and "await " in _rtv_code_mask(body_line):
 				is_coroutine = true
 			# "return <something>" (not bare "return").
 			if _rtv_re_ret_value.search(body_line) != null:
