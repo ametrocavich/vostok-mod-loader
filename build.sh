@@ -79,20 +79,19 @@ FILES=(
     "$SRC/registry/aggregators.gd"
     # Declarative setup() entry point (depends on registry _many verbs + hook_many)
     "$SRC/setup.gd"
-    "$SRC/framework_wrappers.gd"
     # Codegen pipeline
     "$SRC/gdsc_detokenizer.gd"
     "$SRC/pck_enumeration.gd"
     "$SRC/rewriter_parse.gd"            # regex compile + detokenized-source parsing
     "$SRC/rewriter_rewrite.gd"          # rename+wrap orchestrator + dispatch wrapper emitter
     "$SRC/rewriter_registry_inject.gd"  # declaration transforms, preludes, registry appendices
-    "$SRC/rewriter_autofix.gd"          # legacy-GDScript autofix + bare-base/reload strippers
+    "$SRC/rewriter_text.gd"             # string-aware source mask, identifier test
     "$SRC/hook_pack.gd"
     "$SRC/hook_status.gd"
     # Orchestration
     "$SRC/lifecycle.gd"
     "$SRC/main_menu_hook.gd"
-    # Developer-mode probes and the test-pack scaffolding
+    # Developer-mode probes
     "$SRC/debug.gd"
 )
 
@@ -116,7 +115,9 @@ trap 'rm -f "$TMP"' EXIT
 : > "$TMP"
 for f in "${FILES[@]}"; do
     printf '# source: %s\n' "$f" >> "$TMP"
-    cat "$f" >> "$TMP"
+    # Drop CRs: a Windows checkout can hold CRLF sources, and the output must
+    # match the release build, which is made on Linux from LF blobs.
+    LC_ALL=C tr -d '\r' < "$f" >> "$TMP"
     echo "" >> "$TMP"  # blank line between files
 done
 
