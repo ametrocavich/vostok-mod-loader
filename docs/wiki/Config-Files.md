@@ -66,7 +66,7 @@ Godot's `ConfigFile` writes a blank line after every section header, quotes Stri
 
 | Section | Meaning |
 |---|---|
-| `[settings]` | `active_profile`: the selected profile. `developer_mode`: enables dev-only UI (folder mods, conflict report, extra diagnostics). `ui_scale`: launcher zoom, 1.0 to 2.0. `browse_source`: the site the Browse tab last showed. `active_modpack`, `modpack_backup_profile`, `modpack_backup_valid`: modpack state, see below. `test_pack_precedence`: developer test flag for the static-init mount canary; leave it unset. |
+| `[settings]` | `active_profile`: the selected profile. `developer_mode`: enables dev-only UI (folder mods, conflict report, extra diagnostics). `ui_scale`: launcher zoom, 1.0 to 2.0. `browse_source`: the site the Browse tab last showed. `active_modpack`, `modpack_backup_profile`, `modpack_backup_valid`: modpack state, see below. |
 | `[profile.<name>.enabled]` | `profile_key -> true\|false`. The list you see checked in the UI under that profile. One section per named profile. |
 | `[profile.<name>.priority]` | `profile_key -> int` in `[-999, 999]`. A higher number loads later and wins file conflicts. |
 | `[profile.<name>.dep_ignore]` | `profile_key -> true`. The "Load anyway" dependency overrides for that profile. Sparse: only mods you told to load past a missing or disabled requirement appear, always as `=true`. |
@@ -158,6 +158,7 @@ timestamp=1776897837.26
 script_overrides=[]
 hook_pack_path="user://modloader_hooks/framework_pack_5758.zip"
 hook_pack_wrapped_paths=PackedStringArray("res://Scripts/Menu.gd")
+hook_pack_demotions={}
 ```
 
 | Key | Meaning |
@@ -172,6 +173,7 @@ hook_pack_wrapped_paths=PackedStringArray("res://Scripts/Menu.gd")
 | `script_overrides` | The `[script_extend]` / `[script_overrides]` declarations Pass 1 collected, as `{vanilla_path, mod_script_path, mod_name, priority, seq}` records. Pass 2 replays them before hook generation. `[]` on most installs. |
 | `hook_pack_path` | `user://modloader_hooks/framework_pack_<millis>.zip` to mount at static init next boot. A fresh filename per generation sidesteps Godot's `load_resource_pack` path dedup. |
 | `hook_pack_wrapped_paths` | The `res://Scripts/<Name>.gd` paths in the pack that static init force-compiles with `CACHE_MODE_IGNORE`. Scripts with a module-scope scene preload are left off the list and compile lazily from the pack. Often just `["res://Scripts/Menu.gd"]` for loadouts that only use the core hook. |
+| `hook_pack_demotions` | Verdicts of the compile probe the pre-restart generation ran: `res://Scripts/<Name>.gd` to `"wrap_only"` (shipped with hooks, without registry code) or `"excluded"` (left vanilla). `{}` on a healthy install. Later generations repeat these instead of probing; see [Stability-Canaries](Stability-Canaries#pre-ship-compile-probe). |
 
 Safe to delete. Next launch rebuilds it at the cost of a slower cold boot (the hook pack regenerates).
 
@@ -211,7 +213,7 @@ These live in the game's install directory (next to the `.exe`), not `user://`. 
 |---|---|
 | `modloader_disabled` | Full bypass. The loader's static init resets `override.cfg`, pass state and the hook pack, then mounts nothing; the game boots vanilla. Use when the loader itself is broken or you want to confirm a problem is mod-related. |
 | `modloader_disabled_once` | One-shot version of `modloader_disabled`: the next launch boots vanilla, then the file is deleted so the launch after that is modded again. The launcher's **Launch vanilla** button creates this for you; you can also create it by hand. |
-| `modloader_safe_mode` | One-shot reset. On the next launch the loader restores a clean `override.cfg`, deletes `mod_pass_state.cfg` and the crash heartbeat, then deletes the safe-mode file itself. The launcher still opens, so you can change profiles or disable a bad mod before the next modded boot. Useful when a mod is crashing at autoload time. |
+| `modloader_safe_mode` | One-shot reset. On the next launch the loader restores a clean `override.cfg`, deletes `mod_pass_state.cfg` and the crash heartbeat, then deletes the safe-mode file itself. The launcher still opens, so you can change profiles or disable a bad mod before the next modded boot. The reset runs when the launcher is about to open, after the previous session's archives and `!` early autoloads are already up; a mod that crashes the game before that point needs `modloader_disabled` instead. |
 
 On Windows: right-click the game folder, New, Text Document, rename to `modloader_disabled` (no extension). Or run `echo. > modloader_disabled` in `cmd`.
 
@@ -223,7 +225,7 @@ Everything here is regenerated on demand:
 
 | Path | Contents |
 |---|---|
-| `user://modloader_hooks/framework_pack_<millis>.zip` | The generated hook pack, mounted at static init. Each Pass-1 generation picks a fresh timestamp suffix (Godot's `load_resource_pack` dedups by path and would keep stale mount offsets). Old generations are cleaned up before mount. |
+| `user://modloader_hooks/framework_pack_<millis>.zip` | The generated hook pack, mounted at static init. Each generation picks a fresh timestamp suffix (Godot's `load_resource_pack` dedups by path and would keep stale mount offsets). Old generations are cleaned up before mount. |
 | `user://modloader_hooks/vanilla/` | Cached vanilla script source, decoded from the game's own `.pck` (never from a mounted mod), wiped on a game update. Two stamp files sit at its root: `format` names the cache layout and `build` names the game `.pck` the text was read from. A mismatch on either rebuilds the cache. Speeds up later hook-pack generation. |
 | `user://vmz_mount_cache/` | `.vmz -> .zip` copies so Godot's `load_resource_pack` can mount them, plus `.zip.src` sidecars naming the source. |
 | `user://modloader_early/` | Extracted copies of `!`-prefixed early-autoload scripts that live inside archives. |
@@ -232,7 +234,7 @@ Everything here is regenerated on demand:
 | `user://modloader_crash_streak` | Count of consecutive crashed two-pass restarts. At 2 the loader refuses the two-pass restart and finishes in a single pass instead: mods that can load still load, and the launcher stays reachable so you can disable the one that crashes. Cleared by a clean boot. |
 | `user://modloader_conflicts.txt` | Developer mode only. The conflict report (which mods claim the same `res://` paths). |
 | `user://modloader_filescope.log` | What static init mounted and reset before the launcher opened, rewritten every launch. The first place to look when mods did not mount. |
-| `user://modloader_hook_status.json` | What happened to the hook system last session (whether the script rewrites took effect, or why generation stopped). The launcher reads it on the next start and shows a banner on the Mods tab when hooks did not work. Ignored once the loader, the game executable or the game `.pck` changes. |
+| `user://modloader_hook_status.json` | What happened to the hook system last session (whether the script rewrites took effect, why generation stopped, or which scripts the compile probe left out). The launcher reads it on the next start and shows a banner on the Mods tab when hooks did not work. Ignored once the loader, the game executable or the game `.pck` changes. |
 | `user://modloader_game_updated` | Written when the game executable or `.pck` changed since the last run. The Mods tab shows a "Road to Vostok was updated" notice while it exists; the next session in which the hook rewrites work removes it. |
 | `user://mws_cache/` | Browse-tab caches. `thumbs/` holds ModWorkshop thumbnail and banner images (VostokMods images stay in memory). `landing_<site>.json` holds each site's last successful Browse landing so the offline view survives a relaunch. `mods_meta_v2.json` caches the host detail each installed mod's row shows on the Mods tab. Search and filter responses are cached in memory only. |
 

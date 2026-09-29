@@ -18,7 +18,7 @@ GODOT=/path/to/godot ./check.sh
 |---|---|
 | `GODOT` | Engine executable. If unset, scripts try `godot` on PATH, then a maintainer-specific Windows path. On Windows use the console executable, with a Git Bash path such as `/c/Tools/Godot/godot_console.exe`. |
 | `PYTHON` | Interpreter for documentation checks. If unset, `check.sh` tries `python` and `python3`, requiring version 3.9 or newer. |
-| `VANILLA_SRC` | Decompiled Road to Vostok project for the ten vanilla codegen fixtures. The codegen script has a maintainer-specific default; missing source leaves these fixtures out. The three synthetic fixtures always run. |
+| `VANILLA_SRC` | Decompiled Road to Vostok project for the ten vanilla codegen fixtures. The codegen script has a maintainer-specific default; missing source leaves these fixtures out. The two synthetic fixtures always run. |
 
 Use a dedicated Godot test directory. The boot-state harness creates and
 removes `override.cfg` beside the engine executable and refuses to run if
@@ -47,23 +47,28 @@ initializers must come first; function bodies can call functions later in
 the file. The build checks that every listed file exists, that the result
 has exactly one top-level `extends`, and that it has at most one top-level
 `class_name`. It writes a temporary file and replaces the artifact only on
-success. Parsing and behavior checks are the next step.
+success. Carriage returns are dropped from every fragment, so a Windows
+checkout with CRLF sources builds the same bytes as the release job, which
+runs on Linux from LF blobs. Parsing and behavior checks are the next step.
 
 ## The eight checks
 
 Source: [check.sh](https://github.com/ametrocavich/vostok-mod-loader/blob/development/check.sh).
-Run it after every build. Success prints eight lines starting with `OK:`:
+Run it after every build. `check.sh` does not run `build.sh`: it tests the
+`modloader.gd` already on disk, however old, and only a missing file makes it
+ask for a build. After a source edit always run `./build.sh` first, or the
+checks pass against a stale artifact. Success prints eight lines starting with `OK:`:
 
 | Check | Runner | Coverage |
 |---|---|---|
 | Parse | Inline in `check.sh` | Headless `--check-only` parses and type-checks the assembled loader in a throwaway project. Catches duplicate definitions, unresolved names and incompatible types. |
-| Static invariants and docs | Inline greps and `tools/dev.py check-docs` | Wrapper templates emit `await` only through the coroutine-gated variable; Hooks.md must describe that contract. Checks local/repository Markdown targets, source paths, linked definition ownership and module-index coverage. It does not verify prose, URL fragments or external sites. |
-| Code generation | `tests/codegen/runner.gd` | Three synthetic and, when available, ten vanilla fixtures. Compiles original source, rewritten source and caller stubs; checks signatures, coroutine behavior and masked rewrites. |
-| Dispatch | `tests/codegen/dispatch_runner.gd` | T1 to T23: hook ordering, replacement, post hooks, deferred calls, re-entrancy, defaults and coroutines; registry/setup operations; legacy syntax with mixed quotes, literal terminators and inherited `base()` calls. |
+| Static invariants and docs | Inline greps and `tools/dev.py check-docs` | The built file holds no CR byte (a local build must match the LF release build). Wrapper templates emit `await` only through the coroutine-gated variable; Hooks.md must describe that contract. Checks local/repository Markdown targets, source paths, linked definition ownership and module-index coverage. It does not verify prose, URL fragments or external sites. |
+| Code generation | `tests/codegen/runner.gd` | Two synthetic and, when available, ten vanilla fixtures. Compiles original source, rewritten source and caller stubs; checks signatures, coroutine behavior and masked rewrites. `_check_vetting` runs the pre-ship compile probe on every fixture: each real rewrite must vet as `full`; five vanilla scripts with a renamed member (`GAME_RENAMES`) must ship wrap-only, compile, carry no registry code and record the demotion; a `Database.gd` with no const preloads must still ship hooked, without the scenes appendix; a rewrite that compiles in no form is excluded; persisted verdicts are repeated unprobed. |
+| Dispatch | `tests/codegen/dispatch_runner.gd` | T1 to T23: hook ordering, replacement, post hooks, deferred calls, re-entrancy, defaults and coroutines; registry/setup operations; coroutine detection that ignores `await` inside strings and comments. |
 | Detokenizer | `tests/detok/runner.gd` | T1 to T11: v100/v101 reconstruction, empty tokens, VFS/PCK precedence, cache stamps, `.gdc` fallback and the engine canary. |
 | Identity | `tests/identity/runner.gd` | T1 to T12: filename stems, duplicate winners, metadata read records, profile defaults, key migration, missing active profiles and profile rename/create behavior. |
-| Host and packs | `tests/host/runner.gd` | T1 to T30: complete host records, dispatch coverage, source migration, pack conversion/apply/unload, preserved original files, refreshed imports, exact-version pins, download names, cooldowns, update outcomes and dependency ordering. |
-| Boot state | `tests/boot_state/runner.gd` | T1 to T23: crash streak, state hash, game-update detection, hook health and early hooks, config recovery, failed writes, linked-root deletion guards and unmodded cleanup retry. |
+| Host and packs | `tests/host/runner.gd` | T1 to T32: complete host records, dispatch coverage, source migration, pack conversion/apply/unload, preserved original files, refreshed imports, pack names with no usable characters, refused-manifest copy, exact-version pins, download names, cooldowns, update outcomes, dependency ordering, and that a listing page never carries the loader's own entry on either host (matched per host, paging fields untouched, error results passed through), nor does a saved landing read back from disk. |
+| Boot state | `tests/boot_state/runner.gd` | T1 to T27: crash streak, state hash, game-update detection, hook health and early hooks, config recovery, failed writes, linked-root deletion guards, unmodded cleanup retry, which rewritten scripts wait for lazy compile, that mounting an archive with a scene `.remap` loads nothing, that the hook pack carries no mod scripts, and that the compile probe's verdicts persist through pass state: the following generation does not probe, Pass 1 probes afresh, registry verbs on a demoted target return `false`, and the launcher notice names the script. |
 
 The six harness scripts are `check_codegen.sh`, `check_dispatch.sh`,
 `check_detok.sh`, `check_identity.sh`, `check_host.sh` and `check_boot_state.sh`.
@@ -86,9 +91,12 @@ Run the failing harness directly to shorten the feedback loop:
 ./check_host.sh --prove
 ```
 
-`--prove` first runs the clean harness, then makes a targeted mutation in the
-temporary copy and requires failure. It leaves repository source unchanged.
-It tests the gate's failure detection, not every possible bug in its subject.
+`--prove` makes a targeted mutation in the temporary copy and requires the
+named failure. Only `check_boot_state.sh` runs the clean harness first; the
+others go straight to the mutated run, so `--prove` on a baseline that already
+fails can still print `PROVE-OK`. Run the plain harness (or `./check.sh`)
+before trusting it. It leaves repository source unchanged, and it tests the
+gate's failure detection, not every possible bug in its subject.
 Each check script defines its temporary `WORK` directory; inspect the runner
 output and that directory's generated files when a fixture fails.
 

@@ -130,7 +130,8 @@ renames are not.
   Browse source menu order. A provider with no arm in a dispatcher gets
   `HOST_ERR_UNWIRED` from its `_:` default; `check_host.sh` T9 reads the
   dispatchers off the built source and fails when a provider is missing
-  from one.
+  from one. If the loader itself is listed on the new host, add that id to
+  `HOST_OWN_LISTINGS` so `_host_hide_own_listing` keeps it out of Browse.
 - `build.sh`: add the file after `host_api.gd`.
 - `tests/host/runner.gd`: a normalizer fixture for the host's payload shape.
 - `docs/wiki/Browse.md` and `docs/wiki/Mod-Format.md` (the `source=` value).
@@ -182,7 +183,10 @@ The authoritative map sits above the download entry points in
 5. If the section needs code injected into a vanilla script: a transform in
    `src/rewriter_registry_inject.gd`, the script in `REGISTRY_TARGETS` and a
    marker in `REGISTRY_EXPECTED_MARKERS` (`src/hook_pack.gd`), and a fixture
-   line in `tests/codegen/runner.gd`.
+   line in `tests/codegen/runner.gd`. A handler that hands its entries over
+   through Engine metadata only the injected code reads calls
+   `_registry_target_inert` first in `register` / `override`, so a target
+   the compile probe shipped without registry code returns `false`.
 6. Document it in `docs/wiki/Registry.md`.
 
 `setup.gd` and the `*_many` batch verbs route through the same dispatchers,
@@ -222,9 +226,8 @@ drift: the scan filter in `collect_mod_metadata` and the download-name gate
 Godot's `load_resource_pack` only recognizes literal `.pck` / `.zip`, so any
 other extension needs the vmz-style cache-copy fallback in `_try_mount_pack`
 (fs_archive.gd) and in the early-boot remount loop of `_mount_previous_session`
-(boot.gd); the hook pack's sibling pre-read reads whatever path
-`scan_and_register_archive_claims` recorded in `_archive_zip_paths`, so it
-follows. Also: the `"vmz", "zip"` match arm in `scan_mod` (security_scan.gd),
+(boot.gd). The hook pack never reads mod archives, so it needs no change.
+Also: the `"vmz", "zip"` match arm in `scan_mod` (security_scan.gd),
 the modpack sniff in `collect_mod_metadata` (zip-only by design), the
 skip-log literal, and `docs/wiki/Mod-Format.md`. Hazard: `_static_vmz_to_zip`
 keys its cache on basename, so `Mod.vmz` and a same-basename alias archive

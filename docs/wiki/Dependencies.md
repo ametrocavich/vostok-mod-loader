@@ -129,7 +129,7 @@ What your users see, so you can write install instructions that match:
 
 - Every mod with required dependencies gets a dim sub-line `needs: <names>`, plus `(+N optional)` when it also has optional ones. A mod with only optional dependencies gets `N optional integration(s)` instead. Either way the tooltip lists `requires Name (id)` and `optional: Name (id)` entries.
 - A blocked mod's name turns orange, with an orange line `won't load -- needs <Name (id)> -- <status label>` (`+N more` when several; the tooltip lists all).
-- `Enable dependency` (or `Enable N dependencies`) appears when at least one blocker is installed but disabled. One click transitively enables every installed-but-disabled required dep down the chain.
+- `Enable dependency` (or `Enable N dependencies`) appears when at least one blocker is installed but disabled and the profile is editable (not while a modpack is active). One click transitively enables every installed-but-disabled required dep down the chain.
 - `Load anyway` turns the dependency check off for that mod: it loads regardless of dependency state, and counts as active for mods that depend on it. The override is per profile (persisted in `user://mod_config.cfg`, see [Config-Files](Config-Files)). Its hint reads "For when a requirement is declared wrong or you know better."
 - While that override is on with requirements still unmet, the row shows `dependency check off -- missing: <names>` with a `Re-check` button that restores the normal rule.
 

@@ -1,3 +1,33 @@
+<!--
+Listing text for https://vostokmods.net/mod/metro-mod-loader
+State seen 2026-09-20: serves 3.2.1 (MetroModLoader321.zip, 169.7 KB), game
+version 0.1.1.3, category Libraries, tag Tools, "No changelog provided", and a
+description that predates Browse, modpacks and the VostokMods host.
+
+On release day:
+  1. Description: paste everything below the second marker.
+  2. New version 3.4.0: upload a zip built from the PUBLISHED GitHub release
+     assets (modloader.gd, override.cfg, windows-installer.bat,
+     linux-installer.sh), not from a local build.
+  3. Changelog field for 3.4.0: paste the block between the two markers.
+  4. Game version: set it to the build the release was accepted on.
+Same body as MWS_PAGE.md; keep the two in step.
+-->
+
+<!-- changelog for the 3.4.0 version entry -->
+**3.4.0**
+
+* Browse and install mods from VostokMods (the default) or ModWorkshop without leaving the launcher. Check for updates asks each mod's own site.
+* Modpacks from VostokMods (beta): one small zip carries a mod selection, load order, MCM settings and download sources. Apply switches to the author's setup, Unload puts yours back.
+* Required and optional dependencies: a mod that is missing something says what it needs, with one-click Enable dependency.
+* The launcher tells you when a game update has stopped script hooks from working, and the loader's own update notice now reads the GitHub release.
+* After a game update, a loader change that no longer fits a game script is left out instead of breaking that script: the game keeps running and the launcher names what was skipped.
+* The loader no longer edits mod scripts in any way. Mods run exactly as their authors shipped them.
+* Many fixes to load order, profiles, crash recovery and hook reliability. Full notes on GitHub.
+
+Coming from 3.2.1: copy the new `modloader.gd` and `override.cfg` over the old ones (or run the installer). Profiles, enabled mods and load order carry over.
+<!-- end changelog -->
+
 # Community Mod Loader
 
 Mod loader for Road to Vostok (Godot 4.6). Adds a pre-game launcher for installing mods from VostokMods or ModWorkshop, managing load order and profiles, applying modpacks and checking for updates. It restores mod loading now that the original --main-pack injector method no longer works.

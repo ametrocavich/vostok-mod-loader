@@ -140,7 +140,7 @@ The cache is wiped with the rest of `user://modloader_hooks` on a loader version
 
 From the comment in `_read_vanilla_source`: never call `load(script_path)` here, not even to verify the live script. Any `load()` makes `ResourceFormatLoaderGDScript` read the PCK's `.gdc` (through the PCK's stale `.gd.remap`) and cache the tokenized result at `script_path`. Later hook-pack mounts and loads then hit that cached entry instead of the rewrite. The cache must stay cold until the hook pack is mounted.
 
-`_detokenize_script` reads raw bytes with `FileAccess` only, trying three ways in order:
+`_gdsc_read_script_bytes`, called by `_detokenize_script`, reads raw bytes with `FileAccess` only. It tries the game PCK by offset first (`_vanilla_bytes_from_pck`, above); when that returns nothing it falls back to the VFS, three ways in order:
 
 1. `FileAccess.open(script_path, READ)`
 2. `FileAccess.open(ProjectSettings.globalize_path(script_path), READ)`
@@ -159,7 +159,7 @@ After detokenizing, `_read_vanilla_source` rejects source that contains `_rtv_re
 
 `_probe_gdsc_version` reads each of four known vanilla scripts (`Camera.gd`, `Controller.gd`, `Audio.gd`, `AI.gd`, falling back to the `.gdc` extension), needs at least a 12-byte header and the `GDSC` magic, and returns the u32 version field of the first that qualifies. Returns -1 when none is readable. Canary B uses it to stop cleanly on an unsupported tokenizer.
 
-Caveat, stated in the code as well: `_generate_hook_pack` treats -1 as "no probe" and proceeds without canary B. If a game update renamed all four paths, the canary would stop guarding without saying so.
+Caveat, stated in the code as well: `_hook_pack_preflight`, the first step of `_generate_hook_pack`, treats -1 as "no probe" and proceeds without canary B or canary C. If a game update renamed all four paths, the canary would stop guarding without saying so.
 
 ## Zero-byte entries
 

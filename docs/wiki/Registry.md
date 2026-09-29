@@ -50,12 +50,14 @@ An empty section is enough. When any mod declares it, the rewriter wraps `Databa
 
 Without the declaration the injected fields are missing, and the registries behave differently:
 
-- `scenes` and `scene_paths` check for the injected fields (`_rtv_mod_scenes` on Database, `_rtv_mod_scene_paths` on Loader) and fail with a `push_warning`. The Database messages ask whether `mod.txt` includes a `[registry]` section; the Loader ones say the rewriter didn't fire.
+- `scenes` and `scene_paths` check for the injected fields (`_rtv_mod_scenes` on Database, `_rtv_mod_scene_paths` on Loader) and fail with a `push_warning`. Every message names the missing injected fields; the Database ones also ask whether `mod.txt` includes a `[registry]` section.
 - `ai_types`, `ai_loadouts` and `fish_species` write to `Engine.set_meta(...)` entries that only the rewritten `AISpawner`, `AI` and `FishPool` read. `register` returns `true` with no warning, and the game never sees the entry.
 - `shelters` and `maps` need the rewriter to turn vanilla's `const shelters = [...]` into a `var` and to inject the `_rtv_mod_shelters` dict the spawn prelude reads. A registration that carries a `path` fails through the `scene_paths` check above. A path-less registration warns that `_rtv_mod_shelters` is missing and returns `false`; nothing is appended to a `shelters` array that is still `const`.
 - `items`, `loot`, `recipes`, `events`, `sounds`, `inputs`, `trader_pools`, `trader_tasks`, `random_scenes`, `resources` and `scene_nodes` work regardless. They mutate loaded Resources, `InputMap` or plain vars (`scene_nodes` uses a `SceneTree.node_added` listener) and track state in the registry's own dicts.
 
 Add `[registry]` whenever you use the API.
+
+With the declaration, one case is still checked. After a game update the injected code for a target may no longer compile; the loader then ships that script with hooks only, or leaves it vanilla (see [Hooks](Hooks#compile-probe-before-packing)). `register` and `override` on `ai_types` (`AISpawner.gd`), `ai_loadouts` (`AI.gd`) and `register` on `fish_species` (`FishPool.gd`), `shelters` and `maps` (`Compiler.gd`) then return `false` with a `push_warning` (`the loader's registry code for <file> does not fit this game build and was left out`), instead of reporting success for an entry nothing reads. The Database and Loader registries need no extra check: they already look for their injected fields on the live node. `shelters` and `maps` depend on `Compiler.gd` as well as `Loader.gd`: the `Spawn` prelude is what reads the entry on arrival. If `Compiler.gd` shipped without it, `register` returns `false` with the same warning before anything is stored, the paired `scene_paths` entry included. `remove` still works for an entry registered earlier.
 
 ## Timing
 
@@ -173,7 +175,7 @@ var current = lib.get_entry(lib.Registry.ITEMS, "Potato")  # returns my_replacem
 lib.revert(lib.Registry.ITEMS, "Potato")                    # back to vanilla
 ```
 
-`scenes`, `loot`, `recipes`, `events`, `trader_tasks`, `ai_types` and `ai_loadouts` reject a second `override` of an already-overridden id ("already overridden (revert first to re-override)"). The in-place registries (`items`, `sounds`, `inputs`, `scene_paths`) accept it: the second override wins, and the stash keeps the original from before the first override, so a full `revert` still restores vanilla. Overriding a mod registration is allowed everywhere except `sounds`, which only overrides vanilla field names. Use that to resolve same-id conflicts between mods without touching the loser's code.
+`scenes`, `loot`, `recipes`, `events`, `trader_tasks`, `ai_types` and `ai_loadouts` reject a second `override` of an already-overridden id (the warning starts "already overridden (revert first"). The in-place registries (`items`, `sounds`, `inputs`, `scene_paths`) accept it: the second override wins, and the stash keeps the original from before the first override, so a full `revert` still restores vanilla. Overriding a mod registration is allowed everywhere except `sounds`, which only overrides vanilla field names. Use that to resolve same-id conflicts between mods without touching the loser's code.
 
 ### patch
 
@@ -869,7 +871,7 @@ Six helpers that fan out to several primitive registries (items, scenes, loot, t
 | `register_furniture({id: dict, ...}) -> Dictionary` | Furniture item + scene + trader_pools (default Generalist) + optional crafting recipe |
 | `register_ai_loadout({id: dict, ...}) -> Dictionary` | Batch wrapper over the `ai_loadouts` primitive (per-id result is just `{ok}`) |
 
-They always take a Dictionary of `{id: data}`, even for a single registration. There is no `(id, data)` overload; the `(id, dict)` signatures in the header comment of `src/registry/aggregators.gd` are the internal workers.
+They always take a Dictionary of `{id: data}`, even for a single registration. There is no `(id, data)` overload; the `_register_*(id, data)` functions in `src/registry/aggregators.gd` are the internal workers.
 
 ```gdscript
 # Single registration
@@ -1046,7 +1048,7 @@ for entry in weapons:
     print(entry["id"], " -> ", entry["entry"].get("name"))
 ```
 
-For the handle-based registries (`loot`, `recipes`, `events`, `trader_pools`, `trader_tasks`, `inputs`, `scene_paths`, `shelters`, `maps`, `random_scenes`, `ai_types`, `ai_loadouts`, `fish_species`) `get_entry` returns the mod-registered payload dict, or `null` if the id isn't a mod registration. It does not enumerate vanilla content. `scene_paths` returns the override dict when the id is overridden, vanilla names included, since that is the entry the game loads. For `resources` the id is a `res://` path and it returns `load(id)`. `scene_nodes` and the aggregator-only registries warn and return `null`.
+For the handle-based registries (`loot`, `recipes`, `events`, `trader_pools`, `trader_tasks`, `inputs`, `scene_paths`, `shelters`, `maps`, `random_scenes`, `ai_types`, `ai_loadouts`, `fish_species`) `get_entry` returns the record the registry stored for that handle, or `null` if the id isn't a mod registration. The record is not always the payload you passed: `loot` adds the resolved `table_res`, `trader_pools` stores `{item, trader, flag, original}`, and `shelters` / `maps` wrap the payload as `{auto_scene_path, entry, kind}`. `inputs` also returns a record for a vanilla action a mod has patched (marked `vanilla_stub`). It does not enumerate vanilla content. `scene_paths` returns the override dict when the id is overridden, vanilla names included, since that is the entry the game loads. For `resources` the id is a `res://` path and it returns `load(id)`. `scene_nodes` and the aggregator-only registries warn and return `null`.
 
 Mod entries beat vanilla on id collision, so `list(ITEMS)` returns the mod's version when both exist.
 

@@ -10,6 +10,8 @@ VostokMods scans every upload before serving it. Browse only offers versions the
 
 The loader does not fetch its own updates from either site. The version link in the launcher header checks the loader's GitHub releases.
 
+Both sites list the mod loader itself, so players can find it there. Browse never shows that listing, on the landing, in search results or under a category: it is not a mod, and **Download** would put the loader's zip into `mods/`. The row is dropped from each page as it arrives, so a page can come back one row short and the loaded count in the status line can stay one below the site's total. Install or update the loader from its [release page](https://github.com/ametrocavich/vostok-mod-loader/releases/latest); see [Setup](Setup).
+
 ## Layout
 
 A toolbar across the top, a status line, then a scrolling list of mod rows with a **Load more** button at the bottom.

@@ -92,7 +92,7 @@ Only `[mod]` is required. `[autoload]`, `[updates]`, `[dependencies]`, `[hooks]`
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `name` | string | filename | Display name in the UI |
-| `id` | string | filename | Unique id (case-insensitive). If two installed archives declare the same id, only one loads: highest `version` wins, then newer file mtime, then the alphabetically lower filename. The others are hidden with a logged warning and an `older version hidden:` line on the winner's row. Mods with no `id` are grouped by filename stem instead (`CoolMod_v1.2.zip` and `CoolMod-1.3.zip` count as one mod) |
+| `id` | string | filename | Unique id (case-insensitive). If two installed archives declare the same id, only one loads: highest `version` wins, then newer file mtime, then the alphabetically lower filename. The others are hidden with a logged warning and an `older version hidden:` line on the winner's row. Mods with no `id` are grouped by filename stem instead (`CoolMod_v1.2.zip` and `CoolMod-1.3.zip` count as one mod). `.pck` files are never grouped: every `.pck` loads |
 | `version` | string | `""` | Used by the update check to compare against the mod's site, and as the version a modpack pins |
 | `priority` | int | 0 (or parsed from filename prefix) | Higher loads later, wins file conflicts. Clamped to `-999..999` |
 | `author` | string | `""` | Shown as `by <author>` on the mod's row and in its detail view |
@@ -100,7 +100,7 @@ Only `[mod]` is required. `[autoload]`, `[updates]`, `[dependencies]`, `[hooks]`
 
 Compatibility with the older VostokMods injector (Ryhon0's loader, not the vostokmods.net site): if the archive filename matches `^(-?\d+)-(.*)`, the numeric prefix is the fallback priority when `[mod] priority` is not set, and the rest of the stem is the default name and id. `100-BetterAI.vmz` loads with `priority=100`. See [mod_discovery.gd `_entry_from_config`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd).
 
-A mod without `id=` is identified by its filename. In developer mode the row notes it: renaming or re-packaging the file loses its enabled state and load order, and two copies cannot be told apart. Declare an id.
+A mod without `id=` is identified by its filename. In developer mode the row notes it: a new file whose name differs only by a trailing version (`CoolMod_v1.2.zip` to `CoolMod_v1.3.zip`) keeps its enabled state and load order, any other rename loses them, and two copies cannot be told apart. Declare an id.
 
 ### `[dependencies]` section
 
@@ -231,7 +231,7 @@ Processing, per [mod_loading.gd `_apply_script_overrides`](https://github.com/am
 1. Sort pending overrides by priority ascending.
 2. For each: `load(mod_path)`, read `source_code`, fresh `GDScript.new()`, assign `source_code`, `reload()`, `take_over_path(vanilla_path)`.
 
-The legacy-syntax autofix runs on each chain script before `reload()` (`base()` becomes `super.<method>()`, bodyless blocks get `pass`, `tool`/`onready var`/`export var` get their `@` forms), so chain scripts written against Godot 3 conventions compile.
+The source is compiled unchanged: the loader does not edit a chain script, so it has to be valid Godot 4 GDScript. A script that fails to compile is skipped with `[Overrides] Compile failed for <path>`.
 
 Interaction with the hook system: if the vanilla path is also in the hook wrap surface (through `[hooks]` or a mod calling `.hook()` on one of its methods), the replacement currently loses. Overrides are applied before the hook pack is generated, and activating the pack reloads the vanilla path with the rewritten source, discarding the replacement for that session. The loader logs a `[RTVCodegen]` warning naming your mod at both points. Until activation is reordered so a replacement chains onto the rewrite, hook the methods you need instead of replacing a hooked script. See [Hooks#composing-with-script_extend](Hooks#composing-with-script_extend).
 
@@ -292,6 +292,10 @@ Zips repacked with `ZipFile.CreateFromDirectory()` on Windows often write entrie
 BAD ZIP: <n> entries use Windows backslash paths.
   Re-pack with 7-Zip. Example bad entry: 'MyMod\Main.gd'
 ```
+
+### `.remap` files
+
+A mod can ship Godot `.remap` files, which redirect a scene, texture or script path to another file in the archive. Mounting loads nothing: the engine follows a mounted `.remap` itself the first time that path is loaded, also when the game has no file at the path. An archive that carries an export bake (`.gd.remap` entries next to a `.godot/exported/` folder) runs the compiled copies, not the `.gd` files beside them; in developer mode the row notes it (`Ships N pre-compiled script(s) ...`).
 
 ### Nested mod.txt
 

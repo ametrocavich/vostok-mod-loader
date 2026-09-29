@@ -28,11 +28,10 @@ Static function in `boot.gd`, called during instance initialization. It uses con
 4. Version mismatch. A saved `modloader_version` that differs from `MODLOADER_VERSION` wipes the hook cache, deletes pass state and resets `override.cfg`. Rewriter output can change between versions, so a stale pack must not be mounted.
 5. Game update. If the exe mtime differs from the saved `exe_mtime`, or the game PCK's mtime and size differ from the saved `pck_stamp` (`_static_game_build_changed`), same wipe: vanilla scripts may have changed. A content patch can replace the PCK and leave the executable untouched, so both are checked.
 6. Missing archives. If any recorded archive is gone, write a clean `override.cfg` and delete pass state. A same-basename cache zip that survived does not count as present.
-7. Mount loop. Each archive goes through `ProjectSettings.load_resource_pack`, with the `.vmz -> .zip` cache fallback (`_static_vmz_to_zip`) and `.remap` resolution (`_static_resolve_remaps`).
+7. Mount loop. Each archive goes through `ProjectSettings.load_resource_pack`, with the `.vmz -> .zip` cache fallback (`_static_vmz_to_zip`). Nothing is loaded at mount time: the engine follows a mounted `.remap` itself, and a `load()` here would compile vanilla scripts before the hook pack is mounted.
 8. Orphan hook packs. `_static_cleanup_orphan_hook_packs` deletes every `framework_pack_*.zip` except the one pass state points at. The hook pack has not been mounted in this process yet, so its unused generations can be deleted on Windows.
 9. Pre-init cache snapshot. For each path in `hook_pack_wrapped_paths`, record whether Godot's eager class-cache pass already compiled it (tokenized), whether it holds our source from a previous session, or whether it is not loaded yet. Diagnostic only; it answers "why didn't my hook fire".
-10. Hook pack mount. The path in `hook_pack_path` must be a `framework_pack_*.zip` directly inside `user://modloader_hooks` (`_static_hook_pack_path_sane`; pass state is user-editable, so anything else is refused). The pack is mounted with `replace_files=true`, then every entry listed in `hook_pack_wrapped_paths` is force-compiled from source via `ResourceLoader.load(..., CACHE_MODE_IGNORE)` plus `take_over_path`. Entries the pack carries but the list does not are left to lazy compile. With no mods loaded the pack file does not exist and this step is skipped. With mods loaded but none opting into the hook surface, the list holds only `res://Scripts/Menu.gd`, the core-owned wrap for the launcher's main-menu button.
-11. Test pack. `user://test_pack_precedence.zip` is mounted only when `[settings] test_pack_precedence` is set in `mod_config.cfg`; with the flag off, a leftover zip is deleted, never mounted.
+10. Hook pack mount. The path in `hook_pack_path` must be a `framework_pack_*.zip` directly inside `user://modloader_hooks` (`_static_hook_pack_path_sane`; pass state is user-editable, so anything else is refused). The pack is mounted with `replace_files=true`, then every entry listed in `hook_pack_wrapped_paths` is force-compiled from source via `ResourceLoader.load(..., CACHE_MODE_IGNORE)` plus `take_over_path`. A script that fails to compile still loads non-null with its source, so the preempt counts a script only when its method list carries a `_rtv_vanilla_*` name (`_static_script_has_rewrite`). One that does not is not given the path, is counted as failed, and is named in `[FileScope] HOOK PACK: did not compile, left alone: <names>`. Entries the pack carries but the list does not are left to lazy compile. With no mods loaded the pack file does not exist and this step is skipped. With mods loaded but none opting into the hook surface, the list holds only `res://Scripts/Menu.gd`, the core-owned wrap for the launcher's main-menu button.
 
 Mounting before later autoloads initialize gives the rewritten scripts an opportunity to take precedence. It does not guarantee that an already cached script can be replaced: activation checks and canaries detect engine-cache failures (see [Limitations](Limitations)).
 
@@ -68,7 +67,7 @@ if archive_paths not empty and _crash_breaker_tripped():
 
 if archive_paths not empty:
     _register_rtv_modlib_meta()
-    _generate_hook_pack(true)          # defer_activation: Pass 2 activates
+    _generate_hook_pack(true)          # defer_activation: probes rewrites, Pass 2 activates
     _write_heartbeat()
     _write_override_cfg(sections.prepend)
     _write_pass_state(archive_paths, new_hash)
@@ -85,6 +84,8 @@ else:
 
 `_generate_hook_pack(true)` on the pre-restart path is deliberate. Without `defer_activation`, activation would run against the PCK bytecode this engine process already pinned, log a misleading "hooks WILL NOT fire this session" alarm, and restart anyway. With it, the call writes the zip and the pass-state entry and lets Pass 2's fresh engine mount it at static init. The branch is at the end of `_generate_hook_pack` in [src/hook_pack.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd).
 
+This is also the one generation that probe-compiles its rewrites before packing them (`_hook_pack_begin_vetting`, `_hook_pack_vet_rewrite`). A probe compiles the script and whatever its module-scope preloads pull in, which is harmless in a process about to exit and would get ahead of mod overrides anywhere else. A rewrite that does not compile is demoted to hooks only or left out of the pack, and the verdicts are persisted as `hook_pack_demotions` for the generations that follow. The `_finish_with_existing_mounts` path reads them from pass state and does not probe. The crash-breaker path has deleted pass state, so its generation probes live, skipping scripts deferred to lazy compile. See [Stability-Canaries](Stability-Canaries#pre-ship-compile-probe).
+
 `_modloader_restart` re-injects `--rendering-driver` and `--rendering-method` (Godot's own parser strips them from `OS.get_cmdline_args()`, and RTV's Steam launch presets set exactly those two) and forwards user args after `--`.
 
 ## Pass 2 (post-restart)
@@ -96,12 +97,11 @@ Archives are already mounted (static init did it in this process) and early auto
 1. Writes `user://modloader_pass2_dirty` first thing. If the pass crashes before cleanup, the next static init sees the marker and wipes.
 2. Restores `[script_overrides]` entries from pass state and applies them.
 3. Re-runs the class lookup, script enumeration, dev-mode setting, metadata collection and `_load_ui_config`, then `load_all_mods("Pass 2")`. Archives already in `_filescope_mounted` are not mounted again. (`_compile_regex` runs once per launch, in `_ready`.)
-4. Hands off to `_finish_boot`, the tail every boot path shares: registers the `RTVModLib` meta and generates plus activates the hook pack (no `defer_activation` this time).
-5. Re-applies the test pack when the flag is set (`_test_pack_reapply` in debug.gd), copying it to a fresh `user://test_pack_reapply_<ticks>.zip` because `load_resource_pack` dedupes by path.
-6. Instantiates pending autoloads, skipping any already in the tree from `[autoload_prepend]`.
-7. Runs the dev-mode diagnostics, then `_emit_frameworks_ready`.
-8. Deletes the heartbeat and clears the restart streak, then `reload_current_scene()` if any archive or autoload landed. The streak is cleared here and not at entry: `load_all_mods` and autoload instantiation are where a mod crashes, so clearing earlier would record a streak of zero for a crashed launch.
-9. Back in `_run_pass_2`: deletes the dirty marker, then asks the OS for window focus (Windows hands foreground away when the Pass 1 process dies).
+4. Hands off to `_finish_boot`, the tail every boot path shares: registers the `RTVModLib` meta and generates plus activates the hook pack (no `defer_activation` this time). This generation does not probe: it reads `hook_pack_demotions` from pass state and repeats Pass 1's verdicts, so a demoted script ships in the same form in both packs.
+5. Instantiates pending autoloads, skipping any already in the tree from `[autoload_prepend]`.
+6. Runs the dev-mode diagnostics, then `_emit_frameworks_ready`.
+7. Deletes the heartbeat and clears the restart streak, then `reload_current_scene()` if any archive or autoload landed. The streak is cleared here and not at entry: `load_all_mods` and autoload instantiation are where a mod crashes, so clearing earlier would record a streak of zero for a crashed launch.
+8. Back in `_run_pass_2`: deletes the dirty marker, then asks the OS for window focus (Windows hands foreground away when the Pass 1 process dies).
 
 Pass 2 never shows the launcher.
 
@@ -146,8 +146,9 @@ Sections other than the two autoload ones (`[display]`, `[input]`, ...) survive 
 | `script_overrides` | `[{vanilla_path, mod_script_path, mod_name, priority, seq}]` for Pass 2 to replay |
 | `hook_pack_path` | The pack static init mounts next boot |
 | `hook_pack_wrapped_paths` | The vanilla script paths the pack wrapped and activated eagerly; static init preempts exactly these. Scripts deferred for a module-scope scene preload are not listed and lazy-compile from the mounted pack |
+| `hook_pack_demotions` | The compile probe's verdicts from the Pass 1 generation: `res://` script path to `"wrap_only"` or `"excluded"`, empty when every rewrite shipped in full. A generation that finds the key repeats the verdicts and does not probe |
 
-Writer: `_write_pass_state`. Hash: `_compute_state_hash`. `_persist_hook_pack_state` writes the two hook-pack keys separately, seeding `exe_mtime`, `pck_stamp` and `modloader_version` only when they are missing.
+Writer: `_write_pass_state`. Hash: `_compute_state_hash`. `_persist_hook_pack_state` writes the three hook-pack keys separately, seeding `exe_mtime`, `pck_stamp` and `modloader_version` only when they are missing.
 
 The crash streak lives in its own file, `user://modloader_crash_streak` (`CRASH_STREAK_PATH`): a bare integer, bumped by `_write_pass_state`, reset to zero by `_clear_restart_counter`, read by `_crash_breaker_tripped`. `_static_force_vanilla_state` never touches it. See [Stability-Canaries](Stability-Canaries#restart-counter).
 

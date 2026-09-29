@@ -75,6 +75,39 @@ Why: the engine can keep the version at 101 while changing what the column map m
 
 `check_detok.sh` covers the reader against synthetic buffers; canary C is still the only check against a real `.gdc` from the shipped PCK.
 
+## Pre-ship compile probe
+
+Location: `_hook_pack_vet_rewrite` and `_rtv_probe_compiles` in hook_pack.gd, called from `_hook_pack_write_zip` for each rewritten script before its zip entries are written. `_hook_pack_begin_vetting` decides whether the generation probes.
+
+Probe: compile the rewrite as a script bound to no path (`GDScript.new()`, `source_code`, `reload()`), with the `class_name` line left out of the copy, because a second script declaring a registered global class does not compile. It passes when `reload()` returns OK and the method list carries a `_rtv_vanilla_*` name. On failure the wrap-only form is tried (hooks, no registry code), then the script is left out of the pack. A demotion only counts when the plain vanilla text compiles in the same probe; otherwise the probe cannot judge this script and the full rewrite ships, with a debug line. The ladder is described in [Hooks](Hooks#compile-probe-before-packing).
+
+When: on the Pass 1 generation (`defer_activation`), whose process exits right after. A probe compiles the script, which pulls in the scenes and scripts behind its module-scope preloads; in any later process that would get ahead of mod overrides. The verdicts go to pass state as `hook_pack_demotions` (`res://` path to `wrap_only` or `excluded`). Pass 2 and the unchanged-mod-set launch read them and repeat them without probing. A generation that finds no verdicts in pass state (the crash-breaker single pass, which deletes pass state) probes live, except the scripts deferred to lazy compile. A mod-set change, a loader rebuild and a game update all force the Pass 1 path, so every change of input is probed. One gap remains: a script that first enters the wrap surface in Pass 2 (through `add_hook()` in a `!` early autoload that was not running in the Pass 1 process) was never probed and ships unvetted.
+
+Alarm levels:
+
+- The registry code does not compile, the wrap-only form does, critical:
+  ```
+  [STABILITY] <file>: the registry code does not compile against this game build
+  (the parse error above names the cause), so the script ships with hooks only.
+  Mod content registered against it will NOT appear. The game itself is unaffected.
+  Update the ModLoader.
+  ```
+- No rewritten form compiles, critical:
+  ```
+  [STABILITY] <file>: the rewritten script does not compile against this game build
+  (the parse error above names the cause), so it is left unmodified.
+  Hooks on it will NOT fire. The game itself is unaffected. Update the ModLoader.
+  ```
+  In both cases the engine's own `Parse Error` line sits just above and names the identifier.
+- A generation that probed, info: `[STABILITY] Probe-compiled N rewrite(s) in M ms before packing: X shipped in full, Y without registry code, Z left vanilla`. N counts scripts; M is the time spent in every compile they needed, so a demoted script costs more than one.
+- A generation that repeats non-empty verdicts, warning: `[STABILITY] Repeating the last probe's verdicts: <dict>`.
+
+Reconciliation marks a script left vanilla `LOST` and a wrap-only one `PARTIAL`, missing `registry code`. The activating generation writes a `demoted` hook status record with the script paths, unless canary A has a worse state to report, and the next launcher shows an error banner naming the scripts: the loader's changes to them do not fit this version of the game, the game runs normally, mods that hook or register against them do nothing. When every rewrite was excluded nothing is packed, so no activation runs; the generation then persists the verdicts and writes the `demoted` record itself. `register`/`override` on `ai_types`, `ai_loadouts` and `fish_species`, and `register` on `shelters` and `maps` (target `Compiler.gd`), return `false` when their target was demoted (see [Registry](Registry#opting-in)).
+
+Why: the pack serves its `.gd` over the game's bytecode and shadows the `.gdc`, so a rewrite that fails to compile used to take the vanilla script down with it, with no fallback. The likeliest trigger is a game update renaming a member the registry code names. Two engine facts, measured on Godot 4.6.1, shape the probe. A script that fails to compile still loads non-null with its source; only `can_instantiate()` is false and the method list is empty. And `ResourceLoader.load(path, "", CACHE_MODE_IGNORE)` at the path of a live script recompiles that live script in place, so a load at the real path cannot serve as a probe.
+
+`check_codegen.sh` pins the ladder against the real vanilla scripts and `check_boot_state.sh` T27 pins the persistence; see [Build](Build).
+
 ## VFS-precedence canary
 
 Location: a file `_hook_pack_write_zip` writes just before the pack zip closes, read back by `_hook_pack_mount_and_activate` right after `load_resource_pack`.
@@ -96,7 +129,7 @@ Why: `ProjectSettings.load_resource_pack` can return true while the mount serves
 The mount and write steps fail the same way:
 
 - `load_resource_pack` returns false: critical `[RTVCodegen] Failed to mount hook pack at <path> -- script hooks will not fire this session, vanilla scripts run. Next launch regenerates the pack.`
-- Writing the zip fails (disk full, I/O error): the partial zip is deleted, critical `[RTVCodegen] Hook pack write failed (disk full / I/O error?) at <path> -- pack discarded, hooks disabled this session, running vanilla.`
+- Writing the zip fails (disk full, I/O error): the partial zip is deleted, critical `[RTVCodegen] Hook pack write failed (disk full / I/O error?) at <path> -- pack discarded, hooks disabled this session, running vanilla`
 
 In all three cases nothing is persisted, so the next launch starts from scratch, and a `pack_failed` hook status record is written so the Mods tab shows its banner on the next start.
 

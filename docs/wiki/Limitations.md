@@ -6,6 +6,7 @@ What the loader cannot do, and the engine quirks it works around.
 
 - Keep a content mod enabled for any save you created with it. If a save stops loading after you change your mod list, re-enable the mod you removed and try again. The save itself is fine. Details in the next section.
 - Changing mods means restarting the game. Mods cannot be added, removed or reloaded while the game runs.
+- After a game update, some mods may do nothing until the loader is updated. When the loader's changes to a game script no longer fit the new build, it leaves them out: the game runs normally, and the launcher names the scripts in a red banner on the next start.
 - Mods built with Godot 4.7 or newer will not load when shipped as a `.pck`. The loader rejects them with a warning that names the Godot version they were exported with. Ask the author for a `.zip` or a Godot 4.6 build.
 - Some `.zip` mods are rejected because they were zipped with Windows-style backslash paths inside. The loader logs this when it happens; the author needs to re-pack (7-Zip does it correctly).
 
@@ -78,7 +79,19 @@ Detection: `_collect_module_scope_scene_preloads` in [src/pck_enumeration.gd](ht
 
 Workaround: the activator in [src/hook_pack.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd) skips eager compile for these scripts. VFS precedence (`.gd` plus `.gd.remap` plus empty `.gdc`) still serves the rewrite when game code lazy-loads them after mod overrides have run. A 60-second watchdog checks that it did ([Stability-Canaries](Stability-Canaries#defer-verify-watchdog)).
 
-Exception: the six `REGISTRY_TARGETS` (`Database.gd`, `Loader.gd`, `AISpawner.gd`, `AI.gd`, `FishPool.gd`, `Compiler.gd`) are always activated eagerly, so the injected `_rtv_mod_scenes` / `_rtv_override_scenes` / `_get()` and the other preludes are live on the autoload instances when mods call `lib.register`. They do not have the ext_resource problem because mods do not `take_over_path` them; they use the registry.
+Exception: the six `REGISTRY_TARGETS` (`Database.gd`, `Loader.gd`, `AISpawner.gd`, `AI.gd`, `FishPool.gd`, `Compiler.gd`) are activated eagerly, so the injected `_rtv_mod_scenes` / `_rtv_override_scenes` / `_get()` and the other preludes are live on the autoload instances when mods call `lib.register`. `AISpawner.gd` is the one registry target that keeps the deferral (`REGISTRY_TARGETS_DEFERRABLE`, decided by `_defers_scene_preloads`): its injected resolver reads Engine meta at call time, so nothing needs the script live, and its module-scope preloads are the four AI scenes. Compiled eagerly, it baked `res://Scripts/AI.gd` into those scenes before any mod autoload ran, so a mod's `overrideScript` of `AI.gd` was orphaned whenever `AISpawner.gd` was in the wrap surface, which is any mod set that declares `[registry]` or hooks `AISpawner.gd`. That held from 3.0.0 until 3.4.0.
+
+The remaining eager targets can still bake a scene early. `AI.gd` and `Loader.gd` preload a few scenes and `Database.gd` preloads hundreds, so a mod that calls `overrideScript` on a script one of those scenes carries can meet the same orphaning. The supported route for those is the registry, not `take_over_path`.
+
+### A game update can outdate the registry code
+
+Problem: the code injected into the registry targets names vanilla members (`weapons` and `boss` in `AI.gd`, `Zone` in `AISpawner.gd`, `shelters` and the `LoadScene` locals in `Loader.gd`, `species` in `FishPool.gd`, `spawnTarget` in `Compiler.gd`). A game update that renames one leaves a rewrite that does not compile. The pack serves its `.gd` over the game's bytecode, so until 3.4.0 that broke the vanilla script itself.
+
+Detection: every rewrite is probe-compiled before it is packed (`_hook_pack_vet_rewrite` in [src/hook_pack.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd)).
+
+Result: the failure is now confined to the loader's side. The script ships with hooks only and the registries that depend on it are inert, or, when no rewritten form compiles, the script runs vanilla and hooks on it do not fire. The game itself is unaffected. One `[STABILITY]` critical per script, a `demoted` record for the launcher banner, and `false` from the affected registry verbs. The fix is a loader update. See [Stability-Canaries](Stability-Canaries#pre-ship-compile-probe).
+
+A transform that merely finds no anchor (the pattern moved, nothing renamed) still compiles; that case is caught by the registry marker check and reported `PARTIAL` by reconciliation.
 
 ### Direct const access bypasses `_get()`
 
@@ -101,38 +114,21 @@ Property-syntax access to a `const` resolves at compile time. Use `Database.get(
 
 ### CRLF / LF mixing
 
-GDScript rejects a file that mixes `\r\n` and `\n` with a misleading `Expected indented block after 'X' block` error. The problem is the line endings, not the indentation.
+Godot 4.6 compiles CRLF source, and source that mixes `\r\n` and `\n`, without help. Mod scripts are never touched: they run from the mod's own archive exactly as shipped, CRLF included.
 
-ImmersiveXP ships CRLF source; the loader's generated code is LF. Vanilla source comes out of the detokenizer as LF already. Mod scripts the loader compiles or packs are normalized first: `_apply_script_overrides` in [src/mod_loading.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_loading.gd) and the sibling pre-read in `_generate_hook_pack` both run
+The loader normalizes one thing, the vanilla source it rewrites. The wrappers it appends are LF, so `_rtv_rewrite_vanilla_source` in [src/rewriter_rewrite.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter_rewrite.gd) first runs
 
 ```gdscript
 source.replace("\r\n", "\n").replace("\r", "\n")
 ```
 
-before the autofix pass.
+so the emitted file has one line ending throughout.
 
 ### Tabs vs spaces
 
-GDScript also rejects tabs and spaces mixed in one file. ImmersiveXP uses 4-space indent, vanilla RTV uses tabs. The generated wrapper has to match the file it lands in.
+GDScript rejects tabs and spaces mixed in one file's indentation. Vanilla RTV uses tabs, but the generated wrapper has to match whatever the file it lands in uses.
 
-`_detect_indent_style` in [src/rewriter_rewrite.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter_rewrite.gd) reads the first indented, non-empty, non-comment line and returns `"\t"` or `" ".repeat(n)`. Wrappers and autofix insertions use that unit.
-
-### Legacy Godot 3 syntax
-
-Godot 4's parser rejects `if X:` with no indented body, which Godot 3 tolerated. Real RTV mods have these (AI Overhaul's `AwarenessSystem.gd`, for one).
-
-`_rtv_autofix_legacy_syntax` in [src/rewriter_autofix.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter_autofix.gd) scans block headers (`if` / `elif` / `else` / `for` / `while` / `match` / `func` / `class` / `static func`) and, when the next non-blank non-comment line is not indented deeper, injects a `pass` at `header_indent + indent_unit`:
-
-```gdscript
-if some_condition:
-	pass  # [Autofix] injected -- original block had no body
-```
-
-It also rewrites `tool` to `@tool`, `onready var` to `@onready var`, `export var` to `@export var`, and Godot 3's `base(args)` to `super.<enclosing>(args)` (`_rtv_rewrite_bare_base`). It leaves `export(Type) var` alone; that needs a type-annotation transform that can break strictly typed references.
-
-The autofix runs on script overrides, on mod sibling scripts packed into the hook pack, and on vanilla source before wrapping. It never renames or injects dispatch into a mod script.
-
-A script that is already valid Godot 4 comes back byte-identical. Text inside string literals is never rewritten, a triple-quoted block included, and `base(...)` is left alone in a script that declares its own `func base`: only where `base` has no meaning of its own is a bare call the legacy form.
+`_detect_indent_style` in [src/rewriter_rewrite.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter_rewrite.gd) reads the first indented, non-empty, non-comment line of the vanilla source and returns `"\t"` or `" ".repeat(n)`. The wrappers use that unit.
 
 ### `super()` rewriting
 
@@ -172,7 +168,6 @@ Fallback in `_activate_rewritten_scripts` ([src/hook_pack.gd](https://github.com
 `ProjectSettings.load_resource_pack(same_path, true)` called twice in one session is a no-op the second time. How the loader sidesteps it:
 
 - Each `_generate_hook_pack` call writes a new uniquely named zip, `framework_pack_<ticks>.zip`, so a fresh mount always has fresh file offsets. `modloader.gd`'s own mtime is also folded into the state hash (`_compute_state_hash`, [src/boot.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd)), so rebuilding the loader forces a restart even with the mod set unchanged.
-- The dev-mode test-pack re-apply copies the pack to a unique `user://test_pack_reapply_<ticks>.zip` each time (`_test_pack_reapply` in [src/debug.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/debug.gd)), and sweeps the previous copies first.
 
 ### Class_name collision
 
@@ -204,7 +199,7 @@ There is a small window where Pass 1 has written the heartbeat but the OS has no
 
 While a previous session's hook pack is mounted, Godot holds a `FileAccessZIP` handle to it. Deleting or rewriting that file invalidates the handle, and VFS reads through the mount then fail at `file_access_zip.cpp:137` with "Cannot open file".
 
-Workaround in `_generate_hook_pack`: each generation writes a new uniquely named zip, so the mounted pack is never deleted or rewritten during the session. Stale packs are swept at the next launch's static init, before any mount. The same reason the mod sibling scripts are read from their archives with `ZIPReader` before `ZIPPacker.open`, which would invalidate the handle on Windows.
+Workaround in `_generate_hook_pack`: each generation writes a new uniquely named zip, so the mounted pack is never deleted or rewritten during the session. Stale packs are swept at the next launch's static init, before any mount.
 
 ### What is not supported
 

@@ -31,7 +31,6 @@ Debug-level lines include:
 - Skip-list rejections from the rewriter (`[RTVCodegen] Skipped <file> (runtime-sensitive)`)
 - Per-script rewrite summaries (`[RTVCodegen] Rewrote res://Scripts/<file> (N hooks)`)
 - The per-target reconciliation table (`[RTVCodegen] reconcile <path> :: <methods> [<declared>] -> <status>`)
-- Sibling-autofix carry-forward (`[Autofix] Carried N unchanged mod sibling script(s) forward into new hook pack ...`)
 - Stale cache cleanup (`Removed stale cache: <name>`)
 - Replace-hook rejections (`[RTVModLib] replace hook '<name>' already owned (id=N), registration rejected`)
 - The override timing and OverrideVerify lines from sections 5 and 6
@@ -50,15 +49,11 @@ The console summary lists the loaded mod count, each conflicted resource path wi
 `_scan_gd_source` in [mod_loading.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_loading.gd) runs per mod with `.gd` files, in every mode; only the reporting is dev-gated. It fills `_mod_script_analysis[mod_name]` with:
 
 - `take_over_literal_paths`: literal `take_over_path("res://...")` calls
-- `extends_paths`: `extends "res://..."` paths
-- `extends_class_names`: `extends ClassName` references (these break override chains)
-- `class_names`: the mod's own `class_name` declarations (Godot bug #83542)
+- `extends_paths`: the `extends "res://..."` path of each script that has one
 - `uses_dynamic_override`: any `take_over_path(` call at all
-- `lifecycle_no_super`: lifecycle methods (`_ready`, `_process`, ...) in extending scripts that never call `super(`
-- `calls_base`: `base(` calls, the Godot 3 pattern
-- `preload_paths`: every `preload("res://...")`
-- `override_methods`: `extends_path -> [method_names]`, for collision detection
-- `hook_calls`: literal `.hook("...")` calls, which `_merge_hook_calls_into_wrap_mask` folds into the wrap surface
+- `total_gd_files`: the number of `.gd` entries in the archive (counted by the caller, `scan_and_register_archive_claims`)
+- `hook_calls`: literal `.hook("...")` calls as `{prefix, method}`, which `_merge_hook_calls_into_wrap_mask` folds into the wrap surface
+- `calls_bloader_api`: the source calls `Loader.add_shelter(` or `Loader.add_map(`
 
 ### 5. Override timing warnings
 
@@ -70,13 +65,13 @@ The console summary lists the loaded mod count, each conflicted resource path wi
 
 ### 6. OverrideVerify
 
-`_verify_script_overrides` in conflict_report.gd runs once from `_emit_frameworks_ready`, in every mode. For each mod that uses `overrideScript()`, it loads the declared target after the autoloads have run and logs the `resource_path` plus the head of the source, at debug level:
+`_verify_script_overrides` in conflict_report.gd runs once from `_emit_frameworks_ready`, in developer mode only. For each mod that uses `overrideScript()`, it looks at each declared target that is already cached (it never loads one itself, which would compile the script early) after the autoloads have run and logs the `resource_path` plus the head of the source, at debug level:
 
 ```
 [OverrideVerify] MyMod | res://Scripts/Controller.gd | resource_path=res://Scripts/Controller.gd src_head=[extends "res://ModBase.gd" | ...]
 ```
 
-A `load()` that returns null is a warning in every mode. Mod source is never rewritten, so there is no marker in a mod's own script to classify cache state against; the probe reports the head and leaves the judgement to you.
+A target that is not cached yet logs `not loaded yet` instead. Mod source is never rewritten, so there is no marker in a mod's own script to classify cache state against; the probe reports the head and leaves the judgement to you.
 
 ### 7. Live-probe hooks
 
@@ -107,27 +102,15 @@ Also in `_dev_hook_probes`. For each of nine autoloads (`Database`, `GameData`, 
 
 `script_has_rename=true` with `instance_has_rename=false` means the autoload node still holds the old bytecode through `get_script()`: the rewrite is not reaching the live instance.
 
-### 9. IXP-VERIFY
-
-Inside the 30-second timer. For `Controller`, `Camera` and `WeaponRig` it finds the first instance with `_rtv_collect_nodes_by_class`, walks the `extends` chain up to depth 6, and logs:
-
-```
-[IXP-VERIFY] <class> instance script: path=<path> src_len=<n> ixp_content=<bool> rewrite_content=<bool>
-[IXP-VERIFY]   base[1]: path=<path> src_len=<n> ixp=<bool> rewrite=<bool>
-[IXP-VERIFY]   base[2]: ...
-```
-
-ImmersiveXP markers (`"ImmersiveXP"`, `"IXP "`, `"overrideScript"`) confirm IXP's `take_over_path` chain is intact. With IXP active, the instance script shows IXP markers and the base chain walks IXP, then our rewrite, then the engine class. If IXP failed, the instance script is our rewrite directly.
-
-### 10. Registry smoke probe
+### 9. Registry smoke probe
 
 Also in `_dev_hook_probes`. Logs under `[RegistryProbe]`: checks that `Database._rtv_vanilla_scenes` exists and is populated and that `db.get(first_key)` returns a PackedScene, warning on each failure.
 
-### 11. Dispatch counters
+### 10. Dispatch counters
 
 Per-hook-base counts accumulate in `_dispatch_counts` (constants.gd). The generated wrappers increment it only when dev mode is on; `_rtv_dispatch_inline_src` in rewriter_rewrite.gd emits the increment inside an `if _lib._developer_mode:` block. The dict is cleared when the 30-second window starts and printed as the DISPATCH-COUNT breakdown from section 7.
 
-### 12. Mod author notes
+### 11. Mod author notes
 
 Mods-tab rows show notes meant for the mod's author only while dev mode is on: an unquoted `[mod] version`, a missing `id=`, a stale export bake beside the sources, an unrecognized `[updates] source=`. Real breakage (an invalid zip, a `mod.txt` that fails to parse or sits in a subfolder, an autoload path that resolves nowhere) shows to everyone regardless. `_build_entry_author_notes` in mod_discovery.gd builds the list.
 

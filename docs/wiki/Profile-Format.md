@@ -30,14 +30,14 @@ The JSON is plain UTF-8 `profile.json` at the root of a modpack zip, next to an 
 | Key | Required | Type | Meaning |
 |---|---|---|---|
 | `metroprofile` | yes | int | Schema version. Always `1` for v1 payloads. |
-| `name` | yes | String | Modpack display name, the pack's name on the site, whitespace-stripped. The profile slot used on apply is derived with `_sanitize_profile_name` (letters in any script, digits, space, hyphen, underscore). The loader does not export modpack zips. A pack added from VostokMods is saved as `vostokmods-<slug>.zip`, named from its site slug and not from `name`. |
+| `name` | yes | String | Modpack display name, the pack's name on the site, whitespace-stripped. The profile slot used on apply is derived with `_sanitize_profile_name` (cased letters such as Latin, Cyrillic and Greek, ASCII digits, space, hyphen, underscore; CJK, Arabic and emoji are dropped). When the site name sanitizes to nothing, the writer stores the pack's slug as `name` instead. The loader does not export modpack zips. A pack added from VostokMods is saved as `vostokmods-<slug>.zip`, named from its site slug and not from `name`. |
 | `enabled` | yes | Dictionary | `profile_key -> bool`. The hosted writer includes manifest members with true values. The reader accepts false values for activation, but availability and download planning inspect every declared key and source, including false entries. |
-| `priority` | no | Dictionary | `profile_key -> int`, load-order priority in `[-999, 999]`. Absent entries default to 0 on apply. |
+| `priority` | no | Dictionary | `profile_key -> int`, load-order priority in `[-999, 999]`. A mod with no entry keeps its own default priority (`mod.txt` `priority=` or the filename prefix, else 0). A non-numeric value reads as 0. |
 | `modloader_version` | no | String | The `MODLOADER_VERSION` of the loader that wrote the file. Advisory only. |
 | `exported_at` | no | String | When the pack last changed on the site (the manifest's `updatedAt`). Advisory only. |
 | `description` | no | String | The pack's summary on the site. Omitted when empty. |
 | `author` | no | String | The pack's author on the site. Omitted when empty. |
-| `sources` | no | Dictionary | `profile_key -> {provider: String, id: String, modworkshop_id?: int, version?: String}`, one record per mod the site could serve, pinned to the version the manifest names; lets apply download missing mods. The legacy `modworkshop_id` mirror is emitted if and only if `provider == "modworkshop"`, so an older loader reading a VostokMods record treats it as source-less instead of downloading an unrelated ModWorkshop mod of the same number. |
+| `sources` | no | Dictionary | `profile_key -> {provider: String, id: String, modworkshop_id?: int, version?: String}`, one record per mod the site could serve, pinned to the version the manifest names; lets apply download missing mods. The loader's writer emits `{provider: "vostokmods", id, version?}` only, so an older loader reading the record treats it as source-less instead of downloading an unrelated ModWorkshop mod of the same number. Readers still accept a legacy `{modworkshop_id: N}` record, and never consult `modworkshop_id` when a `provider` key is present. The mirror rule (`modworkshop_id` written if and only if `provider == "modworkshop"`) applies to the `[mod_sources]` records in `mod_config.cfg`. |
 | `dep_ignore` | no | Dictionary | `profile_key -> true`, sparse (true-only entries). The "Load anyway" dependency overrides, re-materialized on apply. |
 | `hosted` | no | Dictionary | Present on a pack the launcher pulled from a mod site: `{provider, slug, url, manifest_url, hash, format}`. `hash` is the site's own change token; **Refresh** re-fetches the manifest and rewrites the zip when it differs. |
 | `unavailable` | no | Dictionary | `profile_key -> reason` for mods the site listed but could not serve when the pack was fetched (`scanning`, `no_files`, `removed`). Apply reports these instead of downloading. |
@@ -70,7 +70,7 @@ First apply, or apply after a changed hosted import invalidates the kept slot, m
 Parsers written against v1 will exist in the wild indefinitely. To keep them parsing:
 
 - v1 parsers ignore unknown top-level JSON keys, so future additions can ship new optional fields without breaking them.
-- v1 parsers tolerate missing optional keys (`priority`, `modloader_version`, `exported_at`, `description`, `author`, `sources`, `dep_ignore`). A missing required key is rejected with an error.
+- v1 parsers tolerate missing optional keys (`priority`, `modloader_version`, `exported_at`, `description`, `author`, `sources`, `dep_ignore`, `hosted`, `unavailable`, `checksums`). A missing required key is rejected with an error.
 - Adding a required key, renaming a key, or changing a key's value type means bumping `metroprofile` to `2`. Old parsers then reject the pack (`_validate_modpack` reports `This modpack was made for a newer version of the mod loader -- update the mod loader and try again`) instead of mis-applying it. A `metroprofile` that is missing or below 1 is reported as a damaged file, not as a newer format.
 - Additive changes to optional fields stay on `metroprofile: 1`.
 

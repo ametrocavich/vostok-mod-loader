@@ -221,6 +221,7 @@ This is an opt-in model. When no user mod declares anything, vanilla scripts run
 - `static func`s are never hookable. Declaring one warns `Hook on <file>::<method> will NEVER fire: it is a static function`.
 - Zero-byte PCK scripts (the base game ships a few, e.g. `CasettePlayer.gd`) are not hookable.
 - Scripts on the loader's skip lists (runtime-sensitive scripts like `MuzzleFlash.gd`, and save/data resource classes like `ItemData.gd`) are never rewritten; a hook declared on one warns that it can never fire. See [Limitations](Limitations).
+- A rewrite that does not compile against the current game build is not packed. The script ships with hooks only, or runs vanilla and is reported `LOST`. See [Compile probe before packing](#compile-probe-before-packing).
 - A declared path that matches no vanilla script is reported `LOST` by the reconciliation report. A declared method not found in the vanilla source warns `Hook on <file>::<method> will NEVER fire: no such method in vanilla` and the script's reconciliation line reads `PARTIAL`. A `.hook()` call whose stem resolves to no vanilla script warns at boot (`no vanilla script matches prefix '<stem>' -- check spelling, or declare the path in [hooks] in mod.txt`). Watch the log for typos.
 - The six registry target scripts (`Database.gd`, `Loader.gd`, `AISpawner.gd`, `AI.gd`, `FishPool.gd`, `Compiler.gd`) enter the surface, whole-script, when any mod declares `[registry]`. See [Registry](Registry).
 
@@ -439,7 +440,7 @@ func <name>(args):
 Notes:
 
 - Void methods use a structurally similar template but fire `_dispatch("<hook_base>-post", ...)` (return ignored) instead of `_dispatch_post`.
-- Coroutines: `await` is prepended to the vanilla call and the replace-callback call only when the vanilla body itself contains `await`. In GDScript any function whose body contains `await` is a coroutine, so an unconditional `await` would turn every wrapped method into one and break every non-awaited call site at parse time; `check.sh` and `check_codegen.sh` lock the rule.
+- Coroutines: `await` is prepended to the vanilla call and the replace-callback call only when the vanilla body itself contains `await` as code; an `await` inside a string literal or a comment does not count. In GDScript any function whose body contains `await` is a coroutine, so an unconditional `await` would turn every wrapped method into one and break every non-awaited call site at parse time; `check.sh` and `check_codegen.sh` lock the rule.
 - The dispatch helpers (`_dispatch`, `_dispatch_post`, `_dispatch_deferred` in `src/hooks_api.gd`) iterate the snapshot `_live_hook_entries` returns, which leaves out and unhooks any entry whose Callable is no longer valid. The snapshot is what makes mid-dispatch `hook()`/`unhook()` safe.
 - `_skip_super` is saved and restored around the replace call, so nested wrapped calls are safe.
 - The legacy-post deprecation warning is one-shot per (hook name, callback object, callback method), so hot-path methods do not spam the log.
@@ -451,13 +452,35 @@ For every vanilla script in the opt-in wrap surface, `src/hook_pack.gd` (`_gener
 
 1. Detokenize the `.gdc` bytecode to reconstructed source (see [GDSC-Detokenizer](GDSC-Detokenizer)).
 2. Parse the source (`_rtv_parse_script` in `src/rewriter_parse.gd`): signatures, params, return types, coroutine markers.
-3. Normalize line endings and autofix legacy syntax (bodyless blocks get `pass`; `tool`/`onready var`/`export var` get `@` annotations; `base(...)` forms become `super.` calls).
+3. Normalize the vanilla source's line endings to LF, so it matches the LF wrappers appended below.
 4. Apply the per-method wrap mask: paths declared through `[hooks]`/`.hook()`/`add_hook()` wrap only the listed methods; registry targets wrap every method (injection needs whole-script access).
 5. Rename pass: `func <name>(` becomes `func _rtv_vanilla_<name>(`, and bare `super()` calls inside a renamed body become `super.<name>()`.
 6. Append one dispatch wrapper per wrapped method, at the original name.
 7. Registry injection for the registry targets: appendix helpers for `Database.gd`/`Loader.gd`/`AISpawner.gd`/`AI.gd`, plus function-body preludes for `Loader.gd`/`FishPool.gd`/`AI.gd`/`Compiler.gd` (see [Registry](Registry)).
+8. Probe-compile the result before it enters the zip (`_hook_pack_vet_rewrite`). A rewrite that does not compile is never packed; see below.
 
 Indent style (tabs vs spaces) is detected from the source so the emitted wrappers match.
+
+### Compile probe before packing
+
+The pack serves its `.gd` over the game's bytecode and shadows the `.gdc` with an empty one, so a rewrite that does not compile would leave the vanilla script broken with nothing to fall back to. The likeliest cause is a game update renaming a member the registry code names (`weapons` in `AI.gd`, `Zone` in `AISpawner.gd`, `shelters` in `Loader.gd`, `species` in `FishPool.gd`, `spawnTarget` in `Compiler.gd`). So each rewrite is compiled first, as a script bound to no path (`_rtv_probe_compiles`: `GDScript.new()`, `source_code`, `reload()`), with the `class_name` line left out of the copy. A compile only counts when the result carries a `_rtv_vanilla_*` method.
+
+The ladder, per script:
+
+1. The full rewrite. If it compiles, it ships.
+2. The wrap-only form (`_rtv_rewrite_vanilla_source(..., with_registry=false)`): renames and dispatch wrappers, no declaration transform, no preludes, no appendix. Hooks work; registry features on that script do not.
+3. Neither compiles: the script is not packed and runs vanilla. Hooks on it do not fire.
+
+A demotion only counts when the plain vanilla text compiles in the same probe. If it does not, the probe cannot judge this script and the full rewrite ships as before, with a debug line.
+
+What a mod author sees when a target was demoted:
+
+- One `[STABILITY]` critical per script, directly below the engine's own `Parse Error` line, which names the identifier that no longer exists.
+- In the reconciliation report, a script left vanilla is `LOST` (`the rewritten script does not compile against this game build; left unmodified`), and a wrap-only script is `PARTIAL`, wrapped but missing `registry code`.
+- `hook()` on a script left vanilla still registers and never fires. `register`/`override` on `ai_types`, `ai_loadouts` and `fish_species`, and `register` on `shelters` and `maps` (target `Compiler.gd`), return `false` with a warning when their target shipped without registry code (see [Registry](Registry#opting-in)).
+- The launcher shows an error notice naming the scripts on the next start.
+
+The probe runs only on the generation before the restart; later generations repeat its verdicts. When it runs, what it logs and what the player sees are in [Stability-Canaries](Stability-Canaries#pre-ship-compile-probe).
 
 ## Three-entry pack recipe
 
@@ -469,7 +492,7 @@ Each rewritten vanilla script ships as three zip entries in the hook pack:
 | `Scripts/<Name>.gd.remap` | `[remap]` pointing back at the `.gd`; overrides the PCK's `.gd.remap -> .gdc` redirect |
 | `Scripts/<Name>.gdc` | Zero bytes. Godot prefers a sibling `.gdc`; an empty one cannot parse and silently falls back to our `.gd` |
 
-The pack lives at `user://modloader_hooks/framework_pack_<timestamp>.zip` (a fresh filename per generation; orphaned packs are swept at static init) and mounts with `replace_files=true` so its entries win over the PCK. The pack also carries a canary file that is read back after mounting; if it does not match, activation is skipped and the log says so. When no mods are loaded, pack generation is skipped entirely. When mods are loaded but none opt into the hook surface, the pack contains only the core `Menu.gd :: _ready` wrap for the launcher's Mods button.
+The pack lives at `user://modloader_hooks/framework_pack_<timestamp>.zip` (a fresh filename per generation; orphaned packs are swept at static init) and mounts with `replace_files=true` so its entries win over the PCK. The pack also carries a canary file that is read back after mounting; if it does not match, activation is skipped and the log says so. Those entries are all it holds: mod scripts are never copied into it and run from the mod's own archive as shipped. When no mods are loaded, pack generation is skipped entirely. When mods are loaded but none opt into the hook surface, the pack contains only the core `Menu.gd :: _ready` wrap for the launcher's Mods button.
 
 ## Activation + fallback
 

@@ -29,7 +29,7 @@ Core shared `const`, `var` and `signal` declarations. State and constants with a
 
 ### [fs_archive.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/fs_archive.gd)
 
-Disk I/O with no game logic: `.vmz` to `.zip` cache copies (`_static_vmz_to_zip`, keyed by a `.src` sidecar holding the source mtime and size), the static-init log writer, `_read_preserved_cfg_sections`, `_try_mount_pack` plus `.remap` resolution after a mount, `read_mod_config` / `_parse_mod_txt` (ConfigFile syntax with the unquoted-`[hooks]` value repair and an empty-section workaround for `[registry]`), and the folder-mod zipper `zip_folder_to_temp` with its `_folder_dev_zip_current` staleness check.
+Disk I/O with no game logic: `.vmz` to `.zip` cache copies (`_static_vmz_to_zip`, keyed by a `.src` sidecar holding the source mtime and size), the static-init log writer, `_read_preserved_cfg_sections`, `_try_mount_pack` (a mount loads nothing; the engine follows a mounted `.remap` itself), `read_mod_config` / `_parse_mod_txt` (ConfigFile syntax with the unquoted-`[hooks]` value repair and an empty-section workaround for `[registry]`), and the folder-mod zipper `zip_folder_to_temp` with its `_folder_dev_zip_current` staleness check.
 
 The early-boot path uses static helpers to avoid reading partially initialized instance fields. The `_filescope_mounted` initializer runs during autoload construction, not when the script is merely compiled.
 
@@ -39,12 +39,13 @@ The early-boot path uses static helpers to avoid reading partially initialized i
 
 Owns the boot sequence; its header comment is the short form of [Architecture](Architecture).
 
-- `var _filescope_mounted: Dictionary = _mount_previous_session()` at the top of the file: a module-scope var with a call initializer, which is what runs static init before `_ready`.
+- `var _filescope_mounted: Dictionary = _mount_previous_session()` at the top of the file: a member var with a call initializer, so the mount runs when the autoload instance is constructed, before `_ready`.
 - `_mount_previous_session`, called by the autoload instance initializer before `_ready`.
 - Sentinel handling: `_is_modloader_disabled`, `_check_safe_mode`, the Pass 2 dirty marker branch.
 - The crash streak: `_static_read_crash_streak`, `_static_write_crash_streak`, `_crash_breaker_tripped`.
 - `override.cfg` reading and writing: `_write_override_cfg`, `_restore_clean_override_cfg`, `_static_reset_override_cfg`, `_static_write_cfg_atomic`, `_autoload_entry_writable`.
-- Pass state: `_write_pass_state`, `_persist_hook_pack_state`, `_compute_state_hash`, `_stable_path_mtime`.
+- Pass state: `_write_pass_state`, `_persist_hook_pack_state` (pack path, wrapped paths and the compile probe's `hook_pack_demotions`), `_compute_state_hash`, `_stable_path_mtime`.
+- The static-init preempt's success test, `_static_script_has_rewrite`: a script that failed to compile still loads non-null, so only a `_rtv_vanilla_*` method counts, and a script without one is not given the path.
 - Game-update detection: `_static_game_pck_path`, `_static_game_pck_stamp`, `_static_game_build_changed`. The executable's mtime and the PCK's mtime and size are both recorded, because a content patch can replace the PCK alone.
 - Heartbeat and crash recovery: `_write_heartbeat`, `_delete_heartbeat`, `_check_crash_recovery`, `_clear_restart_counter`.
 - Hook-cache wiping and orphan-pack cleanup: `_static_wipe_hook_cache`, `_static_cleanup_orphan_hook_packs`, `_static_hook_pack_path_sane`.
@@ -78,7 +79,7 @@ Shared HTTP transport: `_hnet_get_json` with the User-Agent, body cap, per-URL T
 
 ### [host_api.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/host_api.gd)
 
-The seam. `host_list_mods`, `host_get_mod`, `host_list_files`, `host_resolve_file`, `host_list_categories`, `host_latest_versions` (async) and `host_caps`, `host_display_name`, `host_mod_page_url`, `host_sorts`, `host_sections`, `host_limit`, `host_error_message` (synchronous). Dispatch is an explicit `match` on the provider, the same shape `registry.gd` uses, so the synchronous operations stay synchronous; a Callable table would turn each into a coroutine, and `host_mod_page_url` is called from code that has to return a Control. `host_providers()` lists the providers in display order (VostokMods first, so Browse opens on it); `host_browse_providers()` filters that by the `browse` capability, which is what the Browse source menu is built from. A provider with no arm in a dispatcher gets `HOST_ERR_UNWIRED` from its `_:` default. `check_host.sh` T9 reads the dispatchers off the built source and fails when a provider is missing from one, and checks each host's `page_url` and sort claims against what it builds.
+The seam. `host_list_mods`, `host_get_mod`, `host_list_files`, `host_resolve_file`, `host_list_categories`, `host_latest_versions` (async) and `host_caps`, `host_display_name`, `host_mod_page_url`, `host_sorts`, `host_sections`, `host_limit`, `host_error_message` (synchronous). Dispatch is an explicit `match` on the provider, the same shape `registry.gd` uses, so the synchronous operations stay synchronous; a Callable table would turn each into a coroutine, and `host_mod_page_url` is called from code that has to return a Control. `host_providers()` lists the providers in display order (VostokMods first, so Browse opens on it); `host_browse_providers()` filters that by the `browse` capability, which is what the Browse source menu is built from. A provider with no arm in a dispatcher gets `HOST_ERR_UNWIRED` from its `_:` default. `check_host.sh` T9 reads the dispatchers off the built source and fails when a provider is missing from one, and checks each host's `page_url` and sort claims against what it builds. `host_list_mods` also passes every page through `_host_hide_own_listing`, which drops the loader's own listing on that host (`HOST_OWN_LISTINGS`: one id per provider) so Browse never offers the loader as a mod. Paging fields are returned as the host sent them, so a page can be one row short. The row test is `_host_is_own_listing(provider, row)`; `_browse_landing_snapshot` in `ui_browse.gd` calls it too, so an offline landing saved by a build that did not filter yet is cleaned as it is read.
 
 ### [host_mws.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/host_mws.gd)
 
@@ -121,14 +122,14 @@ Modpacks published on vostokmods.net. Turns a pack manifest (`GET /api/modpacks/
 The runtime loading pipeline: mounts archives, scans `.gd` files, registers file claims, queues autoloads, applies `[script_extend]` / `[script_overrides]`.
 
 - `load_all_mods` is the entry point; `_process_mod_candidate` is the per-mod pipeline. It reads `[registry]` itself and hands the other sections to `_apply_hooks_section`, `_apply_extend_sections` and `_apply_autoload_section`. `MOD_TXT_KNOWN_SECTIONS` feeds the unrecognized-section notice.
-- `_apply_script_overrides` sorts by priority (ties by declaration order), autofixes each source, compiles a fresh `GDScript`, and `take_over_path`s it onto the vanilla path. Each override's `extends` resolves to the previous occupant, so `ModB -> ModA -> vanilla` chains work.
-- `scan_and_register_archive_claims` detects Windows-backslash zip paths and `Database.gd` collisions, records `_archive_zip_paths` (the readable zip for each archive, used by the hook pack's sibling pre-read), and builds the per-file analysis through `_scan_gd_source`.
+- `_apply_script_overrides` sorts by priority (ties by declaration order), loads each mod script, compiles a fresh `GDScript` from its unchanged `source_code`, and `take_over_path`s it onto the vanilla path. Each override's `extends` resolves to the previous occupant, so `ModB -> ModA -> vanilla` chains work.
+- `scan_and_register_archive_claims` detects Windows-backslash zip paths and `Database.gd` collisions, records each archive's file set in `_archive_file_sets`, and builds the per-file analysis through `_scan_gd_source`.
 - `_merge_hook_calls_into_wrap_mask` turns literal `.hook("...")` calls found in mod sources into wrap-mask entries.
 - `_instantiate_autoload` handles PackedScene, GDScript and other resources.
 
 ### [conflict_report.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/conflict_report.gd)
 
-Developer-mode diagnostics. `_print_conflict_summary` and `_write_conflict_report` run from every finish path when dev mode is on. `_verify_script_overrides` runs from `_emit_frameworks_ready` regardless, loads each dynamically overridden target and logs its `resource_path` and source head at debug level (the `load()` itself matters: it populates the cache as autoloads finish). This diagnostic reports the loaded resource; it does not classify overrides as stale or broken. Compatibility autofix can change the source compiled for an override or packed sibling, while the installed mod archive remains unchanged.
+Developer-mode diagnostics. `_print_conflict_summary` and `_write_conflict_report` run from every finish path when dev mode is on. `_verify_script_overrides` runs from `_emit_frameworks_ready`, also in dev mode only, and logs the `resource_path` and source head of each dynamically overridden target that is already cached, at debug level (it never loads a target itself: that would compile the script early). This diagnostic reports the loaded resource; it does not classify overrides as stale or broken.
 
 ## UI
 
@@ -176,7 +177,7 @@ The registry verbs: `register`, `override`, `patch`, `append`, `prepend`, `remov
 
 | File | Slots |
 |---|---|
-| `shared.gd` | Helpers used by more than one handler |
+| `shared.gd` | Helpers used by more than one handler, among them `_registry_target_inert`: true, with one warning, when a target script shipped without its registry code. `ai.gd`, `ai_loadouts.gd` and `fish.gd` call it first in register/override and return `false`; so does the shelter and map register in `loader.gd`, for `Compiler.gd` |
 | `scenes.gd` | `scenes`: writes into the dicts the rewriter injects into `Database.gd` |
 | `items.gd` | `items`: ItemData kept in the registry's own dict keyed by `file` |
 | `loot.gd` | `loot`: mutates `items` on loaded LootTable resources |
@@ -205,10 +206,6 @@ Limitation: direct constant access (`Database.Potato`) bypasses the injected `_g
 
 `lib.setup(plan)`, the declarative install entry point. A plan is an Array of `[verb, ...args]` entries applied in order, so register-then-patch reads naturally. Each entry maps to a public verb (`register`, `override`, `patch`, `append`, `prepend`, `remove_from`, `revert`, `remove`, `hooks`, the aggregator verbs) plus the meta verb `when` for conditional sub-plans. It sits after the registry handlers in `build.sh` because it binds the `*_many` verbs and `hook_many`. See [Setup-Plans](Setup-Plans).
 
-### [framework_wrappers.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/framework_wrappers.gd)
-
-One function, `_rtv_collect_nodes_by_class`: a scene-tree walk that finds nodes whose script, or any ancestor in its `extends` chain, carries a given `class_name`. Used by the dev-mode IXP-VERIFY probe in `debug.gd`. The name is left over from the extends-wrapper pipeline (`[rtvmodlib] needs=`, generated `Framework<X>.gd` subclasses, `node_added` swaps) that v3.0.1 removed.
-
 ## Codegen pipeline
 
 ### [gdsc_detokenizer.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/gdsc_detokenizer.gd)
@@ -234,23 +231,23 @@ Source-rewrite codegen for the vanilla scripts in the opt-in wrap surface. Four 
 | File | Owns |
 |---|---|
 | [rewriter_parse.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter_parse.gd) | Regex compilation (`_compile_regex`, `_rtv_compile_codegen_regex`), signature scanning, parameter splitting, `_rtv_parse_script`. Its header carries the pipeline map and the recipe for adding a rewrite target |
-| [rewriter_rewrite.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter_rewrite.gd) | `_rtv_rewrite_vanilla_source`, the orchestrator; `_rewrite_bare_super`; `_detect_indent_style`; the wrapper emitter `_rtv_dispatch_inline_src` |
+| [rewriter_rewrite.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter_rewrite.gd) | `_rtv_rewrite_vanilla_source`, the orchestrator, whose `with_registry=false` form leaves out every declaration transform, prelude and appendix (the wrap-only fallback), and which drops the `Database.gd` appendix when the const transform found nothing to rewrite; `_rewrite_bare_super`; `_detect_indent_style`; the wrapper emitter `_rtv_dispatch_inline_src` |
 | [rewriter_registry_inject.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter_registry_inject.gd) | The per-script transforms: `Database.gd` and `Loader.gd` declaration rewrites, the preludes for `Loader.LoadScene`, `FishPool._ready`, `Compiler.Spawn` and `AI.SelectWeapon`, the `AISpawner.gd` agent-assignment rewrite, and the registry appendices |
-| [rewriter_autofix.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter_autofix.gd) | `_rtv_autofix_legacy_syntax` (bodyless blocks, `tool` / `onready` / `export`, `base()`), `_rtv_strip_helper_reload` |
+| [rewriter_text.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter_text.gd) | Two text helpers: `_rtv_code_mask` (hides string-literal contents and comments while preserving positions) and `_rtv_is_ident_char` |
 
 Given detokenized vanilla source, a parse structure and a per-method mask, the rewriter:
 
 - Renames each non-static method in the mask from `Foo` to `_rtv_vanilla_Foo`.
 - Appends a dispatch wrapper at the original name that runs pre, replace, post and callback hooks around the renamed body. The wrapper awaits the vanilla body only when that body is itself a coroutine; `check.sh` greps the templates for a literal `await` and `check_codegen.sh` compiles the output to keep it that way.
 - Rewrites bare `super()` inside renamed bodies to `super.<orig_name>()` so the parent's wrapper resolves.
-- Repairs Godot 3 syntax: a `pass` for bodyless blocks, `@tool` / `@onready var` / `@export var`, and legacy `base(args)` to `super.<enclosing>(args)`. Literals and comments are masked. A declared or inherited `base` method keeps its call; an unresolved script parent is treated conservatively.
+- Normalizes the vanilla source's line endings to LF, matching the LF wrappers it appends.
 - Applies the registry transforms: `Database.gd` gets its `const X = preload(...)` lines rewritten into a `_rtv_vanilla_scenes` dict plus `_rtv_mod_scenes` / `_rtv_override_scenes` and a `_get()`; `Loader.gd` gets `shelters` rewritten `const` to `var` with a snapshot, the `_rtv_mod_scene_paths` / `_rtv_override_scene_paths` / `_rtv_mod_shelters` dicts and a `LoadScene` prelude; `AISpawner.gd` gets each `agent = <Name>` routed through `_rtv_resolve_ai_type`, reading `Engine.get_meta("_rtv_ai_overrides")`; `AI.gd` gets a `SelectWeapon` prelude reading `_rtv_ai_loadouts`; `FishPool.gd` gets a `_ready` prelude reading `_rtv_fish_species`; `Compiler.gd` gets a `Spawn` prelude for shelters and maps. `REGISTRY_EXPECTED_MARKERS` in `hook_pack.gd` checks that each transform actually landed.
 
-Hook wrappers are emitted for vanilla targets. A mod script extending a wrapped target reaches its wrapper through `super.foo(...)`. The compatibility autofix also processes compiled override sources and siblings copied into the generated hook pack; it does not edit the installed archive.
+Hook wrappers are emitted for vanilla targets. A mod script extending a wrapped target reaches its wrapper through `super.foo(...)`. The rewriter never touches a mod script: mod scripts run from the mod's own archive exactly as shipped, and coroutine detection in `rewriter_parse.gd` counts a line as `await` only when `await ` survives `_rtv_code_mask`.
 
 ### [hook_pack.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd)
 
-`_generate_hook_pack` runs the pipeline end to end, as six functions in order: `_hook_pack_preflight` (steps 1 to 4), `_hook_pack_script_paths`, `_hook_pack_wrap_surface` (5 and 6), `_hook_pack_collect_siblings` (7), `_hook_pack_write_zip` (8 to 10) and `_hook_pack_mount_and_activate` (11).
+`_generate_hook_pack` runs the pipeline end to end, as five functions in order: `_hook_pack_preflight` (steps 1 to 4), `_hook_pack_script_paths`, `_hook_pack_wrap_surface` (5 and 6), `_hook_pack_write_zip` (7 and 8) and `_hook_pack_mount_and_activate` (9 and 10). The pack holds no mod scripts.
 
 1. Clear `_scripts_with_scene_preloads`, pick a fresh `user://modloader_hooks/framework_pack_<ticks>.zip` name (a same-path remount is a no-op in Godot, and Windows will not let a mounted zip be deleted).
 2. Canary B: `_probe_gdsc_version` must return 100, 101 or -1.
@@ -258,23 +255,24 @@ Hook wrappers are emitted for vanilla targets. A mod script extending a wrapped 
 4. Canary C: `_canary_detokenizer_roundtrip_ok`.
 5. `_seed_core_hooks` adds the `Menu.gd :: _ready` wrap for the main-menu button. If no user mod declared `[hooks]`, `.hook()` or `[registry]`, log the "No user opt-in declarations" line and carry on with that one core wrap.
 6. Build the wrap mask from `_hooked_methods` (per method) and, when any mod declared `[registry]`, the six `REGISTRY_TARGETS` (whole script). Every declared target gets a reconciliation ledger entry.
-7. Pre-read mod sibling scripts from their archives before `ZIPPacker.open`, which would invalidate the previous session's VFS handle to the old pack.
-8. For each vanilla script in the mask: skip lists win (with a warning naming the declaring mod), zero-byte entries are skipped, a `[script_extend]` / `[script_overrides]` claimant at the same path is warned about (the rewrite wins), then detokenize, parse, rewrite, verify the renames and registry markers, and write three zip entries: `Scripts/<Name>.gd`, `Scripts/<Name>.gd.remap` (self-referencing, beats the PCK's remap to `.gdc`) and an empty `Scripts/<Name>.gdc`.
-9. Pack the autofixed siblings, then the VFS canary file.
-10. `_log_hook_reconciliation`: one info line when every declared target made it, a critical block per lost target otherwise.
-11. With `defer_activation`, persist the pack path and stop. Otherwise mount with `replace_files=true`, read the canary back, and call `_activate_rewritten_scripts`.
+7. For each vanilla script in the mask: skip lists win (with a warning naming the declaring mod), zero-byte entries are skipped, a `[script_extend]` / `[script_overrides]` claimant at the same path is warned about (the rewrite wins), then detokenize, parse, rewrite, vet the rewrite (`_hook_pack_vet_rewrite`, below), verify the renames and registry markers, and write three zip entries: `Scripts/<Name>.gd`, `Scripts/<Name>.gd.remap` (self-referencing, beats the PCK's remap to `.gdc`) and an empty `Scripts/<Name>.gdc`.
+8. Pack the VFS canary file.
+9. `_log_hook_reconciliation`: one info line when every declared target made it, a critical block per lost target otherwise.
+10. With `defer_activation`, persist the pack path and stop. Otherwise mount with `replace_files=true`, read the canary back, and call `_activate_rewritten_scripts`.
 
-`_activate_rewritten_scripts` defers scripts with module-scope scene preloads to lazy compile (with a 60-second DEFER-VERIFY watchdog), and for the rest checks whether static init already preempted the script, then falls back to `source_code + reload()` and finally `CACHE_MODE_IGNORE + take_over_path`. It warns again when it displaces a mod's replacement script, persists `hook_pack_path` and `hook_pack_wrapped_paths`, runs the canary A compile proof for every player, and in dev mode hands off to `_dev_preactivate_summary` and `_dev_hook_probes` in `debug.gd`. See [Stability-Canaries](Stability-Canaries) and [Developer-Mode](Developer-Mode).
+The compile probe: `_hook_pack_begin_vetting` runs before step 5 and decides whether this generation probes (Pass 1, or no verdicts in pass state) or repeats the persisted `_hook_pack_demotions`. `_hook_pack_vet_rewrite` returns the source to pack and its mode, `REWRITE_FULL`, `REWRITE_WRAP_ONLY` or `REWRITE_EXCLUDED`, trying each form through `_rtv_probe_compiles`, which compiles a pathless copy without its `class_name` line. An excluded script is marked lost and skipped; a wrap-only one gets a missing `registry code` entry. Step 9 is followed by the `[STABILITY] Probe-compiled ...` line. When every rewrite was excluded, nothing is packed or mounted; step 10 still persists the verdicts (`_persist_hook_pack_state` with an empty pack path) and writes the `HOOK_STATE_DEMOTED` record. See [Stability-Canaries](Stability-Canaries#pre-ship-compile-probe).
+
+`_activate_rewritten_scripts` defers scripts with module-scope scene preloads to lazy compile (with a 60-second DEFER-VERIFY watchdog), and for the rest checks whether static init already preempted the script, then falls back to `source_code + reload()` and finally `CACHE_MODE_IGNORE + take_over_path`. It warns again when it displaces a mod's replacement script, persists `hook_pack_path` and `hook_pack_wrapped_paths`, runs the canary A compile proof for every player, writes the hook status record (`HOOK_STATE_DEMOTED` with the script paths when the probe demoted anything and canary A found nothing worse), and in dev mode hands off to `_dev_preactivate_summary` and `_dev_hook_probes` in `debug.gd`. See [Stability-Canaries](Stability-Canaries) and [Developer-Mode](Developer-Mode).
 
 ## Orchestration
 
 
 ### [hook_status.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_status.gd)
 
-The hook system's last outcome, written where the launcher can read it (`user://modloader_hook_status.json`). Generation and activation run after the launcher closes, so without this a game update that breaks the rewriter is visible only in the log. `_hook_status_write` is called from the canary B and C stops, the no-mods short-circuit, the pack write, mount and VFS-canary failures, and the end of activation; `_hook_status_problem` turns the record (and the static-init `modloader_game_updated` marker) into the banner `build_mods_tab` shows. Records from another loader version or another game build (executable mtime or PCK stamp) are ignored.
+The hook system's last outcome, written where the launcher can read it (`user://modloader_hook_status.json`). Generation and activation run after the launcher closes, so without this a game update that breaks the rewriter is visible only in the log. `_hook_status_write` is called from the canary B and C stops, the no-mods short-circuit, the pack write, mount and VFS-canary failures, and the end of activation; `_hook_status_problem` turns the record (and the static-init `modloader_game_updated` marker) into the banner `build_mods_tab` shows. `HOOK_STATE_DEMOTED` is the record for scripts the compile probe shipped without registry code or left vanilla; its banner is an error that names them. Records from another loader version or another game build (executable mtime or PCK stamp) are ignored.
 ### [lifecycle.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd)
 
-`_ready` handles disabled sentinels, registers `RTVModLib` before its first await, compiles regex helpers afterward and dispatches to `_run_pass_1` / `_run_pass_2`. `_modloader_restart` is the shared relaunch helper (keeps the Steam rendering flags, forwards user args). `reopen_mod_ui` is the post-boot entry from the main-menu button; it restarts into a clean Pass 1 when the session is dirty. Every boot path ends in `_finish_boot`, which registers the meta, generates the pack, instantiates queued autoloads, run the dev-mode diagnostics, emits `frameworks_ready`, clears the heartbeat and the streak, and reloads the current scene when asked; `_finish_with_existing_mounts` and `_finish_single_pass` are the Pass 1 entries that pick the reload rule, and Pass 2 calls it directly. See [Architecture](Architecture).
+`_ready` handles disabled sentinels, registers `RTVModLib` before its first await, compiles regex helpers afterward and dispatches to `_run_pass_1` / `_run_pass_2`. `_modloader_restart` is the shared relaunch helper (keeps the Steam rendering flags, forwards user args). `reopen_mod_ui` is the post-boot entry from the main-menu button; it restarts into a clean Pass 1 when the session is dirty. Every boot path ends in `_finish_boot`, which registers the meta, generates the pack, instantiates queued autoloads, runs the dev-mode diagnostics, emits `frameworks_ready`, clears the heartbeat and the streak, and reloads the current scene when asked; `_finish_with_existing_mounts` and `_finish_single_pass` are the Pass 1 entries that pick the reload rule, and Pass 2 calls it directly. See [Architecture](Architecture).
 
 ### [main_menu_hook.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/main_menu_hook.gd)
 
@@ -286,8 +284,8 @@ Injects a "Mods" button into RTV's main menu (`res://Scripts/Menu.gd`) so the la
 
 Changes to the enabled set, load order or installed mods mark the reopened session dirty; closing it then restarts into a clean Pass 1. A profile rename or view-setting change alone does not require a restart.
 
-## Developer probes and test scaffolding
+## Developer probes
 
 ### [debug.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/debug.gd)
 
-`_dev_preactivate_summary` and `_dev_hook_probes` are the developer-mode probes `_activate_rewritten_scripts` runs: the pre-activation classification, the eight live hooks, AUTOLOAD-CHECK, the registry smoke probe, IXP-VERIFY and the 30-second report timer ([Developer-Mode](Developer-Mode) lists them). The rest is gated behind `[settings] test_pack_precedence = true` in `user://mod_config.cfg`; the default config has no such key. `_load_test_pack_flag` is static so `boot.gd` can read it at static init. `_test_pack_precedence` (Pass 1, before the restart) exercises pack-over-bytecode precedence for `Controller.gd`; `_test_pack_reapply` (Pass 2, from `_finish_boot`) mounts the pack again from a fresh copy after the re-mounts; `_test_post_autoload_verify` runs one second after the autoloads and reports what took over the path.
+`_dev_preactivate_summary` and `_dev_hook_probes` are the developer-mode probes `_activate_rewritten_scripts` runs: the pre-activation classification, the eight live hooks, AUTOLOAD-CHECK, the registry smoke probe and the 30-second report timer ([Developer-Mode](Developer-Mode) lists them).

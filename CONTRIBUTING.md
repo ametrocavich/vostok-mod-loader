@@ -20,7 +20,7 @@ interpreter. Use a dedicated test engine directory: the boot-state harness
 briefly writes `override.cfg` beside that executable and refuses an existing
 file. The checks run headlessly; they do not launch the game or editor.
 
-A complete run prints eight `OK:` lines. The three synthetic codegen fixtures
+A complete run prints eight `OK:` lines. The two synthetic codegen fixtures
 always run; ten additional fixtures run when decompiled game source is
 available through `VANILLA_SRC`. [Build and checks](docs/wiki/Build.md)
 describes coverage, environment variables and failure diagnosis.
@@ -55,8 +55,10 @@ use the build that produced the error. `--list` prints assembly order.
 3. Update the matching page in `docs/wiki/` when a contract, flow or label
    changes. `check.sh` checks local links and linked function ownership;
    reviewing the meaning of the prose is still part of the change.
-4. Run `./build.sh && ./check.sh`. For harness changes, also run that script
-   with `--prove` to check that its intentional failure is caught.
+4. Run `./build.sh && ./check.sh`. `check.sh` does not run `build.sh`: on its
+   own it tests the `modloader.gd` left by the previous build, so a stale
+   artifact passes and gets deployed. For harness changes, also run that
+   script with `--prove` to check that its intentional failure is caught.
 5. Record any required in-game smoke test separately. The headless gates do
    not cover the launcher UI, real downloads or the complete restart flow.
 

@@ -2,6 +2,8 @@
 
 A modpack is a mod list published on vostokmods.net: which mods are on, their load order, the author's in-game mod settings, and where to download each mod from. It does not contain the mods themselves. Get one from the Modpacks tab, click **Apply**, and the launcher downloads anything you are missing and switches you to the author's setup.
 
+Modpacks from VostokMods are in beta in 3.4. The site's pack pages are new, and the feature was built and tested against the site's published format before any real pack existed. Apply backs up your profile and mod settings first and **Unload** brings them back, so trying a pack is safe; if one misbehaves, [report it](https://github.com/ametrocavich/vostok-mod-loader/issues) with the pack link.
+
 The **Modpacks** tab is the third tab in the pre-launch window.
 
 Applying a pack downloads each mod from VostokMods at the version the pack names. A mod the site cannot serve right now is listed with the reason, and you install it by hand. Curious what is inside a pack? See [Profile-Format](Profile-Format).
@@ -30,6 +32,8 @@ Mods that fail to download show up in a summary you can retry from. A mod the pa
 - `the modpack does not say where this mod is hosted -- install it manually`
 
 While the downloads run you can **Cancel**. The download in flight finishes (it cannot be interrupted cleanly mid-request), no further ones start, and the apply stops before touching your profiles: `Apply cancelled -- the modpack was not applied and your profiles are unchanged.` Any mods that had already downloaded stay in your mods folder.
+
+A pack can pin a mod to an exact version. If you already have a newer copy of that mod installed, Apply refuses before it downloads or changes anything: `This pack requires <mod> at <version>. Remove the newer installed version <version> before applying it.` Remove the newer file from the Mods tab (or your mods folder) and apply again; the pinned version is then downloaded.
 
 Only one modpack can be active at a time. To apply a different pack, **Unload** the current one first.
 
@@ -116,7 +120,7 @@ Required fields are validated before apply touches any state: `metroprofile` mus
 |---|---|---|---|
 | `provider` | string | yes (new format) | Host token: `modworkshop` or `vostokmods`. |
 | `id` | string | yes (new format) | That host's mod id. For VostokMods this is the slug. |
-| `modworkshop_id` | int | mirror | Compatibility mirror for older loaders, written only when `provider == "modworkshop"`. An older loader reads this; a newer one reads `provider` + `id`. Absent for other hosts so an old loader does not download an unrelated ModWorkshop mod with the same number. |
+| `modworkshop_id` | int | mirror | Compatibility mirror for older loaders, for a hand-written `provider == "modworkshop"` record only; packs the launcher writes are VostokMods-only and never carry it. An older loader reads this; a newer one reads `provider` + `id` and never consults the mirror. Absent for other hosts so an old loader does not download an unrelated ModWorkshop mod with the same number. |
 | `version` | string | no | Exact version to pin. When set, apply fetches that version, or fails if the host no longer has it; when absent, it fetches the host's current file. |
 
 A record with neither a resolvable `provider` + `id` nor a positive `modworkshop_id` cannot be auto-installed and appears as a missing-mod row with a reason.
