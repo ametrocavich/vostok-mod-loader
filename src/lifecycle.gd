@@ -22,21 +22,12 @@ func _ready() -> void:
 	# while this one is suspended, and they look the API up through this meta.
 	_register_rtv_modlib_meta()
 	await get_tree().process_frame
-	# Once per launch; both passes and the test scaffolding read the regexes.
+	# Once per launch; both passes read the regexes.
 	_compile_regex()
-	# The test pack must mount after load_all_mods re-mounts archives.
-	var is_pass_2 := "--modloader-restart" in OS.get_cmdline_user_args()
-	if _load_test_pack_flag() and not is_pass_2:
-		_test_pack_precedence()
-		_log_info("[TEST-REMAP] test complete (Pass 1, before restart)")
-	if is_pass_2:
+	if "--modloader-restart" in OS.get_cmdline_user_args():
 		await _run_pass_2()
 	else:
 		await _run_pass_1()
-	# Deferred verify: by now all autoloads have run. Check what IXP took over.
-	if _load_test_pack_flag():
-		await get_tree().create_timer(1.0).timeout
-		_test_post_autoload_verify()
 
 # Shared restart helper. `clean_pass1` strips --modloader-restart for a clean Pass 1.
 func _modloader_restart(clean_pass1: bool) -> void:
@@ -205,12 +196,10 @@ func _finish_single_pass() -> void:
 # clear the heartbeat and the crash streak. The streak is cleared after the
 # autoloads because they are where a mod crashes the process. Reloads the
 # current scene when asked; returns false only when that reload failed.
-func _finish_boot(reload_scene: bool, pass_2: bool = false) -> bool:
+func _finish_boot(reload_scene: bool) -> bool:
 	_boot_complete = true
 	_register_rtv_modlib_meta()
 	_generate_hook_pack()
-	if pass_2 and _load_test_pack_flag():
-		_test_pack_reapply()
 	for entry in _pending_autoloads:
 		# An autoload already loaded from override.cfg would be instantiated twice.
 		if get_tree().root.has_node(entry["name"]):
@@ -265,7 +254,7 @@ func _run_pass_2() -> void:
 	# The finish clears the streak after the autoloads, and the dirty marker
 	# goes after that: both stay behind the crash window so the breaker can trip.
 	var reloaded := _finish_boot(not _filescope_mounted.is_empty() or not _archive_file_sets.is_empty()
-			or _pending_autoloads.size() > 0, true)
+			or _pending_autoloads.size() > 0)
 	if FileAccess.file_exists(PASS2_DIRTY_PATH):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(PASS2_DIRTY_PATH))
 	if not reloaded:
