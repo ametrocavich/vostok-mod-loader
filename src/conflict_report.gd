@@ -1,7 +1,6 @@
 ## ----- conflict_report.gd -----
-## Verify that script overrides took effect (every session, from
-## _emit_frameworks_ready) and, in developer mode, write the conflict report
-## to user://.
+## Developer-mode diagnostics: report what script overrides left in the
+## cache (from _emit_frameworks_ready) and write the conflict report to user://.
 ## Mod scripts are never rewritten, so there is no marker to test against;
 ## override effect is judged from resource_path and the extends chain.
 
@@ -18,11 +17,14 @@ func _log_override_timing_warnings() -> void:
 		_log_debug(mod_name + " uses overrideScript() on: " + target_list
 				+ " -- applies after scene reload")
 
-# Post-frameworks_ready check on dynamic overrides: load each declared
-# target and log its resource_path + source head. Reports only; diagnosing
-# staleness would need a marker mod sources don't have.
-
+# Post-frameworks_ready report on dynamic overrides, developer mode only:
+# for each target already in the cache, log its resource_path + source head.
+# A target nothing has loaded yet is left alone: a load() here would compile
+# it early and bake the scenes it preloads against the vanilla script, ahead
+# of a mod that overrides after frameworks_ready.
 func _verify_script_overrides() -> void:
+	if not _developer_mode:
+		return
 	var printed_header: bool = false
 	for mod_name: String in _mod_script_analysis:
 		var analysis: Dictionary = _mod_script_analysis[mod_name]
@@ -32,17 +34,15 @@ func _verify_script_overrides() -> void:
 		if targets.is_empty():
 			continue
 		if not printed_header:
-			# Debug, not info: a player can act on none of this (the failure
-			# branch stays a warning). Only the logging is gated; the load()
-			# below always runs and populates the ResourceCache as autoloads
-			# finish, which may matter to the override mechanism itself.
 			_log_debug("[OverrideVerify] === Post-autoload cache check ===")
 			printed_header = true
 		for vanilla_path in targets:
 			var vp: String = String(vanilla_path)
+			if not ResourceLoader.has_cached(vp):
+				_log_debug("[OverrideVerify] %s | %s | not loaded yet" % [mod_name, vp])
+				continue
 			var scr := load(vp) as Script
 			if scr == null:
-				_log_warning("[OverrideVerify] %s | %s | FAIL: load() returned null" % [mod_name, vp])
 				continue
 			var src: String = scr.source_code
 			var src_head: String = src.substr(0, 60).replace("\n", " | ").replace("\t", " ")

@@ -53,9 +53,7 @@ func _emit_frameworks_ready() -> void:
 	frameworks_ready.emit()
 	_log_info("[RTVModLib] frameworks_ready emitted")
 	# Mod autoload _ready() calls (where overrideScript() fires
-	# take_over_path) have finished: verify each declared override landed
-	# and watch node_added for PackedScene ext_resource staleness that
-	# take_over_path can't fix.
+	# take_over_path) have finished; developer mode reports what they left.
 	_verify_script_overrides()
 
 ## Extract the hook_base ("<script>-<method>") by stripping any
