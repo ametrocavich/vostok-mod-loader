@@ -33,6 +33,37 @@ func host_browse_providers() -> PackedStringArray:
 
 # ----- async operations -----
 
+# The loader's own listing on each host, by that host's id. It is listed so
+# players can find it, but it is not a mod: Download would put the loader's
+# zip into mods/. Browse never shows these rows.
+const HOST_OWN_LISTINGS := {
+	HOST_MODWORKSHOP: "55623",
+	HOST_VOSTOKMODS: "metro-mod-loader",
+}
+
+## True when `row` is the loader's own listing on `provider`. The id is matched
+## per host: another host's mod may carry the same id.
+func _host_is_own_listing(provider: String, row: Variant) -> bool:
+	var own := str(HOST_OWN_LISTINGS.get(provider, ""))
+	var ref: Variant = (row as Dictionary).get("ref") if row is Dictionary else null
+	return own != "" and ref is Dictionary and str((ref as Dictionary).get("id", "")) == own
+
+## Drop the loader's own listing from one page of rows. Paging fields are
+## left alone: a page may come back one row short, which the list tolerates.
+func _host_hide_own_listing(provider: String, result: Dictionary) -> Dictionary:
+	if not bool(result.get("ok", false)) or not (result.get("data") is Dictionary):
+		return result
+	var rows: Variant = (result["data"] as Dictionary).get("rows")
+	if not HOST_OWN_LISTINGS.has(provider) or not (rows is Array):
+		return result
+	var shown := []
+	for row in (rows as Array):
+		if _host_is_own_listing(provider, row):
+			continue
+		shown.append(row)
+	(result["data"] as Dictionary)["rows"] = shown
+	return result
+
 ## List, search or filter a host's catalog. q keys, all optional: query,
 ## sort_key, category_ref, cursor ("" for the first page), limit. One
 ## dictionary so a new filter adds a key, not an edit to every arm.
@@ -42,7 +73,7 @@ func host_list_mods(provider: String, q: Dictionary) -> Dictionary:
 		HOST_MODWORKSHOP: out = await _mwsp_list_mods(q)
 		HOST_VOSTOKMODS: out = await _vmp_list_mods(q)
 		_: out = _host_unwired("host_list_mods", provider)
-	return _host_check_result(provider, "host_list_mods", out)
+	return _host_hide_own_listing(provider, _host_check_result(provider, "host_list_mods", out))
 
 
 ## Full detail for one mod. Data is a ModDetail record.

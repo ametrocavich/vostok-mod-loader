@@ -70,6 +70,7 @@ func _browse_landing_snapshot(provider: String) -> Dictionary:
 	if not (saved_v is int or saved_v is float) or int(saved_v) <= 0:
 		return {}
 	# A row from an older build that lacks a field is dropped, not crashed on.
+	# So is the loader's own listing, which a 3.3 pre-release could save.
 	var sections: Array = []
 	for sec_v in (snap["sections"] as Array):
 		if not (sec_v is Dictionary):
@@ -80,7 +81,7 @@ func _browse_landing_snapshot(provider: String) -> Dictionary:
 			continue
 		var rows: Array = []
 		for row_v in (rows_v as Array):
-			if row_v is Dictionary and _mods_meta_record_complete(row_v):
+			if row_v is Dictionary and _mods_meta_record_complete(row_v) and not _host_is_own_listing(provider, row_v):
 				rows.append(row_v)
 		sections.append({"title": str(sec.get("title", "")), "rows": rows})
 	snap["sections"] = sections
