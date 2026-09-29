@@ -2,8 +2,8 @@
 # build.sh -- concatenate src/*.gd into modloader.gd
 #
 # Explicit ordering (not filename-based sort): the FILES list below is the
-# source of truth for concat order. Dependencies flow top-down earlier
-# files may not reference code defined later.
+# source of truth for concat order. Only const initializers are ordered
+# (GDScript resolves them top to bottom); function bodies can call anything.
 
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -23,13 +23,38 @@ FILES=(
     "$SRC/boot.gd"
     # Mod discovery + loading
     "$SRC/security_scan.gd"
-    "$SRC/mws_api.gd"
+    # Mod-host seam. types -> transport -> dispatch, then one file per host.
+    # host_api.gd dispatches into adapters defined after it, the same shape
+    # registry.gd already uses for its section handlers.
+    "$SRC/host_types.gd"
+    "$SRC/host_http.gd"
+    "$SRC/host_api.gd"
+    "$SRC/host_mws.gd"
+    "$SRC/host_vostokmods.gd"
     "$SRC/mod_discovery.gd"
+    "$SRC/mod_dependencies.gd"
+    "$SRC/mod_identity.gd"
+    "$SRC/mod_downloads.gd"
+    "$SRC/mod_sources.gd"
     "$SRC/modpacks.gd"
+    "$SRC/hosted_modpacks.gd"
     "$SRC/mod_loading.gd"
     "$SRC/conflict_report.gd"
     # UI
+    "$SRC/profiles.gd"
+    "$SRC/profile_snapshots.gd"
     "$SRC/ui.gd"
+    "$SRC/ui_images.gd"
+    "$SRC/ui_format.gd"
+    "$SRC/loader_update.gd"
+    "$SRC/ui_theme.gd"
+    "$SRC/ui_dialogs.gd"
+    "$SRC/ui_mods.gd"
+    "$SRC/ui_mods_rows.gd"
+    "$SRC/ui_mods_metadata.gd"
+    "$SRC/mod_updates.gd"
+    "$SRC/ui_browse.gd"
+    "$SRC/ui_modpacks.gd"
     # Public API (hooks + registry)
     "$SRC/hooks_api.gd"
     # Registry dispatcher + per-section handlers. shared.gd holds helpers
@@ -54,18 +79,31 @@ FILES=(
     "$SRC/registry/aggregators.gd"
     # Declarative setup() entry point (depends on registry _many verbs + hook_many)
     "$SRC/setup.gd"
-    "$SRC/framework_wrappers.gd"
     # Codegen pipeline
     "$SRC/gdsc_detokenizer.gd"
     "$SRC/pck_enumeration.gd"
-    "$SRC/rewriter.gd"
+    "$SRC/rewriter_parse.gd"            # regex compile + detokenized-source parsing
+    "$SRC/rewriter_rewrite.gd"          # rename+wrap orchestrator + dispatch wrapper emitter
+    "$SRC/rewriter_registry_inject.gd"  # declaration transforms, preludes, registry appendices
+    "$SRC/rewriter_text.gd"             # string-aware source mask, identifier test
     "$SRC/hook_pack.gd"
+    "$SRC/hook_status.gd"
     # Orchestration
     "$SRC/lifecycle.gd"
     "$SRC/main_menu_hook.gd"
-    # Temporary debug scaffolding
+    # Developer-mode probes
     "$SRC/debug.gd"
 )
+
+if [[ $# -gt 1 ]]; then
+    echo "Usage: ./build.sh [--list]" >&2
+    exit 2
+fi
+case "${1:-}" in
+    --list) printf '%s\n' "${FILES[@]}"; exit 0 ;;
+    "") ;;
+    *) echo "Usage: ./build.sh [--list]" >&2; exit 2 ;;
+esac
 
 # Validate every listed file exists before starting
 for f in "${FILES[@]}"; do
@@ -73,9 +111,13 @@ for f in "${FILES[@]}"; do
 done
 
 # Concatenate
+trap 'rm -f "$TMP"' EXIT
 : > "$TMP"
 for f in "${FILES[@]}"; do
-    cat "$f" >> "$TMP"
+    printf '# source: %s\n' "$f" >> "$TMP"
+    # Drop CRs: a Windows checkout can hold CRLF sources, and the output must
+    # match the release build, which is made on Linux from LF blobs.
+    LC_ALL=C tr -d '\r' < "$f" >> "$TMP"
     echo "" >> "$TMP"  # blank line between files
 done
 

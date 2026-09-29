@@ -1,20 +1,15 @@
 ## ----- registry/items.gd -----
+## Items are ItemData Resources (or subclasses). Godot's Resource cache
+## returns the same instance for every load(), so mutating a loaded
+## ItemData mutates it for every holder -- including what saves deserialize,
+## since SlotData serializes ItemData by-value.
 ##
-## Items are ItemData Resources (or subclasses: WeaponData, AttachmentData, etc).
-## Godot's Resource caching means every `load("res://Items/.../Potato.tres")`
-## returns the same instance, so mutating the loaded ItemData mutates it for
-## every holder; including what saves deserialize on next load, because
-## SlotData serializes ItemData references by-value.
-##
-## Vanilla has no central file-string -> ItemData lookup; code passes ItemData
-## references around directly. So `register` doesn't need to inject anything
-## global: we keep mod-registered items in a dict keyed by `file` and expose
-## them via get_entry(). `file` is the primary id since vanilla code reads
-## itemData.file directly.
+## Vanilla has no central file-string -> ItemData lookup; mod-registered
+## items live in a dict keyed by `file`, the primary id, since vanilla
+## code reads itemData.file directly.
 
-# Vanilla item resolution: LT_Master.items is the authoritative list of every
-# ItemData that ships with the game. Scan it for a matching `file` string.
-# Cached on first hit since LT_Master is static for a given game install.
+# Vanilla item resolution: scan LT_Master.items for a matching `file`
+# string, cached on first use (LT_Master is static per install).
 var _vanilla_item_cache: Dictionary = {}
 var _vanilla_item_cache_built: bool = false
 
@@ -22,7 +17,6 @@ func _register_item(id: String, data: Variant) -> bool:
 	if not (data is Resource) or not _looks_like_item_data(data):
 		push_warning("[Registry] register('items', '%s', ...) expects an ItemData Resource, got %s" % [id, typeof(data)])
 		return false
-	# Collision: vanilla item with matching file, or prior mod registration.
 	if _find_vanilla_item(id) != null:
 		push_warning("[Registry] register('items', '%s'): id collides with vanilla item; use override or patch instead" % id)
 		return false
@@ -30,8 +24,8 @@ func _register_item(id: String, data: Variant) -> bool:
 	if reg.has(id):
 		push_warning("[Registry] register('items', '%s'): already registered by a mod" % id)
 		return false
-	# Keep ItemData.file in sync with the registry id; vanilla code reads
-	# itemData.file directly and assumes it matches the item's canonical name.
+	# Keep ItemData.file in sync with the registry id; vanilla assumes it
+	# matches the item's canonical name.
 	if data.get("file") != id:
 		data.set("file", id)
 	reg[id] = data
@@ -52,10 +46,8 @@ func _override_item(id: String, data: Variant) -> bool:
 	if not ov.has(id):
 		ov[id] = existing
 		_registry_overridden["items"] = ov
-	# Overrides live in _registry_registered because lookup precedence is
-	# override > register > vanilla, and we key both by id. Track in
-	# overridden map so revert can restore; the live value in registered dict
-	# is what lookups hit.
+	# Overrides live in _registry_registered (lookups hit that dict); the
+	# overridden map exists only so revert can restore.
 	var reg: Dictionary = _registry_registered.get("items", {})
 	reg[id] = data
 	_registry_registered["items"] = reg
@@ -76,43 +68,28 @@ func _patch_item(id: String, fields: Dictionary) -> bool:
 	var stash: Dictionary = patched.get(id, {})
 	for field in fields.keys():
 		var field_name := String(field)
-		# Resource.get() returns null both for "missing" and for legitimate
-		# null values. Prefer property-list check so mistyped field names
-		# surface as warnings instead of silently patching a phantom field.
+		# Property-list check, not get(): Resource.get() returns null for
+		# both "missing" and legitimate null, so typos would patch a phantom.
 		if not _object_has_property(target, field_name):
 			push_warning("[Registry] patch('items', '%s'): field '%s' doesn't exist on %s" \
 					% [id, field_name, target.get_class()])
 			continue
-		# First-write-wins stash: keep pre-any-patch value so revert restores
-		# the true original no matter how many patches have piled on.
 		if not stash.has(field_name):
 			stash[field_name] = target.get(field_name)
+			_patch_source_note("items", id, field_name, target)
 		target.set(field_name, fields[field])
 	patched[id] = stash
 	_registry_patched["items"] = patched
 	_log_debug("[Registry] patched item '%s' fields %s" % [id, fields.keys()])
 	return true
 
-func _append_item(id: String, field: String, values: Array, allow_duplicates: bool) -> bool:
+# append, prepend and remove_from share one body; `op` selects the operation.
+func _array_op_item(id: String, field: String, op: String, values: Array, allow_duplicates: bool) -> bool:
 	var target := _lookup_item(id)
 	if target == null:
-		push_warning("[Registry] append('items', '%s'): no item with that id" % id)
+		push_warning("[Registry] %s('items', '%s'): no item with that id" % [op, id])
 		return false
-	return _array_op_on_resource("items", id, target, field, "append", values, allow_duplicates)
-
-func _prepend_item(id: String, field: String, values: Array, allow_duplicates: bool) -> bool:
-	var target := _lookup_item(id)
-	if target == null:
-		push_warning("[Registry] prepend('items', '%s'): no item with that id" % id)
-		return false
-	return _array_op_on_resource("items", id, target, field, "prepend", values, allow_duplicates)
-
-func _remove_from_item(id: String, field: String, values: Array) -> bool:
-	var target := _lookup_item(id)
-	if target == null:
-		push_warning("[Registry] remove_from('items', '%s'): no item with that id" % id)
-		return false
-	return _array_op_on_resource("items", id, target, field, "remove_from", values, false)
+	return _array_op_on_resource("items", id, target, field, op, values, allow_duplicates)
 
 
 func _remove_item(id: String) -> bool:
@@ -120,52 +97,46 @@ func _remove_item(id: String) -> bool:
 	if not reg.has(id):
 		push_warning("[Registry] remove('items', '%s'): not registered by a mod" % id)
 		return false
-	# Block remove on entries that are actually overrides, not registrations.
-	# An override lives in reg too (see _override_item rationale) but must be
-	# reverted, not removed; remove implies "undo a register()".
+	# Overrides live in reg too but must be reverted, not removed.
 	var ov: Dictionary = _registry_overridden.get("items", {})
 	if ov.has(id):
 		push_warning("[Registry] remove('items', '%s'): entry is an override, use revert instead" % id)
 		return false
 	reg.erase(id)
 	_registry_registered["items"] = reg
-	# Drop the id's patch stash with the entry (mirrors _remove_event): its
-	# first-write-wins originals belong to the item being removed, and leaving
-	# it would poison a later re-registration of the same id -- revert would
-	# write the OLD item's values onto the NEW one.
+	# Drop the patch stash with the entry: revert after a re-registration of
+	# the same id would otherwise write the old item's values onto the new.
 	var patched: Dictionary = _registry_patched.get("items", {})
 	if patched.has(id):
 		patched.erase(id)
 		_registry_patched["items"] = patched
+		_patch_source_forget("items", id)
 	_log_debug("[Registry] removed item '%s'" % id)
 	return true
 
 func _revert_item(id: String, fields: Array) -> bool:
-	# Two revert modes: (a) full-entry revert of an override(), (b) per-field
-	# revert of patch()es. Caller distinguishes by presence of `fields`.
 	var did_something := false
 	var ov: Dictionary = _registry_overridden.get("items", {})
 	var patched: Dictionary = _registry_patched.get("items", {})
-	# Full revert: no fields specified -> undo override AND clear all patches.
-	# Order matters: restore patch stash FIRST (onto the currently-resolving
-	# entry, which may be an override), THEN drop the override so lookups
-	# fall back to vanilla. Reversing would restore patch values onto vanilla
-	# ItemData, mutating the base resource permanently.
+	# Full revert: the patch stash first, each value onto the object it was
+	# read from (the override when the patch came after it, the entry under
+	# the override when it came before), then the override.
 	if fields.is_empty():
 		if patched.has(id):
-			var target := _lookup_item(id)
-			if target != null:
-				var stash: Dictionary = patched[id]
-				for fname in stash.keys():
-					target.set(fname, stash[fname])
+			var stash: Dictionary = patched[id]
+			for fname in stash.keys():
+				var source: Resource = _patch_source("items", id, fname, _lookup_item(id))
+				if source != null:
+					source.set(fname, stash[fname])
 			patched.erase(id)
 			_registry_patched["items"] = patched
+			_patch_source_forget("items", id)
 			did_something = true
 		if ov.has(id):
 			var reg: Dictionary = _registry_registered.get("items", {})
 			var original = ov[id]
 			if original != null and original != _find_vanilla_item(id):
-				# Overridden entry was a mod registration; put it back.
+				# The overridden entry was a mod registration; put it back.
 				reg[id] = original
 			else:
 				reg.erase(id)
@@ -176,8 +147,7 @@ func _revert_item(id: String, fields: Array) -> bool:
 		if not did_something:
 			push_warning("[Registry] revert('items', '%s'): nothing to revert" % id)
 		return did_something
-	# Per-field revert: only undo the named fields on a patch(). Overrides
-	# are whole-entry and don't combine with field-level revert.
+	# Per-field revert; overrides are whole-entry and don't combine with it.
 	if not patched.has(id):
 		push_warning("[Registry] revert('items', '%s', %s): no patches on this id" % [id, fields])
 		return false
@@ -191,7 +161,8 @@ func _revert_item(id: String, fields: Array) -> bool:
 		if not stash.has(fname):
 			push_warning("[Registry] revert('items', '%s'): field '%s' wasn't patched" % [id, fname])
 			continue
-		target.set(fname, stash[fname])
+		(_patch_source("items", id, fname, target) as Resource).set(fname, stash[fname])
+		_patch_source_forget("items", id, fname)
 		stash.erase(fname)
 		did_something = true
 	if stash.is_empty():
@@ -201,10 +172,8 @@ func _revert_item(id: String, fields: Array) -> bool:
 	_registry_patched["items"] = patched
 	return did_something
 
-# Lookup precedence: mod registrations (which includes overrides) first, then
-# vanilla. Matches the scenes registry's override > mod > vanilla shape;
-# here overrides live inside the mod-registered dict, so the order collapses
-# to "mod entries beat vanilla."
+# Mod entries (including overrides, which live in the same dict) beat
+# vanilla.
 func _lookup_item(id: String) -> Resource:
 	var reg: Dictionary = _registry_registered.get("items", {})
 	if reg.has(id):

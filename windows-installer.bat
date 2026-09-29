@@ -30,6 +30,12 @@ for %%P in (
 echo Could not find Road to Vostok automatically.
 echo Please enter the path to your game folder (containing RTV.exe):
 set /p "GAME_PATH=Game path: "
+:: Explorer's "Copy as path" wraps the path in quotes; drop them, and a
+:: trailing backslash, before the path is used. Delayed expansion: the
+:: percent form is expanded while the line is parsed and is a syntax error
+:: when the answer was empty.
+if defined GAME_PATH set "GAME_PATH=!GAME_PATH:"=!"
+if defined GAME_PATH if "!GAME_PATH:~-1!"=="\" set "GAME_PATH=!GAME_PATH:~0,-1!"
 
 if not exist "%GAME_PATH%\RTV.exe" (
     echo ERROR: RTV.exe not found at "%GAME_PATH%"
@@ -50,13 +56,16 @@ set "OVERRIDE_URL=https://github.com/ametrocavich/vostok-mod-loader/releases/lat
 
 :: --- Download modloader.gd ---
 :: Force TLS 1.2 (older PowerShell defaults to 1.1 which GitHub rejects).
+:: Paths and URLs reach PowerShell through the environment, not by being
+:: pasted into the command: a game path with an apostrophe would end a
+:: quoted string there.
 :: Verify the response succeeded AND the file is non-empty before trusting it.
 :: Download to a temp file first so a failed download doesn't overwrite or
 :: delete a working existing installation.
 set "MODLOADER_TMP=%MODLOADER_DEST%.new"
 if exist "%MODLOADER_TMP%" del "%MODLOADER_TMP%" >nul 2>&1
 echo Downloading mod loader...
-powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; try { $r = Invoke-WebRequest -Uri '%MODLOADER_URL%' -OutFile '%MODLOADER_TMP%' -UseBasicParsing -PassThru; if ($r.StatusCode -ne 200) { exit 1 } } catch { exit 1 }"
+powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; try { $r = Invoke-WebRequest -Uri $env:MODLOADER_URL -OutFile $env:MODLOADER_TMP -UseBasicParsing -PassThru; if ($r.StatusCode -ne 200) { exit 1 } } catch { exit 1 }"
 set "DL_RC=!errorlevel!"
 set "DL_OK=0"
 if !DL_RC! equ 0 if exist "%MODLOADER_TMP%" (
@@ -91,7 +100,7 @@ if !DL_OK! equ 1 (
 set "OVERRIDE_TMP=%OVERRIDE_PATH%.template"
 if exist "%OVERRIDE_TMP%" del "%OVERRIDE_TMP%" >nul 2>&1
 echo Fetching override.cfg template...
-powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; try { $r = Invoke-WebRequest -Uri '%OVERRIDE_URL%' -OutFile '%OVERRIDE_TMP%' -UseBasicParsing -PassThru; if ($r.StatusCode -ne 200) { exit 1 } } catch { exit 1 }"
+powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; try { $r = Invoke-WebRequest -Uri $env:OVERRIDE_URL -OutFile $env:OVERRIDE_TMP -UseBasicParsing -PassThru; if ($r.StatusCode -ne 200) { exit 1 } } catch { exit 1 }"
 set "OV_RC=!errorlevel!"
 set "OV_OK=0"
 if !OV_RC! equ 0 if exist "%OVERRIDE_TMP%" (
@@ -106,11 +115,13 @@ if !OV_OK! neq 1 (
 :: --- Install/merge override.cfg ---
 :: For keys the template specifies, force the template's value (overwriting
 :: outdated user values like a stale ModLoader path). Keys the user has that
-:: template doesn't specify are left untouched.
+:: template doesn't specify are left untouched, with one exception: a
+:: ModLoader entry under [autoload] from an older install is dropped, since
+:: the loader now lives under [autoload_prepend] and must not be listed twice.
 if exist "%OVERRIDE_PATH%" (
     echo Merging override.cfg (preserving user sections, updating template keys)
     copy "%OVERRIDE_PATH%" "%OVERRIDE_PATH%.bak" >nul
-    powershell -Command "$user = '%OVERRIDE_PATH%'; $tmpl = '%OVERRIDE_TMP%'; $tmplCfg = @{}; $curSec = $null; foreach ($line in Get-Content -LiteralPath $tmpl) { $t = $line.Trim(); if ($t -match '^\[(.+)\]$') { $curSec = $Matches[1]; if (-not $tmplCfg.ContainsKey($curSec)) { $tmplCfg[$curSec] = [ordered]@{} }; continue } if ($t -eq '' -or $t.StartsWith(';') -or $t.StartsWith('#') -or $curSec -eq $null) { continue } $eq = $t.IndexOf('='); if ($eq -lt 0) { continue } $k = $t.Substring(0, $eq).Trim(); $v = $t.Substring($eq + 1); $tmplCfg[$curSec][$k] = $v } $out = New-Object System.Collections.Generic.List[string]; $seenSec = @{}; $curSec = $null; $sectionLines = New-Object System.Collections.Generic.List[string]; function Flush { param($sec, $lines, $out, $tmplCfg) $tmplKeys = @{}; if ($sec -ne $null -and $tmplCfg.ContainsKey($sec)) { foreach ($k in $tmplCfg[$sec].Keys) { $tmplKeys[$k] = $true } } $existingKeys = @{}; foreach ($ln in $lines) { $tr = $ln.Trim(); if ($tr -match '^\[.+\]$') { $out.Add($ln); continue } if ($tr -eq '' -or $tr.StartsWith(';') -or $tr.StartsWith('#')) { $out.Add($ln); continue } $eq = $tr.IndexOf('='); if ($eq -lt 0) { $out.Add($ln); continue } $k = $tr.Substring(0, $eq).Trim(); if ($tmplKeys.ContainsKey($k)) { $newVal = $tmplCfg[$sec][$k]; $out.Add(\"$k=$newVal\"); $existingKeys[$k] = $true } else { $out.Add($ln) } } if ($sec -ne $null -and $tmplCfg.ContainsKey($sec)) { foreach ($k in $tmplCfg[$sec].Keys) { if (-not $existingKeys.ContainsKey($k)) { $out.Add(\"$k=$($tmplCfg[$sec][$k])\") } } } } foreach ($line in Get-Content -LiteralPath $user) { $t = $line.Trim(); if ($t -match '^\[(.+)\]$') { Flush $curSec $sectionLines $out $tmplCfg; $sectionLines.Clear(); $curSec = $Matches[1]; $seenSec[$curSec] = $true; $sectionLines.Add($line); continue } $sectionLines.Add($line) } Flush $curSec $sectionLines $out $tmplCfg; foreach ($sec in $tmplCfg.Keys) { if (-not $seenSec.ContainsKey($sec)) { $out.Add(''); $out.Add(\"[$sec]\"); foreach ($k in $tmplCfg[$sec].Keys) { $out.Add(\"$k=$($tmplCfg[$sec][$k])\") } } } Set-Content -LiteralPath $user -Value $out"
+    powershell -Command "$user = $env:OVERRIDE_PATH; $tmpl = $env:OVERRIDE_TMP; $tmplCfg = @{}; $curSec = $null; foreach ($line in Get-Content -LiteralPath $tmpl) { $t = $line.Trim(); if ($t -match '^\[(.+)\]$') { $curSec = $Matches[1]; if (-not $tmplCfg.ContainsKey($curSec)) { $tmplCfg[$curSec] = [ordered]@{} }; continue } if ($t -eq '' -or $t.StartsWith(';') -or $t.StartsWith('#') -or $curSec -eq $null) { continue } $eq = $t.IndexOf('='); if ($eq -lt 0) { continue } $k = $t.Substring(0, $eq).Trim(); $v = $t.Substring($eq + 1); $tmplCfg[$curSec][$k] = $v } $out = New-Object System.Collections.Generic.List[string]; $seenSec = @{}; $curSec = $null; $sectionLines = New-Object System.Collections.Generic.List[string]; function Flush { param($sec, $lines, $out, $tmplCfg) $tmplKeys = @{}; if ($sec -ne $null -and $tmplCfg.ContainsKey($sec)) { foreach ($k in $tmplCfg[$sec].Keys) { $tmplKeys[$k] = $true } } $existingKeys = @{}; foreach ($ln in $lines) { $tr = $ln.Trim(); if ($tr -match '^\[.+\]$') { $out.Add($ln); continue } if ($tr -eq '' -or $tr.StartsWith(';') -or $tr.StartsWith('#')) { $out.Add($ln); continue } $eq = $tr.IndexOf('='); if ($eq -lt 0) { $out.Add($ln); continue } $k = $tr.Substring(0, $eq).Trim(); if ($sec -eq 'autoload' -and $k -eq 'ModLoader') { continue } if ($tmplKeys.ContainsKey($k)) { $newVal = $tmplCfg[$sec][$k]; $out.Add(\"$k=$newVal\"); $existingKeys[$k] = $true } else { $out.Add($ln) } } if ($sec -ne $null -and $tmplCfg.ContainsKey($sec)) { foreach ($k in $tmplCfg[$sec].Keys) { if (-not $existingKeys.ContainsKey($k)) { $out.Add(\"$k=$($tmplCfg[$sec][$k])\") } } } } foreach ($line in Get-Content -LiteralPath $user) { $t = $line.Trim(); if ($t -match '^\[(.+)\]$') { Flush $curSec $sectionLines $out $tmplCfg; $sectionLines.Clear(); $curSec = $Matches[1]; $seenSec[$curSec] = $true; $sectionLines.Add($line); continue } $sectionLines.Add($line) } Flush $curSec $sectionLines $out $tmplCfg; foreach ($sec in $tmplCfg.Keys) { if (-not $seenSec.ContainsKey($sec)) { $out.Add(''); $out.Add(\"[$sec]\"); foreach ($k in $tmplCfg[$sec].Keys) { $out.Add(\"$k=$($tmplCfg[$sec][$k])\") } } } Set-Content -LiteralPath $user -Value $out"
     echo Updated override.cfg
 ) else (
     move /y "%OVERRIDE_TMP%" "%OVERRIDE_PATH%" >nul

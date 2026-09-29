@@ -1,23 +1,10 @@
 ## ----- registry/resources.gd -----
-##
-## Patches arbitrary field values on any vanilla .tres file. Intended as the
-## generic fallback for Resources that don't have a dedicated registry: stat
-## tuning files, config-like .tres, anything a mod author wants to tweak
-## without us building a purpose-built registry.
-##
-## Usage:
+## Patches arbitrary fields on any vanilla .tres -- the generic fallback for
+## Resources without a dedicated registry:
 ##   lib.patch(RESOURCES, "res://Resources/GameData.tres", {"walk_speed": 5.0})
-##   lib.revert(RESOURCES, "res://Resources/GameData.tres", ["walk_speed"])
-##   lib.revert(RESOURCES, "res://Resources/GameData.tres")  # full revert
-##
-## The `id` is the absolute res:// path to the .tres. Godot's Resource cache
-## ensures every `load()` of that path returns the same instance, so
-## mutating fields on the loaded Resource propagates to all game-side
-## holders. No register/override/remove; vanilla already defines the
-## Resource; we only mutate fields and track rollback.
-##
-## Field stash keys per path, so the same path can be patched multiple
-## times without losing the pre-first-patch value.
+## The `id` is the absolute res:// path; the Resource cache propagates the
+## mutation to all game-side holders. patch/revert only -- vanilla already
+## defines the Resource. The stash is per-path, first-write-wins.
 
 func _load_resource_at(path: String, verb: String) -> Resource:
 	if path == "" or not path.begins_with("res://"):
@@ -32,23 +19,12 @@ func _load_resource_at(path: String, verb: String) -> Resource:
 		return null
 	return res
 
-func _append_resource(id: String, field: String, values: Array, allow_duplicates: bool) -> bool:
-	var res := _load_resource_at(id, "append")
+# append, prepend and remove_from share one body; `op` selects the operation.
+func _array_op_resource(id: String, field: String, op: String, values: Array, allow_duplicates: bool) -> bool:
+	var res := _load_resource_at(id, op)
 	if res == null:
 		return false
-	return _array_op_on_resource("resources", id, res, field, "append", values, allow_duplicates)
-
-func _prepend_resource(id: String, field: String, values: Array, allow_duplicates: bool) -> bool:
-	var res := _load_resource_at(id, "prepend")
-	if res == null:
-		return false
-	return _array_op_on_resource("resources", id, res, field, "prepend", values, allow_duplicates)
-
-func _remove_from_resource(id: String, field: String, values: Array) -> bool:
-	var res := _load_resource_at(id, "remove_from")
-	if res == null:
-		return false
-	return _array_op_on_resource("resources", id, res, field, "remove_from", values, false)
+	return _array_op_on_resource("resources", id, res, field, op, values, allow_duplicates)
 
 
 func _patch_resource(id: String, fields: Dictionary) -> bool:
@@ -66,8 +42,6 @@ func _patch_resource(id: String, fields: Dictionary) -> bool:
 		if not _object_has_property(res, fname):
 			push_warning("[Registry] patch('resources', '%s'): field '%s' doesn't exist on %s" % [id, fname, res.get_class()])
 			continue
-		# First-write-wins stash so subsequent patches to the same field
-		# don't overwrite the original value.
 		if not stash.has(fname):
 			stash[fname] = res.get(fname)
 		res.set(fname, fields[field])
@@ -88,14 +62,12 @@ func _revert_resource(id: String, fields: Array) -> bool:
 	if res == null:
 		return false
 	var stash: Dictionary = patched[id]
-	# Full revert: restore every stashed field, clear the stash.
 	if fields.is_empty():
 		for fname in stash.keys():
 			res.set(fname, stash[fname])
 		patched.erase(id)
 		_registry_patched["resources"] = patched
 		return true
-	# Per-field revert.
 	var did_something := false
 	for field in fields:
 		var fname := String(field)

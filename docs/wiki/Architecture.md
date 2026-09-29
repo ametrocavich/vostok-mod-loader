@@ -2,93 +2,112 @@
 
 The mod loader runs in two stages:
 
-1. **Static init** (before `_ready`): mounts archives from the previous session, preempts `class_name` scripts Godot would otherwise pin to PCK bytecode, and checks sentinel files.
-2. **`_ready`**: dispatches to **Pass 1** (show UI + optionally restart) or **Pass 2** (post-restart finalization), based on a cmdline arg.
+1. Autoload instance initialization, before `_ready`: checks sentinel files, mounts the previous session's archives and attempts to preempt cached `class_name` scripts. Logs call this phase "static init" or "FileScope"; the trigger is an instance variable initializer.
+2. `_ready`: dispatches to Pass 1 (show the launcher, optionally restart) or Pass 2 (post-restart finalization), based on a command-line argument.
+
+The header comment of [src/boot.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd) carries the short form of this sequence and the sentinel table; this page is the longer form. Function names are the anchors here, not line numbers.
 
 ## Entry points
 
 | Stage | Trigger | Code |
 |---|---|---|
-| Static init | Module-scope var initializer evaluates before `_ready` | `var _filescope_mounted: Dictionary = _mount_previous_session()` at [src/constants.gd:366](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd#L366) |
-| `_ready` | Godot calls it after scene enters tree | [src/lifecycle.gd:7](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd#L7) |
+| Early mounts | Instance variable initializer runs when the ModLoader autoload is constructed | `var _filescope_mounted: Dictionary = _mount_previous_session()` at the top of [src/boot.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd) |
+| `_ready` | Godot calls it once the autoload enters the tree | `_ready` in [src/lifecycle.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd) |
 
-The static-init trick works because Godot evaluates `var = <call>()` initializers at script-load time. The mounts land in VFS before any autoload scene graph resolves, so game autoloads can `preload(res://ModPath/Foo.gd)` without the archive being explicitly mounted in `_ready`.
+`_filescope_mounted` is an ordinary instance variable, not a `static var`. Loading or compiling the script alone does not call its initializer; constructing the autoload instance does. The loader's position in `[autoload_prepend]` puts these mounts before later autoload initialization. Godot may already have cached some scripts; the cache snapshot and activation checks report that condition.
 
-## Static init (`_mount_previous_session`)
+`_ready` registers the `RTVModLib` Engine meta before its first await, so early mod autoloads can find the API. After that await it compiles the regex helpers and selects the pass. A harness that instantiates the loader must disable the boot initializer in its test copy.
 
-Defined at [src/boot.gd:170](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L170). Sequence:
+## Early mounts (`_mount_previous_session`)
 
-1. **Disabled sentinel check** -- if `<exe_dir>/modloader_disabled` or `<exe_dir>/modloader_disabled_once` exists, force vanilla state and return. See [Stability-Canaries](Stability-Canaries) for the escape hatches.
-2. **Crashed Pass 2 recovery** -- if `user://modloader_pass2_dirty` exists, Pass 2 was interrupted before cleanup; full wipe.
-3. **Load pass state** from `user://mod_pass_state.cfg`; early return if missing.
-4. **Version mismatch** -- if saved `modloader_version` != current `MODLOADER_VERSION`, wipe state (pass-state format may have changed).
-5. **Exe mtime check** -- if the game exe was updated since last session, wipe the hook cache, delete pass state, and reset `override.cfg` (vanilla scripts may have changed); mount nothing this launch.
-6. **Archive existence scan** -- if any archive from last session is missing, write a clean `override.cfg` and reset.
-7. **Mount loop** -- each archive via `ProjectSettings.load_resource_pack`, with `.vmz -> .zip` fallback.
-8. **Orphan hook-pack cleanup** (`_static_cleanup_orphan_hook_packs`, called at [boot.gd:325](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L325)) -- at static init nothing is mounted yet, so every `framework_pack_*.zip` except the one pass state points at is deleted.
-9. **Pre-init cache snapshot** ([boot.gd:330-352](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L330)) -- probe the scripts pass state recorded as wrapped last session (from `hook_pack_wrapped_paths`) and classify each as tokenized (PCK-pinned) / source-loaded (our prior-session rewrite) / not-yet-loaded. Before v3.0.1 this was a hardcoded 16-entry list; now it's driven by what mods actually declared.
-10. **Hook pack preempt mount** ([boot.gd:303-397](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L303)) -- mount the hook pack recorded in pass state's `hook_pack_path` (a per-session `user://modloader_hooks/framework_pack_<ticks>.zip` -- unique filenames defeat Godot's `load_resource_pack` path dedupe and Windows mounted-file locks; orphans are swept at the next static init) with `replace_files=true`, then force a fresh source-compile of each script in `hook_pack_wrapped_paths` via `ResourceLoader.load(..., CACHE_MODE_IGNORE)` + `take_over_path`. Scripts not in that set are left to Godot's lazy-compile path. When no mods are loaded at all the pack file doesn't exist and this step short-circuits; when mods are loaded but none opt into the hook surface, `hook_pack_wrapped_paths` narrows to just `res://Scripts/Menu.gd` (the core-owned wrap for the launcher's main-menu button) -- legacy loadouts boot with that one script preempted and nothing else.
-11. **Test pack mount** (dev-only, gated on `user://test_pack_precedence.zip` presence).
+Static function in `boot.gd`, called during instance initialization. It uses constants and static helpers rather than partially initialized instance state, and writes collected lines to `user://modloader_filescope.log` through `_write_filescope_log`. The first line records the Godot version, the loader version and the OS. Sequence:
 
-The hook pack preempt is the only way to rewire scripts Godot pre-compiles during `class_cache` population. Once pinned, runtime `source_code + reload()` and `CACHE_MODE_IGNORE + take_over_path` both fail against autoload-backed scripts (see [Limitations](Limitations)).
+1. Disabled sentinel. If `<exe_dir>/modloader_disabled` or `<exe_dir>/modloader_disabled_once` exists (`_is_modloader_disabled`), call `_static_force_vanilla_state` and return with nothing mounted. See [Stability-Canaries](Stability-Canaries) for the escape hatches.
+2. Crashed Pass 2. If `user://modloader_pass2_dirty` exists, the previous Pass 2 died before cleanup; same full wipe, nothing mounted.
+3. Load `user://mod_pass_state.cfg`; return if it is missing.
+4. Version mismatch. A saved `modloader_version` that differs from `MODLOADER_VERSION` wipes the hook cache, deletes pass state and resets `override.cfg`. Rewriter output can change between versions, so a stale pack must not be mounted.
+5. Game update. If the exe mtime differs from the saved `exe_mtime`, or the game PCK's mtime and size differ from the saved `pck_stamp` (`_static_game_build_changed`), same wipe: vanilla scripts may have changed. A content patch can replace the PCK and leave the executable untouched, so both are checked.
+6. Missing archives. If any recorded archive is gone, write a clean `override.cfg` and delete pass state. A same-basename cache zip that survived does not count as present.
+7. Mount loop. Each archive goes through `ProjectSettings.load_resource_pack`, with the `.vmz -> .zip` cache fallback (`_static_vmz_to_zip`). Nothing is loaded at mount time: the engine follows a mounted `.remap` itself, and a `load()` here would compile vanilla scripts before the hook pack is mounted.
+8. Orphan hook packs. `_static_cleanup_orphan_hook_packs` deletes every `framework_pack_*.zip` except the one pass state points at. The hook pack has not been mounted in this process yet, so its unused generations can be deleted on Windows.
+9. Pre-init cache snapshot. For each path in `hook_pack_wrapped_paths`, record whether Godot's eager class-cache pass already compiled it (tokenized), whether it holds our source from a previous session, or whether it is not loaded yet. Diagnostic only; it answers "why didn't my hook fire".
+10. Hook pack mount. The path in `hook_pack_path` must be a `framework_pack_*.zip` directly inside `user://modloader_hooks` (`_static_hook_pack_path_sane`; pass state is user-editable, so anything else is refused). The pack is mounted with `replace_files=true`, then every entry listed in `hook_pack_wrapped_paths` is force-compiled from source via `ResourceLoader.load(..., CACHE_MODE_IGNORE)` plus `take_over_path`. A script that fails to compile still loads non-null with its source, so the preempt counts a script only when its method list carries a `_rtv_vanilla_*` name (`_static_script_has_rewrite`). One that does not is not given the path, is counted as failed, and is named in `[FileScope] HOOK PACK: did not compile, left alone: <names>`. Entries the pack carries but the list does not are left to lazy compile. With no mods loaded the pack file does not exist and this step is skipped. With mods loaded but none opting into the hook surface, the list holds only `res://Scripts/Menu.gd`, the core-owned wrap for the launcher's main-menu button.
+
+Mounting before later autoloads initialize gives the rewritten scripts an opportunity to take precedence. It does not guarantee that an already cached script can be replaced: activation checks and canaries detect engine-cache failures (see [Limitations](Limitations)).
 
 ## Pass 1 (normal launch)
 
-Defined at [src/lifecycle.gd:114](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd#L114). Outline:
+`_run_pass_1` in `lifecycle.gd`. Outline:
 
 ```
-check crash recovery (heartbeat + restart count)
-check safe mode sentinel
-compile regex, build class_name lookup, load dev-mode setting
-collect_mod_metadata()          # scan <exe>/mods/ -- no mounting
-clean_stale_cache
-load_ui_config
-await show_mod_ui()             # user configures and clicks Launch Game
-save_ui_config
-load_all_mods()                 # mount archives, scan, queue autoloads
-_apply_script_overrides         # from [script_overrides] in mod.txt
-sections    = _build_autoload_sections()
+_check_crash_recovery()          # heartbeat survivor from the last launch
+_check_safe_mode()               # user-placed modloader_safe_mode
+_build_class_name_lookup(); _enumerate_game_scripts()
+_load_developer_mode_setting()
+_ui_mod_entries = collect_mod_metadata()   # scan <exe>/mods/, no mounting
+_clean_stale_cache(); _remove_retired_state()
+_load_ui_config()
+await show_mod_ui()              # the user configures and clicks Launch
+_save_ui_config()
+_applied_script_overrides.clear()
+load_all_mods()                  # mount archives, scan, queue autoloads
+_apply_script_overrides()        # [script_extend] / [script_overrides]
+sections      = _build_autoload_sections()
 archive_paths = _collect_enabled_archive_paths()
-new_hash    = _compute_state_hash(...)
+new_hash      = _compute_state_hash(archive_paths, sections.prepend)
 
 if new_hash == old_hash and not empty:
-    _finish_with_existing_mounts()     # fast path -- same mod set as last session
+    _finish_with_existing_mounts()     # same mod set as last session
+    return
+
+if archive_paths not empty and _crash_breaker_tripped():
+    reset streak, restore clean override.cfg, delete pass state
+    _finish_single_pass()              # launcher stays reachable
     return
 
 if archive_paths not empty:
-    _register_rtv_modlib_meta
-    _generate_hook_pack(defer_activation=true)    # Pass 2 activates
-    _write_heartbeat
+    _register_rtv_modlib_meta()
+    _generate_hook_pack(true)          # defer_activation: probes rewrites, Pass 2 activates
+    _write_heartbeat()
     _write_override_cfg(sections.prepend)
     _write_pass_state(archive_paths, new_hash)
-    OS.set_restart_on_exit(true, args + "--modloader-restart")
-    get_tree().quit()
+    _modloader_restart(false)          # relaunch with --modloader-restart
 else:
-    remove pass_state, restore clean override.cfg, wipe hook cache
-    _finish_single_pass()
+    delete pass state and restore clean override.cfg
+    on failure: offer Retry or Quit; do not restart
+    wipe hook cache
+    if static init mounted anything:
+        _modloader_restart(false)      # a process without the previous mod set
+    else:
+        _finish_single_pass()
 ```
 
-`defer_activation=true` on the first-time pack generation is deliberate: without it, activation runs against the already-pinned PCK bytecode in this engine process, fires a misleading `"hooks WILL NOT fire this session"` STABILITY alarm, then restarts anyway. Passing `defer_activation=true` writes the zip + pass state and lets Pass 2's fresh engine mount it cleanly. See the `defer_activation` branch at [hook_pack.gd:568](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L568) (`_generate_hook_pack` is defined at [hook_pack.gd:98](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd#L98)).
+`_generate_hook_pack(true)` on the pre-restart path is deliberate. Without `defer_activation`, activation would run against the PCK bytecode this engine process already pinned, log a misleading "hooks WILL NOT fire this session" alarm, and restart anyway. With it, the call writes the zip and the pass-state entry and lets Pass 2's fresh engine mount it at static init. The branch is at the end of `_generate_hook_pack` in [src/hook_pack.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd).
+
+This is also the one generation that probe-compiles its rewrites before packing them (`_hook_pack_begin_vetting`, `_hook_pack_vet_rewrite`). A probe compiles the script and whatever its module-scope preloads pull in, which is harmless in a process about to exit and would get ahead of mod overrides anywhere else. A rewrite that does not compile is demoted to hooks only or left out of the pack, and the verdicts are persisted as `hook_pack_demotions` for the generations that follow. The `_finish_with_existing_mounts` path reads them from pass state and does not probe. The crash-breaker path has deleted pass state, so its generation probes live, skipping scripts deferred to lazy compile. See [Stability-Canaries](Stability-Canaries#pre-ship-compile-probe).
+
+`_modloader_restart` re-injects `--rendering-driver` and `--rendering-method` (Godot's own parser strips them from `OS.get_cmdline_args()`, and RTV's Steam launch presets set exactly those two) and forwards user args after `--`.
 
 ## Pass 2 (post-restart)
 
-Triggered by `--modloader-restart` in `OS.get_cmdline_user_args()`. Defined at [src/lifecycle.gd:241](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd#L241).
+`_run_pass_2` in `lifecycle.gd`, chosen when `--modloader-restart` is in `OS.get_cmdline_user_args()`.
 
-Archives are already mounted at file-scope (static init handled it). Early autoloads are already in the tree (Godot loaded them from `[autoload_prepend]`). This pass:
+Archives are already mounted (static init did it in this process) and early autoloads are already in the tree (Godot loaded them from `[autoload_prepend]`). The pass:
 
-1. Writes `user://modloader_pass2_dirty` sentinel first thing. If Pass 2 crashes before cleanup, next launch's static init detects the marker and force-wipes.
-2. Restores `[script_overrides]` from pass state and applies them.
-3. Clears restart counter.
-4. Re-runs metadata collection + `load_all_mods("Pass 2")`. Archives already file-scope-mounted skip re-mount via `_filescope_mounted.has(full_path)` check.
-5. Generates + mounts the hook pack (this time without `defer_activation`).
-6. Instantiates pending autoloads (skips ones already in tree from `[autoload_prepend]`).
-7. `_emit_frameworks_ready` -- runs verification probes (see [Developer-Mode](Developer-Mode)).
-8. Deletes heartbeat, clears the Pass 2 dirty marker.
-9. `reload_current_scene()` if any archives or autoloads changed.
+1. Writes `user://modloader_pass2_dirty` first thing. If the pass crashes before cleanup, the next static init sees the marker and wipes.
+2. Restores `[script_overrides]` entries from pass state and applies them.
+3. Re-runs the class lookup, script enumeration, dev-mode setting, metadata collection and `_load_ui_config`, then `load_all_mods("Pass 2")`. Archives already in `_filescope_mounted` are not mounted again. (`_compile_regex` runs once per launch, in `_ready`.)
+4. Hands off to `_finish_boot`, the tail every boot path shares: registers the `RTVModLib` meta and generates plus activates the hook pack (no `defer_activation` this time). This generation does not probe: it reads `hook_pack_demotions` from pass state and repeats Pass 1's verdicts, so a demoted script ships in the same form in both packs.
+5. Instantiates pending autoloads, skipping any already in the tree from `[autoload_prepend]`.
+6. Runs the dev-mode diagnostics, then `_emit_frameworks_ready`.
+7. Deletes the heartbeat and clears the restart streak, then `reload_current_scene()` if any archive or autoload landed. The streak is cleared here and not at entry: `load_all_mods` and autoload instantiation are where a mod crashes, so clearing earlier would record a streak of zero for a crashed launch.
+8. Back in `_run_pass_2`: deletes the dirty marker, then asks the OS for window focus (Windows hands foreground away when the Pass 1 process dies).
+
+Pass 2 never shows the launcher.
 
 ## override.cfg lifecycle
 
-`override.cfg` is written directly to the game directory (not `user://`) because Godot reads it at engine startup before any script runs. Canonical layout (written by `_write_override_cfg` at [boot.gd:617](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L617)):
+`override.cfg` is written to the game directory, not `user://`, because Godot reads it at engine startup before any script runs. Layout, as written by `_write_override_cfg` in `boot.gd`:
 
 ```
 [autoload_prepend]
@@ -103,11 +122,13 @@ ModLoader="*res://modloader.gd"
 
 Three invariants:
 
-- **ModLoader is always in `[autoload_prepend]`, last entry.** `[autoload_prepend]` is reverse-insertion -- last listed = first loaded. This ensures ModLoader's static-init mount runs before any mod autoload's script references resolve. See the rationale at [boot.gd:623-632](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L623).
-- **Late autoloads never appear in `override.cfg`.** If they did, Godot would try to load them before archives are mounted in static init. They're instantiated manually in `_finish_*` helpers after mounts land.
-- **Atomic write via `.tmp` + park/promote.** [boot.gd:654-679](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L654). `DirAccess.rename()` on Windows won't overwrite, so the live file is parked as `override.cfg.old`, the `.tmp` is promoted, then the `.old` is dropped; on any failure the `.old` is restored. The live `override.cfg` is never deleted before the replacement is proven in place -- losing it would permanently un-load the ModLoader autoload with no way to self-heal.
+- ModLoader is always the last entry in `[autoload_prepend]`. That section is reverse-insertion (last listed = first loaded), so the ModLoader instance mounts archives before later mod autoloads initialize. In plain `[autoload]` some game autoloads would pin their bytecode before static init could preempt them.
+- Late autoloads never appear in `override.cfg`. Godot would try to load them before the archives are mounted. `_finish_boot` instantiates them after the mounts land.
+- The write is atomic: `.tmp`, then park the live file as `override.cfg.old`, promote the `.tmp`, drop the `.old`. Windows `DirAccess.rename()` will not overwrite, hence the park step. On any failure the `.old` is restored (by byte copy if the rename back fails too). The live file is never deleted before its replacement is proven in place; losing it would un-load the ModLoader autoload with no way to self-heal. `_static_write_cfg_atomic` is the one writer, shared by `_write_override_cfg` and the static reset paths.
 
-Non-autoload sections (`[display]`, `[input]`, etc.) are preserved via `_read_preserved_cfg_sections` ([fs_archive.gd:93](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/fs_archive.gd#L93)) and re-concatenated.
+Each early autoload line is checked by `_autoload_entry_writable` first: the name must be a plain identifier and the path a `res://` or extracted `user://modloader_early/` path with no quotes, backslashes or newlines. Godot stops applying entries at the first malformed line, and the ModLoader line comes after the mod entries.
+
+Sections other than the two autoload ones (`[display]`, `[input]`, ...) survive through `_read_preserved_cfg_sections` in [src/fs_archive.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/fs_archive.gd).
 
 ## Pass state
 
@@ -115,28 +136,31 @@ Non-autoload sections (`[display]`, `[input]`, etc.) are preserved via `_read_pr
 
 | Key | Purpose |
 |---|---|
-| `restart_count` | Crash-loop guard -- `_check_crash_recovery` wipes when `>= MAX_RESTART_COUNT` (2) |
-| `mods_hash` | md5 of archive paths + stable mtimes (folder mods hash the source tree, not the temp zip) + prepend autoloads + enabled mods' declared versions + script_overrides + `MODLOADER_VERSION` + `modloader.gd` mtime. Mismatch forces restart |
+| `restart_count` | Incremented by `_write_pass_state`, read by `_check_crash_recovery`. The crash-loop breaker itself reads the streak file below, because the crashed-Pass-2 wipe deletes this file |
+| `mods_hash` | md5 of the archive paths in load order plus stable mtimes (folder mods hash the source tree, not the temp zip), prepend autoloads, enabled mods' declared versions, script overrides, `MODLOADER_VERSION` and `modloader.gd`'s own mtime. A mismatch forces a restart |
 | `archive_paths` | `PackedStringArray` replayed by static init's mount loop |
-| `modloader_version` | Version wipe check -- format may have changed |
+| `modloader_version` | Version check at static init |
 | `exe_mtime` | Game-update detection |
+| `pck_stamp` | The game PCK's `<mtime>:<size>`, the other half of game-update detection |
 | `timestamp` | Unix time, diagnostic only |
-| `script_overrides` | `[{vanilla_path, mod_script_path, mod_name, priority}]` for Pass 2 to replay |
-| `hook_pack_path` | Static init mounts this at next boot |
-| `hook_pack_wrapped_paths` | `PackedStringArray` of the vanilla script paths the hook pack wrapped last session; static init preempts exactly these (everything else is left to lenient lazy-compile) |
-| `hook_pack_exe_mtime` | Separate invalidation key for hook pack |
+| `script_overrides` | `[{vanilla_path, mod_script_path, mod_name, priority, seq}]` for Pass 2 to replay |
+| `hook_pack_path` | The pack static init mounts next boot |
+| `hook_pack_wrapped_paths` | The vanilla script paths the pack wrapped and activated eagerly; static init preempts exactly these. Scripts deferred for a module-scope scene preload are not listed and lazy-compile from the mounted pack |
+| `hook_pack_demotions` | The compile probe's verdicts from the Pass 1 generation: `res://` script path to `"wrap_only"` or `"excluded"`, empty when every rewrite shipped in full. A generation that finds the key repeats the verdicts and does not probe |
 
-Writer: `_write_pass_state` at [boot.gd:700](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L700). Hash computed by `_compute_state_hash` at [boot.gd:767](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L767).
+Writer: `_write_pass_state`. Hash: `_compute_state_hash`. `_persist_hook_pack_state` writes the three hook-pack keys separately, seeding `exe_mtime`, `pck_stamp` and `modloader_version` only when they are missing.
 
-Including `modloader.gd`'s own mtime in the hash is load-bearing ([boot.gd:786-800](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L786)): `ProjectSettings.load_resource_pack` dedupes by path, so rebuilding the loader without a restart would leave the old hook pack mount active with stale file offsets.
+The crash streak lives in its own file, `user://modloader_crash_streak` (`CRASH_STREAK_PATH`): a bare integer, bumped by `_write_pass_state`, reset to zero by `_clear_restart_counter`, read by `_crash_breaker_tripped`. `_static_force_vanilla_state` never touches it. See [Stability-Canaries](Stability-Canaries#restart-counter).
+
+Folding `modloader.gd`'s mtime into the hash matters: `ProjectSettings.load_resource_pack` dedupes by path, so rebuilding the loader without a restart would leave the old hook pack mount active with stale file offsets and reads of moved entries failing inside `file_access_zip.cpp`.
 
 ## Heartbeat + safe mode
 
-- **Heartbeat file** (`user://modloader_heartbeat.txt`) written right before the Pass 1 -> Pass 2 restart, deleted by every finish path (`_finish_single_pass`, `_finish_with_existing_mounts`, Pass 2 cleanup). A survivor at the next Pass 1 means the previous launch died between restart and finish; `_check_crash_recovery` logs a warning and clears it.
-- **Restart counter** in pass state, incremented by `_write_pass_state`. `_check_crash_recovery` at [boot.gd:813](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L813) force-resets when it hits `MAX_RESTART_COUNT` (2).
-- **Safe mode file** (`<exe>/modloader_safe_mode`) -- user-placed. `_check_safe_mode` at [boot.gd:828](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L828) detects, wipes state, removes the sentinel.
-- **Disabled sentinel** (`<exe>/modloader_disabled`) -- user-placed, sticky. Checked at static init by `_is_modloader_disabled` at [boot.gd:91](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd#L91). Modloader sits idle for the whole session until the user removes the file.
-- **One-shot vanilla sentinel** (`<exe>/modloader_disabled_once`) -- written by the UI's Launch Vanilla button; `_ready` deletes it after one vanilla boot, so the next launch is normal. If the game crashes before `_ready`, it persists and the next launch stays vanilla (intentional fail-safe).
-- **Pass 2 dirty marker** (`user://modloader_pass2_dirty`) -- written at Pass 2 start, deleted at Pass 2 end. Detected at next static init to force-wipe on interrupted runs.
+- Heartbeat (`user://modloader_heartbeat.txt`). Written right before the Pass 1 to Pass 2 restart, deleted by every finish path. A survivor at the next Pass 1 means the previous launch died between the restart and the finish; `_check_crash_recovery` logs a warning and clears it.
+- Restart counter. `restart_count` in pass state plus the streak file. `_check_crash_recovery` resets to clean state when a heartbeat survives and `restart_count >= MAX_RESTART_COUNT` (2). `_crash_breaker_tripped` refuses the two-pass restart when the streak reaches the same limit.
+- Safe mode file (`<exe>/modloader_safe_mode`). User-placed. `_check_safe_mode` wipes state and removes the file.
+- Disabled sentinel (`<exe>/modloader_disabled`). User-placed, sticky. The loader sits idle for the whole session until the file is removed.
+- One-shot vanilla sentinel (`<exe>/modloader_disabled_once`). Written by the launcher's "Launch vanilla" button; `_ready` deletes it after one vanilla boot. If the game crashes before `_ready`, it persists and the next launch stays vanilla, which is the intended fail-safe.
+- Pass 2 dirty marker (`user://modloader_pass2_dirty`). Written at Pass 2 start, deleted at Pass 2 end. A survivor makes the next static init force-wipe.
 
-See [Stability-Canaries](Stability-Canaries) for the escape hatches in detail.
+[Stability-Canaries](Stability-Canaries) covers the escape hatches in detail.

@@ -1,27 +1,17 @@
 ## ----- registry/sounds.gd -----
+## AudioLibrary is a plain Resource (not an autoload) that scripts preload
+## and read by direct property name (audioLibrary.knifeSlash). The Resource
+## cache makes every preload the same instance, so mutations propagate to
+## every holder.
 ##
-## AudioLibrary is a plain Resource at res://Resources/AudioLibrary.tres, not
-## an autoload. Every script that uses audio does `preload("res://Resources/
-## AudioLibrary.tres")` and accesses events by direct property name, e.g.
-## `audioLibrary.knifeSlash`. Godot's Resource cache means every preload
-## returns the same instance, so mutating fields on that one instance
-## propagates to every holder.
+## register/override accept: an AudioEvent Resource; a bare AudioStream
+## (wrapped in a default AudioEvent); or {audioClips, volume, randomPitch}.
+## patch() takes a subset of those three fields.
 ##
-## Data shape accepted by register/override:
-##   - AudioEvent Resource instance (direct)
-##   - AudioStream directly (wrapped in a default AudioEvent: volume=0, randomPitch=false)
-##   - Dictionary {audioClips: Array[AudioStream], volume: float, randomPitch: bool}
-##     (missing keys default sensibly)
-##
-## patch() takes {volume, randomPitch, audioClips} subset.
-##
-## register() limitation (mirrors scenes): registrations live in a mod-only
-## lookup dict. Vanilla scripts hardcode property names like `audioLibrary
-## .knifeSlash`, so a newly registered id isn't reachable from vanilla code.
-## Mods wanting to play their own sounds must fetch via
-## `lib.get_entry(lib.Registry.SOUNDS, "mymod_pickup")` or, equivalently,
-## `audioLibrary.get("mymod_pickup")`; both resolve through the same
-## storage (see _lookup_sound). Use override to affect what vanilla plays.
+## Vanilla hardcodes property names, so a newly registered id isn't
+## reachable from vanilla code, and a registration never touches the
+## library itself -- mods fetch it via get_entry. Use override to affect
+## what vanilla plays.
 
 const _AUDIO_LIBRARY_PATH := "res://Resources/AudioLibrary.tres"
 
@@ -40,18 +30,12 @@ func _audio_library() -> Resource:
 	_audio_library_cache = lib
 	return lib
 
-# Accept an AudioEvent, a bare AudioStream, or a Dictionary, and return an
-# AudioEvent Resource (or null with warning on bad input).
-#
-# AudioEvent's class script is loaded dynamically from the existing library;
-# we don't know its res:// path up front and don't want to hardcode it.
-# Pull the class from any existing @export AudioEvent on the library. This
-# also tolerates the game renaming or moving AudioEvent.gd.
+# Accept an AudioEvent, a bare AudioStream, or a Dictionary; return an
+# AudioEvent Resource or null with a warning. The AudioEvent class comes
+# from the live library (_audio_event_class), never a hardcoded path.
 func _coerce_audio_event(id: String, verb: String, data: Variant) -> Resource:
-	# Direct pass-through: already an AudioEvent-shaped Resource.
 	if data is Resource and _looks_like_audio_event(data):
 		return data
-	# Bare AudioStream: wrap in a default-constructed AudioEvent.
 	if data is AudioStream:
 		var ev_class := _audio_event_class()
 		if ev_class == null:
@@ -62,7 +46,6 @@ func _coerce_audio_event(id: String, verb: String, data: Variant) -> Resource:
 		ev.set("volume", 0.0)
 		ev.set("randomPitch", false)
 		return ev
-	# Dictionary shorthand.
 	if data is Dictionary:
 		var d: Dictionary = data
 		var ev_class_d := _audio_event_class()
@@ -74,9 +57,8 @@ func _coerce_audio_event(id: String, verb: String, data: Variant) -> Resource:
 			ev.set("audioClips", d["audioClips"])
 		else:
 			ev.set("audioClips", [])
-		# .get's default only covers an ABSENT key; a present-but-null (or
-		# wrong-typed) value would hit float(null)/bool(null), which is a
-		# runtime constructor error. Type-check before converting.
+		# .get's default only covers absent keys; a present-but-null value
+		# would crash float()/bool(), so type-check first.
 		var raw_vol = d.get("volume", 0.0)
 		if raw_vol is float or raw_vol is int:
 			ev.set("volume", float(raw_vol))
@@ -95,9 +77,8 @@ func _coerce_audio_event(id: String, verb: String, data: Variant) -> Resource:
 	push_warning("[Registry] %s('sounds', '%s', ...) expects AudioEvent / AudioStream / Dictionary, got %s" % [verb, id, typeof(data)])
 	return null
 
-# Walk the live AudioLibrary for the first non-null @export AudioEvent and
-# use its script as the AudioEvent class reference. Avoids hardcoding the
-# AudioEvent.gd path (which the game could move).
+# First non-null @export AudioEvent on the live library supplies the class;
+# hardcoding the AudioEvent.gd path would break if the game moves it.
 func _audio_event_class() -> GDScript:
 	var lib := _audio_library()
 	if lib == null:
@@ -115,25 +96,21 @@ func _audio_event_class() -> GDScript:
 	return null
 
 func _looks_like_audio_event(res: Resource) -> bool:
-	# AudioEvent is identified by its three canonical fields. Same heuristic
-	# shape as _looks_like_item_data for ItemData.
+	# Shape heuristic on the three canonical fields (cf _looks_like_item_data).
 	return _object_has_property(res, "audioClips") \
 			and _object_has_property(res, "volume") \
 			and _object_has_property(res, "randomPitch")
 
-# True if the name is a declared @export property on AudioLibrary. Used to
-# distinguish "override vanilla sound" from "register new sound".
+# True if the name is a declared @export property on AudioLibrary.
 func _sound_exists_in_vanilla(id: String) -> bool:
 	var lib := _audio_library()
 	if lib == null:
 		return false
 	return _object_has_property(lib, id)
 
-# Lookup precedence: mod overrides > mod registrations > vanilla library
-# field. Overrides on vanilla names live as set() mutations on the library
-# itself; lookups via audioLibrary.get(id) would find them there. To keep
-# the registry self-contained and work for register-only ids too, we route
-# through _registry_registered first, falling back to the library.
+# Overrides on vanilla names are set() mutations on the library itself, so
+# the library read already sees them; the registered dict comes first only
+# to cover register-only ids.
 func _lookup_sound(id: String) -> Resource:
 	var reg: Dictionary = _registry_registered.get("sounds", {})
 	if reg.has(id):
@@ -166,16 +143,13 @@ func _override_sound(id: String, data: Variant) -> bool:
 	if lib == null:
 		return false
 	if not _sound_exists_in_vanilla(id):
-		# Mod-registered ids can't be overridden; that's what a second
-		# register call would be conceptually, but we reject re-register.
-		# Force mods to revert first.
+		# Mod-registered ids can't be overridden; revert the register first.
 		push_warning("[Registry] override('sounds', '%s'): no vanilla AudioLibrary field with that name (register can't be overridden; revert the register first)" % id)
 		return false
 	var ev := _coerce_audio_event(id, "override", data)
 	if ev == null:
 		return false
-	# First-write-wins stash so multiple overrides on the same id still
-	# restore to true vanilla on revert.
+	# First-write-wins stash so stacked overrides revert to true vanilla.
 	var ov: Dictionary = _registry_overridden.get("sounds", {})
 	if not ov.has(id):
 		ov[id] = lib.get(id)
@@ -184,26 +158,13 @@ func _override_sound(id: String, data: Variant) -> bool:
 	_log_debug("[Registry] overrode sound '%s'" % id)
 	return true
 
-func _append_sound(id: String, field: String, values: Array, allow_duplicates: bool) -> bool:
+# append, prepend and remove_from share one body; `op` selects the operation.
+func _array_op_sound(id: String, field: String, op: String, values: Array, allow_duplicates: bool) -> bool:
 	var target := _lookup_sound(id)
 	if target == null:
-		push_warning("[Registry] append('sounds', '%s'): no sound with that id" % id)
+		push_warning("[Registry] %s('sounds', '%s'): no sound with that id" % [op, id])
 		return false
-	return _array_op_on_resource("sounds", id, target, field, "append", values, allow_duplicates)
-
-func _prepend_sound(id: String, field: String, values: Array, allow_duplicates: bool) -> bool:
-	var target := _lookup_sound(id)
-	if target == null:
-		push_warning("[Registry] prepend('sounds', '%s'): no sound with that id" % id)
-		return false
-	return _array_op_on_resource("sounds", id, target, field, "prepend", values, allow_duplicates)
-
-func _remove_from_sound(id: String, field: String, values: Array) -> bool:
-	var target := _lookup_sound(id)
-	if target == null:
-		push_warning("[Registry] remove_from('sounds', '%s'): no sound with that id" % id)
-		return false
-	return _array_op_on_resource("sounds", id, target, field, "remove_from", values, false)
+	return _array_op_on_resource("sounds", id, target, field, op, values, allow_duplicates)
 
 
 func _patch_sound(id: String, fields: Dictionary) -> bool:
@@ -224,6 +185,7 @@ func _patch_sound(id: String, fields: Dictionary) -> bool:
 			continue
 		if not stash.has(field_name):
 			stash[field_name] = target.get(field_name)
+			_patch_source_note("sounds", id, field_name, target)
 		target.set(field_name, fields[field])
 	patched[id] = stash
 	_registry_patched["sounds"] = patched
@@ -235,17 +197,16 @@ func _remove_sound(id: String) -> bool:
 	if not reg.has(id):
 		push_warning("[Registry] remove('sounds', '%s'): not registered by a mod" % id)
 		return false
-	# Sounds don't have the items-style override-lives-in-registered dual
-	# storage; overrides mutate the library directly, not this dict. So
-	# anything in reg is a plain register.
+	# Overrides mutate the library, not this dict, so anything in reg is a
+	# plain register.
 	reg.erase(id)
 	_registry_registered["sounds"] = reg
-	# Drop the id's patch stash with the entry (mirrors _remove_event): stale
-	# originals would poison a later re-registration under the same id.
+	# Drop the patch stash: stale originals would poison a re-registration.
 	var patched: Dictionary = _registry_patched.get("sounds", {})
 	if patched.has(id):
 		patched.erase(id)
 		_registry_patched["sounds"] = patched
+		_patch_source_forget("sounds", id)
 	_log_debug("[Registry] removed sound '%s'" % id)
 	return true
 
@@ -254,18 +215,18 @@ func _revert_sound(id: String, fields: Array) -> bool:
 	var ov: Dictionary = _registry_overridden.get("sounds", {})
 	var patched: Dictionary = _registry_patched.get("sounds", {})
 	var lib := _audio_library()
-	# Full revert: undo override AND clear patches. Order: patches first
-	# (onto whatever's currently resolving, which may be an override), then
-	# override (replaces whole entry with the stashed vanilla).
+	# Full revert: patches first, each value onto the AudioEvent it was read
+	# from (see _revert_item), then the override itself.
 	if fields.is_empty():
 		if patched.has(id):
-			var target := _lookup_sound(id)
-			if target != null:
-				var stash: Dictionary = patched[id]
-				for fname in stash.keys():
-					target.set(fname, stash[fname])
+			var stash: Dictionary = patched[id]
+			for fname in stash.keys():
+				var source: Resource = _patch_source("sounds", id, fname, _lookup_sound(id))
+				if source != null:
+					source.set(fname, stash[fname])
 			patched.erase(id)
 			_registry_patched["sounds"] = patched
+			_patch_source_forget("sounds", id)
 			did_something = true
 		if ov.has(id) and lib != null:
 			lib.set(id, ov[id])
@@ -275,7 +236,6 @@ func _revert_sound(id: String, fields: Array) -> bool:
 		if not did_something:
 			push_warning("[Registry] revert('sounds', '%s'): nothing to revert" % id)
 		return did_something
-	# Per-field revert: only undo named fields on a patch.
 	if not patched.has(id):
 		push_warning("[Registry] revert('sounds', '%s', %s): no patches on this id" % [id, fields])
 		return false
@@ -289,7 +249,8 @@ func _revert_sound(id: String, fields: Array) -> bool:
 		if not stash.has(fname):
 			push_warning("[Registry] revert('sounds', '%s'): field '%s' wasn't patched" % [id, fname])
 			continue
-		target.set(fname, stash[fname])
+		(_patch_source("sounds", id, fname, target) as Resource).set(fname, stash[fname])
+		_patch_source_forget("sounds", id, fname)
 		stash.erase(fname)
 		did_something = true
 	if stash.is_empty():

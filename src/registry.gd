@@ -4,43 +4,22 @@
 ## Usage:
 ##   lib.register(lib.Registry.SCENES, "my_item", preload("res://mymod/item.tscn"))
 ##   lib.override(lib.Registry.SCENES, "Potato", preload("res://mymod/better_potato.tscn"))
-##   lib.remove(lib.Registry.SCENES, "my_item")
-##   lib.revert(lib.Registry.SCENES, "Potato")
 ##
-## This file owns:
-##   - the Registry const (canonical registry names)
-##   - rollback tracking dicts shared across sections
-##   - the public verb dispatchers (register/override/patch/append/prepend/
-##     remove_from/remove/revert), their batched *_many forms, and the read
-##     API (get_entry / has / keys / list / find)
+## Owns the Registry const, the rollback dicts, the verb dispatchers and
+## their *_many forms, and the read API (get_entry / has / keys / list /
+## find). Per-registry handlers live in src/registry/*.gd.
 ##
-## Per-registry handlers live in src/registry/*.gd. NEW-SECTION CHECKLIST --
-## adding a registry section touches all of these:
-##   1. Add a Registry.FOO constant below
-##   2. Add a match-arm in EVERY dispatcher in this file: register, override,
-##      patch, _array_op_dispatch, remove, revert, get_entry, and
-##      _enumerate_vanilla. Verbs the section doesn't support still need an
-##      explicit warn-and-return-false arm (see 'resources'/'scene_nodes'
-##      arms), or callers get a misleading "unknown registry" warning.
-##   3. Create src/registry/foo.gd with the _register_foo / _override_foo /
-##      _patch_foo / _remove_foo / _revert_foo handlers those arms call.
-##   4. List the new file in build.sh's FILES array (order only matters when
-##      a const initializer references a const from another file).
-##   5. If the section needs game-code cooperation (injected dicts/preludes,
-##      as scenes/loader/ai/fish do), add the injection in rewriter.gd; wire
-##      any boot-time listener in hooks_api (see scene_nodes).
-##   6. Document the section in docs/wiki/Registry.md.
-## setup(), the *_many batch verbs, and has/keys/list/find pick the new
-## section up automatically once the match arms exist.
+## Adding a section touches: the Registry.FOO const; a match arm in every
+## dispatcher here (a forgotten arm is not a compile error and lands in the
+## `_:` default at runtime, so unsupported verbs need an explicit refusing arm);
+## the src/registry/foo.gd handlers; the build.sh FILES entry; any injection in
+## rewriter_registry_inject.gd + hook_pack.gd; and docs/wiki/Registry.md.
 ##
-## Timing constraint: Trader / LootContainer / LootSimulation fill local
-## buckets from LootTables in their `_ready()` and never re-read. Mod authors
-## MUST register loot during their own mod `_ready()`; earlier in the
-## autoload order; or their entries won't propagate to world loot and
-## traders. Runtime re-registration after scene load is invisible.
+## Timing: Trader / LootContainer / LootSimulation fill local buckets from
+## LootTables in _ready() and never re-read, so mods must register loot
+## during their own _ready() or earlier in the autoload order.
 
-# Registry name constants. Mods use lib.Registry.SCENES etc. instead of raw
-# strings so typos surface at parse time.
+# Mods use lib.Registry.SCENES etc. instead of raw strings so typos surface at parse time.
 const Registry := {
 	SCENES = "scenes",
 	ITEMS = "items",
@@ -63,97 +42,76 @@ const Registry := {
 	MAGAZINES = "magazines",
 	ATTACHMENTS = "attachments",
 	AI_LOADOUTS = "ai_loadouts",
-	# TRACKS = "tracks",  # not yet implemented
 }
 
-# Rollback tracking. Populated by register/override/patch, consumed by
-# remove/revert. Structure: reg -> {id -> {...per-verb data}}.
-#   _registry_registered: reg -> {id -> data}         (newly created entries)
-#   _registry_overridden: reg -> {id -> original}     (full-entry replacements)
-#   _registry_patched:    reg -> {id -> {field -> original_value}}
-# Per-field patch tracking stores the value as it was BEFORE the first patch
-# to that field; subsequent patches to the same field don't overwrite the
-# stash, so revert restores true original state.
+# Rollback tracking, reg -> {id -> per-verb data}. Populated by register/
+# override/patch, consumed by remove/revert. Patch stashes each field's
+# pre-first-patch value, so revert restores the true original.
 var _registry_registered: Dictionary = {}
 var _registry_overridden: Dictionary = {}
 var _registry_patched: Dictionary = {}
+# Where each stashed value was read from: reg -> {key -> {field -> Resource or
+# Dictionary}}. An override placed after a patch changes what the id resolves
+# to, and revert has to reach the object the patch changed. Read by items,
+# sounds and scene_paths, the slots where an override can do that.
+var _registry_patch_sources: Dictionary = {}
+
+# Default-arm diagnostic: a mod typo, or a Registry const with no match arm
+# for this verb, which is a loader bug nothing else flags.
+func _warn_unknown_registry(verb: String, registry: String) -> void:
+	if registry in Registry.values():
+		push_warning("[Registry] %s: '%s' is declared in the Registry const but has no match arm in %s -- unwired section (loader bug, see \"Adding a registry section\" in CONTRIBUTING.md), not a mod typo" \
+				% [verb, registry, verb])
+	else:
+		push_warning("[Registry] %s: unknown registry '%s'" % [verb, registry])
 
 # ---- Aggregator helpers (weapons / magazines / attachments) ----
-# These wrap several primitive registries (ITEMS + SCENES + LOOT +
-# TRADER_POOLS, plus patches to vanilla weapons' `compatible`) into a
-# single call. Return a Dictionary with per-step success bools so mods
-# can inspect partial failures. The weapon/magazine/attachment standard
-# verbs collapse the dict to a single bool; call the public methods
-# below directly when you want the granular result. register_item is
-# method-only (no Registry const) since the bare-Resource form of
-# register('items', ...) already exists.
+# Wrap several primitive registries into one call and return per-step success
+# bools; the standard verbs collapse that to one bool.
 
-## Register a generic item bundle (ItemData + optional scene/icon/loot/
-## trader_pools). Use this for content that doesn't fit the
-## weapon/mag/attachment helpers (consumables, keys, tools, ammo).
-##
-## ALWAYS takes a Dictionary of {id: data}, even for a single registration:
-##   lib.register_item({"my_potion": {item: ..., scene: ..., loot_tables: [...]}})
-##
-## Returns {ok: bool, results: {id: granular_dict}} where each granular_dict
-## is the per-entry result with sub-bools for items/scene/loot_count/etc.
-## See registry/aggregators.gd for the full per-entry schema.
+## Register generic item bundles (ItemData + optional scene/icon/loot/
+## trader_pools). Always takes {id: data}, even for one entry. Returns
+## {ok, results: {id: granular_dict}}; schema in registry/aggregators.gd.
 func register_item(entries: Dictionary) -> Dictionary:
 	return _register_aggregator_batch("item", entries)
 
-## Register one or more furniture bundles (ItemData with type='Furniture' +
-## placed scene + trader_pools, optional crafting recipe). Furniture is
-## intentionally not loot-pool spawnable; trader_pools defaults to
-## ['Generalist'] with a warn if missing.
+## Register furniture bundles (ItemData with type='Furniture' + placed scene
+## + trader_pools, optional crafting recipe). Not loot-pool spawnable;
+## trader_pools defaults to ['Generalist'] with a warn if missing.
 func register_furniture(entries: Dictionary) -> Dictionary:
 	return _register_aggregator_batch("furniture", entries)
 
-## Register one or more weapon bundles (item + scene + rig, optional
-## magazines / fits_attachments / loot_tables). Iterate result.results to
-## inspect per-id sub-result.
+## Register weapon bundles (item + scene + rig, optional magazines /
+## fits_attachments / loot_tables). result.results has per-id sub-results.
 func register_weapon(entries: Dictionary) -> Dictionary:
 	return _register_aggregator_batch("weapon", entries)
 
-## Register one or more magazine bundles (item + scene, optional
-## fits_weapons / loot_tables). Patches each fits_weapons target's
-## compatible array.
+## Register magazine bundles (item + scene, optional fits_weapons /
+## loot_tables). Patches each fits_weapons target's compatible array.
 func register_magazine(entries: Dictionary) -> Dictionary:
 	return _register_aggregator_batch("magazine", entries)
 
-## Register one or more attachment bundles. Same shape as register_magazine;
-## the split is for mod-author readability (vanilla's `compatible` field
-## doesn't distinguish mag from attachment).
+## Register attachment bundles. Same shape as register_magazine; the split
+## is only for readability (vanilla `compatible` doesn't distinguish).
 func register_attachment(entries: Dictionary) -> Dictionary:
 	return _register_aggregator_batch("attachment", entries)
 
-## Register one or more AI loadout entries (declares which AI categories
-## carry which weapon scenes, with per-entry probability + optional
-## replace-vanilla flag). Use this when:
-##   - You want to add an existing weapon (vanilla or modded) to AI's
-##     spawn pool without going through register_weapon.
-##   - You want different categories' rolls to use distinct ids so they
-##     can be reverted or removed independently.
-##
-## For weapons you're already registering, the simpler path is the
-## ai_loadout field on register_weapon -- it auto-uses the weapon's
-## scene and id, and a single failure mode is reported in result.ai_loadout.
-##
-## Per-entry data: {weapon_scene, ai_types[], chance?, replace?}.
-## See AI_LOADOUTS_PLAN.md or registry/ai_loadouts.gd for shape detail.
+## Register AI loadout entries: which AI categories carry which weapon
+## scenes. Per-entry data: {weapon_scene, ai_types[], chance?, replace?};
+## see registry/ai_loadouts.gd. Weapons being registered anyway can use
+## register_weapon's ai_loadout field instead.
 func register_ai_loadout(entries: Dictionary) -> Dictionary:
 	return _register_aggregator_batch("ai_loadout", entries)
 
 
-# Internal: shared loop for all aggregator helpers. Dispatches each entry to
-# the per-aggregator worker (_register_item_bundle / _register_weapon / etc.)
-# and wraps the per-id granular results in {ok, results: {id: granular}}.
-# Failures isolate -- one bad entry doesn't stop the next.
+# Shared loop for all aggregator helpers. Wraps per-id granular results in
+# {ok, results}; one bad entry doesn't stop the next.
 func _register_aggregator_batch(kind: String, entries: Dictionary) -> Dictionary:
 	var results: Dictionary = {}
 	var all_ok := true
 	for id in entries.keys():
-		# str(), not String(): a non-String key must not abort the batch (see
-		# remove_many).
+		# str(), not String(): String() is the non-converting constructor and a
+		# non-String key would abort the batch mid-way. Same everywhere a batch verb stringifies keys.
 		var sid := str(id)
 		var per: Dictionary
 		match kind:
@@ -163,10 +121,7 @@ func _register_aggregator_batch(kind: String, entries: Dictionary) -> Dictionary
 			"magazine":   per = _register_magazine(sid, entries[id])
 			"attachment": per = _register_attachment(sid, entries[id])
 			"ai_loadout":
-				# Thin wrapper: ai_loadouts is a primitive registry, not
-				# a multi-step bundle. Wrap the bool result in the same
-				# {ok, ...} shape as the other aggregators for batch-loop
-				# consistency.
+				# ai_loadouts is a primitive registry; wrap its bool in the shared shape.
 				var ok: bool = _register_ai_loadout(sid, entries[id])
 				per = {"ok": ok}
 			_:
@@ -178,7 +133,7 @@ func _register_aggregator_batch(kind: String, entries: Dictionary) -> Dictionary
 
 # ---- Public verbs ----
 
-## Register a NEW entry. Fails if the id already exists (in vanilla or prior
+## Register a new entry. Fails if the id already exists (in vanilla or prior
 ## mod registrations). Returns true on success.
 func register(registry: String, id: String, data: Variant) -> bool:
 	if id == "":
@@ -208,17 +163,14 @@ func register(registry: String, id: String, data: Variant) -> bool:
 			push_warning("[Registry] register: 'scene_nodes' doesn't support register (nodes are positional inside a scene; use override('scenes', ...) to replace the whole scene or patch('scene_nodes', ...) to mutate node properties)")
 			return false
 		"weapons":
-			# Aggregator helper returns a granular Dictionary. register()
-			# collapses to the bool "did everything succeed" view; mods that
-			# want per-step success should call lib.register_weapon(id, data)
-			# directly to get the full dict.
+			# Collapse the aggregator's granular dict to a bool.
 			return bool(_register_weapon(id, data).get("ok", false))
 		"magazines":
 			return bool(_register_magazine(id, data).get("ok", false))
 		"attachments":
 			return bool(_register_attachment(id, data).get("ok", false))
 		_:
-			push_warning("[Registry] register: unknown registry '%s'" % registry)
+			_warn_unknown_registry("register", registry)
 			return false
 
 ## Replace an existing entry. Preserves the original so revert() can restore.
@@ -264,29 +216,19 @@ func override(registry: String, id: String, data: Variant) -> bool:
 			push_warning("[Registry] override: '%s' is a pure aggregator -- override the underlying primitives instead (override('items', ...) for the ItemData, override('scenes', ...) for the world/rig scene)" % registry)
 			return false
 		_:
-			push_warning("[Registry] override: unknown registry '%s'" % registry)
+			_warn_unknown_registry("override", registry)
 			return false
 
-## Partial update: merge `fields` into the entry at `id`. Not every registry
-## supports patch; scenes are monolithic PackedScenes, loot entries are
-## bare ItemData references (patch via the items registry instead). Returns
-## false with guidance on unsupported registries.
+## Partial update: merge `fields` into the entry at `id`. Unsupported
+## registries return false with guidance. 'recipes', 'events', and
+## 'trader_tasks' also accept a direct Resource ref as `id`.
 ##
-## `id` is String for most registries. The 'recipes', 'events', and
-## 'trader_tasks' registries also accept a direct Resource ref (RecipeData /
-## EventData / TaskData) so mods can patch vanilla entries without first
-## registering a handle; same semantics, just skips the indirection when
-## the mod already holds the ref.
-##
-## Return contract (current behavior, drifted across handlers -- documented
-## as-is; convergence is queued as plan item B3): items, sounds, recipes,
-## events and trader_tasks return true whenever the id resolves, even if
-## EVERY field was rejected as unknown (each bad field warns and is
-## skipped). resources and inputs return false unless at least one field
-## actually applied. scene_nodes validates up front and rejects the whole
-## patch (returns false, applies nothing) if any field is missing on the
-## target node. scene_paths entries are open Dictionaries, so any field
-## name is accepted. All handlers return false when the id doesn't resolve.
+## Return contract varies by handler: items/sounds/recipes/events/
+## trader_tasks return true whenever the id resolves, even if every field
+## was rejected (bad fields warn and skip); resources and inputs need at
+## least one field applied; scene_nodes validates up front and applies
+## nothing if any field is missing; scene_paths entries are open dicts, any
+## field is accepted. All return false when the id doesn't resolve.
 func patch(registry: String, id: Variant, fields: Dictionary) -> bool:
 	if id is String and id == "":
 		push_warning("[Registry] patch(%s, ...) called with empty id" % registry)
@@ -356,35 +298,29 @@ func patch(registry: String, id: Variant, fields: Dictionary) -> bool:
 			push_warning("[Registry] patch: '%s' is a pure aggregator -- patch the underlying primitive instead (patch('items', ...) for ItemData fields like compatible/damage/etc)" % registry)
 			return false
 		_:
-			push_warning("[Registry] patch: unknown registry '%s'" % registry)
+			_warn_unknown_registry("patch", registry)
 			return false
 
-## Append values to an Array field on a registry entry. Array-only.
-## De-duplicates by default (matches typical mod intent for compatibility lists);
-## pass allow_duplicates=true to permit repeats. `values` accepts a single value
-## or an Array. First-write-wins stash is shared with patch(), so revert()
-## restores the true pre-any-mutation array even after multiple ops.
+## Append values (one or an Array) to an Array field. De-duplicates by
+## default; pass allow_duplicates=true to permit repeats. Shares patch()'s
+## first-write-wins stash, so revert() restores the pre-mutation array.
 func append(registry: String, id: Variant, field: String, values: Variant, allow_duplicates: bool = false) -> bool:
 	return _array_op_dispatch(registry, id, field, "append", values, allow_duplicates)
 
 
-## Prepend values to an Array field. Same de-dup semantics as append; the
-## resulting prefix order matches the input order (prepend([a, b]) on [c]
-## yields [a, b, c]).
+## Prepend values to an Array field. Same de-dup semantics as append;
+## prepend([a, b]) on [c] yields [a, b, c].
 func prepend(registry: String, id: Variant, field: String, values: Variant, allow_duplicates: bool = false) -> bool:
 	return _array_op_dispatch(registry, id, field, "prepend", values, allow_duplicates)
 
 
-## Remove values from an Array field. Removes ALL matching occurrences.
+## Remove values from an Array field. Removes all matching occurrences.
 ## Silent skip if a value isn't present (idempotent).
 func remove_from(registry: String, id: Variant, field: String, values: Variant) -> bool:
 	return _array_op_dispatch(registry, id, field, "remove_from", values, false)
 
 
-# Shared dispatcher for append/prepend/remove_from. Mirrors patch()'s
-# registry-by-registry routing exactly: registries that support patch on
-# Resource fields get a per-registry helper here; registries with non-Resource
-# entries (scenes, loot, shelters, etc.) get a warn-and-return-false branch.
+# Shared dispatcher for append/prepend/remove_from; mirrors patch()'s routing.
 func _array_op_dispatch(registry: String, id: Variant, field: String, op: String, values: Variant, allow_duplicates: bool) -> bool:
 	if id is String and id == "":
 		push_warning("[Registry] %s(%s, ...) called with empty id" % [op, registry])
@@ -392,10 +328,7 @@ func _array_op_dispatch(registry: String, id: Variant, field: String, op: String
 	if field == "":
 		push_warning("[Registry] %s(%s, ...) called with empty field" % [op, registry])
 		return false
-	# Reject null up front. Without this, _coerce_to_array(null) returns
-	# [null] (not []), the empty-check passes, and the typed-array validator
-	# rejects null with a misleading "rejected by typed-array constraint"
-	# message that doesn't tell the caller the real problem.
+	# Reject null up front: _coerce_to_array(null) yields [null] and a misleading error later.
 	if values == null:
 		push_warning("[Registry] %s('%s', %s): null is not a valid value (pass a value or an Array of values)" \
 				% [op, registry, str(id)])
@@ -409,33 +342,18 @@ func _array_op_dispatch(registry: String, id: Variant, field: String, op: String
 			if not (id is String):
 				push_warning("[Registry] %s('items', ...): id must be a String" % op)
 				return false
-			match op:
-				"append":      return _append_item(id, field, arr, allow_duplicates)
-				"prepend":     return _prepend_item(id, field, arr, allow_duplicates)
-				"remove_from": return _remove_from_item(id, field, arr)
+			return _array_op_item(id, field, op, arr, allow_duplicates)
 		"sounds":
 			if not (id is String):
 				push_warning("[Registry] %s('sounds', ...): id must be a String" % op)
 				return false
-			match op:
-				"append":      return _append_sound(id, field, arr, allow_duplicates)
-				"prepend":     return _prepend_sound(id, field, arr, allow_duplicates)
-				"remove_from": return _remove_from_sound(id, field, arr)
+			return _array_op_sound(id, field, op, arr, allow_duplicates)
 		"recipes":
-			match op:
-				"append":      return _append_recipe(id, field, arr, allow_duplicates)
-				"prepend":     return _prepend_recipe(id, field, arr, allow_duplicates)
-				"remove_from": return _remove_from_recipe(id, field, arr)
+			return _array_op_recipe(id, field, op, arr, allow_duplicates)
 		"events":
-			match op:
-				"append":      return _append_event(id, field, arr, allow_duplicates)
-				"prepend":     return _prepend_event(id, field, arr, allow_duplicates)
-				"remove_from": return _remove_from_event(id, field, arr)
+			return _array_op_event(id, field, op, arr, allow_duplicates)
 		"trader_tasks":
-			match op:
-				"append":      return _append_trader_task(id, field, arr, allow_duplicates)
-				"prepend":     return _prepend_trader_task(id, field, arr, allow_duplicates)
-				"remove_from": return _remove_from_trader_task(id, field, arr)
+			return _array_op_trader_task(id, field, op, arr, allow_duplicates)
 		"inputs":
 			push_warning("[Registry] %s: 'inputs' has no Array-typed fields (display_label/default_event/deadzone are scalars; use patch instead)" % op)
 			return false
@@ -446,10 +364,7 @@ func _array_op_dispatch(registry: String, id: Variant, field: String, op: String
 			if not (id is String):
 				push_warning("[Registry] %s('resources', ...): id must be a res:// path String" % op)
 				return false
-			match op:
-				"append":      return _append_resource(id, field, arr, allow_duplicates)
-				"prepend":     return _prepend_resource(id, field, arr, allow_duplicates)
-				"remove_from": return _remove_from_resource(id, field, arr)
+			return _array_op_resource(id, field, op, arr, allow_duplicates)
 		"scene_nodes":
 			push_warning("[Registry] %s: 'scene_nodes' patches store literal property values applied on scene-load; Array-merge isn't supported (read the property in a hook and patch the merged value instead)" % op)
 			return false
@@ -464,6 +379,9 @@ func _array_op_dispatch(registry: String, id: Variant, field: String, op: String
 			return false
 		"shelters":
 			push_warning("[Registry] %s: 'shelters' doesn't support array ops (entries are bare strings)" % op)
+			return false
+		"maps":
+			push_warning("[Registry] %s: 'maps' doesn't support array ops (entries are bare strings)" % op)
 			return false
 		"random_scenes":
 			push_warning("[Registry] %s: 'random_scenes' doesn't support array ops (entries are bare paths)" % op)
@@ -481,14 +399,13 @@ func _array_op_dispatch(registry: String, id: Variant, field: String, op: String
 			push_warning("[Registry] %s: '%s' is a pure aggregator -- use the underlying primitive (e.g. %s('items', ...))" % [op, registry, op])
 			return false
 		_:
-			push_warning("[Registry] %s: unknown registry '%s'" % [op, registry])
+			_warn_unknown_registry(op, registry)
 			return false
 	return false
 
 
-## Undo a register(). Fails if the id wasn't registered by a mod (can't
-## remove vanilla entries via this API; use override with a disabled
-## equivalent, or rely on the game's own toggle mechanisms).
+## Undo a register(). Fails if the id wasn't registered by a mod; vanilla
+## entries can't be removed, only overridden.
 func remove(registry: String, id: String) -> bool:
 	match registry:
 		"scenes": return _remove_scene(id)
@@ -517,16 +434,12 @@ func remove(registry: String, id: String) -> bool:
 			push_warning("[Registry] remove: '%s' is a pure aggregator -- remove the underlying primitives instead (remove('items', ...), remove('scenes', ...), remove('loot', ...))" % registry)
 			return false
 		_:
-			push_warning("[Registry] remove: unknown registry '%s'" % registry)
+			_warn_unknown_registry("remove", registry)
 			return false
 
-## Undo an override() or patch(). `fields` is for per-field revert on patch
-## registries; leave empty to revert everything (both override and all
-## accumulated patches on the id).
-##
-## `id` widens to Variant for symmetry with patch(): the 'recipes',
-## 'events', and 'trader_tasks' registries accept either a String handle or
-## a Resource ref. Other registries require String.
+## Undo an override() or patch(). `fields` selects per-field revert; leave
+## empty to revert everything on the id. As with patch(), 'recipes',
+## 'events', and 'trader_tasks' also accept a Resource ref as `id`.
 func revert(registry: String, id: Variant, fields: Array = []) -> bool:
 	match registry:
 		"scenes":
@@ -611,20 +524,16 @@ func revert(registry: String, id: Variant, fields: Array = []) -> bool:
 			push_warning("[Registry] revert: '%s' is a pure aggregator -- revert the underlying primitives instead" % registry)
 			return false
 		_:
-			push_warning("[Registry] revert: unknown registry '%s'" % registry)
+			_warn_unknown_registry("revert", registry)
 			return false
 
-## Batched form of register(). `entries` is `{id: data, ...}`. Fans out to
-## register() per entry; failures are isolated (one bad id doesn't stop the
-## others). Returns `{ok: bool, results: {id: bool, ...}}`. `ok` is true only
-## when every entry succeeded.
+## Batched form of register(). `entries` is `{id: data, ...}`. Failures are
+## isolated per entry. Returns `{ok: bool, results: {id: bool, ...}}`; `ok`
+## is true only when every entry succeeded.
 func register_many(registry: String, entries: Dictionary) -> Dictionary:
 	var results: Dictionary = {}
 	var all_ok := true
 	for id in entries.keys():
-		# register() takes a String id; a non-String dict key would be a
-		# runtime argument-type error that aborts the batch mid-way (entries
-		# before it committed, the rest never ran). str() isolates it instead.
 		var ok: bool = register(registry, str(id), entries[id])
 		results[id] = ok
 		if not ok:
@@ -637,7 +546,6 @@ func override_many(registry: String, entries: Dictionary) -> Dictionary:
 	var results: Dictionary = {}
 	var all_ok := true
 	for id in entries.keys():
-		# str(): same batch-abort guard as register_many.
 		var ok: bool = override(registry, str(id), entries[id])
 		results[id] = ok
 		if not ok:
@@ -650,7 +558,16 @@ func patch_many(registry: String, entries: Dictionary) -> Dictionary:
 	var results: Dictionary = {}
 	var all_ok := true
 	for id in entries.keys():
-		var ok: bool = patch(registry, id, entries[id])
+		var fields: Variant = entries[id]
+		# Same guard as revert_many: patch() takes a Dictionary, and a script
+		# error on a bad value would end the batch at this entry.
+		if not (fields is Dictionary):
+			push_warning("[Registry] patch_many('%s', '%s'): value must be a Dictionary of fields; got %s. Skipping." \
+					% [registry, str(id), type_string(typeof(fields))])
+			results[id] = false
+			all_ok = false
+			continue
+		var ok: bool = patch(registry, id, fields)
 		results[id] = ok
 		if not ok:
 			all_ok = false
@@ -659,7 +576,7 @@ func patch_many(registry: String, entries: Dictionary) -> Dictionary:
 
 ## Batched form of append(). `entries` is `{id: values, ...}` where values is
 ## a single value or Array. Same field across all entries (most common case);
-## use individual append() calls if you need different fields per id.
+## use individual append() calls when entries need different fields.
 func append_many(registry: String, field: String, entries: Dictionary, allow_duplicates: bool = false) -> Dictionary:
 	var results: Dictionary = {}
 	var all_ok := true
@@ -702,11 +619,8 @@ func revert_many(registry: String, entries: Dictionary) -> Dictionary:
 	var all_ok := true
 	for id in entries.keys():
 		var v: Variant = entries[id]
-		# Strict: a non-Array value (typo like {id: "field_name"} instead of
-		# {id: ["field_name"]}) used to silently coerce to [] and trigger a
-		# full revert, losing other unrelated patches on the same id. Reject
-		# instead so the caller sees the typo. Pass [] explicitly for full
-		# revert.
+		# A non-Array value ({id: "field"} for {id: ["field"]}) would coerce to []
+		# and full-revert, losing unrelated patches; reject so the typo surfaces.
 		if not (v is Array):
 			push_warning("[Registry] revert_many('%s', '%s'): value must be an Array of field names (use [] for full revert); got %s. Skipping." \
 					% [registry, str(id), type_string(typeof(v))])
@@ -726,9 +640,6 @@ func remove_many(registry: String, ids: Array) -> Dictionary:
 	var results: Dictionary = {}
 	var all_ok := true
 	for id in ids:
-		# str(), not String(): String() is the non-converting constructor and a
-		# non-String id (typo'd int) would be a runtime error that aborts the
-		# batch mid-way -- entries before it committed, the rest never ran.
 		var sid := str(id)
 		var ok: bool = remove(registry, sid)
 		results[sid] = ok
@@ -738,9 +649,8 @@ func remove_many(registry: String, ids: Array) -> Dictionary:
 
 
 ## Read API: resolve an id to its current value (vanilla, mod-registered, or
-## mod-overridden, in the same priority the game itself sees). Useful for
-## debugging and for mods that want to introspect what's registered. Returns
-## null if the id doesn't resolve.
+## mod-overridden, in the same priority the game sees). Returns null if the
+## id doesn't resolve.
 func get_entry(registry: String, id: String) -> Variant:
 	match registry:
 		"scenes":
@@ -749,9 +659,7 @@ func get_entry(registry: String, id: String) -> Variant:
 		"items":
 			return _lookup_item(id)
 		"loot":
-			# Returns the {item, table} dict the mod registered under id, or
-			# null if the id isn't a mod loot registration. Reads through
-			# overrides first (matches lookup precedence elsewhere).
+			# The {item, table} dict the mod registered under id, or null.
 			var reg: Dictionary = _registry_registered.get("loot", {})
 			return reg.get(id)
 		"sounds":
@@ -772,19 +680,16 @@ func get_entry(registry: String, id: String) -> Variant:
 			var reg: Dictionary = _registry_registered.get("inputs", {})
 			return reg.get(id)
 		"scene_paths":
-			var reg: Dictionary = _registry_registered.get("scene_paths", {})
-			return reg.get(id)
+			return _lookup_scene_path(id)
 		"shelters":
 			var reg: Dictionary = _registry_registered.get("shelters", {})
 			var entry = reg.get(id)
-			# Filter cross-surface lookups: shelters get_entry returns null
-			# for ids that were registered via 'maps'.
+			# Ids registered via 'maps' don't surface here (shared bucket).
 			if entry is Dictionary and entry.get("kind", "shelters") != "shelters":
 				return null
 			return entry
 		"maps":
-			# Maps share the 'shelters' storage bucket but only surface
-			# entries whose kind is "maps" through get_entry('maps').
+			# Maps share the 'shelters' bucket; only kind=="maps" surfaces.
 			var reg: Dictionary = _registry_registered.get("shelters", {})
 			var entry = reg.get(id)
 			if entry is Dictionary and entry.get("kind", "shelters") != "maps":
@@ -803,9 +708,7 @@ func get_entry(registry: String, id: String) -> Variant:
 			var reg: Dictionary = _registry_registered.get("fish_species", {})
 			return reg.get(id)
 		"resources":
-			# For the raw-resource escape hatch, `id` is a res:// path.
-			# Returns the loaded Resource (with any live patches applied),
-			# or null if the path doesn't resolve.
+			# `id` is a res:// path; returns the loaded Resource with live patches, or null.
 			if not (id is String):
 				return null
 			return load(id)
@@ -816,34 +719,19 @@ func get_entry(registry: String, id: String) -> Variant:
 			push_warning("[Registry] get_entry: '%s' is a pure aggregator -- read the underlying primitives instead (get_entry('items', ...) / get_entry('scenes', ...))" % registry)
 			return null
 		_:
-			push_warning("[Registry] get_entry: unknown registry '%s'" % registry)
+			_warn_unknown_registry("get_entry", registry)
 			return null
 
 # ---- Bulk read API ----
-# Companion to get_entry for "what's in this registry?" queries. All four
-# methods accept include_vanilla (default true) so modders can choose
-# between "everything visible to gameplay" and "only what mods added."
-#
-# Per-registry vanilla-source dispatch lives in _enumerate_vanilla; mod
-# entries are read from _registry_registered via _bulk_mod_entries. On id
-# collision the mod entry wins (matches get_entry precedence: override >
-# register > vanilla).
+# Companion to get_entry. include_vanilla chooses between everything visible
+# to gameplay and only what mods added; on collision the mod entry wins.
 
-# Mod-side entries for the bulk read API. 'shelters' and 'maps' share one
-# storage bucket (loader.gd _register_shelter_or_map stores both under
-# 'shelters' with a 'kind' tag), so filter by kind here; each surface only
-# reports its own registrations, matching get_entry's cross-surface
-# behavior. Every other registry reads its own bucket directly.
+# Mod-side entries. 'shelters' and 'maps' share one bucket with a 'kind' tag;
+# filter so each surface reports only its own registrations.
 func _bulk_mod_entries(registry: String) -> Dictionary:
 	if registry == "scenes":
-		# Scenes keep their real PackedScene values on the Database node
-		# (_rtv_mod_scenes for registrations, _rtv_override_scenes for
-		# overrides); _registry_registered["scenes"] holds only bare `true`
-		# rollback markers. Reading those markers directly would (a) hand
-		# find()/list() a bool instead of a scene, and (b) miss overrides
-		# entirely, so an overridden vanilla id would still read back its
-		# pre-override scene. Merge the real values here, overrides last, so
-		# the read API matches get_entry precedence (override > register).
+		# Real PackedScene values live on the Database node; _registry_registered
+		# holds only rollback markers. Merge the real values, overrides last.
 		var scene_out: Dictionary = {}
 		var db := _database_node()
 		if db != null:
@@ -865,8 +753,7 @@ func _bulk_mod_entries(registry: String) -> Dictionary:
 		return out
 	return _registry_registered.get(registry, {})
 
-## True if the id resolves to anything in this registry. Skips the entry
-## construction get_entry would do; cheap membership check.
+## Cheap membership check: true if the id resolves in this registry.
 func has(registry: String, id: String, include_vanilla: bool = true) -> bool:
 	var reg: Dictionary = _bulk_mod_entries(registry)
 	if reg.has(id):
@@ -876,9 +763,8 @@ func has(registry: String, id: String, include_vanilla: bool = true) -> bool:
 	var vanilla: Dictionary = _enumerate_vanilla(registry)
 	return vanilla.has(id)
 
-## Just the ids in this registry, as a typed String array. Cheaper than
-## list().keys() because we don't materialize the merged values dict when
-## the caller doesn't need it.
+## The ids in this registry, as a typed String array. Cheaper than
+## list().keys() -- no merged values dict is materialized.
 func keys(registry: String, include_vanilla: bool = true) -> Array[String]:
 	var out: Array[String] = []
 	var seen: Dictionary = {}
@@ -904,9 +790,8 @@ func list(registry: String, include_vanilla: bool = true) -> Dictionary:
 		out[k] = reg[k]
 	return out
 
-## Filtered iteration. Predicate signature: func(entry) -> bool. Returns
-## an Array of Dictionary {id, entry} pairs for every match. The id is
-## included in the result so callers don't need to lookup separately.
+## Filtered iteration. Predicate: func(entry) -> bool. Returns an Array of
+## {id, entry} pairs for every match.
 func find(registry: String, predicate: Callable, include_vanilla: bool = true) -> Array:
 	var out: Array = []
 	var entries: Dictionary = list(registry, include_vanilla)
@@ -914,21 +799,17 @@ func find(registry: String, predicate: Callable, include_vanilla: bool = true) -
 		var entry = entries[id]
 		if entry == null:
 			continue
-		if bool(predicate.call(entry)):
+		# _json_truthy: bool() on a predicate that returned null is a script error.
+		if _json_truthy(predicate.call(entry)):
 			out.append({"id": String(id), "entry": entry})
 	return out
 
-# Per-registry vanilla source enumerator. Returns id -> entry for every
-# vanilla content item the registry tracks. Pure-mod registries (loot,
-# trader_pools, scene_paths-mod-only, etc.) return {} -- their entries
-# are inherently mod-side only.
+# Per-registry vanilla source enumerator: id -> entry. Pure-mod registries
+# return {}.
 func _enumerate_vanilla(registry: String) -> Dictionary:
 	match registry:
 		"items":
-			# Vanilla items live in LT_Master.items, indexed by their .file
-			# string. This intentionally repeats _build_vanilla_item_cache's
-			# walk instead of reusing it: enumeration returns a fresh dict
-			# and must not warn or populate the items registry's lazy cache.
+			# Vanilla items: LT_Master.items by .file. Repeats the cache walk, since enumeration must not warn.
 			var out: Dictionary = {}
 			var master = load("res://Loot/LT_Master.tres")
 			if master == null or not ("items" in master):
@@ -941,14 +822,8 @@ func _enumerate_vanilla(registry: String) -> Dictionary:
 					out[String(f)] = it
 			return out
 		"scenes":
-			# Vanilla scenes start life as const declarations on Database.gd.
-			# When any mod declares [registry], the rewriter moves every
-			# `const X = preload(...)` into the injected _rtv_vanilla_scenes
-			# dict (rewriter.gd _rtv_rewrite_database_constants), leaving the
-			# script constant map with no PackedScene entries. Read the
-			# injected dict first -- the same source _scene_exists_in_vanilla
-			# uses -- and fall back to the const-map walk for the unrewritten
-			# case.
+			# With [registry] declared the rewriter moved Database.gd's preload consts
+			# into _rtv_vanilla_scenes; read that first, else walk the const map.
 			var out: Dictionary = {}
 			var db := _database_node()
 			if db == null:
@@ -966,8 +841,7 @@ func _enumerate_vanilla(registry: String) -> Dictionary:
 					out[String(k)] = v
 			return out
 		"scene_paths":
-			# Vanilla scene-path consts on Loader.gd. Same const-map walk
-			# but values are Strings (res:// paths) rather than PackedScenes.
+			# Vanilla scene-path consts on Loader.gd (String res:// values).
 			var out: Dictionary = {}
 			var ldr = get_tree().root.get_node_or_null("Loader")
 			if ldr == null or ldr.get_script() == null:
@@ -979,10 +853,7 @@ func _enumerate_vanilla(registry: String) -> Dictionary:
 					out[String(k)] = v
 			return out
 		"shelters":
-			# Vanilla shelters are the entries in Loader.shelters that pre-
-			# date any mod additions. _rtv_vanilla_shelters captures this
-			# at @onready time. Each shelter "entry" is just its name; we
-			# return name -> name for shape consistency.
+			# _rtv_vanilla_shelters snapshots Loader.shelters; a shelter entry is its name.
 			var out: Dictionary = {}
 			var ldr = get_tree().root.get_node_or_null("Loader")
 			if ldr == null or not ("_rtv_vanilla_shelters" in ldr):
@@ -991,17 +862,10 @@ func _enumerate_vanilla(registry: String) -> Dictionary:
 				out[String(name)] = String(name)
 			return out
 		"maps":
-			# Mod-registered maps share the shelters storage bucket (see
-			# loader.gd _register_shelter_or_map); the mod side is handled by
-			# _bulk_mod_entries. There is no vanilla snapshot for maps --
-			# _rtv_vanilla_shelters captures only Loader.shelters, which
-			# lists shelters, not maps -- so the vanilla side is empty.
+			# No vanilla snapshot for maps; the mod side is in _bulk_mod_entries.
 			return {}
 		"recipes":
-			# Vanilla recipes live in Recipes.tres across seven category
-			# arrays. RecipeData has no inherent id -- we synthesize one
-			# from "<category>:<recipe.name>" so two recipes with the same
-			# display name in different categories don't collide.
+			# RecipeData has no id; synthesize "<category>:<name>" so categories do not collide.
 			var out: Dictionary = {}
 			var recipes = load(_RECIPES_PATH)
 			if recipes == null:
@@ -1017,12 +881,11 @@ func _enumerate_vanilla(registry: String) -> Dictionary:
 					var key: String = "%s:%s" % [cat, String(rname) if rname != null else "<unnamed>"]
 					out[key] = r
 			return out
-		# Pure-mod registries: vanilla side is empty. The mod-entries dict
-		# in _registry_registered is the complete picture for these.
+		# Pure-mod registries: vanilla side is empty.
 		"loot", "trader_pools", "trader_tasks", "events", "sounds", \
 		"inputs", "random_scenes", "ai_types", "fish_species", "resources", \
 		"scene_nodes", "weapons", "magazines", "attachments", "ai_loadouts":
 			return {}
 		_:
-			push_warning("[Registry] _enumerate_vanilla: unknown registry '%s'" % registry)
+			_warn_unknown_registry("_enumerate_vanilla (has/keys/list/find)", registry)
 			return {}

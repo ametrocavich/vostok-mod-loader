@@ -1,53 +1,31 @@
 ## ----- registry/ai_loadouts.gd -----
+## Per-AI-category weapon injection. Vanilla AI scenes bake their weapon
+## list as preloaded children of `weapons: Node3D` and AI.SelectWeapon()
+## picks one; the rewriter adds a SelectWeapon prelude that reads
+## Engine.get_meta("_rtv_ai_loadouts") (a flat list rebuilt by
+## _rebuild_ai_loadouts_engine_meta) and injects weapon scene instances
+## into `weapons` before vanilla picks. Mirrors registry/ai.gd.
 ##
-## Per-AI-category weapon injection. Mods register entries declaring
-## "this weapon scene should appear in AI of these categories N% of the
-## time." Vanilla AI scenes (Bandit, Guard, Military, Punisher) bake
-## their weapon list as preloaded children of a `weapons: Node3D` and
-## `AI.SelectWeapon()` picks one at random. We rewrite SelectWeapon
-## with a one-line prelude that consults this registry's flat list and
-## injects weapon scene instances into `weapons` before vanilla picks.
-##
-## Architecture mirrors registry/ai.gd:
-##   - Per-id dict lives in _registry_registered["ai_loadouts"]
-##   - _rebuild_ai_loadouts_engine_meta() flattens active entries into
-##     Engine.set_meta("_rtv_ai_loadouts", [...]) which the rewriter
-##     prelude reads at runtime
-##   - Override stashes the prior entry in _registry_overridden so revert
-##     can restore it
-##
-## Data shape (input):
-##   {
-##     weapon_scene: PackedScene | String,  # scene ref or id resolvable via Database
-##     ai_types:     Array[String],         # subset of [Bandit, Guard, Military, Punisher]
-##     chance:       float,                 # optional, default 1.0; clamped [0.0, 1.0]
-##     replace:      bool,                  # optional, default false
-##   }
-##
-## Data shape (stored, post-canonicalization):
-##   {
-##     weapon_scene: PackedScene,           # always a ref
-##     ai_types:     Array[String],         # always canonical CamelCase
-##     chance:       float,                 # always clamped
-##     replace:      bool,
-##   }
+## Input shape: {weapon_scene: PackedScene|String (Database id),
+##   ai_types: Array[String] subset of [Bandit, Guard, Military, Punisher],
+##   chance?: float clamped [0,1] (default 1.0), replace?: bool}.
+## Stored shape is the same, canonicalized: weapon_scene always a ref,
+## ai_types canonical CamelCase, chance clamped.
 
 const _AI_LOADOUTS_ENGINE_META_KEY := "_rtv_ai_loadouts"
 const _VALID_AI_CATEGORIES := ["Bandit", "Guard", "Military", "Punisher"]
 
 func _rebuild_ai_loadouts_engine_meta() -> void:
-	# Flat list, not a dict -- the runtime prelude iterates and rolls
-	# per-entry independently, so per-entry order doesn't carry meaning.
-	# Multiple mods stacking is the expected case; entries are additive.
+	# Flat list: the prelude rolls per-entry independently, so order carries
+	# no meaning and multiple mods stack additively.
 	var flat: Array = []
 	var reg: Dictionary = _registry_registered.get("ai_loadouts", {})
 	for id in reg.keys():
 		flat.append(reg[id])
 	Engine.set_meta(_AI_LOADOUTS_ENGINE_META_KEY, flat)
 
-# Returns the canonical category String if `raw` matches one of the four
-# valid categories case-insensitively, else "". Used for input
-# normalization so mod authors can write "bandit", "BANDIT", or "Bandit".
+# Case-insensitive match against the valid categories; returns the
+# canonical String or "".
 func _canonicalize_ai_category(raw: Variant) -> String:
 	if not (raw is String):
 		return ""
@@ -60,8 +38,7 @@ func _canonicalize_ai_category(raw: Variant) -> String:
 	return ""
 
 # Resolve a String id to a PackedScene via the Database autoload (the same
-# lookup vanilla code uses). Returns null on miss; caller decides how to
-# handle the error.
+# lookup vanilla uses). Returns null on miss.
 func _resolve_scene_ref(ref: Variant) -> PackedScene:
 	if ref is PackedScene:
 		return ref
@@ -74,9 +51,8 @@ func _resolve_scene_ref(ref: Variant) -> PackedScene:
 			return resolved
 	return null
 
-# Validate + canonicalize input. Returns the stored-shape Dictionary on
-# success, null on validation failure (with a push_warning already
-# emitted). Verb arg is just for warn message context.
+# Validate + canonicalize input. Returns the stored-shape Dictionary, or
+# null after warning. `verb` is warn-message context only.
 func _validate_ai_loadout_data(id: String, verb: String, data: Variant):
 	if not (data is Dictionary):
 		push_warning("[Registry] %s('ai_loadouts', '%s', ...) expects Dictionary, got %s" % [verb, id, typeof(data)])
@@ -90,9 +66,8 @@ func _validate_ai_loadout_data(id: String, verb: String, data: Variant):
 	if scene == null:
 		push_warning("[Registry] %s('ai_loadouts', '%s'): weapon_scene didn't resolve to a PackedScene (got %s)" % [verb, id, d["weapon_scene"]])
 		return null
-	# ai_types: canonicalize each string; reject the whole call on any
-	# unrecognized entry so authors see typos at register time, not at
-	# runtime when nothing spawns.
+	# Reject the whole call on any unrecognized ai_type so authors see typos
+	# at register time, not at runtime when nothing spawns.
 	var raw_types: Variant = d["ai_types"]
 	if not (raw_types is Array):
 		push_warning("[Registry] %s('ai_loadouts', '%s'): ai_types must be an Array of Strings" % [verb, id])
@@ -104,9 +79,8 @@ func _validate_ai_loadout_data(id: String, verb: String, data: Variant):
 	for raw in (raw_types as Array):
 		var canon := _canonicalize_ai_category(raw)
 		if canon == "":
-			# Help the author by showing both the raw input and what
-			# capitalize-style canonicalization would have produced, so
-			# they can tell whether it was a typo vs an unknown category.
+			# Show what capitalization would have produced so the author can
+			# tell a typo from an unknown category.
 			var hint: String = ""
 			if raw is String:
 				hint = " (canonicalized to '%s')" % (raw as String).capitalize()
@@ -114,39 +88,32 @@ func _validate_ai_loadout_data(id: String, verb: String, data: Variant):
 			return null
 		if not (canon in canonical_types):
 			canonical_types.append(canon)
-	# chance: optional, clamp to [0.0, 1.0]. Out-of-range warns but
-	# doesn't reject -- a 0.0 entry is a no-op (legitimate "wired but
-	# disabled" pattern) and a >1.0 entry just always fires.
+	# chance: out-of-range warns but doesn't reject. 0.0 is a legitimate
+	# "wired but disabled" entry; >1.0 just always fires.
 	var chance: float = 1.0
 	if d.has("chance"):
-		# Type-check before converting: float(null) is a runtime error in
-		# Godot 4, and JSON-derived mod data routinely carries a
-		# present-but-null key that d.has() doesn't guard against.
+		# Type-check first: float(null) is a runtime error in Godot 4, and
+		# JSON-derived data routinely carries present-but-null keys.
 		var raw_chance = d["chance"]
 		if raw_chance is String:
-			# String chances have always been accepted via float(String), which
-			# uses String.to_float() semantics: whitespace-tolerant, and junk
-			# degrades ("abc" -> 0.0, "50%" -> 50.0 -> clamped below). Keep
-			# exactly that -- falling through to the 1.0 default would flip
-			# malformed input from its historical value to always-fires.
+			# String chances take String.to_float() semantics: whitespace-
+			# tolerant, junk degrades ("abc" -> 0.0, "50%" -> 50.0, clamped
+			# below). Falling back to the 1.0 default instead would turn
+			# malformed input into always-fires.
 			var chance_str := (raw_chance as String).strip_edges()
 			if not chance_str.is_valid_float():
 				push_warning("[Registry] %s('ai_loadouts', '%s'): non-numeric chance string '%s' -- parsed as %s" % [verb, id, raw_chance, chance_str.to_float()])
 			raw_chance = chance_str.to_float()
 		if raw_chance is float or raw_chance is int or raw_chance is bool:
-			# bool included: "chance": false -> 0.0 is the legitimate
-			# "wired but disabled" pattern noted above (and bool is not
-			# matched by `is int` in GDScript).
+			# bool included: chance: false -> 0.0 is the disabled pattern
+			# above, and bool is not matched by `is int` in GDScript.
 			chance = clampf(float(raw_chance), 0.0, 1.0)
 			if float(raw_chance) < 0.0 or float(raw_chance) > 1.0:
 				push_warning("[Registry] %s('ai_loadouts', '%s'): chance %s clamped to %s" % [verb, id, raw_chance, chance])
 		else:
 			push_warning("[Registry] %s('ai_loadouts', '%s'): chance must be a number, got %s; using 1.0" % [verb, id, typeof(raw_chance)])
-	# replace: optional, default false. Document as a sharp edge in the
-	# plan but don't reject -- some mods want to override a vanilla AI's
-	# loadout entirely.
-	# Same present-but-null hole as chance: bool(null) is a runtime error,
-	# so coerce only known-safe types and warn otherwise.
+	# replace is a sharp edge but legitimate (override a vanilla AI's
+	# loadout entirely). Same present-but-null hole as chance.
 	var replace: bool = false
 	var raw_replace = d.get("replace", false)
 	if raw_replace is bool:
@@ -163,6 +130,8 @@ func _validate_ai_loadout_data(id: String, verb: String, data: Variant):
 	}
 
 func _register_ai_loadout(id: String, data: Variant) -> bool:
+	if _registry_target_inert("AI.gd", "register('ai_loadouts', '%s')" % id):
+		return false
 	var reg: Dictionary = _registry_registered.get("ai_loadouts", {})
 	if reg.has(id):
 		push_warning("[Registry] register('ai_loadouts', '%s'): already registered (pick a unique id or use override)" % id)
@@ -177,6 +146,8 @@ func _register_ai_loadout(id: String, data: Variant) -> bool:
 	return true
 
 func _override_ai_loadout(id: String, data: Variant) -> bool:
+	if _registry_target_inert("AI.gd", "override('ai_loadouts', '%s')" % id):
+		return false
 	var reg: Dictionary = _registry_registered.get("ai_loadouts", {})
 	if not reg.has(id):
 		push_warning("[Registry] override('ai_loadouts', '%s'): no existing entry to override" % id)
