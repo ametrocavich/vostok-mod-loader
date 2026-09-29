@@ -5,9 +5,13 @@
 # res://Scripts/<Name>.gd it is the script Godot compiles for that path, so no
 # extends chain and no bug #83542. Input must be pristine vanilla source.
 
-func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask: Dictionary = {}) -> String:
+func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask: Dictionary = {},
+		with_registry: bool = true) -> String:
 	# method_mask restricts which methods get renamed and wrapped. Empty = wrap
 	# every non-static method (REGISTRY_TARGETS and the "*" wildcard).
+	# with_registry=false leaves out everything that names vanilla members
+	# (declaration transforms, preludes, appendices): the wrap-only form the
+	# pack falls back to when the full rewrite does not compile.
 	var apply_mask: bool = not _mask_is_wildcard(method_mask)
 	var hookable: Array = []
 	for fe in parsed["functions"]:
@@ -44,26 +48,22 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask
 	for fe in hookable:
 		hookable_names[fe["name"]] = true
 
-	# IXP ships CRLF source and the wrappers use LF; mixed endings make the
-	# parser raise a misleading indentation error, so strip all CR up front.
+	# The emitted wrappers use LF; keep the whole file on one line ending.
 	var src: String = source.replace("\r\n", "\n").replace("\r", "\n")
-
-	# Repair Godot-3-era syntax first so every downstream step sees valid source.
-	var autofix := _rtv_autofix_legacy_syntax(src, "res://Scripts/" + str(parsed.get("filename", "")))
-	src = autofix["source"]
-	var af_total: int = int(autofix["bodyless"]) + int(autofix["tool"]) \
-			+ int(autofix["onready"]) + int(autofix["export"]) + int(autofix.get("base", 0))
-	if af_total > 0:
-		_log_info("[Autofix] %s: %d bodyless, %d @tool, %d @onready, %d @export, %d base()->super -- legacy syntax normalized" \
-				% [parsed.get("filename", "?"), autofix["bodyless"], autofix["tool"], autofix["onready"], autofix["export"], autofix.get("base", 0)])
 
 	# Per-script declaration transforms (rewriter_registry_inject.gd) make compile-time consts runtime-mutable.
 	var fn: String = parsed.get("filename", "")
-	if fn == "Database.gd":
-		src = _rtv_rewrite_database_constants(src)
-	elif fn == "Loader.gd":
+	var inject := with_registry
+	if inject and fn == "Database.gd":
+		var transformed := _rtv_rewrite_database_constants(src)
+		# The appendix reads _rtv_vanilla_scenes, which only the transform
+		# declares: without it the appendix would not compile.
+		if transformed == src:
+			inject = false
+		src = transformed
+	elif inject and fn == "Loader.gd":
 		src = _rtv_rewrite_loader_shelters(src)
-	elif fn == "AISpawner.gd":
+	elif inject and fn == "AISpawner.gd":
 		src = _rtv_rewrite_aispawner_agent_assignments(src)
 
 	# Pass 1: rename top-level "func <name>(" to "func _rtv_vanilla_<name>(" and
@@ -106,7 +106,8 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask
 
 	# Pass 1.5: prelude injection into specific bodies (post-rename targets).
 	var indent := _detect_indent_style(src)
-	lines = _rtv_apply_prelude_injections(parsed.get("filename", ""), lines, "_rtv_vanilla_", indent)
+	if inject:
+		lines = _rtv_apply_prelude_injections(parsed.get("filename", ""), lines, "_rtv_vanilla_", indent)
 
 	# Pass 2: append dispatch wrappers at EOF in the source's indent style.
 	var prefix := _rtv_script_hook_prefix(parsed["filename"])
@@ -115,7 +116,8 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask
 		appended += _rtv_dispatch_inline_src(fe, prefix, indent) + "\n"
 
 	# Per-script registry injections (gated upstream by REGISTRY_TARGETS).
-	appended += _rtv_registry_injection(parsed["filename"], indent)
+	if inject:
+		appended += _rtv_registry_injection(parsed["filename"], indent)
 
 	return "\n".join(lines) + appended
 
@@ -155,7 +157,8 @@ func _rewrite_bare_super(line: String, method_name: String) -> String:
 	return out
 
 # The leading whitespace of the first indented line, as the indent unit (tab
-# fallback). GDScript forbids mixing tabs and spaces; IXP uses 4-space, RTV tabs.
+# fallback). GDScript forbids mixing tabs and spaces. The rewriter only ever
+# sees vanilla source, and RTV uses tabs.
 func _detect_indent_style(source: String) -> String:
 	for line: String in source.split("\n"):
 		if line.is_empty():

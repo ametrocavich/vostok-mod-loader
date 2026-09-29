@@ -57,6 +57,15 @@ else
     exit $status
 fi
 
+# The release is built on Linux from LF blobs. A Windows checkout can hold
+# CRLF sources, so build.sh drops the CRs: what is tested and deployed here
+# must be byte-for-byte what ships.
+cr_count=$(LC_ALL=C tr -cd '\r' < "$OUT" | wc -c)
+if [[ $cr_count -ne 0 ]]; then
+    echo "FAILED: $OUT holds $cr_count CR byte(s) -- a local build must match the LF release build. Run ./build.sh." >&2
+    exit 1
+fi
+
 # Wrapper templates emit await only through the coroutine-gated aw variable.
 if ! ls src/rewriter*.gd >/dev/null 2>&1; then
     echo "FAILED: no src/rewriter*.gd found -- the await invariant has nothing to check (emitter files renamed?)" >&2

@@ -37,17 +37,14 @@
 extends SceneTree
 
 ## Fixture table. "file" is a res://Scripts/ basename. Optional keys:
-##   baseline=false  pristine source is INTENTIONALLY invalid Godot 4 syntax
-##                   (legacy-autofix fixture): skip the pristine compile and
-##                   the body-verbatim check; the REWRITTEN output must still
-##                   compile because _rtv_autofix_legacy_syntax repairs it.
+##   baseline=false  pristine source is INTENTIONALLY invalid: skip the
+##                   pristine compile and the body-verbatim check.
 ##   mask=[...]      also run the rewrite with this per-method mask and
 ##                   assert only the masked methods were renamed + wrapped.
 const FIXTURES: Array[Dictionary] = [
 	# Synthetic fixtures (from tests/codegen/, copied in by check_codegen.sh).
 	{"file": "FixtureDefaults.gd", "mask": ["DefaultsTricky", "CoroutineValue"]},
 	{"file": "FixtureSub.gd"},                     # extends-by-path + bare super()
-	{"file": "FixtureLegacy.gd", "baseline": false},
 	# Real vanilla scripts (copied from the decompiled game source).
 	{"file": "Loader.gd", "mask": ["ValidateShelter", "LoadScene", "FadeIn"]},
 	{"file": "Database.gd"},     # const->dict declaration transform + _get() appendix
@@ -92,6 +89,9 @@ var _saw_void := false
 var _saw_coroutine := false
 var _saw_defaults := false
 var _saw_validateshelter := false
+var _vetted_full := 0
+var _vetted_renames := 0
+var _vetted_excluded := 0
 var _fixtures_run := 0
 
 func _process(_delta: float) -> bool:
@@ -137,6 +137,10 @@ func _run() -> void:
 		_fail("coverage", "no fixture exercised a coroutine method")
 	if not _saw_defaults:
 		_fail("coverage", "no fixture exercised default parameter values")
+	if _vetted_excluded == 0:
+		_fail("coverage", "no fixture exercised the probe's excluded verdict")
+	if not synthetic_only and _vetted_renames < GAME_RENAMES.size():
+		_fail("coverage", "only %d of %d renamed-member cases ran" % [_vetted_renames, GAME_RENAMES.size()])
 	if not synthetic_only and not _saw_validateshelter:
 		_fail("coverage", "Loader.gd::ValidateShelter (the known-good 3.3.0 fixture) was not checked")
 	_finish(t0)
@@ -153,6 +157,89 @@ func _finish(t0: int) -> void:
 func _fail(where: String, msg: String) -> void:
 	_failures.append(where + ": " + msg)
 	printerr("[codegen] FAIL " + where + ": " + msg)
+
+# --- the pre-ship compile probe ------------------------------------------------
+
+## A vanilla member each registry target's injected code names. Renaming it in
+## the fixture's text is what a game update that renames it looks like.
+const GAME_RENAMES := {
+	"AI.gd": "weapons",
+	"AISpawner.gd": "Zone",
+	"Loader.gd": "shelters",
+	"FishPool.gd": "species",
+	"Compiler.gd": "spawnTarget",
+}
+
+func _vet(ml, path: String, source: String, parsed: Dictionary) -> Dictionary:
+	ml.set("_hook_pack_vetting", true)
+	ml.set("_hook_pack_pre_restart", true)
+	(ml.get("_hook_pack_demotions") as Dictionary).clear()
+	return ml._hook_pack_vet_rewrite(path, source, parsed, {}, false)
+
+func _check_vetting(ml, fname: String, path: String, raw: String, parsed: Dictionary) -> void:
+	# 1. No false positive: the rewrite of the real script ships in full. A
+	# probe that rejected a good rewrite would switch hooks off for everyone.
+	var good: Dictionary = _vet(ml, path, raw, parsed)
+	if str(good["mode"]) != "full":
+		_fail(fname, "VET: the probe demoted a good rewrite to '%s' -- it would disable hooks on a healthy game" % str(good["mode"]))
+	_vetted_full += 1
+
+	# 2. The game renamed a member the registry code names: hooks stay, the
+	# registry code goes, and what ships compiles.
+	if GAME_RENAMES.has(fname):
+		var member: String = GAME_RENAMES[fname]
+		var re := RegEx.new()
+		re.compile("\\b" + member + "\\b")
+		var renamed_src := re.sub(raw, member + "Renamed", true)
+		if renamed_src == raw:
+			_fail(fname, "VET: fixture no longer contains '%s' -- pick another member for GAME_RENAMES" % member)
+			return
+		var full_attempt: String = ml._rtv_rewrite_vanilla_source(renamed_src, ml._rtv_parse_script(fname, renamed_src), {})
+		if ml._rtv_probe_compiles(full_attempt, true):
+			_fail(fname, "VET: the full rewrite still compiles with '%s' renamed -- this case proves nothing, pick a member the injected code names" % member)
+		var verdict: Dictionary = _vet(ml, path, renamed_src, ml._rtv_parse_script(fname, renamed_src))
+		if str(verdict["mode"]) != "wrap_only":
+			_fail(fname, "VET: with '%s' renamed the script must ship wrap-only, got '%s'" % [member, str(verdict["mode"])])
+		elif not ml._rtv_probe_compiles(str(verdict["source"]), true):
+			_fail(fname, "VET: the wrap-only source does not compile")
+		elif "Metro mod loader" in str(verdict["source"]).replace("# --- Metro mod loader inline hook dispatch wrappers ---", ""):
+			_fail(fname, "VET: the wrap-only source still carries registry code")
+		if str((ml.get("_hook_pack_demotions") as Dictionary).get(path, "")) != "wrap_only":
+			_fail(fname, "VET: the demotion was not recorded for the generations that follow")
+		_vetted_renames += 1
+
+	# 3. Database's declaration transform found nothing: the appendix that
+	# reads its dict must go with it, or Database.gd would not compile.
+	if fname == "Database.gd":
+		var no_consts := raw.replace("\nconst ", "\nvar ")
+		var db_verdict: Dictionary = _vet(ml, path, no_consts, ml._rtv_parse_script(fname, no_consts))
+		if str(db_verdict["mode"]) == "excluded" or not ml._rtv_probe_compiles(str(db_verdict["source"]), true):
+			_fail(fname, "VET: a Database.gd with no const preloads must still ship a compiling, hooked script (got '%s')" % str(db_verdict["mode"]))
+		if "_rtv_mod_scenes" in str(db_verdict["source"]):
+			_fail(fname, "VET: the scenes appendix was kept although the transform it depends on found nothing")
+
+	# 4. A rewrite that cannot compile in any form leaves the script vanilla.
+	if fname == "FixtureSub.gd":
+		var bogus: Dictionary = parsed.duplicate(true)
+		(bogus["functions"] as Array).append({"name": "NoSuchMethod", "params": "", "param_names": [],
+				"line_number": 1, "is_static": false, "return_type": null,
+				"is_coroutine": false, "has_return_value": false})
+		var lost: Dictionary = _vet(ml, path, raw, bogus)
+		if str(lost["mode"]) != "excluded":
+			_fail(fname, "VET: a rewrite that compiles in no form must be excluded, got '%s'" % str(lost["mode"]))
+		_vetted_excluded += 1
+
+	# 5. A generation that follows a vetted one repeats its verdicts unprobed.
+	if fname == "AI.gd":
+		ml.set("_hook_pack_vetting", false)
+		ml.set("_hook_pack_demotions", {path: "wrap_only"})
+		var repeated: Dictionary = ml._hook_pack_vet_rewrite(path, raw, parsed, {}, false)
+		if str(repeated["mode"]) != "wrap_only" or "_rtv_apply_ai_loadouts" in str(repeated["source"]):
+			_fail(fname, "VET: a persisted wrap-only verdict was not repeated")
+		ml.set("_hook_pack_demotions", {path: "excluded"})
+		if str(ml._hook_pack_vet_rewrite(path, raw, parsed, {}, false)["mode"]) != "excluded":
+			_fail(fname, "VET: a persisted excluded verdict was not repeated")
+	(ml.get("_hook_pack_demotions") as Dictionary).clear()
 
 # --- fixture pipeline -------------------------------------------------------
 
@@ -210,6 +297,10 @@ func _check_fixture(ml, fx: Dictionary) -> void:
 		var sdecl := _decl_line(plines, fe)
 		if sdecl != "" and _find_line(rlines, "func _rtv_vanilla_" + sdecl.trim_prefix("static func "), 0) >= 0:
 			_fail(fname, "static func %s was renamed/wrapped -- static methods must stay untouched" % fe["name"])
+
+	# Before the rewrite is written over the pristine file: the probe must
+	# judge the real script, and the renamed-member cases read the pristine text.
+	_check_vetting(ml, fname, path, raw, parsed)
 
 	if not _compile_at_path(fname, path, rewritten, "COMPILE (wrap-all)"):
 		return

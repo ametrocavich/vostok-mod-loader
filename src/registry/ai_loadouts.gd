@@ -130,6 +130,8 @@ func _validate_ai_loadout_data(id: String, verb: String, data: Variant):
 	}
 
 func _register_ai_loadout(id: String, data: Variant) -> bool:
+	if _registry_target_inert("AI.gd", "register('ai_loadouts', '%s')" % id):
+		return false
 	var reg: Dictionary = _registry_registered.get("ai_loadouts", {})
 	if reg.has(id):
 		push_warning("[Registry] register('ai_loadouts', '%s'): already registered (pick a unique id or use override)" % id)
@@ -144,6 +146,8 @@ func _register_ai_loadout(id: String, data: Variant) -> bool:
 	return true
 
 func _override_ai_loadout(id: String, data: Variant) -> bool:
+	if _registry_target_inert("AI.gd", "override('ai_loadouts', '%s')" % id):
+		return false
 	var reg: Dictionary = _registry_registered.get("ai_loadouts", {})
 	if not reg.has(id):
 		push_warning("[Registry] override('ai_loadouts', '%s'): no existing entry to override" % id)

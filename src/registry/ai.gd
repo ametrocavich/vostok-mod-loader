@@ -47,6 +47,8 @@ func _validate_ai_type_data(id: String, verb: String, data: Variant) -> Array:
 	return [scene, zone]
 
 func _register_ai_type(id: String, data: Variant) -> bool:
+	if _registry_target_inert("AISpawner.gd", "register('ai_types', '%s')" % id):
+		return false
 	var reg: Dictionary = _registry_registered.get("ai_types", {})
 	if reg.has(id):
 		push_warning("[Registry] register('ai_types', '%s'): already registered (pick a unique handle or use override)" % id)
@@ -68,6 +70,8 @@ func _register_ai_type(id: String, data: Variant) -> bool:
 	return true
 
 func _override_ai_type(id: String, data: Variant) -> bool:
+	if _registry_target_inert("AISpawner.gd", "override('ai_types', '%s')" % id):
+		return false
 	# "Claim this zone even if another mod did": conflicting registrations
 	# are displaced and restored on revert.
 	var ov: Dictionary = _registry_overridden.get("ai_types", {})

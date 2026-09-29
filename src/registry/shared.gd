@@ -9,6 +9,16 @@ func _track_registered(registry: String, id: String) -> void:
 	reg[id] = true
 	_registry_registered[registry] = reg
 
+# True, with one warning, when the rewriter shipped `filename` without its
+# registry code (see _hook_pack_vet_rewrite). These registries hand their
+# entries over through Engine metadata that only the injected code reads, so
+# without this check a registration would report success and never appear.
+func _registry_target_inert(filename: String, what: String) -> bool:
+	if not _hook_pack_demotions.has("res://Scripts/" + filename):
+		return false
+	push_warning("[Registry] %s: the loader's registry code for %s does not fit this game build and was left out -- nothing registered against it can appear. Update the ModLoader." % [what, filename])
+	return true
+
 # True if `res` declares a property named `prop`. Param is Object (not
 # Resource) so Node-backed callers (scene_nodes) can share it.
 func _object_has_property(res: Object, prop: String) -> bool:

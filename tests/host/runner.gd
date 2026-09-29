@@ -95,6 +95,8 @@ func _run() -> void:
 	_t28_dependency_lists_and_load_order(ml)
 	await _t29_pack_version_pins(ml)
 	await _t30_reimport_hosted_pack(ml)
+	await _t31_hosted_pack_names_and_errors(ml)
+	_t32_browse_hides_the_loaders_own_listing(ml)
 
 	_finish()
 
@@ -1303,6 +1305,99 @@ func _t30_reimport_hosted_pack(ml: Object) -> void:
 	ml.set("_mods_dir", previous_dir)
 	_pack_cleanup(ml)
 
+# A pack name with no cased letters sanitizes to "", which has no slot: the
+# import falls back to the slug. A manifest the loader refuses keeps the
+# validator's reason instead of the generic bad-response copy.
+# The loader is listed on both sites so players can find it, but it is not a
+# mod: Download in Browse would put the loader's own zip into mods/, where it
+# shows as a broken mod and gets mounted over res://modloader.gd.
+func _t32_browse_hides_the_loaders_own_listing(ml: Object) -> void:
+	var own: Dictionary = ml.HOST_OWN_LISTINGS
+	_assert(str(own.get(ml.HOST_VOSTOKMODS, "")) == "metro-mod-loader" and str(own.get(ml.HOST_MODWORKSHOP, "")) == "55623",
+			"T32: the two known listings are named (got %s)" % str(own))
+	for provider: String in own:
+		var rows := []
+		for id in ["some-mod", str(own[provider]), "another-mod"]:
+			var row: Dictionary = ml.host_empty_summary()
+			row["ref"] = ml.host_ref(provider, id)
+			row["name"] = id
+			rows.append(row)
+		var page: Dictionary = ml.host_page(rows, true, "2", 3)
+		var shown: Dictionary = ml._host_hide_own_listing(provider, ml.host_ok(page))
+		var names := PackedStringArray()
+		for r in ((shown["data"] as Dictionary)["rows"] as Array):
+			names.append(str((r as Dictionary)["name"]))
+		_assert(names == PackedStringArray(["some-mod", "another-mod"]),
+				"T32: %s still lists the loader, or lost a real mod (got %s)" % [provider, str(names)])
+		_assert(bool((shown["data"] as Dictionary)["has_more"]) and str((shown["data"] as Dictionary)["next_cursor"]) == "2",
+				"T32: paging survives the filter on %s" % provider)
+	# Another host's id that happens to match is a different mod.
+	var other: Dictionary = ml.host_empty_summary()
+	other["ref"] = ml.host_ref(ml.HOST_MODWORKSHOP, "metro-mod-loader")
+	var kept: Dictionary = ml._host_hide_own_listing(ml.HOST_MODWORKSHOP, ml.host_ok(ml.host_page([other], false, "", 1)))
+	_assert(((kept["data"] as Dictionary)["rows"] as Array).size() == 1, "T32: the id is matched per host")
+	# A failed result passes through untouched.
+	var failed: Dictionary = ml.host_err(ml.HOST_ERR_BAD_RESPONSE, 0, "x")
+	_assert(ml._host_hide_own_listing(ml.HOST_VOSTOKMODS, failed) == failed, "T32: an error result is returned as it came")
+	# The offline landing is read back from disk, and a file written by a build
+	# that did not filter yet can hold the loader's row.
+	var snapshots: Dictionary = ml.get("_browse_landing_snapshots")
+	for provider: String in own:
+		var saved_rows := []
+		for id in ["some-mod", str(own[provider])]:
+			var row: Dictionary = ml.host_empty_summary()
+			row["ref"] = ml.host_ref(provider, id)
+			row["name"] = id
+			saved_rows.append(row)
+		var snap_path := str(ml._browse_landing_snapshot_path(provider))
+		DirAccess.make_dir_recursive_absolute(snap_path.get_base_dir())
+		var f := FileAccess.open(snap_path, FileAccess.WRITE)
+		f.store_string(JSON.stringify({"sections": [{"title": "Popular", "rows": saved_rows}], "saved_at_unix": 1700000000}))
+		f.close()
+		snapshots.erase(provider)
+		var snap: Dictionary = ml._browse_landing_snapshot(provider)
+		var saved_names := PackedStringArray()
+		for sec in (snap.get("sections", []) as Array):
+			for r in ((sec as Dictionary)["rows"] as Array):
+				saved_names.append(str((r as Dictionary)["name"]))
+		_assert(saved_names == PackedStringArray(["some-mod"]),
+				"T32: the saved %s landing still lists the loader, or lost a real mod (got %s)" % [provider, str(saved_names)])
+		_assert(int(snap.get("saved_at_unix", 0)) == 1700000000, "T32: the saved %s landing keeps its timestamp" % provider)
+		snapshots.erase(provider)
+		DirAccess.remove_absolute(snap_path)
+
+func _t31_hosted_pack_names_and_errors(ml: Object) -> void:
+	_pack_setup(ml)
+	var previous_dir := str(ml.get("_mods_dir"))
+	var mods_dir := "user://t31_mods"
+	DirAccess.make_dir_recursive_absolute(mods_dir)
+	ml.set("_mods_dir", mods_dir)
+	var uncased := char(0x751F) + char(0x5B58) + " " + char(0x5305)
+	_assert(str(ml._sanitize_profile_name(uncased)).strip_edges() == "", "T31: fixture name has no cased letters")
+	var manifest := {"format": 2, "name": uncased, "slug": "survival-cn", "hash": "one",
+			"mods": [{"slug": "foo", "version": "2.0", "available": true, "loadOrder": 1}]}
+	var imported: Dictionary = ml._hosted_import_manifest(manifest)
+	_assert(bool(imported["ok"]) and str(imported["name"]) == "survival-cn",
+			"T31: a name with no usable characters imports under the slug (got '%s')" % str(imported.get("name", "")))
+	if bool(imported["ok"]):
+		var entry: Dictionary = ml._build_modpack_entry(str(imported["file_path"]))
+		_assert(str(entry.get("sanitized_name", "")) == "survival-cn", "T31: the imported pack has a slot name")
+		var applied: Dictionary = await ml.apply_modpack(entry, null, Callable())
+		_assert(bool(applied["ok"]), "T31: the imported pack applies (%s)" % str(applied.get("error", "")))
+		ml.unload_modpack(null)
+	var too_new: Dictionary = ml.host_err(ml.HOST_ERR_BAD_RESPONSE, 0, str(ml._vmp_validate_manifest({"format": 99, "mods": []})))
+	_assert(str(ml._hosted_fetch_error_copy(too_new)).contains("update the mod loader"),
+			"T31: a too-new manifest tells the player to update the loader")
+	var offline: Dictionary = ml.host_err(ml.HOST_ERR_OFFLINE, 0, "")
+	_assert(str(ml._hosted_fetch_error_copy(offline)) == str(ml.host_error_message(ml.HOST_VOSTOKMODS, offline)),
+			"T31: other failures keep the shared host copy")
+	var bare: Dictionary = ml.host_err(ml.HOST_ERR_BAD_RESPONSE, 0, "")
+	_assert(str(ml._hosted_fetch_error_copy(bare)) == str(ml.host_error_message(ml.HOST_VOSTOKMODS, bare)),
+			"T31: a bad response with no reason keeps the shared host copy")
+	ml._remove_tree(mods_dir, false)
+	ml.set("_mods_dir", previous_dir)
+	_pack_cleanup(ml)
+
 # A source pin must not enable another installed version, including after a
 # failed download. Older pins must fail before the newest-copy selector can
 # hide their download.
@@ -1547,7 +1642,7 @@ func _fail(msg: String) -> void:
 func _finish() -> void:
 	_done = true
 	if _failures.is_empty():
-		print("[host] PASS: %d assertion(s) across T1..T30" % _assertions)
+		print("[host] PASS: %d assertion(s) across T1..T32" % _assertions)
 		quit(0)
 		return
 	for m in _failures:

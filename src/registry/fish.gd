@@ -23,6 +23,8 @@ func _rebuild_fish_engine_meta() -> void:
 	Engine.set_meta(_FISH_ENGINE_META_KEY, flat)
 
 func _register_fish_species(id: String, data: Variant) -> bool:
+	if _registry_target_inert("FishPool.gd", "register('fish_species', '%s')" % id):
+		return false
 	var reg: Dictionary = _registry_registered.get("fish_species", {})
 	if reg.has(id):
 		push_warning("[Registry] register('fish_species', '%s'): already registered (pick a unique handle)" % id)

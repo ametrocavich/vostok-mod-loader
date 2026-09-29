@@ -49,8 +49,7 @@
 #     (prelude injection), list it in BODY_MODIFIED.
 #   - Synthetic script: drop a FixtureName.gd in tests/codegen/ (it is
 #     copied into res://Scripts/), add it to FIXTURES. Use
-#     {"baseline": false} if the pristine source is intentionally invalid
-#     (legacy-autofix fixtures).
+#     {"baseline": false} if the pristine source is intentionally invalid.
 #
 # Usage:
 #   ./check_codegen.sh              # build.sh must have run first
@@ -63,7 +62,7 @@
 # This NEVER opens a window and NEVER touches the game install: --headless
 # only, against the throwaway project. If the decompiled vanilla source is
 # not present on this machine the ten vanilla fixtures are left out and the
-# three synthetic ones still run (--prove included), so contributors and CI
+# two synthetic ones still run (--prove included), so contributors and CI
 # compile the rewriter's output without the game files.
 
 set -uo pipefail
@@ -99,7 +98,7 @@ fi
 # Decompiled vanilla game source (plain .gd) -- the input corpus.
 VANILLA_SRC="${VANILLA_SRC:-/c/Users/ametr/Documents/Road to Vostok}"
 # Without the decompiled game source the ten vanilla fixtures cannot run. The
-# three synthetic fixtures need nothing but the engine, so they still do: the
+# two synthetic fixtures need nothing but the engine, so they still do: the
 # rewriter's output gets compiled on every machine, CI included.
 SYNTHETIC_ONLY=0
 if [[ ! -d "$VANILLA_SRC/Scripts" ]]; then

@@ -18,6 +18,7 @@ const HOOK_STATE_DETOK_FAILED := "detok_failed"
 const HOOK_STATE_ALL_FAILED := "all_failed"
 const HOOK_STATE_CRITICAL_FAILED := "critical_failed"
 const HOOK_STATE_PACK_FAILED := "pack_failed"
+const HOOK_STATE_DEMOTED := "demoted"
 
 
 ## Record the outcome of this session's hook work. `fields` carries at least
@@ -94,6 +95,13 @@ func _hook_status_problem() -> Dictionary:
 				shown.append(str(n).get_file())
 			return {"severity": "error", "text":
 					"Last time the game ran, hooks did not work on %s. Mods that change those scripts did nothing. This usually follows a game update; check for a loader update." % ", ".join(shown)}
+		HOOK_STATE_DEMOTED:
+			var demoted: Array = rec.get("demoted", []) if rec.get("demoted") is Array else []
+			var demoted_names := PackedStringArray()
+			for d in demoted:
+				demoted_names.append(str(d).get_file())
+			return {"severity": "error", "text":
+					"The loader's changes to %s do not fit this version of Road to Vostok, so it left them out. The game runs normally, but mods that hook or register against those scripts do nothing. This usually follows a game update; check for a loader update." % ", ".join(demoted_names)}
 		HOOK_STATE_PACK_FAILED:
 			return {"severity": "error", "text":
 					"Last time the game ran, the loader could not build or mount its hook pack, so hook-based mods did nothing. Check the free space on your disk; if it keeps happening, check for a loader update."}

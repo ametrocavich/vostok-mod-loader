@@ -166,6 +166,10 @@ func _run() -> void:
 	_t21_cfg_write_failure_names_its_step()
 	_t22_remove_tree_leaves_a_link_target_alone()
 	_t23_unmodded_cleanup_failures()
+	_t24_aispawner_keeps_the_scene_preload_deferral()
+	_t25_mounting_a_scene_remap_loads_nothing()
+	_t26_the_hook_pack_carries_no_mod_scripts()
+	_t27_probe_verdicts_outlive_the_probing_launch()
 
 	_finish()
 
@@ -730,7 +734,7 @@ func _t18_pack_failures_reach_the_launcher() -> void:
 	# The zip cannot be created: its directory does not exist.
 	healthy.call()
 	var packed: Array[String] = []
-	var wrote: int = _ml._hook_pack_write_zip("user://no_such_dir/framework_pack_1.zip", no_paths, {}, {}, {}, {}, packed)
+	var wrote: int = _ml._hook_pack_write_zip("user://no_such_dir/framework_pack_1.zip", no_paths, {}, {}, {}, packed)
 	_assert(wrote == -1, "T18: a zip that cannot be created returns -1 (got %d)" % wrote)
 	var problem: Dictionary = _ml._hook_status_problem()
 	_assert(str(problem.get("severity", "")) == "error" and str(problem.get("text", "")).contains("hook pack"),
@@ -793,6 +797,217 @@ func _t19_wrap_surface_counts_each_script_once() -> void:
 # The reconciliation report names the mods behind a target that did not make
 # it into the pack. A registry target has no [hooks] declarer; the mods that
 # declared [registry] are named, not an add_hook() call that never happened.
+# A script whose module-scope preload() pulls in scenes must compile after
+# mod autoloads ran overrideScript(), or those scenes bake the vanilla
+# script and the mod body never runs (ImmersiveXP's AI.gd, 2026-09). The
+# registry targets are compiled eagerly all the same, because mods write
+# into their injected fields; AISpawner.gd is the exception that must stay
+# deferred: its resolver reads Engine meta at call time, and its preloads
+# are the four AI scenes.
+func _t24_aispawner_keeps_the_scene_preload_deferral() -> void:
+	var scenes := PackedStringArray(["res://AI/Bandit/AI_Bandit.tscn"])
+	var none := PackedStringArray()
+	_assert(bool(_ml._defers_scene_preloads("Door.gd", scenes)), "T24: an ordinary script with a scene preload is deferred")
+	_assert(not bool(_ml._defers_scene_preloads("Door.gd", none)), "T24: no scene preload, no deferral")
+	_assert(bool(_ml._defers_scene_preloads("AISpawner.gd", scenes)),
+			"T24: AISpawner.gd is deferred although it is a registry target")
+	for rt in _ml.REGISTRY_TARGETS:
+		if str(rt) == "AISpawner.gd":
+			continue
+		_assert(not bool(_ml._defers_scene_preloads(str(rt), scenes)),
+				"T24: registry target %s stays eagerly compiled" % str(rt))
+	# The real vanilla shape: column-zero preloads are collected, indented ones are not.
+	var src := "extends Node3D\nvar bandit = preload(\"res://AI/Bandit/AI_Bandit.tscn\")\nfunc f():\n\tvar x = preload(\"res://AI/Guard/AI_Guard.tscn\")\n"
+	var found: PackedStringArray = _ml._collect_module_scope_scene_preloads(src)
+	_assert(found.size() == 1 and found[0] == "res://AI/Bandit/AI_Bandit.tscn",
+			"T24: only the module-scope scene preload is collected (got %s)" % str(found))
+
+# --- T25: mounting an archive with a scene .remap loads nothing -----------------
+
+# The engine follows a mounted .remap by itself. Loading the target at mount
+# time kept nothing of the scene, but every script the scene pulls in stayed
+# cached, compiled before the hook pack was mounted: a deferred rewrite of
+# one of them could then never lazy-compile, and its hooks were dead.
+func _t25_mounting_a_scene_remap_loads_nothing() -> void:
+	var zip_abs := ProjectSettings.globalize_path("user://t25_remap.zip")
+	var zp := ZIPPacker.new()
+	_assert(zp.open(zip_abs) == OK, "T25: could not write the fixture zip")
+	var entries := {
+		"T25Mod/Thing.gd": "extends Node
+",
+		"T25Mod/Room.tscn": "[gd_scene load_steps=2 format=3]
+
+[ext_resource type=\"Script\" path=\"res://T25Mod/Thing.gd\" id=\"1\"]
+
+[node name=\"ModRoom\" type=\"Node\"]
+script = ExtResource(\"1\")
+",
+		"T25Vanilla/Room.tscn.remap": "[remap]
+
+path=\"res://T25Mod/Room.tscn\"
+",
+	}
+	for entry: String in entries:
+		zp.start_file(entry)
+		zp.write_file(str(entries[entry]).to_utf8_buffer())
+		zp.close_file()
+	zp.close()
+	_assert(bool(_ml._try_mount_pack(zip_abs)), "T25: the fixture archive mounts")
+	_assert(not ResourceLoader.has_cached("res://T25Mod/Thing.gd"),
+			"T25: mounting compiled a script the remapped scene references")
+	_assert(ResourceLoader.exists("res://T25Vanilla/Room.tscn"), "T25: the remapped path exists")
+	var room := load("res://T25Vanilla/Room.tscn") as PackedScene
+	_assert(room != null, "T25: the remapped path loads")
+	if room != null:
+		var node := room.instantiate()
+		_assert(str(node.name) == "ModRoom", "T25: the remapped path serves the mod scene (got %s)" % str(node.name))
+		node.free()
+	DirAccess.remove_absolute(zip_abs)
+
+# --- T26: the hook pack carries no mod scripts ----------------------------------
+
+# The pack used to hold a copy of every mod script, so the loader could edit
+# them (a legacy-syntax autofix that matched no mod, and a strip of the
+# reload() line in the community overrideScript helper). A mod's code now
+# runs from the mod's own archive, exactly as its author shipped it.
+func _t26_the_hook_pack_carries_no_mod_scripts() -> void:
+	var mod_zip := ProjectSettings.globalize_path("user://t26_mod.zip")
+	var helper := "extends Node
+func overrideScript(p):
+	var script = load(p)
+	script.reload()
+	script.take_over_path(script.get_base_script().resource_path)
+"
+	var zp := ZIPPacker.new()
+	_assert(zp.open(mod_zip) == OK, "T26: could not write the fixture mod")
+	zp.start_file("T26Mod/Main.gd")
+	zp.write_file(helper.to_utf8_buffer())
+	zp.close_file()
+	zp.close()
+	_ml.set("_archive_file_sets", {"t26_mod.zip": {"res://T26Mod/Main.gd": true}})
+	var pack_rel := "user://t26_pack.zip"
+	var packed: Array[String] = []
+	var none: Array[String] = []
+	var hooks: int = int(_ml._hook_pack_write_zip(pack_rel, none, {}, {}, {}, packed))
+	_assert(hooks == 0, "T26: an empty wrap surface writes a pack with no hooks (got %d)" % hooks)
+	var zr := ZIPReader.new()
+	_assert(zr.open(ProjectSettings.globalize_path(pack_rel)) == OK, "T26: the pack opens")
+	var entries := zr.get_files()
+	zr.close()
+	_assert(entries.size() == 1 and str(entries[0]) == "__modloader_canary__.txt",
+			"T26: the pack holds only its canary, got %s" % str(entries))
+	var built := FileAccess.get_file_as_string(MODLOADER_PATH)
+	_assert(not ("_rtv_strip_helper_reload" in built) and not ("_rtv_autofix_legacy_syntax" in built),
+			"T26: the loader still carries a transform of mod source")
+	(_ml.get("_archive_file_sets") as Dictionary).clear()
+	DirAccess.remove_absolute(mod_zip)
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(pack_rel))
+
+# --- T27: the probe's verdicts outlive the launch that probed -------------------
+
+# Only the Pass 1 generation may probe: its process exits right after, so the
+# scripts a probe compiles cannot get ahead of mod overrides. The generations
+# that follow (Pass 2, the same-state launch) must repeat its verdicts, or
+# they would pack the very rewrite Pass 1 found broken.
+func _t27_probe_verdicts_outlive_the_probing_launch() -> void:
+	var ai := "res://Scripts/AI.gd"
+	var spawner := "res://Scripts/AISpawner.gd"
+	var state_abs := ProjectSettings.globalize_path(str(_ml.PASS_STATE_PATH))
+	DirAccess.remove_absolute(state_abs)
+
+	# No pass state (the single-pass launch): nothing to repeat, so it probes.
+	_ml.set("_hook_pack_demotions", {ai: "excluded"})
+	_ml._hook_pack_begin_vetting(false)
+	_assert(bool(_ml.get("_hook_pack_vetting")), "T27: with no pass state the generation probes")
+	_assert((_ml.get("_hook_pack_demotions") as Dictionary).is_empty(), "T27: a probing generation starts with no verdicts")
+
+	# Pass 1 demotes two scripts and persists the pack.
+	_ml.set("_hook_pack_demotions", {ai: "wrap_only", spawner: "excluded"})
+	_ml._persist_hook_pack_state("user://modloader_hooks/framework_pack_27.zip", PackedStringArray())
+
+	# The next process starts empty and must read them back, unprobed.
+	_ml.set("_hook_pack_demotions", {})
+	_ml._hook_pack_begin_vetting(false)
+	var got: Dictionary = _ml.get("_hook_pack_demotions")
+	_assert(not bool(_ml.get("_hook_pack_vetting")), "T27: a generation that follows a vetted one does not probe")
+	_assert(str(got.get(ai, "")) == "wrap_only" and str(got.get(spawner, "")) == "excluded",
+			"T27: the verdicts were not read back from pass state (got %s)" % str(got))
+
+	# A registry whose entries only the injected code reads says so, instead of
+	# reporting success for content that can never appear.
+	var scene := PackedScene.new()
+	_assert(not bool(_ml._register_ai_type("t27_type", {"scene": scene, "zone": "Area05"})),
+			"T27: ai_types accepted a registration although AISpawner.gd shipped without its registry code")
+	_assert(not bool(_ml._register_ai_loadout("t27_loadout", {})),
+			"T27: ai_loadouts accepted a registration although AI.gd shipped without its registry code")
+	# shelters and maps depend on Compiler.gd the same way: its Spawn prelude is
+	# what reads the entry. Loader.gd is healthy here (a stand-in node with the
+	# injected fields, handed over by a subclass because the loader under test
+	# is not in the tree), so only the Compiler.gd verdict can refuse.
+	var place := "user://t27_place.tscn"
+	var place_root := Node.new()
+	var packed := PackedScene.new()
+	packed.pack(place_root)
+	place_root.free()
+	ResourceSaver.save(packed, place)
+	var ldr_script := GDScript.new()
+	ldr_script.source_code = "extends Node\nvar shelters: Array = []\nvar _rtv_mod_shelters := {}\nvar _rtv_mod_scene_paths := {}\nvar _rtv_override_scene_paths := {}\n"
+	ldr_script.reload()
+	var ldr := Node.new()
+	ldr.set_script(ldr_script)
+	var sub_script := GDScript.new()
+	sub_script.source_code = "extends \"%s\"\nvar t27_loader: Node\nfunc _loader_node() -> Node:\n\treturn t27_loader\n" % MODLOADER_PATH
+	_assert(sub_script.reload() == OK, "T27: the stand-in Loader subclass compiles")
+	var sub: Object = sub_script.new()
+	sub.set("t27_loader", ldr)
+	_assert(bool(sub._register_shelter("t27_kept", {"path": place})),
+			"T27: with Compiler.gd shipped in full, a shelter registers against the stand-in Loader")
+	sub.set("_hook_pack_demotions", {"res://Scripts/Compiler.gd": "wrap_only"})
+	_assert(not bool(sub._register_shelter("t27_place", {"path": place})),
+			"T27: shelters accepted a registration although Compiler.gd shipped without its registry code")
+	_assert(not bool(sub._register_map("t27_area", {"path": place})),
+			"T27: maps accepted a registration although Compiler.gd shipped without its registry code")
+	var registered: Dictionary = sub.get("_registry_registered")
+	for refused in ["t27_place", "t27_area"]:
+		_assert(not (registered.get("scene_paths", {}) as Dictionary).has(refused)
+				and not (ldr.get("_rtv_mod_scene_paths") as Dictionary).has(refused)
+				and not (ldr.get("shelters") as Array).has(refused),
+				"T27: the refused '%s' left its scene path or name behind (scene_paths %s)" % [refused, str((registered.get("scene_paths", {}) as Dictionary).keys())])
+	# What was registered before the verdict can still be taken out.
+	_assert(bool(sub._remove_shelter("t27_kept")) and not (ldr.get("shelters") as Array).has("t27_kept"),
+			"T27: a shelter registered earlier cannot be removed once Compiler.gd is demoted")
+	sub.free()
+	ldr.free()
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(place))
+
+	# The launcher tells the player, by script name.
+	_ml._hook_status_write({"state": str(_ml.HOOK_STATE_DEMOTED), "attempted": 5, "ok": 5, "demoted": got.keys()})
+	var problem: Dictionary = _ml._hook_status_problem()
+	_assert(str(problem.get("severity", "")) == "error" and str(problem.get("text", "")).contains("AI.gd"),
+			"T27: a demoted script is an error notice that names it (got %s)" % str(problem))
+
+	# Every rewrite left out means nothing is packed; the verdicts must reach
+	# the next generation all the same, or it would probe live, skip the
+	# deferred scripts and pack the broken one.
+	DirAccess.remove_absolute(state_abs)
+	_ml.set("_hook_pack_demotions", {ai: "excluded"})
+	var nothing: Array[String] = []
+	_ml._hook_pack_mount_and_activate("user://modloader_hooks/framework_pack_27b.zip", nothing, 0, {}, true)
+	_ml.set("_hook_pack_demotions", {})
+	_ml._hook_pack_begin_vetting(false)
+	_assert(not bool(_ml.get("_hook_pack_vetting")) and str((_ml.get("_hook_pack_demotions") as Dictionary).get(ai, "")) == "excluded",
+			"T27: with every rewrite left out, the verdicts were not persisted")
+	_assert(str(_ml._hook_status_problem().get("text", "")).contains("AI.gd"),
+			"T27: with every rewrite left out, the launcher was not told")
+
+	# A new Pass 1 probes again and forgets the old verdicts.
+	_ml._hook_pack_begin_vetting(true)
+	_assert(bool(_ml.get("_hook_pack_vetting")) and (_ml.get("_hook_pack_demotions") as Dictionary).is_empty(),
+			"T27: Pass 1 probes afresh")
+
+	DirAccess.remove_absolute(state_abs)
+	_ml._hook_status_write({"state": "ok", "attempted": 0})
+
 func _t20_lost_registry_target_names_its_declarers() -> void:
 	_assert("_registry_declared_by" in _ml, "T20: the loader has _registry_declared_by")
 	if not ("_registry_declared_by" in _ml):
@@ -1218,7 +1433,7 @@ func _cleanup_exe_cfg() -> void:
 func _finish() -> void:
 	_cleanup_exe_cfg()
 	if _failures.is_empty():
-		print("[boot-state] PASS: %d assertion(s) across T1..T23" % _assertions)
+		print("[boot-state] PASS: %d assertion(s) across T1..T27" % _assertions)
 		quit(0)
 		return
 	for m in _failures:

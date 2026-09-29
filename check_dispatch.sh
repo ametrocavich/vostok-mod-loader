@@ -46,8 +46,7 @@
 #   T21 hook_many, patch_many and find() report a bad value and carry on
 #   T22 registry scene_nodes: a per-field revert reports whether it reverted
 #       anything
-#   T23 the legacy-syntax autofix leaves a valid Godot 4 script alone and
-#       still fixes the legacy forms
+#   T23 coroutine detection ignores `await` inside strings and comments
 #
 # Unlike check_codegen.sh this needs NO decompiled vanilla source -- the
 # fixture is synthetic -- so it runs on every machine with a Godot binary

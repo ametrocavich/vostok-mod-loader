@@ -12,6 +12,28 @@
 # overrides land first, and VFS precedence still serves the rewrite.
 var _scripts_with_scene_preloads: Dictionary = {}
 
+# How a rewritten script ships. A rewrite that does not compile is never
+# packed: the pack would serve it over the game's bytecode and the vanilla
+# script would stop working. WRAP_ONLY keeps the hooks and drops the registry
+# code (the part that names vanilla members); EXCLUDED leaves the script
+# vanilla.
+const REWRITE_FULL := "full"
+const REWRITE_WRAP_ONLY := "wrap_only"
+const REWRITE_EXCLUDED := "excluded"
+# res:// path -> REWRITE_WRAP_ONLY | REWRITE_EXCLUDED, for every script the
+# probe demoted. Persisted in pass state: the generations that follow a
+# vetted one (Pass 2, the same-state launch) repeat its verdicts and do not
+# probe, because a probe there would compile scripts before mod overrides.
+var _hook_pack_demotions: Dictionary = {}
+var _hook_pack_vetting := false
+# True on the Pass 1 generation, whose process exits right after: the only
+# place a probe may compile a script that is deferred to lazy compile.
+var _hook_pack_pre_restart := false
+# What the probes of one generation cost, for the log: scripts vetted, and
+# the time spent in every compile they needed.
+var _hook_pack_probe_count := 0
+var _hook_pack_probe_ms := 0
+
 # Scripts with rewriter-injected registry helpers. Force-activated (bypassing
 # the scene-preload deferral) so injected fields are live when mods call
 # lib.register(). Enrolled only when some mod declares [registry].
@@ -26,6 +48,20 @@ const REGISTRY_TARGETS: Array[String] = [
 
 func _is_registry_target(filename: String) -> bool:
 	return filename in REGISTRY_TARGETS
+
+# Registry targets that keep the scene-preload deferral. AISpawner.gd's
+# injected resolver reads Engine meta at call time, so nothing a mod
+# registers needs the script live; and its module-scope preloads are the
+# four AI scenes, which bake res://Scripts/AI.gd the moment it compiles.
+# Compiled eagerly, it orphaned every mod's overrideScript() of AI.gd.
+const REGISTRY_TARGETS_DEFERRABLE: Array[String] = ["AISpawner.gd"]
+
+# Whether a rewritten vanilla script waits for lazy compile (after the mod
+# autoloads ran overrideScript) instead of being activated eagerly.
+func _defers_scene_preloads(filename: String, scene_preloads: PackedStringArray) -> bool:
+	if scene_preloads.is_empty():
+		return false
+	return not _is_registry_target(filename) or filename in REGISTRY_TARGETS_DEFERRABLE
 
 # Post-rewrite markers for registry targets, each emitted only when the
 # transform landed (the always-appended appendices do not contain them).
@@ -101,22 +137,99 @@ func _source_has_indented_func_body(source: String) -> bool:
 # Build the framework pack: enumerate res://Scripts/*.gd, detokenize, parse,
 # generate wrappers, zip, mount. The zip mounts at res://: extends-chain
 # resolution for class_name parents breaks for scripts loaded from user://.
-# The steps are the six functions below, in order.
+# The steps are the six _hook_pack_* functions called here, in call order;
+# the probe helpers sit between _hook_pack_begin_vetting and the rest.
 func _generate_hook_pack(defer_activation: bool = false) -> String:
 	var pack_zip_rel := _hook_pack_preflight()
 	if pack_zip_rel == "":
 		return ""
+	_hook_pack_begin_vetting(defer_activation)
 	var script_paths := _hook_pack_script_paths()
 	var needed_paths: Dictionary = {}
 	var hook_mask: Dictionary = {}
 	var reconcile := _hook_pack_wrap_surface(script_paths, needed_paths, hook_mask)
-	var sibling_fixes := _hook_pack_collect_siblings()
 	var packed_paths: Array[String] = []
 	var hook_count := _hook_pack_write_zip(pack_zip_rel, script_paths, needed_paths, hook_mask,
-			reconcile, sibling_fixes, packed_paths)
+			reconcile, packed_paths)
 	if hook_count < 0:
 		return ""
 	return _hook_pack_mount_and_activate(pack_zip_rel, packed_paths, hook_count, reconcile, defer_activation)
+
+# Decide whether this generation probes its rewrites or repeats the verdicts
+# of the vetted generation before it. Pass 1 probes. Any other generation
+# reads the verdicts Pass 1 left in pass state; with no pass state (the
+# single-pass launch) it probes, deferred scripts excepted.
+func _hook_pack_begin_vetting(pre_restart: bool) -> void:
+	_hook_pack_pre_restart = pre_restart
+	_hook_pack_vetting = true
+	_hook_pack_probe_count = 0
+	_hook_pack_probe_ms = 0
+	if not pre_restart:
+		var cfg := ConfigFile.new()
+		if cfg.load(PASS_STATE_PATH) == OK and cfg.has_section_key("state", "hook_pack_demotions"):
+			var saved: Variant = cfg.get_value("state", "hook_pack_demotions", {})
+			_hook_pack_demotions = (saved as Dictionary).duplicate() if saved is Dictionary else {}
+			_hook_pack_vetting = false
+			return
+	_hook_pack_demotions.clear()
+
+# Compile a copy of `source` that is bound to no path, so nothing live is
+# touched: a load at the script's own path would recompile the running script
+# in place. The class_name line is left out of the copy, because a second
+# script declaring a registered global class does not compile. With
+# want_rewrite the copy must also carry a renamed vanilla method.
+func _rtv_probe_compiles(source: String, want_rewrite: bool) -> bool:
+	var lines := source.split("\n")
+	for i in lines.size():
+		var line: String = lines[i]
+		if not line.begins_with("class_name "):
+			continue
+		# `class_name X extends Y` keeps its extends clause.
+		var at := line.find(" extends ")
+		lines[i] = line.substr(at + 1) if at >= 0 else ""
+	var probe := GDScript.new()
+	probe.source_code = "\n".join(lines)
+	var t0 := Time.get_ticks_msec()
+	var err := probe.reload()
+	_hook_pack_probe_ms += Time.get_ticks_msec() - t0
+	if err != OK:
+		return false
+	if not want_rewrite:
+		return true
+	for m in probe.get_script_method_list():
+		if str(m["name"]).begins_with("_rtv_vanilla_"):
+			return true
+	return false
+
+# The source to pack for one script, and how it ships. Tries the full
+# rewrite, then the wrap-only form, then leaves the script vanilla; a demotion
+# only counts when the plain vanilla text compiles here, so a probe that
+# cannot judge this script changes nothing.
+func _hook_pack_vet_rewrite(script_path: String, source: String, parsed: Dictionary,
+		path_mask: Dictionary, deferred: bool) -> Dictionary:
+	if not _hook_pack_vetting:
+		var mode := str(_hook_pack_demotions.get(script_path, REWRITE_FULL))
+		if mode == REWRITE_EXCLUDED:
+			return {"mode": mode, "source": ""}
+		return {"mode": mode, "source": _rtv_rewrite_vanilla_source(source, parsed, path_mask, mode == REWRITE_FULL)}
+	var full := _rtv_rewrite_vanilla_source(source, parsed, path_mask)
+	if deferred and not _hook_pack_pre_restart:
+		return {"mode": REWRITE_FULL, "source": full}
+	_hook_pack_probe_count += 1
+	if _rtv_probe_compiles(full, true):
+		return {"mode": REWRITE_FULL, "source": full}
+	var filename := script_path.get_file()
+	var wrap_only := _rtv_rewrite_vanilla_source(source, parsed, path_mask, false)
+	if wrap_only != full and _rtv_probe_compiles(wrap_only, true):
+		_hook_pack_demotions[script_path] = REWRITE_WRAP_ONLY
+		_log_critical("[STABILITY] %s: the registry code does not compile against this game build (the parse error above names the cause), so the script ships with hooks only. Mod content registered against it will NOT appear. The game itself is unaffected. Update the ModLoader." % filename)
+		return {"mode": REWRITE_WRAP_ONLY, "source": wrap_only}
+	if _rtv_probe_compiles(source, false):
+		_hook_pack_demotions[script_path] = REWRITE_EXCLUDED
+		_log_critical("[STABILITY] %s: the rewritten script does not compile against this game build (the parse error above names the cause), so it is left unmodified. Hooks on it will NOT fire. The game itself is unaffected. Update the ModLoader." % filename)
+		return {"mode": REWRITE_EXCLUDED, "source": ""}
+	_log_debug("[RTVCodegen] %s: the probe cannot compile the plain vanilla text either, so it says nothing about the rewrite -- shipping it unvetted" % filename)
+	return {"mode": REWRITE_FULL, "source": full}
 
 # Everything that must hold before a pack is built: a fresh pack path (a
 # same-path remount is a no-op and Windows will not delete a mounted zip),
@@ -271,86 +384,18 @@ func _hook_pack_wrap_surface(script_paths: Array[String], needed_paths: Dictiona
 	])
 	return reconcile
 
-# Pre-read mod sibling scripts before opening ZIPPacker: the previous
-# session's mounted pack holds a FileAccessZIP handle to this file, and
-# opening it for write invalidates that handle on Windows. Emit every
-# sibling, not just changed ones, so the new pack stays a superset of the
-# old for every sibling path. Read from each mod archive via ZIPReader, not
-# the VFS, where the stale old pack would win and mod updates never land.
-# Returns res_path -> {fixed_src, af, reload_stripped, changed}.
-func _hook_pack_collect_siblings() -> Dictionary:
-	var sibling_fixes: Dictionary = {}  # p -> {fixed_src, af, reload_stripped, changed}
-	for archive_file: String in _archive_file_sets:
-		var paths_set: Dictionary = _archive_file_sets[archive_file]
-		var zr: ZIPReader = null
-		# The same readable archive path the claim scan opened (folder mods: the re-zipped _dev.zip).
-		var zip_path: String = str(_archive_zip_paths.get(archive_file, ""))
-		if zip_path != "" and FileAccess.file_exists(zip_path):
-			zr = ZIPReader.new()
-			if zr.open(zip_path) != OK:
-				zr = null
-		for p: String in paths_set:
-			if not p.ends_with(".gd"):
-				continue
-			if p.begins_with("res://Scripts/"):
-				continue  # vanilla, handled in the main rewrite loop
-			if zr == null:
-				# Last resort: a VFS read, accepting the stale-overlay risk.
-				if not ResourceLoader.exists(p):
-					continue
-				var raw_vfs := FileAccess.get_file_as_string(p)
-				if raw_vfs.is_empty():
-					continue
-				var norm_vfs := raw_vfs.replace("\r\n", "\n").replace("\r", "\n")
-				var af_vfs := _rtv_autofix_legacy_syntax(norm_vfs, p)
-				var fixed_vfs: String = af_vfs["source"]
-				var rl_vfs := _rtv_strip_helper_reload(fixed_vfs)
-				fixed_vfs = rl_vfs["source"]
-				sibling_fixes[p] = {
-					"fixed_src": fixed_vfs,
-					"af": af_vfs,
-					"reload_stripped": int(rl_vfs["stripped"]),
-					"changed": fixed_vfs != norm_vfs,
-				}
-				continue
-			var entry := p.trim_prefix("res://")
-			if not (entry in zr.get_files()):
-				continue
-			var bytes := zr.read_file(entry)
-			if bytes.is_empty():
-				continue
-			var raw := bytes.get_string_from_utf8()
-			if raw.is_empty():
-				continue
-			var norm := raw.replace("\r\n", "\n").replace("\r", "\n")
-			var af := _rtv_autofix_legacy_syntax(norm, p, zr)
-			var fixed_src: String = af["source"]
-			# Strip redundant .reload() in helpers that also take_over_path.
-			var rl := _rtv_strip_helper_reload(fixed_src)
-			fixed_src = rl["source"]
-			sibling_fixes[p] = {
-				"fixed_src": fixed_src,
-				"af": af,
-				"reload_stripped": int(rl["stripped"]),
-				"changed": fixed_src != norm,
-			}
-		if zr != null:
-			zr.close()
-	return sibling_fixes
-
 # The VFS-precedence canary the pack carries; the mount step reads it back.
 func _hook_pack_canary_content(pack_zip_rel: String) -> String:
 	return "MODLOADER-VFS-CANARY-" + pack_zip_rel.get_file()
 
 # Write the pack: three entries per wrapped vanilla script (the rewrite, a
-# self-referencing .gd.remap and an empty .gdc), the autofixed mod siblings
-# and the VFS canary file. Appends every packed script to packed_paths and
+# self-referencing .gd.remap and an empty .gdc) and the VFS canary file. No
+# mod script enters the pack. Appends every packed script to packed_paths and
 # records each declared target's fate in the ledger. Returns the number of
 # hook points written, or -1 when the pack could not be written (the zip is
 # deleted and the failure logged).
 func _hook_pack_write_zip(pack_zip_rel: String, script_paths: Array[String], needed_paths: Dictionary,
-		hook_mask: Dictionary, reconcile: Dictionary, sibling_fixes: Dictionary,
-		packed_paths: Array[String]) -> int:
+		hook_mask: Dictionary, reconcile: Dictionary, packed_paths: Array[String]) -> int:
 	var zip_abs := ProjectSettings.globalize_path(pack_zip_rel)
 	var zp := ZIPPacker.new()
 	if zp.open(zip_abs) != OK:
@@ -446,13 +491,23 @@ func _hook_pack_write_zip(pack_zip_rel: String, script_paths: Array[String], nee
 				rec_v["missing_methods"] = missing_partial
 
 		# Scripts with module-scope PackedScene preloads are deferred from eager
-		# activation (see _activate_rewritten_scripts), except registry targets,
-		# whose injected fields must be live when mods call lib.register().
+		# activation (see _activate_rewritten_scripts), except the registry
+		# targets whose injected fields must be live when mods call
+		# lib.register() (see _defers_scene_preloads).
 		var scene_preloads := _collect_module_scope_scene_preloads(source)
-		if scene_preloads.size() > 0 and not _is_registry_target(filename):
+		if _defers_scene_preloads(filename, scene_preloads):
 			_scripts_with_scene_preloads[script_path] = scene_preloads
 
-		var rewritten := _rtv_rewrite_vanilla_source(source, parsed, path_mask)
+		var vetted := _hook_pack_vet_rewrite(script_path, source, parsed, path_mask,
+				_scripts_with_scene_preloads.has(script_path))
+		var ship_mode := str(vetted["mode"])
+		if ship_mode == REWRITE_EXCLUDED:
+			_scripts_with_scene_preloads.erase(script_path)
+			if not rec_v.is_empty() and rec_v["status"] == "pending":
+				rec_v["status"] = "lost"
+				rec_v["detail"] = "the rewritten script does not compile against this game build; left unmodified"
+			continue
+		var rewritten := str(vetted["source"])
 		# Rename check: the parser and the rename pass find methods two different
 		# ways; any divergence silently produces a wrapper-less rewrite.
 		var renamed_set: Dictionary = {}
@@ -476,7 +531,12 @@ func _hook_pack_write_zip(pack_zip_rel: String, script_paths: Array[String], nee
 			rec_v["missing_methods"] = mm
 		# Registry markers: anchored transforms no-op silently when the game
 		# changes; the marker check records the loss for reconciliation.
-		if _any_mod_declared_registry and _is_registry_target(filename):
+		if ship_mode == REWRITE_WRAP_ONLY:
+			if not rec_v.is_empty():
+				var mm_w: Array = rec_v.get("missing_methods", []) as Array
+				mm_w.append("registry code (does not compile against this game build -- registry features on this script will not work)")
+				rec_v["missing_methods"] = mm_w
+		elif _any_mod_declared_registry and _is_registry_target(filename):
 			var marker := str(REGISTRY_EXPECTED_MARKERS.get(filename, ""))
 			if marker == "":
 				# Target missing from REGISTRY_EXPECTED_MARKERS: its transform is unverified.
@@ -542,44 +602,8 @@ func _hook_pack_write_zip(pack_zip_rel: String, script_paths: Array[String], nee
 			rec_v["wrapped_count"] = hookable_count
 		_log_debug("[RTVCodegen] Rewrote %s (%d hooks)" % [script_path, hookable_count * 4])
 
-	# Mod scripts are never rewritten: a mod extending a wrapped vanilla
-	# composes through Godot's extends resolution. Sibling autofix only repairs
-	# legacy syntax so preloaded/extended siblings parse; it never injects dispatch.
-	var sibling_fixed := 0
-	var sibling_carried := 0
-	var sibling_total_bodyless := 0
-	var sibling_total_reload_stripped := 0
-	for p: String in sibling_fixes:
-		var fix: Dictionary = sibling_fixes[p]
-		var fixed_src: String = fix["fixed_src"]
-		var af: Dictionary = fix["af"]
-		var reload_stripped: int = int(fix["reload_stripped"])
-		var changed: bool = bool(fix["changed"])
-		var zip_rel: String = p.trim_prefix("res://")
-		if zp.start_file(zip_rel) != OK:
-			_log_warning("[Autofix] Failed to pack sibling zip entry %s" % zip_rel)
-			pack_write_failed = true
-			continue
-		if zp.write_file(fixed_src.to_utf8_buffer()) != OK:
-			pack_write_failed = true
-		if zp.close_file() != OK:
-			pack_write_failed = true
-		if changed:
-			sibling_fixed += 1
-			sibling_total_bodyless += int(af["bodyless"])
-			sibling_total_reload_stripped += reload_stripped
-			if reload_stripped > 0:
-				_log_debug("[Autofix] Stripped %d redundant .reload() call(s) from %s -- prevents Cannot-reload-while-instances-exist spam" % [reload_stripped, p])
-			_log_debug("[Autofix] Patched sibling %s: bodyless=%d tool=%d onready=%d export=%d" \
-					% [p, af["bodyless"], af["tool"], af["onready"], af["export"]])
-		else:
-			sibling_carried += 1
-	if sibling_fixed > 0:
-		_log_info("[Autofix] %d mod sibling script(s) repaired (%d bodyless blocks, %d reload() stripped) -- packed into hook pack overlay" \
-				% [sibling_fixed, sibling_total_bodyless, sibling_total_reload_stripped])
-	if sibling_carried > 0:
-		_log_debug("[Autofix] Carried %d unchanged mod sibling script(s) forward into new hook pack -- preserves VFS coverage across regen" \
-				% sibling_carried)
+	# Mod scripts never enter the pack: a mod extending a wrapped vanilla script
+	# composes through Godot's extends resolution, from the mod's own archive.
 
 	# VFS-precedence canary: a known-content file that must read back after mount.
 	var canary_content := _hook_pack_canary_content(pack_zip_rel)
@@ -627,6 +651,14 @@ func _hook_pack_mount_and_activate(pack_zip_rel: String, packed_paths: Array[Str
 				pending_rec["detail"] = "never reached the rewrite loop (not in the enumerated vanilla script list)"
 	# Reconciliation: declared vs packed; pack-level failures already discarded the pack.
 	_log_hook_reconciliation(reconcile)
+	if _hook_pack_probe_count > 0:
+		_log_info("[STABILITY] Probe-compiled %d rewrite(s) in %d ms before packing: %d shipped in full, %d without registry code, %d left vanilla" \
+				% [_hook_pack_probe_count, _hook_pack_probe_ms,
+					_hook_pack_probe_count - _hook_pack_demotions.size(),
+					_hook_pack_demotions.values().count(REWRITE_WRAP_ONLY),
+					_hook_pack_demotions.values().count(REWRITE_EXCLUDED)])
+	elif not _hook_pack_demotions.is_empty():
+		_log_warning("[STABILITY] Repeating the last probe's verdicts: %s" % str(_hook_pack_demotions))
 	# Mount before mod autoloads run and before any scene compiles against the
 	# rewritten scripts. replace_files=true is the default, passed explicitly.
 	if packed_paths.size() > 0:
@@ -654,6 +686,12 @@ func _hook_pack_mount_and_activate(pack_zip_rel: String, packed_paths: Array[Str
 			return ""
 	else:
 		_log_info("[RTVCodegen] No scripts rewritten -- no pack mounted")
+		if not _hook_pack_demotions.is_empty():
+			# Every rewrite was left out. The verdicts still have to reach the
+			# generation that follows, which would otherwise probe live and skip
+			# the deferred scripts, and the launcher still has to say so.
+			_persist_hook_pack_state("", _eager_wrapped_paths(packed_paths))
+			_hook_status_write({"state": HOOK_STATE_DEMOTED, "attempted": 0, "demoted": _hook_pack_demotions.keys()})
 	return pack_zip_rel
 
 # Who declared a wrap target: "ModA, ModB" for [hooks] and .hook() declarers,
@@ -949,6 +987,9 @@ func _activate_rewritten_scripts(res_paths: Array[String], pack_path: String) ->
 	elif critical_failures.size() > 0:
 		status["state"] = HOOK_STATE_CRITICAL_FAILED
 		status["critical_failures"] = Array(critical_failures)
+	elif not _hook_pack_demotions.is_empty():
+		status["state"] = HOOK_STATE_DEMOTED
+		status["demoted"] = _hook_pack_demotions.keys()
 	_hook_status_write(status)
 
 	if _developer_mode:

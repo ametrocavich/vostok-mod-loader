@@ -298,6 +298,11 @@ func _register_map(id: String, data: Variant) -> bool:
 	return _register_shelter_or_map(id, data, false, "maps")
 
 func _register_shelter_or_map(id: String, data: Variant, default_shelter: bool, label: String) -> bool:
+	# The Compiler.Spawn prelude is what reads the entry. Checked first so the
+	# paired scene_paths entry is not registered either. Loader.gd needs no
+	# such call: its demotion removes the fields checked below.
+	if _registry_target_inert("Compiler.gd", "register('%s', '%s')" % [label, id]):
+		return false
 	var ldr := _loader_node()
 	if ldr == null:
 		return false

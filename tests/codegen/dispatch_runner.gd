@@ -66,8 +66,7 @@
 ##   T21 hook_many, patch_many and find() report a bad value and carry on
 ##   T22 registry scene_nodes: a per-field revert reports whether it reverted
 ##       anything
-##   T23 the legacy-syntax autofix leaves a valid Godot 4 script byte-identical
-##       and still fixes tool, onready, export, base() and bodyless blocks
+##   T23 coroutine detection ignores `await` inside strings and comments
 extends SceneTree
 
 const FIXTURE_PATH := "res://Scripts/FixtureDispatch.gd"
@@ -256,7 +255,7 @@ func _run_tests() -> void:
 	_t20_freed_hook_owner()
 	_t21_batch_verbs_survive_bad_values()
 	_t22_scene_node_revert_reports_what_it_did()
-	_t23_autofix_leaves_valid_scripts_alone()
+	_t23_await_in_a_string_is_not_a_coroutine()
 
 func _t1_pre() -> void:
 	var id: int = _lib.hook("fixturedispatch-add-pre", func(x, y): _log.append("pre:add:%d:%d" % [x, y]))
@@ -757,96 +756,28 @@ func _t22_scene_node_revert_reports_what_it_did() -> void:
 	_expect(_lib.revert("scene_nodes", id, ["process_priority"]), "T22", "reverting the patched field reports true")
 	_expect(not _lib.revert("scene_nodes", id), "T22", "and nothing is left to revert")
 
-# --- the legacy-syntax autofix ---------------------------------------------------
+# --- coroutine detection reads code, not text -----------------------------------
 
-func _t23_autofix_leaves_valid_scripts_alone() -> void:
-	# A script that is valid Godot 4 goes through byte-identical: its own
-	# base() function, text inside string literals, and a triple-quoted block
-	# that merely looks like legacy code.
-	var modern := "extends Node\n\n" \
-			+ "func base(x: int) -> int:\n\treturn x * 2\n\n" \
-			+ "func run() -> int:\n\tprint(\"call base(3) # not a comment\")\n\treturn base(3)\n\n" \
-			+ "const HELP := \"\"\"\nonready var a\nexport var b\nif broken:\n\"\"\"\n"
-	var kept: Dictionary = _ml._rtv_autofix_legacy_syntax(modern)
-	_expect_eq(str(kept["source"]), modern, "T23", "a valid Godot 4 script")
-	_expect_eq(int(kept["base"]) + int(kept["bodyless"]) + int(kept["onready"]) + int(kept["export"]) + int(kept["tool"]), 0,
-			"T23", "fix count on a valid Godot 4 script")
-	var literal := "extends Node\n\nfunc Hunger(delta):\n\tprint(\"base(delta) is gone\")\n\tbase(delta)\n"
-	var mixed: Dictionary = _ml._rtv_autofix_legacy_syntax(literal)
-	_expect(str(mixed["source"]).contains("print(\"base(delta) is gone\")") and str(mixed["source"]).contains("\tsuper.Hunger(delta)"),
-			"T23", "base() is rewritten in code and left alone inside a string on the line before (got %s)" % str(mixed["source"]))
-
-	var dq := "\"".repeat(3)
-	var sq := "'".repeat(3)
-	var comment := "extends Node\n# " + dq + " is only a comment\nonready var bar = $Bar\n"
-	var comment_fixed: Dictionary = _ml._rtv_autofix_legacy_syntax(comment)
-	_expect_eq(int(comment_fixed["onready"]), 1, "T23", "comment quotes do not hide later code")
-	var mixed_quotes := "extends Node\nconst HELP = " + dq + "\n" + sq + "\nif example:\n" + dq + "\n"
-	_expect_eq(str(_ml._rtv_autofix_legacy_syntax(mixed_quotes)["source"]), mixed_quotes,
-			"T23", "opposite triple quotes inside a literal are data")
-	var fake_func := "extends Node\nconst HELP = " + dq + "\nfunc base():\n" + dq + "\nfunc Hunger(delta):\n\tbase(delta)\n"
-	_expect_eq(int(_ml._rtv_autofix_legacy_syntax(fake_func)["base"]), 1,
-			"T23", "a declaration in a literal does not define a method")
-	var same_line := "extends Node\nfunc Hunger(delta):\n\tprint(" + dq + "base(delta) ' # data" + dq + "); base(delta)\n"
-	var same_fixed := str(_ml._rtv_autofix_legacy_syntax(same_line)["source"])
-	_expect(same_fixed.contains(dq + "base(delta) ' # data" + dq + "); super.Hunger(delta)"),
-			"T23", "code after a closed literal is fixed without changing the literal")
-
-	var outdented_close := "extends Node\nfunc Hunger(delta):\n\tvar text = " + dq + "\nbase(delta)\n" + dq + "\n\tbase(delta)\n"
-	var outdented_fixed := str(_ml._rtv_autofix_legacy_syntax(outdented_close)["source"])
-	_expect(outdented_fixed.contains("\nbase(delta)\n" + dq + "\n\tsuper.Hunger(delta)"),
-			"T23", "an outdented literal terminator does not end the enclosing method")
-	var parent_path := "user://t23_base_parent.gd"
-	var parent := FileAccess.open(parent_path, FileAccess.WRITE)
-	parent.store_string("extends Node\nfunc base(x: int) -> int:\n\treturn x * 2\n")
-	parent.close()
-	var inherited := "extends \"" + parent_path + "\"\nfunc run() -> int:\n\treturn base(3)\n"
-	_expect_eq(str(_ml._rtv_autofix_legacy_syntax(inherited)["source"]), inherited,
-			"T23", "a method inherited from a parent keeps its meaning")
-	var middle_path := "user://t23_base_middle.gd"
-	var middle := FileAccess.open(middle_path, FileAccess.WRITE)
-	middle.store_string("extends \"t23_base_parent.gd\"\n")
-	middle.close()
-	var grandchild := inherited.replace(parent_path, middle_path)
-	_expect_eq(str(_ml._rtv_autofix_legacy_syntax(grandchild)["source"]), grandchild,
-			"T23", "a relative grandparent method keeps its meaning")
-	var unknown := inherited.replace(parent_path, "user://t23_missing_parent.gd")
-	_expect_eq(str(_ml._rtv_autofix_legacy_syntax(unknown)["source"]), unknown,
-			"T23", "an unreadable parent cannot justify changing a call")
-	DirAccess.remove_absolute(parent_path)
-	DirAccess.remove_absolute(middle_path)
-
-	var zip_path := "user://t23_parents.zip"
-	var zip := ZIPPacker.new()
-	zip.open(zip_path)
-	var archived_child := "extends \"parent.gd\"\nfunc run() -> int:\n\treturn base(3)\n"
-	for item in [["T23/parent.gd", "extends Node\nfunc base(x):\n\treturn x * 2\n"], ["T23/child.gd", archived_child]]:
-		zip.start_file(item[0])
-		zip.write_file(str(item[1]).to_utf8_buffer())
-		zip.close_file()
-	zip.close()
-	var saved_sets: Dictionary = _ml.get("_archive_file_sets")
-	var saved_paths: Dictionary = _ml.get("_archive_zip_paths")
-	_ml.set("_archive_file_sets", {"t23.zip": {"res://T23/parent.gd": true, "res://T23/child.gd": true}})
-	_ml.set("_archive_zip_paths", {"t23.zip": zip_path})
-	var siblings: Dictionary = _ml._hook_pack_collect_siblings()
-	_expect_eq(str(siblings["res://T23/child.gd"]["fixed_src"]), archived_child,
-			"T23", "sibling rewriting reads a relative parent from the current archive")
-	_ml.set("_archive_file_sets", saved_sets)
-	_ml.set("_archive_zip_paths", saved_paths)
-	DirAccess.remove_absolute(zip_path)
-
-	# The legacy forms real mods ship are still fixed.
-	var legacy := "tool\nextends \"res://Scripts/Character.gd\"\n\n" \
-			+ "onready var bar = $Bar\nexport var rate = 1.0\n\n" \
-			+ "func Hunger(delta):\n\tbase(delta)\n\tbase().Thirst(delta)\n\tif rate > 2.0:\n\t# nothing yet\n\tpass\n"
-	var character := FileAccess.open("res://Scripts/Character.gd", FileAccess.WRITE)
-	character.store_string("extends Node\nfunc Hunger(_delta):\n\tpass\nfunc Thirst(_delta):\n\tpass\n")
-	character.close()
-	var fixed: Dictionary = _ml._rtv_autofix_legacy_syntax(legacy)
-	var out := str(fixed["source"])
-	_expect(out.begins_with("@tool\n"), "T23", "a leading tool becomes @tool")
-	_expect(out.contains("\n@onready var bar = $Bar\n") and out.contains("\n@export var rate = 1.0\n"), "T23", "onready and export become annotations")
-	_expect(out.contains("\tsuper.Hunger(delta)\n") and out.contains("\tsuper.Thirst(delta)\n"), "T23", "base(args) and base().Method(args) become super calls (got %s)" % out)
-	_expect_eq(int(fixed["bodyless"]), 1, "T23", "bodyless blocks given a pass")
-	_expect_eq(int(fixed["base"]), 2, "T23", "base() lines rewritten")
+# The wrapper awaits the vanilla body only when that body is a coroutine. A
+# method flagged by mistake turns its wrapper into a coroutine and every
+# caller fails to parse ("must be called with await"): the 3.3.0 failure.
+func _t23_await_in_a_string_is_not_a_coroutine() -> void:
+	var src := "extends Node
+" 			+ "func says() -> void:
+	print(\"please await the signal\")
+" 			+ "func noted() -> void:
+	var x := 1 # await later
+	print(x)
+" 			+ "func waits() -> void:
+	await get_tree().process_frame
+" 			+ "func both() -> void:
+	print(\"await \"); await get_tree().process_frame
+"
+	var parsed: Dictionary = _ml._rtv_parse_script("T23.gd", src)
+	var coro := {}
+	for fe in parsed["functions"]:
+		coro[str(fe["name"])] = bool(fe["is_coroutine"])
+	_expect_eq(bool(coro.get("says", true)), false, "T23", "await inside a string literal")
+	_expect_eq(bool(coro.get("noted", true)), false, "T23", "await inside a trailing comment")
+	_expect_eq(bool(coro.get("waits", false)), true, "T23", "a real await")
+	_expect_eq(bool(coro.get("both", false)), true, "T23", "a real await after a string that also says await")
