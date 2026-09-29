@@ -1,26 +1,15 @@
 ## ----- registry/recipes.gd -----
+## Recipes.tres has seven Array[RecipeData] category fields that
+## Interface.gd const-preloads and walks per crafting tab. The Resource
+## cache propagates array mutations to the UI provided the mod registers
+## before Interface._ready() -- same timing constraint as loot.
 ##
-## Recipes.tres is a Resource with seven Array[RecipeData] fields: consumables,
-## medical, equipment, weapons, electronics, misc, furniture. Interface.gd
-## const-preloads Recipes.tres, then walks whichever category array matches
-## the crafting tab the player opened. Godot's Resource cache means every
-## `load()` (or const preload) of Recipes.tres returns the same instance, so
-## appending a RecipeData to a category array propagates to the crafting UI
-## provided the mod mutates before Interface._ready() fires; same timing
-## constraint as loot.
-##
-## RecipeData has no unique id field (just name + input + output + proximity
-## flags), so the registry's id is a mod-chosen handle the same way loot
-## works. Payloads:
+## RecipeData has no unique id, so the registry id is a mod-chosen handle.
 ##   register: {recipe: RecipeData, category: "consumables"}
 ##   override: {recipe: RecipeData, category, replaces: RecipeData}
-##   patch:    id can be a String handle OR a RecipeData Resource ref
-##             directly; lets mods patch vanilla recipes in one call
-##             without registering a handle first.
-##
-## Patch rollback keys on object identity (get_instance_id) when the caller
-## passed a Resource ref, or on the mod's String handle otherwise. Either way
-## revert can find the stash and restore original field values.
+##   patch: id is a String handle or a RecipeData ref directly (patches
+##          vanilla recipes without registering a handle first).
+## Patch rollback keys on the handle, or on instance identity for refs.
 
 const _RECIPE_CATEGORIES := ["consumables", "medical", "equipment", "weapons", "electronics", "misc", "furniture"]
 const _RECIPES_PATH := "res://Crafting/Recipes.tres"
@@ -40,8 +29,7 @@ func _recipes_resource() -> Resource:
 	_recipes_cache = res
 	return res
 
-# Shape check: does this Resource carry the RecipeData fields? Consistent
-# with _looks_like_item_data / _looks_like_audio_event.
+# Shape heuristic (cf _looks_like_item_data).
 func _looks_like_recipe_data(res: Resource) -> bool:
 	return _object_has_property(res, "name") \
 			and _object_has_property(res, "input") \
@@ -98,17 +86,14 @@ func _register_recipe(id: String, data: Variant) -> bool:
 	arr.append(recipe)
 	reg[id] = {"recipe": recipe, "category": category}
 	_registry_registered["recipes"] = reg
-	# Vanilla ships the Equipment and Misc category tabs disabled + faded
-	# (Interface.tscn:2591, 2668) because those recipe arrays are empty.
-	# Any mod adding a recipe to either category needs the tab clickable,
-	# so auto-patch the buttons via the scene_nodes registry. Idempotent:
-	# repeat calls from additional mods just re-set the same props.
+	# Vanilla ships the Equipment and Misc tabs disabled + faded (their
+	# recipe arrays are empty), so auto-unlock the button via scene_nodes
+	# when a mod fills the category. Idempotent across mods.
 	_unlock_crafting_category_button_if_needed(category)
 	_log_debug("[Registry] registered recipe '%s' (category=%s, name=%s)" % [id, category, recipe.get("name")])
 	return true
 
-# Category -> node path inside Interface.tscn. Only equipment + misc ship
-# locked in vanilla; the other categories are always clickable.
+# Category -> node path in Interface.tscn; only these two ship locked.
 const _LOCKED_CATEGORY_BUTTONS := {
 	"equipment": "Tools/Crafting/Types/Margin/Buttons/Equipment",
 	"misc": "Tools/Crafting/Types/Margin/Buttons/Misc",
@@ -120,9 +105,8 @@ func _unlock_crafting_category_button_if_needed(category: String) -> void:
 		return
 	var node_path: String = _LOCKED_CATEGORY_BUTTONS[category]
 	var id: String = "%s#%s" % [_INTERFACE_SCENE_PATH, node_path]
-	# Reset the button's modulate to full alpha but leave the icon child
-	# alone at its vanilla 0.5 alpha; icons ship faded on every category
-	# button, and matching sibling behavior is the right default.
+	# Full alpha on the button; the icon child stays at vanilla 0.5 alpha
+	# to match the sibling buttons.
 	_patch_scene_node(id, {
 		"disabled": false,
 		"modulate": Color(1.0, 1.0, 1.0, 1.0),
@@ -165,17 +149,15 @@ func _override_recipe(id: String, data: Variant) -> bool:
 	}
 	_registry_overridden["recipes"] = ov
 	var reg: Dictionary = _registry_registered.get("recipes", {})
+	(ov[id] as Dictionary)["registered"] = reg.get(id)
 	reg[id] = {"recipe": new_recipe, "category": category}
 	_registry_registered["recipes"] = reg
 	_log_debug("[Registry] overrode recipe '%s' in %s" % [id, category])
 	return true
 
-# Resolves whatever the mod passed (String handle or RecipeData Resource) to:
-#   [recipe, patch_key]
-# where patch_key is the stable Variant we use in _registry_patched to
-# track per-field original values. For handles it's the String; for direct
-# refs it's the object's instance_id (int), so distinct Resource instances
-# don't collide.
+# Resolve a String handle or RecipeData ref to [recipe, patch_key].
+# patch_key is the handle, or "ref:<instance_id>" for direct refs so
+# distinct Resource instances don't collide.
 func _resolve_recipe_patch_target(id: Variant) -> Array:
 	if id is String:
 		var reg: Dictionary = _registry_registered.get("recipes", {})
@@ -188,29 +170,14 @@ func _resolve_recipe_patch_target(id: Variant) -> Array:
 	push_warning("[Registry] patch('recipes', ...): id must be a String handle or a RecipeData Resource")
 	return [null, null]
 
-func _append_recipe(id: Variant, field: String, values: Array, allow_duplicates: bool) -> bool:
+# append, prepend and remove_from share one body; `op` selects the operation.
+func _array_op_recipe(id: Variant, field: String, op: String, values: Array, allow_duplicates: bool) -> bool:
 	var resolved := _resolve_recipe_patch_target(id)
 	var target: Resource = resolved[0]
 	var key = resolved[1]
 	if target == null:
 		return false
-	return _array_op_on_resource("recipes", key, target, field, "append", values, allow_duplicates)
-
-func _prepend_recipe(id: Variant, field: String, values: Array, allow_duplicates: bool) -> bool:
-	var resolved := _resolve_recipe_patch_target(id)
-	var target: Resource = resolved[0]
-	var key = resolved[1]
-	if target == null:
-		return false
-	return _array_op_on_resource("recipes", key, target, field, "prepend", values, allow_duplicates)
-
-func _remove_from_recipe(id: Variant, field: String, values: Array) -> bool:
-	var resolved := _resolve_recipe_patch_target(id)
-	var target: Resource = resolved[0]
-	var key = resolved[1]
-	if target == null:
-		return false
-	return _array_op_on_resource("recipes", key, target, field, "remove_from", values, false)
+	return _array_op_on_resource("recipes", key, target, field, op, values, allow_duplicates)
 
 
 func _patch_recipe(id: Variant, fields: Dictionary) -> bool:
@@ -260,9 +227,8 @@ func _remove_recipe(id: String) -> bool:
 				push_warning("[Registry] remove('recipes', '%s'): recipe not found in %s; tracking cleared" % [id, category])
 	reg.erase(id)
 	_registry_registered["recipes"] = reg
-	# Drop the handle's patch stash with the entry (mirrors _remove_event).
-	# Ref-keyed stashes ("ref:<iid>") are left alone -- they track the Resource
-	# identity, which outlives the handle.
+	# Drop the handle's patch stash; ref-keyed stashes ("ref:<iid>") track
+	# Resource identity, which outlives the handle, and are left alone.
 	var patched: Dictionary = _registry_patched.get("recipes", {})
 	if patched.has(id):
 		patched.erase(id)
@@ -274,8 +240,7 @@ func _revert_recipe(id: Variant, fields: Array) -> bool:
 	var did_something := false
 	var ov: Dictionary = _registry_overridden.get("recipes", {})
 	var patched: Dictionary = _registry_patched.get("recipes", {})
-	# Patch key computation matches _resolve_recipe_patch_target so we find the same
-	# stash entry regardless of whether the caller patches by handle or by ref.
+	# Key computation matches _resolve_recipe_patch_target.
 	var patch_key = null
 	var patch_target: Resource = null
 	if id is String:
@@ -286,8 +251,7 @@ func _revert_recipe(id: Variant, fields: Array) -> bool:
 	elif id is Resource and _looks_like_recipe_data(id):
 		patch_key = "ref:%d" % id.get_instance_id()
 		patch_target = id
-	# Full revert: patches first (so stash restores onto current entry),
-	# then override (swaps back to the vanilla recipe instance).
+	# Full revert: patches first (onto the current entry), then override.
 	if fields.is_empty():
 		if patch_key != null and patched.has(patch_key):
 			if patch_target != null:
@@ -311,14 +275,12 @@ func _revert_recipe(id: Variant, fields: Array) -> bool:
 						arr.append(entry["replaced"])
 			ov.erase(id)
 			_registry_overridden["recipes"] = ov
-			var reg2: Dictionary = _registry_registered.get("recipes", {})
-			reg2.erase(id)
-			_registry_registered["recipes"] = reg2
+			_restore_override_handle("recipes", id, entry)
 			did_something = true
 		if not did_something:
 			push_warning("[Registry] revert('recipes'): nothing to revert for that id")
 		return did_something
-	# Per-field revert: only operates on patch stashes.
+	# Per-field revert: patch stashes only.
 	if patch_key == null or not patched.has(patch_key):
 		push_warning("[Registry] revert('recipes'): no patches found for that id")
 		return false

@@ -1,0 +1,5 @@
+# Shell scripts must stay LF: linux-installer.sh is a release asset and the
+# check scripts run under bash in CI. The Windows installer stays as committed.
+*.sh text eol=lf
+*.py text eol=lf
+*.bat -text

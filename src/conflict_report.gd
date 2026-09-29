@@ -1,14 +1,8 @@
 ## ----- conflict_report.gd -----
-## Developer-mode diagnostics: verify script_overrides took effect, probe the
-## scene tree for mismatches, log override timing issues, and produce the
-## conflict report written to user://. Loaded alongside the normal loading
-## path but only runs when developer_mode=true.
-##
-## v3.0.1 cutover note: mod subclass scripts are no longer rewritten (old
-## Step C removed), so the _rtv_mod_ method-prefix signal is gone. Detection
-## now classifies by "does the instance's script extend the wrapped vanilla"
-## rather than "does it carry a _rtv_mod_ prefix." Script path + extends-
-## chain walk are the reliable signals for override-took-effect.
+## Developer-mode diagnostics: report what script overrides left in the
+## cache (from _emit_frameworks_ready) and write the conflict report to user://.
+## Mod scripts are never rewritten, so there is no marker to test against;
+## override effect is judged from resource_path and the extends chain.
 
 # Log which mods use overrideScript() -- overrides apply after scene reload.
 func _log_override_timing_warnings() -> void:
@@ -23,16 +17,14 @@ func _log_override_timing_warnings() -> void:
 		_log_debug(mod_name + " uses overrideScript() on: " + target_list
 				+ " -- applies after scene reload")
 
-# [OverrideVerify]: Post-frameworks_ready sanity check on dynamic overrides.
-#
-# v3.0.1: classification is path-based, not method-prefix-based. For each
-# mod that calls take_over_path() dynamically, load() the declared target
-# path and log its resource_path + source head. Operators can eyeball
-# whether the take_over_path took effect. Full STALE/BROKEN diagnosis
-# that v3.0.0's _rtv_mod_ prefix enabled is gone with Step C -- without
-# rewriting mod sources there is no reliable in-source signal to test.
-
+# Post-frameworks_ready report on dynamic overrides, developer mode only:
+# for each target already in the cache, log its resource_path + source head.
+# A target nothing has loaded yet is left alone: a load() here would compile
+# it early and bake the scenes it preloads against the vanilla script, ahead
+# of a mod that overrides after frameworks_ready.
 func _verify_script_overrides() -> void:
+	if not _developer_mode:
+		return
 	var printed_header: bool = false
 	for mod_name: String in _mod_script_analysis:
 		var analysis: Dictionary = _mod_script_analysis[mod_name]
@@ -42,32 +34,22 @@ func _verify_script_overrides() -> void:
 		if targets.is_empty():
 			continue
 		if not printed_header:
-			# Debug, not info: this block is an operator diagnostic ("did
-			# take_over_path land?"), and a player can do nothing with it. The
-			# FAIL branch below stays a warning -- that one means a mod's
-			# override did not apply, which is worth surfacing to anyone.
-			#
-			# NOTE: only the LOGGING is gated. The load() below is left running
-			# unconditionally on purpose -- it may be load-bearing for the
-			# override mechanism (it populates the ResourceCache at the moment
-			# mod autoloads have just finished), and proving otherwise needs a
-			# runtime test. If it turns out to be purely diagnostic, the whole
-			# function should be skipped when not in developer mode.
 			_log_debug("[OverrideVerify] === Post-autoload cache check ===")
 			printed_header = true
 		for vanilla_path in targets:
 			var vp: String = String(vanilla_path)
+			if not ResourceLoader.has_cached(vp):
+				_log_debug("[OverrideVerify] %s | %s | not loaded yet" % [mod_name, vp])
+				continue
 			var scr := load(vp) as Script
 			if scr == null:
-				_log_warning("[OverrideVerify] %s | %s | FAIL: load() returned null" % [mod_name, vp])
 				continue
 			var src: String = scr.source_code
 			var src_head: String = src.substr(0, 60).replace("\n", " | ").replace("\t", " ")
 			_log_debug("[OverrideVerify] %s | %s | resource_path=%s src_head=[%s]" \
 					% [mod_name, vp, scr.resource_path, src_head])
 
-# Conflict summary + report output (developer mode; called from every
-# finish path in lifecycle.gd)
+# Conflict summary + report output (called from every finish path in lifecycle.gd)
 
 func _print_conflict_summary() -> void:
 	_log_info("")
@@ -114,8 +96,8 @@ func _write_conflict_report() -> void:
 	if f == null:
 		_log_warning("Could not write report to: " + CONFLICT_REPORT_PATH)
 		return
-	# store_line returns bool since Godot 4.3 -- a mid-file failure (disk
-	# full, quota) would otherwise truncate silently while we log success.
+	# store_line returns bool since Godot 4.3; unchecked, a mid-file failure
+	# (disk full) truncates the report while the log claims success.
 	var ok := true
 	for line in _report_lines:
 		ok = f.store_line(line) and ok

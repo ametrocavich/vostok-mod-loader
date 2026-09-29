@@ -1,0 +1,68 @@
+name: ci
+
+# Build modloader.gd from src/ and put it in front of a real GDScript compiler.
+#
+# src/ is concatenated into one script sharing a single namespace, so the
+# failure modes are exactly the ones review misses: two files defining the
+# same top-level function, a call to a function a refactor renamed, a merge that
+# joins two halves that were never built together. Every one of those is a parse
+# error, and a parse error in an autoload means the game does not start.
+#
+# Pinned to the same Godot the maintainer runs locally. When that moves, move
+# this with it -- a CI pass on a different engine than the one people ship
+# against is worth less than it looks.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+      - 'refactor/**'
+
+permissions:
+  contents: read
+
+env:
+  GODOT_VERSION: 4.6.1-stable
+
+jobs:
+  build-and-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Cache by exact version: the download is ~60MB and the URL is immutable
+      # for a given tag, so a hit is always valid.
+      - name: Cache Godot
+        id: cache-godot
+        uses: actions/cache@v4
+        with:
+          path: ~/godot
+          key: godot-${{ env.GODOT_VERSION }}-linux-x86_64
+
+      - name: Download Godot
+        if: steps.cache-godot.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p ~/godot
+          url="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_linux.x86_64.zip"
+          curl -fsSL -o /tmp/godot.zip "$url"
+          unzip -q -o /tmp/godot.zip -d ~/godot
+          mv ~/godot/Godot_v${GODOT_VERSION}_linux.x86_64 ~/godot/godot
+          chmod +x ~/godot/godot
+
+      - name: Build modloader.gd from src/
+        run: |
+          chmod +x build.sh
+          ./build.sh
+
+      # The gate. check.sh parses the built file with --check-only and then runs
+      # the harnesses. The codegen harness leaves out the fixtures that need
+      # the decompiled RTV corpus and still compiles its synthetic ones, so
+      # this is meaningful without shipping game files into CI.
+      - name: Parse-check and run harnesses
+        env:
+          GODOT: /home/runner/godot/godot
+        run: |
+          chmod +x check.sh check_*.sh
+          ./check.sh

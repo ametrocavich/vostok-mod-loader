@@ -14,7 +14,7 @@
 # CALLS the wrapped methods, and asserts on the recorded execution order.
 #
 # Behaviors covered (contract: docs/wiki/Hooks.md + src/hooks_api.gd; test
-# ids T1..T12 in tests/codegen/dispatch_runner.gd):
+# ids T1..T23 in tests/codegen/dispatch_runner.gd):
 #   T1  -pre fires before vanilla, with the vanilla arguments
 #   T2  replace: before vanilla; vanilla's return wins unless skip_super(),
 #       which suppresses vanilla and promotes the callback's return
@@ -30,6 +30,23 @@
 #   T10 two instances of one wrapped script dispatch independently
 #   T11 coroutine vanilla methods still await and return their value
 #   T12 defaulted parameters flow through when omitted
+#   T13 registry inputs: an override's deadzone is applied, revert restores
+#       the deadzone the action had
+#   T14 registry inputs: revert brings back every event, and a reverted
+#       override leaves a vanilla action alone
+#   T15 registry scenes: remove() refuses an id that carries an override
+#   T16 registry items and scene_paths: a patch made before an override is
+#       reverted onto the object it changed
+#   T17 registry scene_paths: get_entry returns an override, and a patch
+#       cannot point a scene at a missing file
+#   T18 setup(): a when-predicate returning null or a String reads as false
+#   T19 has_mod(id, min_version) reads a v-prefixed version
+#   T20 a hook whose owner was freed is unhooked at dispatch, and a replace
+#       slot it held can be taken
+#   T21 hook_many, patch_many and find() report a bad value and carry on
+#   T22 registry scene_nodes: a per-field revert reports whether it reverted
+#       anything
+#   T23 coroutine detection ignores `await` inside strings and comments
 #
 # Unlike check_codegen.sh this needs NO decompiled vanilla source -- the
 # fixture is synthetic -- so it runs on every machine with a Godot binary
@@ -39,7 +56,7 @@
 # full rationale). modloader.gd's single static-init boot line
 #     var _filescope_mounted: Dictionary = _mount_previous_session()
 # is replaced by `= {}` in a TEMP copy, asserted to occur exactly once so
-# drift in constants.gd fails loudly; the runner double-checks no boot code
+# drift in boot.gd fails loudly; the runner double-checks no boot code
 # ran. This NEVER opens a window and NEVER touches the game install:
 # --headless only, against a throwaway project under the system temp dir.
 #
@@ -103,7 +120,7 @@ prepare_work() {
     n=$(grep -cxF "$INIT_LINE" "$OUT" || true)
     if [[ "$n" -ne 1 ]]; then
         echo "ERROR: expected exactly 1 occurrence of the static-init initializer line" >&2
-        echo "       in $OUT, found $n. constants.gd changed -- update INIT_LINE in" >&2
+        echo "       in $OUT, found $n. boot.gd changed -- update INIT_LINE in" >&2
         echo "       check_dispatch.sh so the harness keeps neutering the right thing." >&2
         exit 1
     fi
@@ -150,6 +167,13 @@ if [[ $PROVE -eq 0 ]]; then
     status=$?
     show_log
     elapsed=$((SECONDS - start_s))
+    # A script error inside a test function aborts that function without failing
+    # the run, and the assertions after it never execute. A green run logs none.
+    if [[ $status -eq 0 ]] && grep -q 'SCRIPT ERROR' "$WORK/run.log"; then
+        echo "FAILED: the run exited 0 but logged a SCRIPT ERROR, so a test function stopped part-way:" >&2
+        grep -m3 -A2 'SCRIPT ERROR' "$WORK/run.log" | sed 's/^/    /' >&2
+        status=1
+    fi
     if [[ $status -eq 0 ]]; then
         echo "OK: dispatch harness passed in ${elapsed}s (full log: $WORK/run.log)"
     else

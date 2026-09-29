@@ -1,16 +1,9 @@
 ## ----- main_menu_hook.gd -----
-## Injects a "Mods" button into RTV's main menu (res://Scripts/Menu.gd) that
-## re-opens the launcher UI post-boot. Any mutation to mod_config.cfg while
-## the UI is open flips _dirty_since_boot; on close we restart into a clean
-## Pass 1 so the new mod set takes effect.
-##
-## Implementation uses the same hook machinery mods use:
-##   1. _seed_core_hooks pre-populates _hooked_methods so the rewriter wraps
-##      Menu.gd's _ready even when no user mod asked for it. Called from each
-##      finish path + Pass 1's pre-restart generation so every code path that
-##      produces a hook pack includes our wrap.
-##   2. _register_core_hooks subscribes our injector to menu-_ready-post via
-##      the public hook() API. Fired from _emit_frameworks_ready.
+## Injects a "Mods" button into RTV's main menu that re-opens the launcher UI
+## post-boot; closing after a change restarts into a clean Pass 1. Uses the
+## same hook machinery mods use: _seed_core_hooks makes the rewriter wrap
+## Menu.gd's _ready even when no mod asked for it, and _register_core_hooks
+## subscribes to menu-_ready-post from _emit_frameworks_ready.
 
 const _MENU_SCRIPT_PATH := "res://Scripts/Menu.gd"
 const _MENU_HOOK_NAME := "menu-_ready-post"
@@ -20,13 +13,9 @@ func _seed_core_hooks() -> void:
 	if not _hooked_methods.has(_MENU_SCRIPT_PATH):
 		_hooked_methods[_MENU_SCRIPT_PATH] = {"_ready": true}
 		return
-	# An existing EMPTY dict is the wildcard sentinel: a mod declared
-	# "res://Scripts/Menu.gd = *" in [hooks] and hook_pack.gd reads
-	# emptiness as wrap-every-method, which already covers _ready.
-	# Inserting a key here would silently narrow the wildcard to
-	# wrap-only-_ready, so leave the sentinel untouched.
+	# A wildcard already covers _ready; inserting a key would narrow it.
 	var mask := _hooked_methods[_MENU_SCRIPT_PATH] as Dictionary
-	if mask.is_empty():
+	if _mask_is_wildcard(mask):
 		return
 	mask["_ready"] = true
 
@@ -34,9 +23,8 @@ func _register_core_hooks() -> void:
 	hook(_MENU_HOOK_NAME, _on_menu_ready, 100)
 
 func _on_menu_ready() -> void:
-	# Resolve the menu root via current_scene. The dispatcher fires -post from
-	# the vanilla _ready body, so at this point the Menu node is in the tree
-	# and @onready vars are populated.
+	# -post fires from the vanilla _ready body, so the Menu node is in the
+	# tree and @onready vars are populated.
 	var menu_root := get_tree().current_scene
 	if menu_root == null or menu_root.get_script() == null:
 		return
@@ -44,9 +32,8 @@ func _on_menu_ready() -> void:
 		return
 	_inject_mods_button(menu_root)
 
-# ANCHOR: vanilla Menu scene node paths. If "Main/Buttons" is missing,
-# injection logs a warning and skips; if only the "Quit" child is missing,
-# the Mods button is silently appended last instead of before Quit.
+# Anchored to vanilla Menu node paths: missing "Main/Buttons" skips with a
+# warning; missing "Quit" appends the button last instead of before Quit.
 func _inject_mods_button(menu_root: Node) -> void:
 	var buttons := menu_root.get_node_or_null("Main/Buttons")
 	if buttons == null:

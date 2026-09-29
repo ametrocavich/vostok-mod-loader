@@ -100,8 +100,9 @@ fi
 # --- Install/merge override.cfg ---
 # For keys the template specifies, force the template's value (overwriting
 # outdated user values like a stale ModLoader path). Keys the user has that
-# the template doesn't specify are left untouched. Uses awk (POSIX-standard
-# on any system with a shell).
+# the template doesn't specify are left untouched, except a ModLoader entry
+# under [autoload] left by an older install, which is dropped. Uses awk
+# (POSIX-standard on any system with a shell).
 #
 # Two-pass algorithm:
 #   Pass 1: walk template, record section/key -> value.
@@ -193,6 +194,9 @@ merge_override() {
             eq = index(s2, "=")
             if (eq == 0) { print ln; continue }
             k = trim(substr(s2, 1, eq - 1))
+            # An older install listed the loader under [autoload]. It lives
+            # under [autoload_prepend] now and must not be listed twice.
+            if (user_cur_sec == "autoload" && k == "ModLoader") continue
             if (user_cur_sec != "" && ((user_cur_sec SUBSEP k) in tmpl_kv)) {
                 print k "=" tmpl_kv[user_cur_sec SUBSEP k]
                 seen_keys_local[k] = 1

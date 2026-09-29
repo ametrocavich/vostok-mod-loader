@@ -1,26 +1,19 @@
 ## ----- security_scan.gd -----
-## Lightweight guardrail. Reads each file inside a candidate mod
-## (zip/vmz, pck, or developer-mode folder) WITHOUT mounting it and looks
-## for combinations of GDScript patterns that are nearly diagnostic of
-## known malware: obfuscated string decoding paired with process
-## spawning, anti-debug crashes, ransomware-setup calls.
-##
-## This is NOT a virus scanner. It catches the lazy / copy-paste attacks
-## (see the Road to Vostok dropper that motivated this branch); a
-## determined attacker with the modloader source can evade specific
-## patterns. Loading is never blocked. Only mods that hit a red trigger
-## get a "suspicious code" tag in the launcher and a confirmation
-## dialog at Launch time.
+## Static guardrail: reads each file in a candidate mod (zip/vmz, pck, or
+## dev folder) without mounting it, looking for GDScript pattern combos
+## nearly diagnostic of known malware (obfuscated decode + process spawn,
+## anti-debug crashes). Not a virus scanner; a determined attacker can
+## evade specific patterns. Loading is never blocked -- red findings get a
+## "suspicious code" tag in the launcher, and clicking it lists what matched.
 
-# Source files we run regex content scans on (GDScript text + text-form
+# Source files that get regex content scans (GDScript text plus text-form
 # Godot resources that can embed inline GDScript).
 const _TEXT_SCAN_EXTS: Dictionary = {
 	"gd": true, "tscn": true, "tres": true, "gdshader": true,
 }
 
 # Binary payload scan set: resources that may embed compiled GDScript or
-# string payloads, plus compiled GDScript itself. Byte-scanned for ASCII
-# substrings of binary-safe rule patterns.
+# string payloads. Byte-scanned for binary-safe rule patterns.
 const _BINARY_SCAN_EXTS: Dictionary = {
 	"scn": true, "res": true, "gdc": true,
 }
@@ -28,36 +21,20 @@ const _BINARY_SCAN_EXTS: Dictionary = {
 # Cap findings per mod so a deliberately-noisy archive can't bury the UI.
 const _MAX_FINDINGS_PER_MOD: int = 50
 
-# Cap individual file size we will fully scan. Almost no legitimate mod
-# script is over a couple hundred KB.
+# Per-file scan size cap; no legitimate mod script comes close.
 const _MAX_TEXT_SCAN_BYTES: int = 8 * 1024 * 1024
 
-# Rules. Each rule's individual presence is not a warning by itself --
-# the user only sees a badge when compute_risk_level() returns RISK_RED,
-# which fires for solo red triggers (os_crash, disable_save_safety) or
-# for combinations (obfuscation + process spawn, runtime-code-build +
-# process spawn, both obfuscation patterns together).
-#
-# HOW TO ADD A RULE:
-#   1. Add an entry below: {id, pattern, description, binary}. `pattern`
-#      is RegEx source, compiled once in _security_compile_rules. Text
-#      scans run it against comment-stripped source
-#      (_strip_gdscript_comments) and record only the FIRST match per
-#      rule per file. Multi-line patterns must use [\s\S] -- RegEx `.`
-#      does not cross newlines.
-#   2. `binary: true` additionally runs the rule over .scn/.res/.gdc
-#      blobs flattened to printable ASCII (_security_scan_binary), so
-#      the pattern must be specific enough not to false-positive on
-#      serialized binary data.
-#   3. A match alone shows the user NOTHING. For a rule to affect the
-#      badge its id must ALSO appear in _RED_SOLO_RULES or in one of the
-#      family arrays (_PROCESS_SPAWN_RULES / _OBFUSCATION_RULES /
-#      _RUNTIME_CODE_RULES) combined by compute_risk_level. Those arrays
-#      repeat the id as a plain string -- a typo there silently drops
-#      the rule from the red logic while its findings still log.
-#   4. compute_risk_level also hardcodes the byte_decode_loop +
-#      large_int_array pair check; adding a third obfuscation rule means
-#      revisiting that check.
+# Rules. A match alone never warns; the badge appears only when
+# compute_risk_level() returns RISK_RED (solo red triggers, or the combos
+# listed there). Adding a rule: {id, pattern, description, binary}. Pattern
+# is RegEx source compiled once in _security_compile_rules; text scans run
+# it over comment-stripped source, first match per rule per file, and
+# multi-line patterns need [\s\S] (RegEx `.` does not cross newlines).
+# `binary: true` also runs it over .scn/.res/.gdc blobs flattened to ASCII,
+# so the pattern must not false-positive on serialized data. To affect the
+# badge the id must also appear in _RED_SOLO_RULES or a family array --
+# a typo there silently drops the rule from the red logic. compute_risk_level
+# also hardcodes the byte_decode_loop + large_int_array pair check.
 const _SECURITY_RULES: Array = [
 	# --- Process spawning (combo with obfuscation/runtime_code -> red) ----
 	{
@@ -80,7 +57,7 @@ const _SECURITY_RULES: Array = [
 	},
 	{
 		"id": "os_shell_open",
-		# Skip http/https URL literals -- those go through the browser
+		# Skip http/https URL literals. Those go through the browser
 		# (e.g. mods linking to their modworkshop page).
 		"pattern": "\\bOS\\.shell_open\\s*\\((?!\\s*\"https?://)",
 		"description": "Calls OS.shell_open on a path or URI (not an http(s) URL). The OS handler decides what to launch.",
@@ -133,7 +110,7 @@ const _SECURITY_RULES: Array = [
 	# --- Obfuscation signatures (combo with each other or spawn -> red) ---
 	{
 		"id": "byte_decode_loop",
-		# `for <ident> in <expr>:` ... `<acc> += char(<ident>)` -- the
+		# `for <ident> in <expr>:` ... `<acc> += char(<ident>)`. The
 		# string-decoding loop attackers use to hide the real argument
 		# passed to OS.execute or FileAccess.
 		"pattern": "for\\s+\\w+\\s+in[^:]{1,200}:[\\s\\S]{0,200}?\\+=\\s*(?:char|String\\.chr)\\s*\\(",
@@ -142,7 +119,7 @@ const _SECURITY_RULES: Array = [
 	},
 	{
 		"id": "large_int_array",
-		# 16+ comma-separated numeric literals in a single literal -- the
+		# 16+ comma-separated numeric literals in a single literal. The
 		# encoded-payload shape that almost always pairs with byte_decode_loop.
 		"pattern": "\\[\\s*\\d+(?:\\s*,\\s*\\d+){15,}",
 		"description": "Contains a large integer literal (16+ entries). Often appears alongside obfuscated string-decoding loops.",
@@ -150,10 +127,8 @@ const _SECURITY_RULES: Array = [
 	},
 ]
 
-# Risk level for a mod's combined findings: clean or red. There is no
-# middle tier -- the UI shows nothing for clean findings (even if
-# individual rules matched) and a red "suspicious code" tag with a
-# launch-time confirmation dialog when red triggers fire.
+# Risk level: clean or red, no middle tier. Clean shows nothing even when
+# individual rules matched.
 const RISK_CLEAN := 0
 const RISK_RED := 2
 
@@ -176,15 +151,9 @@ const _RUNTIME_CODE_RULES: Array = [
 	"deserialize_objects", "expression_eval",
 ]
 
-# Returns RISK_CLEAN or RISK_RED.
-#
-# Red fires on:
-#   - any RED_SOLO rule present
-#   - both obfuscation rules together (encoded payload pattern)
-#   - obfuscation + process spawn (decoded execute)
-#   - runtime-code-build + process spawn (constructed execute)
-# Otherwise: clean. Findings are still stored on the entry for logging
-# but the user sees nothing.
+# Red fires on: any RED_SOLO rule; both obfuscation rules together;
+# obfuscation + process spawn; runtime-code-build + process spawn.
+# Otherwise clean; findings are still stored for logging.
 func compute_risk_level(findings: Array) -> int:
 	if findings.is_empty():
 		return RISK_CLEAN
@@ -214,23 +183,16 @@ func _any_present(present: Dictionary, rules: Array) -> bool:
 # Compiled regex cache, indexed by rule id. Lazy-populated on first scan.
 var _security_compiled: Dictionary = {}
 
-# Scan-result cache. scan_mod re-runs on every mods-dir rescan (dev-mode
-# toggle, install/delete, modpack apply, profile refresh), and re-opening
-# every archive to run 13 regexes over every script/resource made those
-# rescans freeze the UI. Key: the mod's full_path. Value:
-# {"stamp": String, "findings": Array}. The stamp covers everything that
-# can change the scanned bytes (see _security_scan_stamp), so any content
-# change misses the cache and rescans. Process-lifetime only, never
-# persisted; bounded by the number of mods on disk.
+# Scan-result cache: scan_mod re-runs on every mods-dir rescan, and
+# re-opening every archive froze the UI. Key: full_path; value: {stamp,
+# findings}. The stamp covers everything that can change the scanned bytes.
+# Process-lifetime only; bounded by the number of mods on disk.
 var _security_scan_cache: Dictionary = {}
 
-# Cheap change-detection stamp for a mod path. Archives: mtime + size.
-# Folder mods: the same recursive walk boot.gd's _stable_path_mtime uses
-# for folder-mod state hashing -- newest mtime alone misses deletions and
-# renames, so fold in the file count and the per-file path@mtime set hash
-# gathered on the same pass. Returns "" when the path can't be stat'd;
-# callers treat that as uncacheable so a vanished file never pins a stale
-# result.
+# Change stamp. Archives: mtime + size. Folders: newest mtime + file count
+# + per-file path@mtime set hash (newest mtime alone misses deletions and
+# renames). Returns "" when the path can't be stat'd; callers treat that as
+# uncacheable.
 func _security_scan_stamp(full_path: String, ext: String) -> String:
 	if ext == "folder":
 		var stats := {"count": 0, "set_hash": 0}
@@ -254,18 +216,16 @@ func _security_compile_rules() -> void:
 		else:
 			_log_warning("[SecurityScan] Failed to compile rule pattern: " + str(rule["id"]))
 
-# Top-level entry. Returns Array[Dictionary] of findings for the mod.
-# Empty array = clean. Each finding dict shape:
-#   {rule, file, line, preview, description}
+# Entry point. Returns findings (empty = clean), each shaped
+# {rule, file, line, preview, description}.
 func scan_mod(full_path: String, ext: String) -> Array:
 	_security_compile_rules()
 	var stamp := _security_scan_stamp(full_path, ext)
 	if not stamp.is_empty():
 		var cached: Dictionary = _security_scan_cache.get(full_path, {})
 		if not cached.is_empty() and str(cached.get("stamp", "")) == stamp:
-			# duplicate(true) so every caller owns its findings array, same
-			# as the uncached path -- mod entries must never alias each
-			# other's (or the cache's) finding dicts.
+			# duplicate(true) so callers own their findings; mod entries must
+			# never alias the cache's dicts.
 			return (cached.get("findings", []) as Array).duplicate(true)
 	var findings: Array = []
 	match ext:
@@ -373,9 +333,8 @@ func _security_scan_pck(pck_path: String, findings: Array) -> void:
 func _security_scan_text(file: String, text: String, findings: Array) -> void:
 	if text.is_empty():
 		return
-	# Strip GDScript line comments before matching so docstrings mentioning
-	# API names don't false-positive. Newlines preserved so line numbers
-	# stay accurate; preview is pulled from the original (uncommented) text.
+	# Match against comment-stripped source so docstrings mentioning API
+	# names don't false-positive; preview comes from the original text.
 	var stripped := _strip_gdscript_comments(text)
 	var orig_lines := text.split("\n")
 	for rule: Dictionary in _SECURITY_RULES:
@@ -402,9 +361,8 @@ func _security_scan_text(file: String, text: String, findings: Array) -> void:
 			"description": rule["description"],
 		})
 
-# Strip GDScript line comments (# ...) before pattern matching. Tracks
-# string-literal state so a # inside "..." isn't treated as a comment
-# start. Newlines preserved so line-number arithmetic stays correct.
+# Strip GDScript line comments, tracking string-literal state so a # inside
+# "..." survives. Newlines preserved so line-number arithmetic stays correct.
 func _strip_gdscript_comments(text: String) -> String:
 	if text.is_empty():
 		return text
@@ -428,13 +386,32 @@ func _strip_line_comment(line: String) -> String:
 		prev = c
 	return line
 
-# Byte-search inside binary resources or .gdc files. Only runs rules
-# marked `binary: true` -- those whose match is unique enough not to
-# false-positive on legit binary serialized content.
+# Byte-search inside binary resources or .gdc files; only rules marked
+# `binary: true` run here.
 func _security_scan_binary(file: String, bytes: PackedByteArray, findings: Array) -> void:
-	# Cap here so zip (post-decompress), folder, and pck callers are all
-	# bounded -- the ascii fallback loop below is too slow for huge blobs.
+	# Cap here so zip (post-decompress), folder, and pck callers are all bounded.
 	if bytes.is_empty() or bytes.size() > _MAX_TEXT_SCAN_BYTES:
+		return
+
+	# Compiled GDScript defeats every rule: .gdc is tokenized bytecode, so
+	# identifiers live in a string table and source-level patterns cannot
+	# match. Disclose that instead of scanning clean. Running the text rules
+	# over detokenized output would need a bytes-level detokenizer entry point.
+	if _security_is_gdsc(bytes):
+		# One notice per mod, not per file: every walker stops at
+		# _MAX_FINDINGS_PER_MOD, so per-file notices would let .gdc decoys
+		# exhaust the budget before the scan reaches a plaintext payload.
+		for existing in findings:
+			if existing is Dictionary and str((existing as Dictionary).get("rule", "")) == "compiled_script":
+				return
+		if findings.size() < _MAX_FINDINGS_PER_MOD:
+			findings.append({
+				"rule": "compiled_script",
+				"file": file,
+				"line": 0,
+				"preview": "(compiled GDScript bytecode)",
+				"description": "This mod ships compiled GDScript (.gdc) that the scanner cannot read, starting with this file. Compiled code was NOT checked -- treat this mod as unscanned unless you trust its author.",
+			})
 		return
 	var as_text := bytes.get_string_from_utf8()
 	if as_text.is_empty():
@@ -463,13 +440,20 @@ func _security_scan_binary(file: String, bytes: PackedByteArray, findings: Array
 			"description": rule["description"],
 		})
 
+## Whether a blob is compiled GDScript, by its GDSC magic rather than by its
+## extension -- the extension is attacker-controlled and the magic is not.
+func _security_is_gdsc(bytes: PackedByteArray) -> bool:
+	if bytes.size() < 4:
+		return false
+	return bytes.slice(0, 4).get_string_from_ascii() == _GDSC_MAGIC
+
+
 # PCK file-table parser that also returns per-entry offset+size so the
 # scanner can read individual blobs without mounting the pck.
 func _security_pck_list_with_offsets(pck_path: String) -> Array:
 	const MAGIC_GDPC: int = 0x43504447  # "GDPC"
 	const PACK_DIR_ENCRYPTED := 1
-	# PACK_FORMAT_V2 / V3 / V4 bounds live in constants.gd (shared with
-	# pck_enumeration.gd's parser).
+	# PACK_FORMAT_V2/V3/V4 bounds live in constants.gd (shared with pck_enumeration.gd).
 	var result: Array = []
 	var f := FileAccess.open(pck_path, FileAccess.READ)
 	if f == null:
@@ -482,8 +466,7 @@ func _security_pck_list_with_offsets(pck_path: String) -> Array:
 	if version < PACK_FORMAT_V2 or version > PACK_FORMAT_V3:
 		if version == PACK_FORMAT_V4:
 			# Godot 4.7+ export -- the one rejection worth a modder-facing
-			# message. The stamped engine version u32s follow the format
-			# version in the GDPC header.
+			# message. The engine version u32s follow the format version.
 			var ver_major: int = f.get_32()
 			var ver_minor: int = f.get_32()
 			_log_warning("[SecurityScan] %s: mod .pck uses pack format v4, exported with Godot %d.%d. This game runs Godot 4.6, which cannot read v4 packs. Ask the mod author to export with Godot 4.6.x, or to ship the mod as a .zip instead." \
@@ -492,8 +475,8 @@ func _security_pck_list_with_offsets(pck_path: String) -> Array:
 		return result
 	f.get_32(); f.get_32(); f.get_32()
 	var pack_flags: int = f.get_32()
-	# Directory entry offsets are relative to file_base (engine reads them as
-	# file_base + ofs), so keep it to make stored offsets absolute below.
+	# Directory entry offsets are relative to file_base; keep it to make the
+	# stored offsets absolute below.
 	var file_base: int = f.get_64()
 	if version == PACK_FORMAT_V3:
 		f.seek(f.get_64())

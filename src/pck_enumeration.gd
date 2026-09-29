@@ -25,8 +25,8 @@ func _build_class_name_lookup() -> void:
 			else:
 				skipped += 1
 		if _class_name_to_path.size() < 10:
-			# A mounted mod (e.g., MCM) may shadow the game's cache with its own
-			# 1-entry version.  Fall back to the hardcoded map.
+			# A mounted mod (e.g. MCM) can shadow the game's cache with its
+			# own tiny version; fall back to the hardcoded map.
 			_log_warning("Class cache has only %d entries (raw=%d) -- mod shadowing detected, using hardcoded fallback" \
 					% [_class_name_to_path.size(), class_list.size()])
 			_class_name_to_path = _get_hardcoded_class_map()
@@ -36,9 +36,8 @@ func _build_class_name_lookup() -> void:
 		_log_warning("Could not load global_script_class_cache.cfg -- using hardcoded fallback")
 		_class_name_to_path = _get_hardcoded_class_map()
 
-# ANCHOR: snapshot of vanilla RTV's global_script_class_cache.cfg (class_name
-# -> path). Fallback only; re-capture from a fresh vanilla install when the
-# game updates.
+# Snapshot of vanilla RTV's global_script_class_cache.cfg. Fallback only;
+# re-capture from a fresh vanilla install when the game updates.
 func _get_hardcoded_class_map() -> Dictionary:
 	return {
 		"AIWeaponData": "res://Scripts/AIWeaponData.gd",
@@ -101,19 +100,21 @@ func _get_hardcoded_class_map() -> Dictionary:
 		"WorldSave": "res://Scripts/WorldSave.gd",
 	}
 
+# --- Script enumeration -----------------------------------------------------
+# DirAccess.get_files_at() can't enumerate PCK contents in Godot 4.6 (it
+# returns at most 1 entry on res://Scripts/); parse the PCK file table instead.
+
+# Returns res://Scripts/*.gd paths found in the game's PCK, or [] on failure
+# (encrypted pack, embedded pack, new format, missing file). Callers fall
+# back to _class_name_to_path when empty.
 func _enumerate_game_scripts() -> Array[String]:
-	# Memoized: PCK parsing is non-trivial and we call this from two sites
-	# now (early in pass 1/2 so the .hook() merge can resolve class_name-less
-	# stems, plus from _generate_hook_pack as before). Cache keeps the second
-	# call free without forcing the caller to track lookup state.
+	# Memoized; called from two sites per pass.
 	if not _all_game_script_paths.is_empty():
 		return _all_game_script_paths
-	# Disk cache. The in-memory memo above only survives the session, so
-	# without this EVERY launch re-parses the PCK's 17k-entry directory --
-	# including the "mod state unchanged" fast path, which otherwise does
-	# almost no work. The result is a list of ~176 paths that can only change
-	# when the game itself changes, so stamp it with the exe's mtime (the same
-	# key boot.gd uses to invalidate hook artifacts) and skip the parse.
+	# Disk cache: without it every launch re-parses the PCK's 17k-entry
+	# directory for a script list that only changes when the game does.
+	# Stamped with the exe's mtime, the same key boot.gd uses to invalidate
+	# hook artifacts.
 	var cached := _load_script_index_cache()
 	if not cached.is_empty():
 		_all_game_script_paths = cached
@@ -129,9 +130,8 @@ func _enumerate_game_scripts() -> Array[String]:
 		if paths.is_empty():
 			continue
 		var scripts: Array[String] = []
-		# Membership via Dictionary, not `in scripts`. The array form is a
-		# linear scan per candidate, so de-duplicating N script paths out of a
-		# 17k-entry directory was quadratic in the number of scripts.
+		# Dictionary membership; `in Array` is a linear scan per candidate
+		# (quadratic overall).
 		var seen: Dictionary = {}
 		for p in paths:
 			# Packed paths lack the res:// prefix; Godot adds it on load.
@@ -156,21 +156,15 @@ func _enumerate_game_scripts() -> Array[String]:
 		return scripts
 	return []
 
-# Script-index disk cache: "<exe mtime>\n<path>\n<path>..." . Lines prefixed
-# "!" carry the PCK's zero-byte .gd entries (the _pck_zero_byte_paths side
-# channel _parse_pck_file_list normally populates) -- a cache hit skips that
-# parse, so the cache must restore the side channel too or downstream
-# detokenize/hook-gen misdiagnose zero-byte scripts as "game build mismatch".
-#
-# Stamped with the game executable's mtime so a game update invalidates it
-# automatically -- the same key boot.gd checks to wipe hook artifacts. A
-# mismatched, missing or unreadable stamp simply falls through to a fresh PCK
-# parse, so the cache can never serve a stale script list; the worst case is
-# the cost we were paying before.
+# Script-index disk cache: "<exe mtime>|<PCK stamp>\n<path>\n<path>...". Lines prefixed
+# "!" carry the PCK's zero-byte .gd entries; a cache hit must restore that
+# side channel (_pck_zero_byte_paths) or downstream detokenize/hook-gen
+# misdiagnose zero-byte scripts as a game build mismatch. Any stamp mismatch
+# falls through to a fresh parse, so the cache can never serve a stale list.
 const _SCRIPT_INDEX_CACHE := "user://modloader_hooks/script_index.txt"
 
 func _script_index_stamp() -> String:
-	return str(FileAccess.get_modified_time(OS.get_executable_path()))
+	return "%d|%s" % [FileAccess.get_modified_time(OS.get_executable_path()), _game_pck_stamp()]
 
 func _load_script_index_cache() -> Array[String]:
 	var empty: Array[String] = []
@@ -185,17 +179,15 @@ func _load_script_index_cache() -> Array[String]:
 	var out: Array[String] = []
 	for i in range(1, lines.size()):
 		var p := lines[i].strip_edges()
-		# Zero-byte side channel ("!"-prefixed): restore into
-		# _pck_zero_byte_paths instead of the script list. Same shape filter
-		# as the plain lines (minus the Scripts/ restriction -- the parser
-		# records zero-byte .gd entries anywhere in the PCK).
+		# "!"-prefixed zero-byte side channel; the parser records these
+		# anywhere in the PCK, not just Scripts/.
 		if p.begins_with("!"):
 			var zb := p.substr(1)
 			if zb.begins_with("res://") and zb.ends_with(".gd"):
 				_pck_zero_byte_paths[zb] = true
 			continue
-		# Only ever hand back paths of the shape the parser itself produces --
-		# a hand-edited or truncated cache must not widen the wrap surface.
+		# Only hand back parser-shaped paths -- a hand-edited or truncated
+		# cache must not widen the wrap surface.
 		if p.begins_with("res://Scripts/") and p.ends_with(".gd"):
 			out.append(p)
 	return out
@@ -210,9 +202,8 @@ func _save_script_index_cache(scripts: Array[String]) -> void:
 	if f == null:
 		return
 	var body := _script_index_stamp() + "\n" + "\n".join(scripts)
-	# Persist the zero-byte side channel so a cache hit restores it (see the
-	# format comment above). Populated by the _parse_pck_file_list call that
-	# immediately precedes every save, so it reflects THIS parse.
+	# Persist the zero-byte side channel (see the format comment above);
+	# populated by the parse that immediately precedes every save.
 	for zb: String in _pck_zero_byte_paths:
 		body += "\n!" + zb
 	var wrote := f.store_string(body)
@@ -223,14 +214,11 @@ func _save_script_index_cache(scripts: Array[String]) -> void:
 		return
 	DirAccess.rename_absolute(tmp, _SCRIPT_INDEX_CACHE)
 
-# Collect module-scope `preload("...tscn|scn")` paths from source. Module-scope
-# = line starts at column 0 (no leading whitespace). Such preloads fire at
-# script parse time, BEFORE mod autoloads run overrideScript(). If the
-# preloaded scene has a Script ext_resource pointing to a path a mod intends
-# to override, the scene bakes a Ref<> to the pre-override vanilla script.
-# take_over_path later clears the vanilla's path_cache, leaving the scene
-# holding an orphaned (empty-path) script. Subsequent instantiate() produces
-# nodes with that orphan, and the mod's body never runs.
+# Collect module-scope `preload("...tscn|scn")` paths (line starts at column
+# 0). These fire at parse time, before mod autoloads run overrideScript():
+# the scene bakes a Ref<> to the pre-override vanilla script, take_over_path
+# then orphans it (path_cache cleared), and instantiate() yields nodes whose
+# mod body never runs.
 func _collect_module_scope_scene_preloads(source: String) -> PackedStringArray:
 	var scenes := PackedStringArray()
 	var re := RegEx.new()
@@ -258,8 +246,7 @@ func _collect_module_scope_scene_preloads(source: String) -> PackedStringArray:
 func _parse_pck_file_list(pck_path: String) -> PackedStringArray:
 	const MAGIC_GDPC: int = 0x43504447  # "GDPC" little-endian
 	const PACK_DIR_ENCRYPTED := 1
-	# PACK_FORMAT_V2 / V3 / V4 bounds live in constants.gd (shared with
-	# security_scan.gd's parser).
+	# PACK_FORMAT_V2/V3/V4 bounds live in constants.gd (shared with security_scan.gd).
 	var result := PackedStringArray()
 	var f := FileAccess.open(pck_path, FileAccess.READ)
 	if f == null:
@@ -276,8 +263,8 @@ func _parse_pck_file_list(pck_path: String) -> PackedStringArray:
 	var pack_format_version: int = f.get_32()
 	if pack_format_version < PACK_FORMAT_V2 or pack_format_version > PACK_FORMAT_V3:
 		if pack_format_version == PACK_FORMAT_V4:
-			# Godot 4.7+ export. The stamped engine version u32s follow the
-			# format version in the GDPC header, so name the offending editor.
+			# Godot 4.7+ export; the engine version u32s follow the format
+			# version, so name the offending editor.
 			var ver_major: int = f.get_32()
 			var ver_minor: int = f.get_32()
 			_log_warning("[PCK] %s: pack format v4, exported with Godot %d.%d. This game runs Godot 4.6, which cannot read v4 packs. Re-export the .pck with Godot 4.6.x, or ship the mod as a .zip (zip mods are unaffected by pack versions)." \
@@ -319,10 +306,9 @@ func _parse_pck_file_list(pck_path: String) -> PackedStringArray:
 		if not path.is_empty():
 			result.append(path)
 			# Track zero-byte entries so downstream detokenize skips them
-			# silently instead of logging misleading "Cannot read bytes"
-			# warnings. The base game may ship empty .gd entries (e.g.
-			# CasettePlayer.gd in RTV 4.6.1) that we cannot hook and that
-			# any preload() call would fail regardless of modloader.
+			# instead of logging misleading warnings. The base game ships
+			# empty .gd entries (e.g. CasettePlayer.gd in RTV 4.6.1) that
+			# cannot be hooked regardless of the modloader.
 			if size == 0 and path.ends_with(".gd"):
 				var res_path := path if path.begins_with("res://") else "res://" + path.trim_prefix("/")
 				_pck_zero_byte_paths[res_path] = true

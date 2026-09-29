@@ -19,17 +19,13 @@ func _register_scene(id: String, data: Variant) -> bool:
 	var db := _database_node()
 	if db == null:
 		return false
-	# The rewriter injects _rtv_mod_scenes + _rtv_override_scenes + _get() into
-	# Database.gd only when at least one mod declares [registry]. Without that,
-	# writing db._rtv_mod_scenes[id] = data silently creates an ad-hoc property
-	# (Godot's Object.set accepts it) but Database.get(id) never routes through
-	# the injected _get() -- callers get null and the registration is invisible.
-	# Fail loud so mod authors see the real cause instead of "item registered
-	# but won't spawn."
+	# The injection only happens when at least one mod declares [registry].
+	# Without it the write would silently create an ad-hoc property that
+	# Database.get(id) never routes through -- the registration would be
+	# invisible. Fail loud instead.
 	if not ("_rtv_mod_scenes" in db):
 		push_warning("[Registry] register('scenes', '%s'): Database.gd is missing injected scene fields (rewriter didn't fire). Does your mod.txt include a [registry] section?" % id)
 		return false
-	# Collision check: vanilla const, prior mod registration, or mod override.
 	if _scene_exists_in_vanilla(db, id):
 		push_warning("[Registry] register('scenes', '%s'): id collides with vanilla constant; use override instead" % id)
 		return false
@@ -48,25 +44,20 @@ func _override_scene(id: String, data: Variant) -> bool:
 	var db := _database_node()
 	if db == null:
 		return false
-	# Same injection guard as _register_scene: without it, an id that collides
-	# with a real Node/Object property (e.g. "name") makes db.get(id) return
-	# non-null and the write below would hit the missing dict.
+	# Injection guard (see _register_scene). Also: without it, an id that
+	# collides with a real Node property (e.g. "name") would make db.get(id)
+	# non-null while the write below hits a missing dict.
 	if not ("_rtv_override_scenes" in db):
 		push_warning("[Registry] override('scenes', '%s'): Database.gd is missing injected scene fields (rewriter didn't fire). Does your mod.txt include a [registry] section?" % id)
 		return false
-	# The rewriter converts Database's `const X = preload(...)` into entries
-	# in _rtv_vanilla_scenes, so db.get(id) routes through _get(); which
-	# checks _rtv_override_scenes first. Writing to that dict is enough to
-	# replace the scene a vanilla id resolves to.
+	# db.get(id) routes through the injected _get(), which checks
+	# _rtv_override_scenes first, so writing that dict replaces the scene.
 	var original = db.get(id)
 	if original == null:
 		push_warning("[Registry] override('scenes', '%s'): no existing entry to override" % id)
 		return false
-	# Reject second override of the same scene id to match every other
-	# registry's behavior. Without this guard, a later mod silently displaces
-	# an earlier mod's override and the earlier mod has no signal that their
-	# work was clobbered. The second mod should revert first (if it wants to
-	# drop the earlier override) or target the registered id explicitly.
+	# Reject a second override of the same id so a later mod can't silently
+	# clobber an earlier mod's override; revert first to re-override.
 	var ov: Dictionary = _registry_overridden.get("scenes", {})
 	if ov.has(id):
 		push_warning("[Registry] override('scenes', '%s'): already overridden (revert first to re-override)" % id)
@@ -81,13 +72,16 @@ func _remove_scene(id: String) -> bool:
 	var db := _database_node()
 	if db == null:
 		return false
-	# Same injection guard as _register_scene: fields only exist when the
-	# rewriter fired; otherwise .has() is an invalid property get.
+	# Injection guard (see _register_scene).
 	if not ("_rtv_mod_scenes" in db):
 		push_warning("[Registry] remove('scenes', '%s'): Database.gd is missing injected scene fields (rewriter didn't fire). Does your mod.txt include a [registry] section?" % id)
 		return false
 	if not db._rtv_mod_scenes.has(id):
 		push_warning("[Registry] remove('scenes', '%s'): not registered by a mod" % id)
+		return false
+	# An override on the registration has this scene as its revert target.
+	if db._rtv_override_scenes.has(id):
+		push_warning("[Registry] remove('scenes', '%s'): entry is an override, use revert instead" % id)
 		return false
 	db._rtv_mod_scenes.erase(id)
 	var reg: Dictionary = _registry_registered.get("scenes", {})
@@ -100,8 +94,7 @@ func _revert_scene(id: String) -> bool:
 	var db := _database_node()
 	if db == null:
 		return false
-	# Same injection guard as _register_scene: fields only exist when the
-	# rewriter fired; otherwise .has() is an invalid property get.
+	# Injection guard (see _register_scene).
 	if not ("_rtv_override_scenes" in db):
 		push_warning("[Registry] revert('scenes', '%s'): Database.gd is missing injected scene fields (rewriter didn't fire). Does your mod.txt include a [registry] section?" % id)
 		return false
@@ -115,10 +108,8 @@ func _revert_scene(id: String) -> bool:
 	_log_debug("[Registry] reverted scene '%s'" % id)
 	return true
 
-# A scene id collides with vanilla if Database's rewritten _rtv_vanilla_scenes
-# dict contains it. The rewriter moves every `const X = preload(...)` from
-# vanilla Database.gd into that dict; it's the canonical source of truth
-# for "vanilla-shipped names."
+# _rtv_vanilla_scenes (the rewriter's home for Database.gd's former
+# `const X = preload(...)` entries) is the canonical vanilla name source.
 func _scene_exists_in_vanilla(db: Node, id: String) -> bool:
 	if not ("_rtv_vanilla_scenes" in db):
 		return false
