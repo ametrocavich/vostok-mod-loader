@@ -108,6 +108,19 @@ func _sound_exists_in_vanilla(id: String) -> bool:
 		return false
 	return _object_has_property(lib, id)
 
+# Every script property on the library, for refusal messages: a game update
+# renames sound fields (Build 2 renamed most), and the refusal is where an
+# author reads the current list without decompiling anything.
+func _sound_field_names() -> String:
+	var lib := _audio_library()
+	if lib == null:
+		return "(AudioLibrary not loaded)"
+	var names := PackedStringArray()
+	for p in lib.get_property_list():
+		if int(p.get("usage", 0)) & PROPERTY_USAGE_SCRIPT_VARIABLE:
+			names.append(str(p["name"]))
+	return ", ".join(names)
+
 # Overrides on vanilla names are set() mutations on the library itself, so
 # the library read already sees them; the registered dict comes first only
 # to cover register-only ids.
@@ -144,7 +157,7 @@ func _override_sound(id: String, data: Variant) -> bool:
 		return false
 	if not _sound_exists_in_vanilla(id):
 		# Mod-registered ids can't be overridden; revert the register first.
-		push_warning("[Registry] override('sounds', '%s'): no vanilla AudioLibrary field with that name (register can't be overridden; revert the register first)" % id)
+		push_warning("[Registry] override('sounds', '%s'): no vanilla AudioLibrary field with that name (register can't be overridden; revert the register first). Current names: %s" % [id, _sound_field_names()])
 		return false
 	var ev := _coerce_audio_event(id, "override", data)
 	if ev == null:
@@ -162,7 +175,7 @@ func _override_sound(id: String, data: Variant) -> bool:
 func _array_op_sound(id: String, field: String, op: String, values: Array, allow_duplicates: bool) -> bool:
 	var target := _lookup_sound(id)
 	if target == null:
-		push_warning("[Registry] %s('sounds', '%s'): no sound with that id" % [op, id])
+		push_warning("[Registry] %s('sounds', '%s'): no sound with that id. Current names: %s" % [op, id, _sound_field_names()])
 		return false
 	return _array_op_on_resource("sounds", id, target, field, op, values, allow_duplicates)
 
@@ -173,7 +186,7 @@ func _patch_sound(id: String, fields: Dictionary) -> bool:
 		return false
 	var target := _lookup_sound(id)
 	if target == null:
-		push_warning("[Registry] patch('sounds', '%s'): no sound with that id" % id)
+		push_warning("[Registry] patch('sounds', '%s'): no sound with that id. Current names: %s" % [id, _sound_field_names()])
 		return false
 	var patched: Dictionary = _registry_patched.get("sounds", {})
 	var stash: Dictionary = patched.get(id, {})
