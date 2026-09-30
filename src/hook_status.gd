@@ -7,9 +7,6 @@
 ## banner when that record says hooks did not work.
 
 const HOOK_STATUS_PATH := "user://modloader_hook_status.json"
-# Written by static init when the game build changed (executable mtime or
-# PCK stamp); cleared by the next healthy hook activation.
-const GAME_UPDATED_MARKER_PATH := "user://modloader_game_updated"
 
 # state values a record can carry
 const HOOK_STATE_OK := "ok"
@@ -35,10 +32,6 @@ func _hook_status_write(fields: Dictionary) -> void:
 	if f != null:
 		f.store_string(JSON.stringify(rec))
 		f.close()
-	if str(rec.get("state", "")) == HOOK_STATE_OK and int(rec.get("attempted", 0)) > 0:
-		# Hooks worked on this game build; the update notice has served.
-		if FileAccess.file_exists(GAME_UPDATED_MARKER_PATH):
-			DirAccess.remove_absolute(ProjectSettings.globalize_path(GAME_UPDATED_MARKER_PATH))
 
 
 ## The last record, or {} when there is none, it was written by a different
@@ -63,19 +56,10 @@ func _hook_status_read() -> Dictionary:
 	return rec
 
 
-## Static-init side: the game executable changed. Written before any
-## instance exists, so this is a static helper on a bare path.
-static func _static_mark_game_updated() -> void:
-	var f := FileAccess.open(GAME_UPDATED_MARKER_PATH, FileAccess.WRITE)
-	if f != null:
-		f.store_string(str(FileAccess.get_modified_time(OS.get_executable_path())))
-		f.close()
-
-
 ## What the launcher should tell the player, or {} when nothing is wrong.
 ## {"severity": "error", "text": String}. Only a recorded failure speaks: a
-## game update on its own is not a problem (the marker only invalidates the
-## hook cache and clears on the next healthy activation), and telling
+## game update on its own is not a problem (static init wipes the hook cache
+## and the next activation records whether hooks still work), and telling
 ## players to look for a loader update when hooks still work sent them
 ## looking for a release that did not exist.
 func _hook_status_problem() -> Dictionary:

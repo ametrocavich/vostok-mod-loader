@@ -230,7 +230,6 @@ func _menu_tests() -> void:
 	_mark("M7")
 	var status := FileAccess.get_file_as_string("user://modloader_hook_status.json")
 	_report("\"ok\"" in status, "M7a hook status record", status.strip_edges())
-	_report(true, "M7b game-updated marker present", str(FileAccess.file_exists("user://modloader_game_updated")))
 
 	_mark("M8")
 	# The loader's own menu hook adds a Mods button before Quit; the deferred

@@ -267,8 +267,6 @@ static func _mount_previous_session() -> Dictionary:
 			_static_game_pck_stamp(_static_game_pck_path())):
 		log_lines.append("[FileScope] Game build changed (executable or PCK) -- wiping hook cache")
 		_static_wipe_hook_cache()
-		# The launcher tells the player; a healthy activation clears it.
-		_static_mark_game_updated()
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(PASS_STATE_PATH))
 		_static_reset_override_cfg(log_lines)
 		_write_filescope_log(log_lines)

@@ -248,8 +248,7 @@ func _mods_build_banners(outer: VBoxContainer, tabs: TabContainer, active_modpac
 	# closes, so this is where a player learns a game update broke the rewriter.
 	var hook_problem := _hook_status_problem()
 	if not hook_problem.is_empty():
-		var is_error := str(hook_problem.get("severity", "")) == "error"
-		var hook_banner := _make_banner(str(hook_problem.get("text", "")), COL_ERR if is_error else COL_ACCENT)
+		var hook_banner := _make_banner(str(hook_problem.get("text", "")), COL_ERR)
 		var update_btn := Button.new()
 		update_btn.text = "Check for loader update"
 		var hook_banner_row: HBoxContainer = hook_banner["row"]

@@ -462,20 +462,17 @@ func _t8_pass_state_reads_coerce() -> void:
 
 # Hook-pack generation runs after the launcher closes, so the only way a
 # player learns a game update broke the rewriter is the record generation
-# leaves behind. Pins: a failure record produces a launcher notice; a record
-# from another loader build or another game build is ignored; the
-# game-updated marker alone shows nothing (a game update is not a problem
-# while hooks work) and only a healthy activation clears it.
+# leaves behind. Pins: a failure record produces a launcher banner; a record
+# from another loader build or another game build is ignored; a healthy
+# activation's record shows nothing.
 func _t7_hook_status_reaches_the_launcher() -> void:
 	var status_path := str(_ml.HOOK_STATUS_PATH)
-	var marker_path := str(_ml.GAME_UPDATED_MARKER_PATH)
 	var clear := func():
-		for p in [status_path, marker_path]:
-			if FileAccess.file_exists(p):
-				DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
+		if FileAccess.file_exists(status_path):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(status_path))
 	clear.call()
 	_assert((_ml._hook_status_problem() as Dictionary).is_empty(),
-			"T7: no record and no marker -> nothing to show")
+			"T7: no record -> nothing to show")
 
 	_ml._hook_status_write({"state": "all_failed", "attempted": 12, "ok": 0})
 	var problem: Dictionary = _ml._hook_status_problem()
@@ -509,19 +506,8 @@ func _t7_hook_status_reaches_the_launcher() -> void:
 	_assert((_ml._hook_status_problem() as Dictionary).is_empty(),
 			"T7: a record from another game build is ignored")
 
-	# The game-updated marker alone shows nothing: players on a current
-	# loader must not be sent looking for a loader update.
-	clear.call()
-	_ml._static_mark_game_updated()
-	problem = _ml._hook_status_problem()
-	_assert(problem.is_empty() and FileAccess.file_exists(marker_path),
-			"T7: the game-updated marker alone shows no banner (got %s)" % str(problem))
-	# A no-mods session does not prove hooks work on the new build.
-	_ml._hook_status_write({"state": "ok", "attempted": 0})
-	_assert(FileAccess.file_exists(marker_path), "T7: an empty session keeps the marker")
-	# A healthy activation does.
+	# A healthy activation's own record replaces any failure record.
 	_ml._hook_status_write({"state": "ok", "attempted": 5, "ok": 5})
-	_assert(not FileAccess.file_exists(marker_path), "T7: a healthy activation clears the marker")
 	_assert((_ml._hook_status_problem() as Dictionary).is_empty(), "T7: nothing to show after a healthy activation")
 	clear.call()
 
