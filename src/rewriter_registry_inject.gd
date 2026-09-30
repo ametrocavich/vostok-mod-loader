@@ -489,8 +489,11 @@ func _rtv_inject_ai_registry(indent: String, source: String = "") -> String:
 		out += I1 + I1 + "out.append(variant_name)\n"
 		out += I1 + "return out\n"
 		return out
-	# Pre-Build 2: boss + AISpawner are set by AISpawner.CreatePools();
-	# without the back-reference the zone category is unknowable, so bail.
+	# Pre-Build 2 shape, kept while the codegen harness still runs on the
+	# rtv0.1.1.3 corpus (VANILLA_SRC): that run is the proof the switch above
+	# picks by source, not by loader build. boss + AISpawner are set by
+	# AISpawner.CreatePools(); without the back-reference the zone category
+	# is unknowable, so bail.
 	out += I1 + "if boss:\n"
 	out += I1 + I1 + "out.append(\"Punisher\")\n"
 	out += I1 + I1 + "return out\n"
@@ -524,7 +527,7 @@ func _rtv_ai_source_has_variant_faction(source: String) -> bool:
 
 # Vanilla anchor: AISpawner.gd Zone enum; the emitted resolver converts the zone int via Zone.keys().
 func _rtv_inject_aispawner_registry(indent: String) -> String:
-	# Resolver helper for the rewritten `agent = _rtv_resolve_ai_type(...)`
+	# Resolver helper for the rewritten `enemy = _rtv_resolve_ai_type(...)`
 	# assignments. Lookup goes through Engine metadata because AISpawner is
 	# a per-scene Node3D with multiple instances sharing one registry.
 	var I1 := indent
