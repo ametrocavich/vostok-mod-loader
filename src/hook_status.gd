@@ -73,8 +73,11 @@ static func _static_mark_game_updated() -> void:
 
 
 ## What the launcher should tell the player, or {} when nothing is wrong.
-## {"severity": "error"|"notice", "text": String}. A failure record beats
-## the game-updated notice: it is the more specific of the two.
+## {"severity": "error", "text": String}. Only a recorded failure speaks: a
+## game update on its own is not a problem (the marker only invalidates the
+## hook cache and clears on the next healthy activation), and telling
+## players to look for a loader update when hooks still work sent them
+## looking for a release that did not exist.
 func _hook_status_problem() -> Dictionary:
 	var rec := _hook_status_read()
 	var state := str(rec.get("state", ""))
@@ -105,7 +108,4 @@ func _hook_status_problem() -> Dictionary:
 		HOOK_STATE_PACK_FAILED:
 			return {"severity": "error", "text":
 					"Last time the game ran, the loader could not build or mount its hook pack, so hook-based mods did nothing. Check the free space on your disk; if it keeps happening, check for a loader update."}
-	if FileAccess.file_exists(GAME_UPDATED_MARKER_PATH):
-		return {"severity": "notice", "text":
-				"Road to Vostok was updated. The loader rebuilt its script cache for the new version. If hook-based mods stop working, check for a loader update."}
 	return {}
