@@ -7,7 +7,7 @@
 
 # release-please bumps MODLOADER_VERSION; the major/minor/patch accessors parse it.
 # x-release-please-start-version
-const MODLOADER_VERSION := "3.4.0"
+const MODLOADER_VERSION := "3.4.1"
 # x-release-please-end
 
 const MODLOADER_RES_PATH := "res://modloader.gd"
