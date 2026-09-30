@@ -23,6 +23,7 @@ Then the pages every mod ships with:
 
 - [Mod-Format](Mod-Format): the mod.txt schema: metadata, autoloads, `[updates]`, `[hooks]` / `[script_extend]` / `[registry]` declarations
 - [Setup-Plans](Setup-Plans): declarative `lib.setup(plan)`, batching your registry and hook calls as one plan literal
+- [Build-2-Migration](Build-2-Migration): step by step, updating a mod that worked on the previous game build for Road to Vostok Build 2 (Nomads)
 
 Related, when you need them:
 

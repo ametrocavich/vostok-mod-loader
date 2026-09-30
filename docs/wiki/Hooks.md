@@ -114,7 +114,7 @@ All calls on `Engine.get_meta("RTVModLib")`. Source: `src/hooks_api.gd`.
 | `has_mod(id, min_version="") -> bool` | True if a mod with that id is loaded. `min_version` does a numeric dotted-version compare (`>=`); non-numeric components compare as 0, and mods without a `version=` field compare as 0.0.0 |
 | `mod_info(id) -> Dictionary` | `{mod_id, mod_name, version, file_name, priority, required_dependencies, optional_dependencies}` for a loaded mod, `{}` if absent. Returns a deep copy; mutate freely |
 | `loaded_mods() -> Array[String]` | All loaded mod ids. Order not guaranteed |
-| `static version() -> String` | Loader version string (e.g. `"3.3.1"`) |
+| `static version() -> String` | Loader version string (e.g. `"3.4.1"`) |
 | `static major_version() / minor_version() / patch_version() -> int` | Numeric components, for feature gating: `if lib.major_version() >= 3:` |
 
 `provides=` rename aliases (see [Mod-Format](Mod-Format)) satisfy dependency resolution but are not matched by `has_mod()`/`mod_info()`. Those match only the mod's real `id`. Check both ids if you need to detect a renamed peer. See [Dependencies](Dependencies).
@@ -128,8 +128,8 @@ await lib.frameworks_ready
 var id = lib.hook("controller-_physics_process-pre", func(delta): print(delta), 100)
 lib.unhook(id)
 
-if lib.has_replace("weaponrig-shoot"):
-    print("another mod already replaced shoot")
+if lib.has_replace("weaponrig-fireevent"):
+    print("another mod already replaced FireEvent")
 
 lib.hook_many({
     "controller-_physics_process-pre":  _on_phys_pre,
@@ -219,13 +219,13 @@ This is an opt-in model. When no user mod declares anything, vanilla scripts run
 
 - Only `res://Scripts/*.gd` is hookable. Another path in `[hooks]` is dropped and shows up as `LOST` in the boot reconciliation report (`non-vanilla path -- only res://Scripts/*.gd is hookable`).
 - `static func`s are never hookable. Declaring one warns `Hook on <file>::<method> will NEVER fire: it is a static function`.
-- Zero-byte PCK scripts (the base game ships a few, e.g. `CasettePlayer.gd`) are not hookable.
+- Zero-byte PCK scripts are not hookable (builds before Build 2 shipped `CasettePlayer.gd` that way; Build 2 has none).
 - Scripts on the loader's skip lists (runtime-sensitive scripts like `MuzzleFlash.gd`, and save/data resource classes like `ItemData.gd`) are never rewritten; a hook declared on one warns that it can never fire. See [Limitations](Limitations).
 - A rewrite that does not compile against the current game build is not packed. The script ships with hooks only, or runs vanilla and is reported `LOST`. See [Compile probe before packing](#compile-probe-before-packing).
-- A declared path that matches no vanilla script is reported `LOST` by the reconciliation report. A declared method not found in the vanilla source warns `Hook on <file>::<method> will NEVER fire: no such method in vanilla` and the script's reconciliation line reads `PARTIAL`. A `.hook()` call whose stem resolves to no vanilla script warns at boot (`no vanilla script matches prefix '<stem>' -- check spelling, or declare the path in [hooks] in mod.txt`). Watch the log for typos.
+- A declared path that matches no vanilla script is reported `LOST` by the reconciliation report. A declared method not found in the vanilla source warns `Hook on <file>::<method> will NEVER fire: no such method in vanilla. Check the spelling, or the game update renamed/removed it.` and the script's reconciliation line reads `PARTIAL <file> (declared by <mod>): wrapped, but missing: <method>`. The names you declared are checked even when another mod's `[registry]` widened that script to a wildcard: the wildcard wraps every method the game still has, and each declared name that is not among them is reported the same way. A `.hook()` call whose stem resolves to no vanilla script warns at boot (`no vanilla script matches prefix '<stem>' -- check spelling, or declare the path in [hooks] in mod.txt`). Watch the log for typos.
 - The six registry target scripts (`Database.gd`, `Loader.gd`, `AISpawner.gd`, `AI.gd`, `FishPool.gd`, `Compiler.gd`) enter the surface, whole-script, when any mod declares `[registry]`. See [Registry](Registry).
 
-The reconciliation report is the last thing pack generation logs. On success it is one line, `Hook reconciliation OK: N/N declared script target(s) wrapped`. A loss is a critical header followed by one `LOST` line per target with the reason.
+The reconciliation report is the last thing pack generation logs. On success it is one line, `Hook reconciliation OK: N/N declared script target(s) wrapped`. A loss is a critical header followed by one `LOST` line per target with the reason. After a game update, a `will NEVER fire: no such method in vanilla` warning on a hook that used to work means the game renamed or removed that method; [Build-2-Migration](Build-2-Migration) walks through finding the new name and fixing the hook.
 
 ### `[hooks]` escape hatch
 
@@ -238,7 +238,7 @@ Declare vanilla paths in `mod.txt` when auto-enrollment cannot see your call:
 
 ```ini
 [hooks]
-res://Scripts/Interface.gd = "_ready, update_tooltip"   # specific methods
+res://Scripts/Interface.gd = "Close, CalculateDeal"    # specific methods
 res://Scripts/Controller.gd = "*"                       # wildcard: all methods
 res://Scripts/Camera.gd = ""                            # empty value == *
 ```
@@ -271,6 +271,7 @@ Mods written against [godot-mod-loader](https://github.com/GodotModding/godot-mo
 - `_caller` is only meaningful during a dispatch.
 - A whole-script replacement at a wrapped path currently loses to the rewrite. That covers a mod shipping its own file at `res://Scripts/<Name>.gd`, a `[script_extend]` / `[script_overrides]` entry, and a runtime `take_over_path`: when the hook pack activates, the vanilla path is reloaded with the rewritten source and the replacement's code does not run that session. The loader warns twice at boot, naming the mod (see [Composing with script_extend](#composing-with-script_extend)). Hook the methods you need instead.
 - A mod override that skips `super()` suppresses hook dispatch for that method.
+- A game update can rename or remove the method you hook. The hook still registers; the warning `Hook on <file>::<method> will NEVER fire: no such method in vanilla` and a `PARTIAL` reconciliation line are the only signs. Compare the game's current method list after every game update. See [Build-2-Migration](Build-2-Migration).
 - Overlapping calls to the same coroutine method on the same node skip hooks. If a wrapped `await`-ing method is called again on the same instance while the first call is still suspended, the second call runs vanilla directly, with no pre, replace, post or callback. See below.
 
 ### Overlapping coroutine calls
@@ -463,7 +464,7 @@ Indent style (tabs vs spaces) is detected from the source so the emitted wrapper
 
 ### Compile probe before packing
 
-The pack serves its `.gd` over the game's bytecode and shadows the `.gdc` with an empty one, so a rewrite that does not compile would leave the vanilla script broken with nothing to fall back to. The likeliest cause is a game update renaming a member the registry code names (`weapons` in `AI.gd`, `Zone` in `AISpawner.gd`, `shelters` in `Loader.gd`, `species` in `FishPool.gd`, `spawnTarget` in `Compiler.gd`). So each rewrite is compiled first, as a script bound to no path (`_rtv_probe_compiles`: `GDScript.new()`, `source_code`, `reload()`), with the `class_name` line left out of the copy. A compile only counts when the result carries a `_rtv_vanilla_*` method.
+The pack serves its `.gd` over the game's bytecode and shadows the `.gdc` with an empty one, so a rewrite that does not compile would leave the vanilla script broken with nothing to fall back to. The likeliest cause is a game update renaming a member the registry code names (`weapons` and `variant` in `AI.gd`, or `weapons`, `boss` and `AISpawner` when the source has the pre-Build 2 shape; `Zone` in `AISpawner.gd`; `shelters` in `Loader.gd`; `species` in `FishPool.gd`; `spawnTarget` in `Compiler.gd`). So each rewrite is compiled first, as a script bound to no path (`_rtv_probe_compiles`: `GDScript.new()`, `source_code`, `reload()`), with the `class_name` line left out of the copy. A compile only counts when the result carries a `_rtv_vanilla_*` method.
 
 The ladder, per script:
 
@@ -478,7 +479,7 @@ What a mod author sees when a target was demoted:
 - One `[STABILITY]` critical per script, directly below the engine's own `Parse Error` line, which names the identifier that no longer exists.
 - In the reconciliation report, a script left vanilla is `LOST` (`the rewritten script does not compile against this game build; left unmodified`), and a wrap-only script is `PARTIAL`, wrapped but missing `registry code`.
 - `hook()` on a script left vanilla still registers and never fires. `register`/`override` on `ai_types`, `ai_loadouts` and `fish_species`, and `register` on `shelters` and `maps` (target `Compiler.gd`), return `false` with a warning when their target shipped without registry code (see [Registry](Registry#opting-in)).
-- The launcher shows an error notice naming the scripts on the next start.
+- The launcher shows a red banner naming the scripts on the next start.
 
 The probe runs only on the generation before the restart; later generations repeat its verdicts. When it runs, what it logs and what the player sees are in [Stability-Canaries](Stability-Canaries#pre-ship-compile-probe).
 

@@ -1,0 +1,11 @@
+[mod]
+name="B2 Test: Registry"
+id="b2test_registry"
+version="1.0.0"
+author="Metro Mod Loader tests"
+priority=0
+
+[autoload]
+B2TestRegistry="res://B2TestRegistry/Main.gd"
+
+[registry]

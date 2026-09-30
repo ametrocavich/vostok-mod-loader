@@ -4,7 +4,7 @@
 # Vanilla game code calling Node.get(name) falls through to _get() when the
 # name isn't a declared property/const, which is how mod data is exposed
 # without modifying the vanilla lookup call sites.
-func _rtv_registry_injection(filename: String, indent: String) -> String:
+func _rtv_registry_injection(filename: String, indent: String, source: String = "") -> String:
 	match filename:
 		"Database.gd":
 			var inj := _rtv_inject_database_registry(indent)
@@ -19,7 +19,7 @@ func _rtv_registry_injection(filename: String, indent: String) -> String:
 			_log_info("[RTVCodegen] Injected registry into %s (%d chars)" % [filename, inj.length()])
 			return inj
 		"AI.gd":
-			var inj := _rtv_inject_ai_registry(indent)
+			var inj := _rtv_inject_ai_registry(indent, source)
 			_log_info("[RTVCodegen] Injected registry into %s (%d chars)" % [filename, inj.length()])
 			return inj
 		_:
@@ -287,14 +287,15 @@ func _rtv_inject_loader_registry(indent: String) -> String:
 	out += I1 + "return true\n"
 	return out
 
-# AISpawner.gd: rewrite each `agent = <name>` so the assignment routes
-# through _rtv_resolve_ai_type (defined in the registry appendix), which
-# picks between the vanilla scene and a mod override for the zone.
-# Vanilla anchor: AISpawner.gd::_ready `agent = <ident>` assignment lines inside the Zone if/elif; silent no-op if the mapping moves.
+# AISpawner.gd: rewrite each `enemy = <name>` (Build 2; `agent = <name>`
+# before it) so the assignment routes through _rtv_resolve_ai_type (defined
+# in the registry appendix), which picks between the vanilla scene and a
+# mod override for the zone.
+# Vanilla anchor: AISpawner.gd::Initialize (`_ready` before Build 2) `enemy = <ident>` / `agent = <ident>` assignment lines inside the Zone if/elif; silent no-op if the mapping moves.
 func _rtv_rewrite_aispawner_agent_assignments(source: String) -> String:
 	var lines: PackedStringArray = source.split("\n")
 	var re := RegEx.new()
-	re.compile('^(\\s*)agent\\s*=\\s*(\\w+)\\s*(#.*)?$')
+	re.compile('^(\\s*)(enemy|agent)\\s*=\\s*(\\w+)\\s*(#.*)?$')
 	var rewrites := 0
 	for i in lines.size():
 		var line: String = lines[i]
@@ -302,19 +303,20 @@ func _rtv_rewrite_aispawner_agent_assignments(source: String) -> String:
 		if m == null:
 			continue
 		var indent := m.get_string(1)
-		var name := m.get_string(2)
+		var target := m.get_string(2)
+		var name := m.get_string(3)
 		# Leave keyword RHS alone.
 		if name in ["true", "false", "null"]:
 			continue
-		lines[i] = "%sagent = _rtv_resolve_ai_type(zone, %s)" % [indent, name]
+		lines[i] = "%s%s = _rtv_resolve_ai_type(zone, %s)" % [indent, target, name]
 		rewrites += 1
 	if rewrites == 0:
 		# No assignment got the resolver wired in; registered AI overrides
 		# would silently never spawn.
 		if _any_mod_declared_registry:
-			_log_critical("[RTVCodegen] AISpawner.gd: vanilla 'agent = <name>' assignments not found (game update?) -- AI type overrides will NOT work. Update the modloader.")
+			_log_critical("[RTVCodegen] AISpawner.gd: vanilla 'enemy = <name>' assignments not found (game update?) -- AI type overrides will NOT work. Update the modloader.")
 		else:
-			_log_debug("[RTVCodegen] AISpawner.gd: no 'agent = <name>' assignments matched; ai_types resolver not wired (inert, no [registry] declared)")
+			_log_debug("[RTVCodegen] AISpawner.gd: no 'enemy = <name>' assignments matched; ai_types resolver not wired (inert, no [registry] declared)")
 	return "\n".join(lines)
 
 # FishPool._ready() prelude: appends mod-registered species to the local
@@ -420,11 +422,15 @@ func _rtv_ai_selectweapon_prelude() -> PackedStringArray:
 	p.append("\t_rtv_apply_ai_loadouts()")
 	return p
 
-# Vanilla anchor: AI.gd fields `weapons`/`boss`/`AISpawner` + AISpawner.Zone enum key names "Area05"/"BorderZone"/"Vostok" (hardcoded in the emitted match below).
-func _rtv_inject_ai_registry(indent: String) -> String:
+# Vanilla anchor: AI.gd field `weapons` (the child container) plus one of two
+# category shapes. Build 2 (Nomads) and later: `variant: AIData` with
+# `faction` (enum Faction{Nomad, Bandit, Guard, Military, Boss}) and `name`
+# ("Punisher", "Bogeyman", ...). Before Build 2: fields `boss`/`AISpawner` +
+# AISpawner.Zone key names "Area05"/"BorderZone"/"Vostok". The source picks.
+func _rtv_inject_ai_registry(indent: String, source: String = "") -> String:
 	# AI.gd registry appendix: reads the ai_loadouts Engine-meta list and
-	# injects weapon instances into self.weapons. Category comes from
-	# self.boss + self.AISpawner.zone (back-reference set in CreatePools).
+	# injects weapon instances into self.weapons. An AI matches an entry when
+	# any of its categories is in the entry's ai_types.
 	var I1 := indent
 	var out := "\n\n# --- Metro mod loader: AI loadouts registry ---\n"
 	out += "func _rtv_apply_ai_loadouts() -> void:\n"
@@ -434,15 +440,19 @@ func _rtv_inject_ai_registry(indent: String) -> String:
 	# Mod-defined AI scenes might omit the weapons @export; bail, not crash.
 	out += I1 + "if weapons == null:\n"
 	out += I1 + I1 + "return\n"
-	out += I1 + "var category: String = _rtv_ai_category()\n"
-	out += I1 + "if category == \"\":\n"
+	out += I1 + "var categories: Array = _rtv_ai_categories()\n"
+	out += I1 + "if categories.is_empty():\n"
 	out += I1 + I1 + "return\n"
 	out += I1 + "for e in entries:\n"
 	# Engine meta is process-global; skip malformed entries, don't crash.
 	out += I1 + I1 + "if not (e is Dictionary):\n"
 	out += I1 + I1 + I1 + "continue\n"
 	out += I1 + I1 + "var ai_types: Array = e.get(\"ai_types\", [])\n"
-	out += I1 + I1 + "if not (category in ai_types):\n"
+	out += I1 + I1 + "var matched: bool = false\n"
+	out += I1 + I1 + "for c in categories:\n"
+	out += I1 + I1 + I1 + "if c in ai_types:\n"
+	out += I1 + I1 + I1 + I1 + "matched = true\n"
+	out += I1 + I1 + "if not matched:\n"
 	out += I1 + I1 + I1 + "continue\n"
 	out += I1 + I1 + "if randf() > float(e.get(\"chance\", 1.0)):\n"
 	out += I1 + I1 + I1 + "continue\n"
@@ -462,33 +472,62 @@ func _rtv_inject_ai_registry(indent: String) -> String:
 	out += I1 + I1 + "if inst.has_method(\"hide\"):\n"
 	out += I1 + I1 + I1 + "inst.hide()\n"
 	out += "\n"
-	out += "func _rtv_ai_category() -> String:\n"
-	# boss + AISpawner are set by AISpawner.CreatePools(); without the
-	# back-reference the zone category is unknowable, so bail.
+	out += "func _rtv_ai_categories() -> Array:\n"
+	out += I1 + "var out: Array = []\n"
+	if _rtv_ai_source_has_variant_faction(source):
+		# Build 2: SelectVariant() runs before SelectWeapon() in Initialize(),
+		# so `variant` is set. The faction key names the category ("Bandit",
+		# "Boss", ...); the variant name adds the specific one ("Punisher").
+		out += I1 + "if variant == null:\n"
+		out += I1 + I1 + "return out\n"
+		out += I1 + "var faction_keys: Array = AIData.Faction.keys()\n"
+		out += I1 + "var f: int = int(variant.faction)\n"
+		out += I1 + "if f >= 0 and f < faction_keys.size():\n"
+		out += I1 + I1 + "out.append(String(faction_keys[f]))\n"
+		out += I1 + "var variant_name: String = String(variant.name)\n"
+		out += I1 + "if variant_name != \"\" and not (variant_name in out):\n"
+		out += I1 + I1 + "out.append(variant_name)\n"
+		out += I1 + "return out\n"
+		return out
+	# Pre-Build 2 shape, kept while the codegen harness still runs on the
+	# rtv0.1.1.3 corpus (VANILLA_SRC): that run is the proof the switch above
+	# picks by source, not by loader build. boss + AISpawner are set by
+	# AISpawner.CreatePools(); without the back-reference the zone category
+	# is unknowable, so bail.
 	out += I1 + "if boss:\n"
-	out += I1 + I1 + "return \"Punisher\"\n"
+	out += I1 + I1 + "out.append(\"Punisher\")\n"
+	out += I1 + I1 + "return out\n"
 	out += I1 + "if AISpawner == null:\n"
-	out += I1 + I1 + "return \"\"\n"
+	out += I1 + I1 + "return out\n"
 	# Zone.keys() yields the enum's string form at the same index, matching
 	# the ai_types convention.
 	out += I1 + "var z: int = AISpawner.zone\n"
 	out += I1 + "var zone_keys: Array = AISpawner.Zone.keys()\n"
 	out += I1 + "if z < 0 or z >= zone_keys.size():\n"
-	out += I1 + I1 + "return \"\"\n"
+	out += I1 + I1 + "return out\n"
 	out += I1 + "match zone_keys[z]:\n"
 	out += I1 + I1 + "\"Area05\":\n"
-	out += I1 + I1 + I1 + "return \"Bandit\"\n"
+	out += I1 + I1 + I1 + "out.append(\"Bandit\")\n"
 	out += I1 + I1 + "\"BorderZone\":\n"
-	out += I1 + I1 + I1 + "return \"Guard\"\n"
+	out += I1 + I1 + I1 + "out.append(\"Guard\")\n"
 	out += I1 + I1 + "\"Vostok\":\n"
-	out += I1 + I1 + I1 + "return \"Military\"\n"
-	out += I1 + I1 + "_:\n"
-	out += I1 + I1 + I1 + "return \"\"\n"
+	out += I1 + I1 + I1 + "out.append(\"Military\")\n"
+	out += I1 + "return out\n"
 	return out
+
+# Build 2 replaced AI.gd's `boss` flag with a `variant: AIData` whose
+# `faction` enum carries the category. Matched on the declaration line so a
+# vanilla AI.gd of either shape gets the resolver that compiles against it.
+func _rtv_ai_source_has_variant_faction(source: String) -> bool:
+	if source == "":
+		return false
+	var re := RegEx.new()
+	re.compile("(?m)^var variant\\s*:\\s*AIData\\b")
+	return re.search(source) != null
 
 # Vanilla anchor: AISpawner.gd Zone enum; the emitted resolver converts the zone int via Zone.keys().
 func _rtv_inject_aispawner_registry(indent: String) -> String:
-	# Resolver helper for the rewritten `agent = _rtv_resolve_ai_type(...)`
+	# Resolver helper for the rewritten `enemy = _rtv_resolve_ai_type(...)`
 	# assignments. Lookup goes through Engine metadata because AISpawner is
 	# a per-scene Node3D with multiple instances sharing one registry.
 	var I1 := indent

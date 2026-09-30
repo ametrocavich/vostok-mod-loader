@@ -4,7 +4,8 @@
 ## - trader_pools: enables an ItemData to appear in a named trader's supply
 ##   bucket. Trader.FillTraderBucket() walks LT_Master and filters by
 ##   boolean trader flags on each item (itemData.generalist / .doctor /
-##   .gunsmith / .grandma). So "register an item into the Doctor's pool" =
+##   .gunsmith / .driver / .hunter; .grandma exists on ItemData but no
+##   trader reads it). So "register an item into the Doctor's pool" =
 ##   set itemData.doctor = true. Register / remove only; no override or
 ##   patch (entries are single boolean flags, there's nothing to override).
 ##
@@ -23,6 +24,9 @@ const _TRADER_POOL_FLAGS := {
 	"doctor": "doctor",
 	"gunsmith": "gunsmith",
 	"grandma": "grandma",
+	# Build 2 (Nomads) traders; ItemData.driver / ItemData.hunter.
+	"driver": "driver",
+	"hunter": "hunter",
 }
 
 # Known TraderData paths. Mods can also pass an absolute res:// path for a
@@ -31,6 +35,8 @@ const _TRADER_PATHS := {
 	"Generalist": "res://Traders/Generalist/Generalist.tres",
 	"Doctor": "res://Traders/Doctor/Doctor.tres",
 	"Gunsmith": "res://Traders/Gunsmith/Gunsmith.tres",
+	"Driver": "res://Traders/Driver/Driver.tres",
+	"Hunter": "res://Traders/Hunter/Hunter.tres",
 }
 
 # -------- trader_pools --------

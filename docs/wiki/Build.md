@@ -18,7 +18,7 @@ GODOT=/path/to/godot ./check.sh
 |---|---|
 | `GODOT` | Engine executable. If unset, scripts try `godot` on PATH, then a maintainer-specific Windows path. On Windows use the console executable, with a Git Bash path such as `/c/Tools/Godot/godot_console.exe`. |
 | `PYTHON` | Interpreter for documentation checks. If unset, `check.sh` tries `python` and `python3`, requiring version 3.9 or newer. |
-| `VANILLA_SRC` | Decompiled Road to Vostok project for the ten vanilla codegen fixtures. The codegen script has a maintainer-specific default; missing source leaves these fixtures out. The two synthetic fixtures always run. |
+| `VANILLA_SRC` | Decompiled Road to Vostok project for the ten vanilla codegen fixtures. The codegen script's maintainer-specific default is the Build 2 (Nomads) corpus; point it at the decompile of the build before Build 2 to run the pre-Build 2 `AI.gd` and `AISpawner.gd` paths. Missing source leaves these fixtures out. The two synthetic fixtures always run. |
 
 Use a dedicated Godot test directory. The boot-state harness creates and
 removes `override.cfg` beside the engine executable and refuses to run if
@@ -63,11 +63,11 @@ checks pass against a stale artifact. Success prints eight lines starting with `
 |---|---|---|
 | Parse | Inline in `check.sh` | Headless `--check-only` parses and type-checks the assembled loader in a throwaway project. Catches duplicate definitions, unresolved names and incompatible types. |
 | Static invariants and docs | Inline greps and `tools/dev.py check-docs` | The built file holds no CR byte (a local build must match the LF release build). Wrapper templates emit `await` only through the coroutine-gated variable; Hooks.md must describe that contract. Checks local/repository Markdown targets, source paths, linked definition ownership and module-index coverage. It does not verify prose, URL fragments or external sites. |
-| Code generation | `tests/codegen/runner.gd` | Two synthetic and, when available, ten vanilla fixtures. Compiles original source, rewritten source and caller stubs; checks signatures, coroutine behavior and masked rewrites. `_check_vetting` runs the pre-ship compile probe on every fixture: each real rewrite must vet as `full`; five vanilla scripts with a renamed member (`GAME_RENAMES`) must ship wrap-only, compile, carry no registry code and record the demotion; a `Database.gd` with no const preloads must still ship hooked, without the scenes appendix; a rewrite that compiles in no form is excluded; persisted verdicts are repeated unprobed. |
+| Code generation | `tests/codegen/runner.gd` | Two synthetic and, when available, ten vanilla fixtures. Compiles original source, rewritten source and caller stubs; checks signatures, coroutine behavior and masked rewrites. For each registry target it asserts that the script's `REGISTRY_EXPECTED_MARKERS` marker is in the full rewrite, so a vanilla anchor that no longer matches the corpus (Build 2's `agent =` to `enemy =` rename) fails the fixture instead of shipping as a silent no-op. `_check_registry_runtime` then instantiates the rewritten registry targets and executes the injected code (AI categories and loadout injection including `replace`, the AISpawner resolver, `Database._get` precedence, the Loader shelter and map shim), on both the Build 2 corpus and the one before it. `_check_vetting` runs the pre-ship compile probe on every fixture: each real rewrite must vet as `full`; five vanilla scripts with a renamed member (`GAME_RENAMES`) must ship wrap-only, compile, carry no registry code and record the demotion; a `Database.gd` with no const preloads must still ship hooked, without the scenes appendix; a rewrite that compiles in no form is excluded; persisted verdicts are repeated unprobed. |
 | Dispatch | `tests/codegen/dispatch_runner.gd` | T1 to T23: hook ordering, replacement, post hooks, deferred calls, re-entrancy, defaults and coroutines; registry/setup operations; coroutine detection that ignores `await` inside strings and comments. |
 | Detokenizer | `tests/detok/runner.gd` | T1 to T11: v100/v101 reconstruction, empty tokens, VFS/PCK precedence, cache stamps, `.gdc` fallback and the engine canary. |
 | Identity | `tests/identity/runner.gd` | T1 to T12: filename stems, duplicate winners, metadata read records, profile defaults, key migration, missing active profiles and profile rename/create behavior. |
-| Host and packs | `tests/host/runner.gd` | T1 to T32: complete host records, dispatch coverage, source migration, pack conversion/apply/unload, preserved original files, refreshed imports, pack names with no usable characters, refused-manifest copy, exact-version pins, download names, cooldowns, update outcomes, dependency ordering, and that a listing page never carries the loader's own entry on either host (matched per host, paging fields untouched, error results passed through), nor does a saved landing read back from disk. |
+| Host and packs | `tests/host/runner.gd` | T1 to T33: complete host records, dispatch coverage, source migration, pack conversion/apply/unload, preserved original files, refreshed imports, pack names with no usable characters, refused-manifest copy, exact-version pins, download names, cooldowns, update outcomes, dependency ordering, and that a listing page never carries the loader's own entry on either host (matched per host, paging fields untouched, error results passed through), nor does a saved landing read back from disk; the VostokMods listing shape (`entries` rows, `ownerDisplayName`, `taxonomies` with a group object) and that Browse finds an installed mod under both the UUID its `mod.txt` carries and the slug the site answered with. |
 | Boot state | `tests/boot_state/runner.gd` | T1 to T27: crash streak, state hash, game-update detection, hook health and early hooks, config recovery, failed writes, linked-root deletion guards, unmodded cleanup retry, which rewritten scripts wait for lazy compile, that mounting an archive with a scene `.remap` loads nothing, that the hook pack carries no mod scripts, and that the compile probe's verdicts persist through pass state: the following generation does not probe, Pass 1 probes afresh, registry verbs on a demoted target return `false`, and the launcher notice names the script. |
 
 The six harness scripts are `check_codegen.sh`, `check_dispatch.sh`,
@@ -80,7 +80,10 @@ game. Assertion counts come from the runners' success output.
 
 A green run does not test the rendered launcher, live hosts, installers or a
 complete game restart. See [the release checklist](https://github.com/ametrocavich/vostok-mod-loader/blob/development/docs/RELEASE_CHECKLIST.md)
-for manual acceptance.
+for manual acceptance. For the Build 2 registry and hook changes there is a
+self-checking in-game kit under `tests/ingame/build2/`: two throwaway test
+mods print `[B2TEST] PASS|FAIL` lines at the main menu and `evaluate.py`
+grades the game log; its README has the three commands.
 
 ## Diagnose and extend a check
 
@@ -132,7 +135,7 @@ Automates the version bump and the changelog from [Conventional Commits](https:/
 
 The draft step matters. From the moment a release is published, `/releases/latest/download/modloader.gd` resolves to it, and both installers fetch that URL. A build or upload failure on a published release left every new install failing on a 404.
 
-Within this workflow, building and uploading assets only run when a release is created. The separate CI workflow still builds and checks normal pushes to `master`.
+Within this workflow, building and uploading assets only run when a release is created. The separate CI workflow still builds and checks normal pushes to `master`. The workflow also has a `workflow_dispatch` trigger (`gh workflow run release-please.yml`) for recomputing the release PR by hand; the release checklist says when.
 
 ### Version-bump mapping
 

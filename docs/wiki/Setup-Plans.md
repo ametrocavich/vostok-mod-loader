@@ -197,11 +197,11 @@ func _ready() -> void:
         # ITEMS ids are ItemData.file strings ("AKM"), not .tres paths;
         # RESOURCES ids are res:// paths.
         ["patch", _lib.Registry.ITEMS, {
-            "AKM":  {"damage": 45.0, "weight": 3.2},
-            "AK74": {"damage": 40.0},
+            "AKM":     {"value": 4500, "weight": 3.2},
+            "AKS_74U": {"value": 4000},
         }],
         ["patch", _lib.Registry.RESOURCES, {
-            "res://Resources/GameData.tres": {"walk_speed": 5.5},
+            "res://Resources/GameData.tres": {"difficulty": 2},
         }],
 
         # --- append: add to an Array field, dedup default -----------------
@@ -220,7 +220,7 @@ func _ready() -> void:
         # --- prepend: insert at the front ---------------------------------
         # SOUNDS ids are AudioLibrary field names; audioClips is the Array field.
         ["prepend", _lib.Registry.SOUNDS, "audioClips", {
-            "knifeSlash": preload("res://my_mod/sounds/squelch.ogg"),
+            "knifeHitFleshSlash": preload("res://my_mod/sounds/squelch.ogg"),
         }],
 
         # --- remove_from: drop matching entries ---------------------------
@@ -243,7 +243,7 @@ func _ready() -> void:
         # --- when: plain bool predicate -----------------------------------
         ["when", _hardcore_mode, [
             ["patch", _lib.Registry.ITEMS, {
-                "AKM": {"damage": 30.0},
+                "AKM": {"value": 3000},
             }],
         ]],
 
@@ -273,8 +273,8 @@ func _ready() -> void:
 
         # --- revert: undo a previous patch (per-field or full) ------------
         ["revert", _lib.Registry.ITEMS, {
-            "AK74":  ["damage"],   # one field only
-            "AKM":    [],            # full revert
+            "AKS_74U": ["value"],   # one field only
+            "AKM":     [],          # full revert
         }],
 
         # --- remove: undo a previous register() ---------------------------

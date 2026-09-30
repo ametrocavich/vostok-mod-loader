@@ -163,4 +163,4 @@ Caveat, stated in the code as well: `_hook_pack_preflight`, the first step of `_
 
 ## Zero-byte entries
 
-Some vanilla `.gd` entries are zero bytes in the base PCK (`CasettePlayer.gd` in RTV 4.6.1). PCK enumeration records them in `_pck_zero_byte_paths` (and restores that set from the script-index cache on a cache hit), and `_detokenize_script` returns empty for them without the "Cannot read bytes" warning. They cannot be hooked either way.
+Some game builds ship a vanilla `.gd` entry as zero bytes (`CasettePlayer.gd` before Build 2; Build 2 has none). PCK enumeration records them in `_pck_zero_byte_paths` (and restores that set from the script-index cache on a cache hit), and `_detokenize_script` returns empty for them without the "Cannot read bytes" warning. They cannot be hooked either way.

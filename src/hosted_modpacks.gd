@@ -65,7 +65,7 @@ func _hosted_manifest_to_profile(manifest: Dictionary) -> Dictionary:
 	var summary := _host_str(manifest.get("summary")).strip_edges()
 	if summary != "":
 		profile["description"] = summary
-	var author := _host_str(manifest.get("author")).strip_edges()
+	var author := _host_str(manifest.get("ownerDisplayName")).strip_edges()
 	if author != "":
 		profile["author"] = author
 	if not sources.is_empty():

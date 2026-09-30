@@ -97,6 +97,7 @@ func _run() -> void:
 	await _t30_reimport_hosted_pack(ml)
 	await _t31_hosted_pack_names_and_errors(ml)
 	_t32_browse_hides_the_loaders_own_listing(ml)
+	_t33_install_map_keys_both_ids(ml)
 
 	_finish()
 
@@ -127,9 +128,9 @@ const MWS_ROW_JSON := """
 # a tag, which the row mixes together.
 const VM_ROW_JSON := """
 {"id": "m_4", "slug": "example", "name": "Example", "summary": "An example mod.",
- "author": "Ovrrde", "authorId": "ovrrde",
- "categories": [{"slug": "tag-1", "name": "Tag One", "group": "tags"},
-                {"slug": "category-1", "name": "Category 1", "group": "categories"}],
+ "ownerDisplayName": "Ovrrde", "ownerUsername": "ovrrde",
+ "taxonomies": [{"slug": "tag-1", "name": "Tag One", "group": {"slug": "tags", "name": "Tags"}},
+                {"slug": "category-1", "name": "Category 1", "group": {"slug": "categories", "name": "Categories"}}],
  "thumbnailUrl": "https://files.vostokmods.net/mods/4/screenshots/example.png",
  "downloadsCount": 1, "followersCount": 7, "viewsCount": 42,
  "createdAt": "2026-08-01T00:00:00.000Z",
@@ -142,7 +143,7 @@ const VM_ROW_JSON := """
 # whenever a mod has no screenshot, which is the common case for a new upload.
 const VM_ROW_NULLS_JSON := """
 {"id": "m_5", "slug": "nulls", "name": "Nulls", "summary": null,
- "author": "Ovrrde", "categories": [], "thumbnailUrl": null,
+ "ownerDisplayName": "Ovrrde", "taxonomies": [], "thumbnailUrl": null,
  "downloadsCount": 0, "followersCount": 0, "viewsCount": 0,
  "createdAt": null, "updatedAt": null, "latestGameVersion": null,
  "latestVersion": null}
@@ -205,7 +206,7 @@ func _t2_vm_summary(ml: Object) -> void:
 			"T2: ref identity is the SLUG (got %s)" % key)
 	_assert(str(s["name"]) == "Example", "T2: name (got %s)" % str(s["name"]))
 	_assert(str(s["author_name"]) == "Ovrrde",
-			"T2: author is a bare display string (got %s)" % str(s["author_name"]))
+			"T2: author_name is ownerDisplayName (got %s)" % str(s["author_name"]))
 	_assert(str(s["short_description"]) == "An example mod.",
 			"T2: summary maps to short_description (got %s)" % str(s["short_description"]))
 	_assert(s["downloads"] is int and int(s["downloads"]) == 1,
@@ -253,7 +254,7 @@ func _t2_vm_summary(ml: Object) -> void:
 	_assert(str(n["updated_at"]) == "",
 			"T2n: null updatedAt -> '' (got %s)" % str(n["updated_at"]))
 	_assert(str(n["category_name"]) == "",
-			"T2n: empty categories -> '' (got %s)" % str(n["category_name"]))
+			"T2n: empty taxonomies -> '' (got %s)" % str(n["category_name"]))
 	_assert(str(n["default_file_id"]) == "",
 			"T2n: null latestVersion -> no default_file_id (got %s)" % str(n["default_file_id"]))
 
@@ -598,19 +599,40 @@ func _t8_vm_pure_surface(ml: Object) -> void:
 	var nullurl: Variant = ml._vmp_file(JSON.parse_string('{"id": "v_11", "downloadUrl": null}'))
 	_assert(str(nullurl["download_url"]) == "",
 			"T8: null downloadUrl -> '' never '<null>' (got %s)" % str(nullurl["download_url"]))
+
+	# The listing body: rows under `entries`, an empty page included. A body
+	# without the key is not a listing (the key moved once and Browse showed
+	# nothing for a day), so it must read as an error upstream, never as empty.
+	var listing: Variant = JSON.parse_string("""
+	{"entries": [{"id": "019ff204-4d5c-7a17-92b7-f9a6a5a4dc88", "slug": "loot-modifier", "name": "Loot Modifier"},
+	             {"id": "019ff1f0-00ac-76a9-a23f-7151e4531131", "slug": "rtvcoop", "name": "RTVCoop"}],
+	 "page": 1, "pageCount": 1, "total": 2}
+	""")
+	_assert(ml._vmp_rows(listing) is Array and (ml._vmp_rows(listing) as Array).size() == 2,
+			"T8: listing rows are read from `entries`")
+	_assert(ml._vmp_rows(JSON.parse_string('{"entries": [], "total": 0}')) is Array,
+			"T8: an empty listing is still a listing")
+	_assert(ml._vmp_rows(JSON.parse_string('{"mods": [{"slug": "a"}]}')) == null and ml._vmp_rows(JSON.parse_string('{"page": 1}')) == null and ml._vmp_rows(null) == null,
+			"T8: a body without `entries` is not a listing")
+	# The page link takes the slug or the UUID; the site resolves either.
+	var uuid := "019ff1f0-00ac-76a9-a23f-7151e4531131"
+	_assert(str(ml._vmp_mod_page_url(uuid)) == "https://vostokmods.net/mod/" + uuid,
+			"T8: a UUID page url passes the UUID through")
 	var nofile: Variant = ml._vmp_file_result(JSON.parse_string('{"id": "v_12", "downloadUrl": null}'))
 	_assert(not nofile["ok"] and str(nofile["code"]) == ml.HOST_ERR_NO_FILE,
 			"T8: a record with no url resolves to NO_FILE, never a bad ok")
 
-	# group is the discriminator between a real category and a tag.
+	# The group object's slug is the discriminator between a category and a tag.
 	var cats: Variant = JSON.parse_string("""
-	[{"slug": "t", "name": "Tag", "group": "tags"},
-	 {"slug": "c", "name": "Cat", "group": "categories"}]
+	[{"slug": "t", "name": "Tag", "group": {"slug": "tags", "name": "Tags"}},
+	 {"slug": "c", "name": "Cat", "group": {"slug": "categories", "name": "Categories"}}]
 	""")
 	_assert(str(ml._vmp_primary_category(cats)) == "Cat",
-			"T8: group=categories wins over an earlier tag")
+			"T8: group categories wins over an earlier tag")
 	_assert(str(ml._vmp_primary_category(JSON.parse_string("[]"))) == "",
-			"T8: no categories -> ''")
+			"T8: no taxonomies -> ''")
+	_assert(str(ml._vmp_group_slug(JSON.parse_string('{"slug": "categories"}'))) == "categories" and str(ml._vmp_group_slug("categories")) == "",
+			"T8: a group is an object; a bare string is not a group")
 
 	# Scalars must agree with the API's own schema, or a request is rejected
 	# for a reason the user reads as a connection failure.
@@ -686,12 +708,12 @@ func _t9_caps_match_wiring(ml: Object) -> void:
 # available mod with a checksum, one unavailable (scanning), one removed;
 # mcmConfig carries both shapes at once (a raw per-mod file and an MCM
 # export whose ImportModData must merge into another mod's config.ini).
-const VM_MANIFEST_JSON := """\n{"format": 2, "slug": "hardcore-survival", "name": "Hardcore Survival",\n "summary": "Short description", "author": "Ovrrde",\n "url": "https://vostokmods.net/modpack/hardcore-survival",\n "coverUrl": null, "updatedAt": "2026-09-11T16:07:32.051Z",\n "hash": "0123abcd",\n "mcmConfig": {\n   "doinkoink-mcm/config.ini": "[General]\n\nvolume={\\\"value\\\": 3}\n",\n   "export.ini": "[some-mod]\n\nImportModData={\\\"friendlyName\\\": \\\"Some Mod\\\"}\nspeed={\\\"value\\\": 7, \\\"import_data\\\": {\\\"section\\\": \\\"Movement\\\"}}\n",\n   "../evil.ini": "[x]\n\nImportModData={}\n"\n },\n "mods": [\n   {"loadOrder": 1, "slug": "mod-configuration-menu", "name": "MCM", "author": "metro",\n    "available": true, "reason": null, "version": "2.9.2", "fileName": "mcm.vmz",\n    "fileSize": 4404019, "sha256": "AB12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",\n    "downloadUrl": "https://vostokmods.net/api/mods/mod-configuration-menu/versions/2.9.2/download",\n    "pageUrl": "https://vostokmods.net/mod/mod-configuration-menu"},\n   {"loadOrder": 2, "slug": "still-scanning", "name": "Scanning", "author": "x",\n    "available": false, "reason": "scanning", "version": null, "fileName": null,\n    "fileSize": null, "sha256": null, "downloadUrl": null, "pageUrl": null},\n   {"loadOrder": 3, "slug": "gone", "name": "Gone", "author": "x",\n    "available": false, "reason": "removed", "version": null, "fileName": null,\n    "fileSize": null, "sha256": null, "downloadUrl": null, "pageUrl": null}\n ]}\n"""
+const VM_MANIFEST_JSON := """\n{"format": 2, "slug": "hardcore-survival", "name": "Hardcore Survival",\n "summary": "Short description", "ownerDisplayName": "Ovrrde",\n "url": "https://vostokmods.net/modpack/hardcore-survival",\n "thumbnailUrl": null, "updatedAt": "2026-09-11T16:07:32.051Z",\n "hash": "0123abcd",\n "mcmConfig": {\n   "doinkoink-mcm/config.ini": "[General]\n\nvolume={\\\"value\\\": 3}\n",\n   "export.ini": "[some-mod]\n\nImportModData={\\\"friendlyName\\\": \\\"Some Mod\\\"}\nspeed={\\\"value\\\": 7, \\\"import_data\\\": {\\\"section\\\": \\\"Movement\\\"}}\n",\n   "../evil.ini": "[x]\n\nImportModData={}\n"\n },\n "mods": [\n   {"loadOrder": 1, "slug": "mod-configuration-menu", "name": "MCM", "ownerDisplayName": "metro",\n    "available": true, "reason": null, "version": "2.9.2", "fileName": "mcm.vmz",\n    "fileSize": 4404019, "sha256": "AB12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",\n    "downloadUrl": "https://vostokmods.net/api/mods/mod-configuration-menu/versions/2.9.2/download",\n    "pageUrl": "https://vostokmods.net/mod/mod-configuration-menu"},\n   {"loadOrder": 2, "slug": "still-scanning", "name": "Scanning", "ownerDisplayName": "x",\n    "available": false, "reason": "scanning", "version": null, "fileName": null,\n    "fileSize": null, "sha256": null, "downloadUrl": null, "pageUrl": null},\n   {"loadOrder": 3, "slug": "gone", "name": "Gone", "ownerDisplayName": "x",\n    "available": false, "reason": "removed", "version": null, "fileName": null,\n    "fileSize": null, "sha256": null, "downloadUrl": null, "pageUrl": null}\n ]}\n"""
 
 const VM_PACK_ROW_JSON := """
-{"id": "01a09139", "slug": "test", "name": "Test", "summary": "", "author": "Admin Prime",
- "authorId": "admin", "authorAvatarUrl": null, "createdAt": "2026-09-11T16:07:32.051Z",
- "updatedAt": "2026-09-11T16:30:14.194Z", "modCount": 14, "coverUrl": null,
+{"id": "01a09139", "slug": "test", "name": "Test", "summary": "", "ownerDisplayName": "Admin Prime",
+ "ownerUsername": "admin", "ownerAvatarUrl": null, "createdAt": "2026-09-11T16:07:32.051Z",
+ "updatedAt": "2026-09-11T16:30:14.194Z", "modCount": 14, "thumbnailUrl": null,
  "manifestUrl": "https://vostokmods.net/api/modpacks/test/manifest",
  "url": "https://vostokmods.net/modpack/test"}
 """
@@ -727,7 +749,7 @@ func _t10_hosted_modpacks(ml: Object) -> void:
 	_assert(int(s["mod_count"]) == 14, "T10: pack summary mod_count reads a JSON float as int")
 	_assert(str(s["manifest_url"]).ends_with("/api/modpacks/test/manifest"), "T10: pack summary manifest_url")
 	_assert(str(s["page_url"]) == "https://vostokmods.net/modpack/test", "T10: pack summary page_url")
-	_assert(str(s["cover_url"]) == "", "T10: null coverUrl reads as empty, not '<null>'")
+	_assert(str(s["cover_url"]) == "", "T10: null thumbnailUrl reads as empty, not '<null>'")
 
 	# Manifest validation.
 	var manifest: Variant = JSON.parse_string(VM_MANIFEST_JSON)
@@ -1528,6 +1550,34 @@ func _t14_modpack_source_installed(ml: Object) -> void:
 	_assert(not bool(ml._modpack_ref_downloadable({})), "T14: an empty ref is not downloadable")
 	_assert(not bool(ml._modpack_ref_downloadable({"provider": "steam", "id": "1"})), "T14: an unknown host is not downloadable")
 
+# An installed mod whose mod.txt carries the UUID VostokMods writes since
+# 2026-09-30 is keyed by that UUID, while Browse rows carry the slug. The
+# Mods-tab memo holds the detail the UUID resolved to, so the install map
+# must answer under both ids or Browse offers Download for an installed mod.
+func _t33_install_map_keys_both_ids(ml: Object) -> void:
+	_pack_cleanup(ml)
+	var uuid := "019ff1f0-00ac-76a9-a23f-7151e4531131"
+	var entry := _installed_entry("rtvcoop@5.0.0", "rtvcoop", "5.0.0")
+	var cfg := ConfigFile.new()
+	cfg.set_value("mod", "version", "5.0.0")
+	cfg.set_value("updates", "source", "vostokmods:" + uuid)
+	entry["cfg"] = cfg
+	var installed: Array[Dictionary] = [entry]
+	ml.set("_ui_mod_entries", installed)
+	var memo: Dictionary = ml.get("_mods_meta_by_key")
+	memo.clear()
+	var map: Dictionary = ml._browse_install_map()
+	_assert(map.has("vostokmods:" + uuid) and not map.has("vostokmods:rtvcoop"),
+			"T33: before any detail answer only the UUID key exists (got %s)" % str(map.keys()))
+	var detail: Dictionary = ml.host_empty_detail()
+	detail["ref"] = ml.host_ref("vostokmods", "rtvcoop")
+	memo["vostokmods:" + uuid] = detail
+	map = ml._browse_install_map()
+	_assert(map.has("vostokmods:" + uuid) and map.has("vostokmods:rtvcoop") and map["vostokmods:rtvcoop"] == entry,
+			"T33: once the detail answered with the slug, both keys find the entry (got %s)" % str(map.keys()))
+	memo.clear()
+	_pack_cleanup(ml)
+
 # Row warnings are for the player: the mod will not work. Author notes are
 # for the mod's author: it works, but its mod.txt could be better. Each
 # message must land in its own list and never in the other.
@@ -1642,7 +1692,7 @@ func _fail(msg: String) -> void:
 func _finish() -> void:
 	_done = true
 	if _failures.is_empty():
-		print("[host] PASS: %d assertion(s) across T1..T32" % _assertions)
+		print("[host] PASS: %d assertion(s) across T1..T33" % _assertions)
 		quit(0)
 		return
 	for m in _failures:

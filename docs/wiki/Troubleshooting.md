@@ -24,6 +24,7 @@ echo. > modloader_disabled
 - A red banner at the top of the Mods tab saying hooks did not work means the game was probably updated and the loader needs an update too. Click **Check for loader update**.
 - A red banner that starts `The loader's changes to <scripts> do not fit this version of Road to Vostok` means a game update changed the named scripts, and the loader left its own changes to them out so the game keeps working. The game and your saves are fine, and there is nothing to remove from your mod list. Mods that hook those scripts, or register content through them, may do nothing until the loader is updated; mods that do not touch them work as usual. Click **Check for loader update** and install the new release when there is one. The banner clears after the update, or after a session in which every change fit again.
 - A mod that ships only files (no `mod.txt`) still mounts and overrides vanilla files, but runs no code of its own.
+- No banner, but a mod stopped working right after a game update: the game may have renamed something the mod hooks or registers. That is the mod's side, not the loader's; its author can follow [Build-2-Migration](Build-2-Migration) to update it.
 
 ## The launcher does not appear
 

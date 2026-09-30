@@ -67,7 +67,7 @@ const BODY_MODIFIED := {
 	"Compiler.gd": ["Spawn"],
 	"FishPool.gd": ["_ready"],
 	"AI.gd": ["SelectWeapon"],
-	"AISpawner.gd": ["_ready"],
+	"AISpawner.gd": ["_ready", "Initialize"],  # zone if/elif moved to Initialize in Build 2
 }
 
 const WRAPPER_MARKER := "# --- Metro mod loader inline hook dispatch wrappers ---"
@@ -241,6 +241,145 @@ func _check_vetting(ml, fname: String, path: String, raw: String, parsed: Dictio
 			_fail(fname, "VET: a persisted excluded verdict was not repeated")
 	(ml.get("_hook_pack_demotions") as Dictionary).clear()
 
+# --- injected registry code, executed ------------------------------------------
+
+# The compile steps prove the appendices parse; these run them. Each target's
+# injected helpers are called on an instance of the rewritten script (never
+# added to the tree, so @onready never runs) with the same Engine meta the
+# registry writes, and the vanilla-facing result is asserted.
+func _check_registry_runtime(fname: String, path: String, raw: String) -> void:
+	match fname:
+		"AI.gd":
+			_runtime_ai(fname, path, raw)
+		"AISpawner.gd":
+			_runtime_aispawner(fname, path)
+		"Database.gd":
+			_runtime_database(fname, path)
+		"Loader.gd":
+			_runtime_loader(fname, path)
+
+func _runtime_instance(fname: String, path: String) -> Object:
+	var scr = ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE)
+	if scr == null or not (scr as Script).can_instantiate():
+		_fail(fname, "RUNTIME: rewritten script cannot be instantiated")
+		return null
+	return (scr as Script).new()
+
+func _runtime_ai(fname: String, path: String, raw: String) -> void:
+	var ai = _runtime_instance(fname, path)
+	if ai == null:
+		return
+	var build2 := "var variant: AIData" in raw
+	if build2:
+		# Build 2: categories come from the AIData variant.
+		var data_script = load("res://Scripts/AIData.gd")
+		var v = data_script.new()
+		v.faction = 4  # Faction.Boss
+		v.name = "Punisher"
+		ai.variant = v
+		var cats: Array = ai._rtv_ai_categories()
+		if cats != ["Boss", "Punisher"]:
+			_fail(fname, "RUNTIME: Boss/Punisher variant gave categories %s" % str(cats))
+		v.faction = 1  # Faction.Bandit
+		v.name = "Bandit"
+		if ai._rtv_ai_categories() != ["Bandit"]:
+			_fail(fname, "RUNTIME: Bandit variant gave categories %s" % str(ai._rtv_ai_categories()))
+		ai.variant = null
+		if not (ai._rtv_ai_categories() as Array).is_empty():
+			_fail(fname, "RUNTIME: no variant must give no categories")
+		ai.variant = v
+		v.faction = 4
+		v.name = "Punisher"
+	else:
+		# Pre-Build 2: the boss flag and the spawner zone.
+		ai.boss = true
+		if ai._rtv_ai_categories() != ["Punisher"]:
+			_fail(fname, "RUNTIME: boss gave categories %s" % str(ai._rtv_ai_categories()))
+		ai.boss = false
+		ai.AISpawner = null
+		if not (ai._rtv_ai_categories() as Array).is_empty():
+			_fail(fname, "RUNTIME: no spawner must give no categories")
+		ai.boss = true
+	# A loadout for the matching category lands in weapons, hidden; a
+	# non-matching one is skipped; replace clears the vanilla children.
+	var weapon := PackedScene.new()
+	var wn := Node3D.new()
+	wn.name = "InjectedWeapon"
+	weapon.pack(wn)
+	wn.free()
+	# Build 2 types `weapons` as BoneAttachment3D (a Node3D before it).
+	var container := BoneAttachment3D.new()
+	var vanilla_weapon := Node3D.new()
+	container.add_child(vanilla_weapon)
+	ai.weapons = container
+	Engine.set_meta("_rtv_ai_loadouts", [
+		{"weapon_scene": weapon, "ai_types": ["Guard"], "chance": 1.0, "replace": false},
+		{"weapon_scene": weapon, "ai_types": ["Punisher"], "chance": 1.0, "replace": false},
+		"not a dictionary",
+	])
+	ai._rtv_apply_ai_loadouts()
+	if container.get_child_count() != 2 or container.get_child(1).name != "InjectedWeapon" or container.get_child(1).visible:
+		_fail(fname, "RUNTIME: loadout injection gave %d weapons children (expected vanilla + one hidden InjectedWeapon)" % container.get_child_count())
+	Engine.set_meta("_rtv_ai_loadouts", [
+		{"weapon_scene": weapon, "ai_types": ["Boss"], "chance": 1.0, "replace": true},
+	])
+	ai._rtv_apply_ai_loadouts()
+	if build2 and (container.get_child_count() != 1 or container.get_child(0).name != "InjectedWeapon"):
+		_fail(fname, "RUNTIME: replace loadout left %d weapons children" % container.get_child_count())
+	Engine.set_meta("_rtv_ai_loadouts", [])
+	container.free()
+	ai.free()
+
+func _runtime_aispawner(fname: String, path: String) -> void:
+	var sp = _runtime_instance(fname, path)
+	if sp == null:
+		return
+	var scene := PackedScene.new()
+	Engine.set_meta("_rtv_ai_overrides", {"Area05": scene})
+	var vanilla := PackedScene.new()
+	if sp._rtv_resolve_ai_type(0, vanilla) != scene:
+		_fail(fname, "RUNTIME: resolver did not return the Area05 override")
+	if sp._rtv_resolve_ai_type(1, vanilla) != vanilla:
+		_fail(fname, "RUNTIME: resolver replaced BorderZone without an override")
+	Engine.set_meta("_rtv_ai_overrides", {})
+	if sp._rtv_resolve_ai_type(0, vanilla) != vanilla:
+		_fail(fname, "RUNTIME: resolver ignored an empty override table")
+	sp.free()
+
+func _runtime_database(fname: String, path: String) -> void:
+	var db = _runtime_instance(fname, path)
+	if db == null:
+		return
+	var mod_scene := PackedScene.new()
+	var over_scene := PackedScene.new()
+	db._rtv_mod_scenes["CodegenMod"] = mod_scene
+	if db.get("CodegenMod") != mod_scene:
+		_fail(fname, "RUNTIME: _get() did not serve a mod scene")
+	db._rtv_override_scenes["CodegenMod"] = over_scene
+	if db.get("CodegenMod") != over_scene:
+		_fail(fname, "RUNTIME: an override did not win over a mod scene")
+	var vanilla_keys: Array = db._rtv_vanilla_scenes.keys()
+	if vanilla_keys.is_empty() or db.get(vanilla_keys[0]) == null:
+		_fail(fname, "RUNTIME: _get() did not serve the vanilla scene dict")
+	if db.get("NoSuchScene") != null:
+		_fail(fname, "RUNTIME: _get() returned something for an unknown name")
+	db.free()
+
+func _runtime_loader(fname: String, path: String) -> void:
+	var ldr = _runtime_instance(fname, path)
+	if ldr == null:
+		return
+	if not ("Cabin" in ldr.shelters):
+		_fail(fname, "RUNTIME: shelters is not the vanilla list (%s)" % str(ldr.shelters))
+	var ok: bool = ldr.add_shelter({"map_name": "CodegenShelter", "path": "res://Scenes/Cabin.tscn", "exit_spawn": "X"})
+	if not ok or not ("CodegenShelter" in ldr.shelters) or not ldr._rtv_mod_scene_paths.has("CodegenShelter"):
+		_fail(fname, "RUNTIME: add_shelter did not register (ok=%s)" % str(ok))
+	if ldr.add_shelter({"map_name": "Cabin"}):
+		_fail(fname, "RUNTIME: add_shelter accepted a vanilla shelter name")
+	if ldr.add_map({"path": "res://x.tscn"}):
+		_fail(fname, "RUNTIME: add_map accepted a dict without map_name")
+	ldr.free()
+
 # --- fixture pipeline -------------------------------------------------------
 
 func _check_fixture(ml, fx: Dictionary) -> void:
@@ -286,6 +425,12 @@ func _check_fixture(ml, fx: Dictionary) -> void:
 	if marker_idx < 0:
 		_fail(fname, "wrapper marker comment missing from rewritten output")
 		return
+	# A registry transform is anchored to vanilla text and no-ops silently when
+	# the game moves the pattern (Build 2 renamed AISpawner's `agent =` to
+	# `enemy =`); the loader checks the same markers at pack time.
+	var expected_markers: Dictionary = ml.get("REGISTRY_EXPECTED_MARKERS")
+	if expected_markers.has(fname) and not (str(expected_markers[fname]) in rewritten):
+		_fail(fname, "REGISTRY: transform marker '%s' missing from the full rewrite -- the vanilla anchor no longer matches this corpus" % str(expected_markers[fname]))
 
 	for fe in nonstatic:
 		_check_method(fname, fe, plines, rlines, marker_idx, fx)
@@ -305,6 +450,7 @@ func _check_fixture(ml, fx: Dictionary) -> void:
 	if not _compile_at_path(fname, path, rewritten, "COMPILE (wrap-all)"):
 		return
 	_check_caller(fname, path, nonstatic, plines)
+	_check_registry_runtime(fname, path, raw)
 	if _failures.size() == fails_before:
 		print("[codegen] OK %s: %d method(s) wrapped; rewritten output + caller stub compile" % [fname, nonstatic.size()])
 

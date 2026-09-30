@@ -117,7 +117,7 @@ func _rtv_rewrite_vanilla_source(source: String, parsed: Dictionary, method_mask
 
 	# Per-script registry injections (gated upstream by REGISTRY_TARGETS).
 	if inject:
-		appended += _rtv_registry_injection(parsed["filename"], indent)
+		appended += _rtv_registry_injection(parsed["filename"], indent, src)
 
 	return "\n".join(lines) + appended
 
