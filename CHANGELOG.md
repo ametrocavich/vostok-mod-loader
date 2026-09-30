@@ -3,17 +3,17 @@
 ## [3.4.1](https://github.com/ametrocavich/vostok-mod-loader/compare/v3.4.0...v3.4.1) (2026-09-30)
 
 
+Road to Vostok Build 2 ("Nomads") support. First stable release since 3.2.1; 3.3.0, 3.3.1 and 3.4.0 were pre-releases.
+
 ### Bug Fixes
 
-* **hooks:** report a declared method the game removed on a registry target ([fd0d576](https://github.com/ametrocavich/vostok-mod-loader/commit/fd0d5763a2c98bd08de24655af8995f1fee170ef))
-* **registry:** follow Build 2's AI variants and AISpawner enemy assignments ([b43ee6e](https://github.com/ametrocavich/vostok-mod-loader/commit/b43ee6ec3031bfab3d23fde2ee4fbb922eb9b96e))
-* **registry:** know Build 2's traders, loot tables and class names ([0de50e8](https://github.com/ametrocavich/vostok-mod-loader/commit/0de50e8501ec76a00625b78497d2969180302c2b))
+* **registry:** follow Build 2's AI variants and AISpawner `enemy =` assignments, so `ai_loadouts` and `ai_types` work again ([b43ee6e](https://github.com/ametrocavich/vostok-mod-loader/commit/b43ee6ec3031bfab3d23fde2ee4fbb922eb9b96e))
+* **registry:** know Build 2's traders (Driver, Hunter), loot tables and class names ([0de50e8](https://github.com/ametrocavich/vostok-mod-loader/commit/0de50e8501ec76a00625b78497d2969180302c2b))
 * **registry:** list the current sound names when a sounds call is refused ([627a2bf](https://github.com/ametrocavich/vostok-mod-loader/commit/627a2bf576c1a71866843ff9f91fbf82f25904bd))
-* Road to Vostok Build 2 support and VostokMods API update ([78c10e1](https://github.com/ametrocavich/vostok-mod-loader/commit/78c10e162181a36310608704d6f018d8cb8503d9))
+* **hooks:** report a declared method the game removed on a registry target ([fd0d576](https://github.com/ametrocavich/vostok-mod-loader/commit/fd0d5763a2c98bd08de24655af8995f1fee170ef))
+* **vostokmods:** read the site's current API (listing `entries`, taxonomies, `ownerDisplayName`, UUID mod ids) and show mods installed from the site as installed ([48de247](https://github.com/ametrocavich/vostok-mod-loader/commit/48de247ab82147ab84226d858921b6a5a3711fd4))
 * **ui:** drop the game-updated notice banner ([48953cc](https://github.com/ametrocavich/vostok-mod-loader/commit/48953ccfe8612dda7063828897e1ccd92314b44e))
 * **ui:** wrap long banner messages ([6bfafb3](https://github.com/ametrocavich/vostok-mod-loader/commit/6bfafb3b2f880429f62e8ca705ff8d4e9539221d))
-* **vostokmods:** read listing rows from entries and resolve UUID mod ids ([35d6ec9](https://github.com/ametrocavich/vostok-mod-loader/commit/35d6ec9ccd084ceee09eb62ddad6b415031149e4))
-* **vostokmods:** read the site's current API shape and match installed mods by UUID or slug ([48de247](https://github.com/ametrocavich/vostok-mod-loader/commit/48de247ab82147ab84226d858921b6a5a3711fd4))
 
 ## [3.4.0](https://github.com/ametrocavich/vostok-mod-loader/compare/v3.3.1...v3.4.0) (2026-09-29)
 
