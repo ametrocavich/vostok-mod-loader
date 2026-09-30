@@ -464,8 +464,8 @@ func _t8_pass_state_reads_coerce() -> void:
 # player learns a game update broke the rewriter is the record generation
 # leaves behind. Pins: a failure record produces a launcher notice; a record
 # from another loader build or another game build is ignored; the
-# game-updated marker produces a notice on its own and only a healthy
-# activation clears it.
+# game-updated marker alone shows nothing (a game update is not a problem
+# while hooks work) and only a healthy activation clears it.
 func _t7_hook_status_reaches_the_launcher() -> void:
 	var status_path := str(_ml.HOOK_STATUS_PATH)
 	var marker_path := str(_ml.GAME_UPDATED_MARKER_PATH)
@@ -509,12 +509,13 @@ func _t7_hook_status_reaches_the_launcher() -> void:
 	_assert((_ml._hook_status_problem() as Dictionary).is_empty(),
 			"T7: a record from another game build is ignored")
 
-	# The game-updated marker alone is a notice, not an error.
+	# The game-updated marker alone shows nothing: players on a current
+	# loader must not be sent looking for a loader update.
 	clear.call()
 	_ml._static_mark_game_updated()
 	problem = _ml._hook_status_problem()
-	_assert(str(problem.get("severity", "")) == "notice" and str(problem.get("text", "")).contains("updated"),
-			"T7: the game-updated marker shows a notice (got %s)" % str(problem))
+	_assert(problem.is_empty() and FileAccess.file_exists(marker_path),
+			"T7: the game-updated marker alone shows no banner (got %s)" % str(problem))
 	# A no-mods session does not prove hooks work on the new build.
 	_ml._hook_status_write({"state": "ok", "attempted": 0})
 	_assert(FileAccess.file_exists(marker_path), "T7: an empty session keeps the marker")
