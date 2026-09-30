@@ -1,0 +1,15 @@
+[mod]
+name="B2 Test: Hooks"
+id="b2test_hooks"
+version="1.0.0"
+author="Metro Mod Loader tests"
+priority=5
+
+[autoload]
+B2TestHooks="res://B2TestHooks/Main.gd"
+
+[hooks]
+res://Scripts/Menu.gd = "_ready"
+res://Scripts/AISpawner.gd = "SpawnWanderer, SpawnEnemy, Initialize"
+res://Scripts/AI.gd = "SelectWeapon"
+res://Scripts/Loader.gd = "LoadScene"
