@@ -5,8 +5,11 @@ Usage: python tests/ingame/build2/evaluate.py [--minutes N] [--logs DIR]
 
 Looks at every godot*.log under the game's user data folder that changed in
 the last N minutes (default 30): the two-pass boot writes more than one file.
-Prints one line per check and exits 1 when anything failed. Never launches
-the game.
+The game log is buffered and a crash at exit loses its tail (this machine's
+RTV.exe has crashed on exit with one WER signature since May 2026), so the
+test mods also write flushed progress files under user://; those are the
+second source of PASS/FAIL. Prints one line per check and exits 1 when
+anything failed. Never launches the game.
 """
 import argparse
 import glob
@@ -16,6 +19,9 @@ import sys
 import time
 
 DEFAULT_LOGS = os.path.join(os.environ.get("APPDATA", ""), "Road to Vostok", "logs")
+EXPECTED = ["R1", "R2", "R3a", "R3b", "R3c", "R4a", "R4b", "R4c", "R5a", "R5b", "R5c", "R5d", "R6", "R7",
+            "R8a", "R8b", "R8c", "M1", "M2a", "M2b", "M2c", "M3a", "M3b", "M4a", "M4b", "M4c", "M4d",
+            "M5a", "M5b", "M6", "M6b", "M7a", "M8", "H0", "H1"]
 
 
 def load_logs(folder, minutes):
@@ -27,6 +33,19 @@ def load_logs(folder, minutes):
         with open(p, encoding="utf-8", errors="replace") as f:
             text += "\n### %s\n" % os.path.basename(p) + f.read()
     return files, text
+
+
+def read_progress(path, results):
+    """Flushed per-step file: '<time> PASS|FAIL <name>: <detail>' lines."""
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8", errors="replace") as f:
+        steps = [ln.strip() for ln in f if ln.strip()]
+    for ln in steps:
+        m = re.match(r"[\d:]+ (PASS|FAIL) (\S+ [^:]*)(?:: ?(.*))?$", ln)
+        if m:
+            results[m.group(2)] = (m.group(1), (m.group(3) or "") + " (from progress file)")
+    return steps
 
 
 def main():
@@ -57,37 +76,37 @@ def main():
     check(not demoted, "no probe demotions", "%d demotion line(s)" % len(demoted))
     lost = re.findall(r"Hook on AISpawner\.gd::spawnwanderer will NEVER fire|PARTIAL .*AISpawner\.gd.*spawnwanderer", text, re.I)
     check(bool(lost), "removed vanilla method reported as lost", "SpawnWanderer warning/ledger line %s" % ("present" if lost else "missing"))
-    progress = os.path.join(os.path.dirname(args.logs), "b2test_progress.txt")
-    if os.path.exists(progress):
-        with open(progress, encoding="utf-8", errors="replace") as f:
-            steps = [ln.strip() for ln in f if ln.strip()]
-        check(bool(steps) and steps[-1].endswith("menu tests done"), "test mod ran to the end (progress file)",
-              "last step: " + (steps[-1] if steps else "none"))
     crit = [ln for ln in text.splitlines() if "[ModLoader][Critical]" in ln]
     check(not crit, "no [Critical] loader lines", "; ".join(c.strip()[:160] for c in crit[:5]))
     errs = [ln for ln in text.splitlines() if ln.startswith("SCRIPT ERROR")]
     check(not errs, "no SCRIPT ERROR lines", "; ".join(e.strip()[:160] for e in errs[:5]))
-    check("Injected Mods button into main menu" in text, "Mods button injected", "")
 
-    # Test-mod lines.
-    b2 = [ln.strip() for ln in text.splitlines() if "[B2TEST]" in ln]
+    # Test-mod results: progress files first, log lines override with detail.
+    userdata = os.path.dirname(args.logs)
     seen = {}
-    for ln in b2:
-        m = re.match(r".*\[B2TEST\] (PASS|FAIL|INFO) (\S+ [^:]*): ?(.*)", ln)
+    steps = read_progress(os.path.join(userdata, "b2test_progress.txt"), seen)
+    if steps:
+        check(steps[-1].endswith("menu tests done"), "test mod ran to the end (progress file)", "last step: " + steps[-1])
+    read_progress(os.path.join(userdata, "b2test_hooks_progress.txt"), seen)
+    for ln in text.splitlines():
+        m = re.match(r".*\[B2TEST\] (PASS|FAIL|INFO) (\S+ [^:]*): ?(.*)", ln.strip())
         if m:
             seen[m.group(2)] = (m.group(1), m.group(3))
+    if seen and not re.search(r"\[B2TEST\] SUMMARY menu", text):
+        print("WARN game log ends early (%d lines): the game did not flush it at exit; progress files fill the gap"
+              % text.count("\n"))
+    button = "Injected Mods button into main menu" in text or \
+        any(k.startswith("M8") and v[0] == "PASS" for k, v in seen.items())
+    check(button, "Mods button injected", "log line or M8 check")
     for name in sorted(seen):
         kind, detail = seen[name]
         if kind == "INFO":
             print("INFO %s: %s" % (name, detail))
         else:
             check(kind == "PASS", "mod " + name, detail)
-    expected = ["R1", "R2", "R3a", "R3b", "R3c", "R4a", "R4b", "R4c", "R5a", "R5b", "R5c", "R5d", "R6", "R7",
-                "R8a", "R8b", "R8c", "M1", "M2a", "M2b", "M2c", "M3a", "M3b", "M4a", "M4b", "M4c", "M4d",
-                "M5a", "M5b", "M6", "M6b", "M7a", "H0", "H1"]
     prefixes = {n.split(" ")[0] for n in seen}
-    missing = [e for e in expected if e not in prefixes]
-    check(not missing, "every expected test reported", "missing: " + ", ".join(missing) if missing else "all %d" % len(expected))
+    missing = [e for e in EXPECTED if e not in prefixes]
+    check(not missing, "every expected test reported", "missing: " + ", ".join(missing) if missing else "all %d" % len(EXPECTED))
 
     width = max(len(r[1]) for r in results)
     fails = 0

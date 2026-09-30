@@ -5,15 +5,32 @@
 extends Node
 
 const TAG := "[B2TEST]"
+# The game log is buffered and lost on a crash at exit; flushed copy.
+const PROGRESS := "user://b2test_hooks_progress.txt"
+
+
+func _line(kind: String, name: String, detail: String) -> void:
+	print("%s %s %s: %s" % [TAG, kind, name, detail])
+	var f := FileAccess.open(PROGRESS, FileAccess.READ_WRITE if FileAccess.file_exists(PROGRESS) else FileAccess.WRITE)
+	if f == null:
+		return
+	f.seek_end()
+	f.store_line("%s %s %s: %s" % [Time.get_time_string_from_system(), kind, name, detail])
+	f.flush()
+	f.close()
 
 
 func _ready() -> void:
+	var f := FileAccess.open(PROGRESS, FileAccess.WRITE)
+	if f != null:
+		f.store_line("run start")
+		f.close()
 	var lib = Engine.get_meta("RTVModLib", null)
 	if lib == null:
-		print("%s FAIL H0 hooks mod lib: RTVModLib meta missing" % TAG)
+		_line("FAIL", "H0 hooks mod lib", "RTVModLib meta missing")
 		return
 	var id: int = lib.hook("menu-_ready-post", _on_menu_ready)
-	print("%s PASS H0 hooks mod registered menu-_ready-post: id %d" % [TAG, id])
+	_line("PASS", "H0 hooks mod registered menu-_ready-post", "id %d" % id)
 	# These fire only in a map; their lines are informational.
 	lib.hook("aispawner-initialize-post", func(): print("%s INFO AISpawner.Initialize post hook fired" % TAG))
 	lib.hook("aispawner-spawnenemy-post", func(): print("%s INFO AISpawner.SpawnEnemy post hook fired" % TAG))
@@ -31,4 +48,4 @@ func _ready() -> void:
 func _on_menu_ready() -> void:
 	var menu := get_tree().current_scene
 	var ok: bool = menu != null and menu.get_script() != null and str(menu.get_script().resource_path) == "res://Scripts/Menu.gd"
-	print("%s %s H1 menu-_ready-post fired from a second mod: scene=%s" % [TAG, "PASS" if ok else "FAIL", str(menu.name) if menu != null else "null"])
+	_line("PASS" if ok else "FAIL", "H1 menu-_ready-post fired from a second mod", "scene=%s" % (str(menu.name) if menu != null else "null"))

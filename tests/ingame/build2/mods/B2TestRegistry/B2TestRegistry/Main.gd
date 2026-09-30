@@ -229,6 +229,13 @@ func _menu_tests() -> void:
 	var status := FileAccess.get_file_as_string("user://modloader_hook_status.json")
 	_report("\"ok\"" in status, "M7a hook status record", status.strip_edges())
 	_report(true, "M7b game-updated marker present", str(FileAccess.file_exists("user://modloader_game_updated")))
+
+	_mark("M8")
+	# The loader's own menu hook adds a Mods button before Quit; the deferred
+	# call runs after every menu-_ready-post hook, so it must exist by now.
+	var menu := get_tree().current_scene
+	var btn = menu.get_node_or_null("Main/Buttons/MetroMods") if menu != null else null
+	_report(btn != null, "M8 Mods button in main menu", "Main/Buttons/MetroMods %s" % ("present" if btn != null else "missing"))
 	_summary("menu")
 	_mark("menu tests done")
 
