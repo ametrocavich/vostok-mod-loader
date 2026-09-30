@@ -55,8 +55,14 @@ def main():
           "COMPILE-PROOF all rewrites active", m.group(0) if m else "missing")
     demoted = re.findall(r"does not compile against this game build", text)
     check(not demoted, "no probe demotions", "%d demotion line(s)" % len(demoted))
-    lost = re.findall(r"Hook on AISpawner\.gd::spawnwanderer will NEVER fire", text, re.I)
-    check(bool(lost), "removed vanilla method reported as lost", "SpawnWanderer warning %s" % ("present" if lost else "missing"))
+    lost = re.findall(r"Hook on AISpawner\.gd::spawnwanderer will NEVER fire|PARTIAL .*AISpawner\.gd.*spawnwanderer", text, re.I)
+    check(bool(lost), "removed vanilla method reported as lost", "SpawnWanderer warning/ledger line %s" % ("present" if lost else "missing"))
+    progress = os.path.join(os.path.dirname(args.logs), "b2test_progress.txt")
+    if os.path.exists(progress):
+        with open(progress, encoding="utf-8", errors="replace") as f:
+            steps = [ln.strip() for ln in f if ln.strip()]
+        check(bool(steps) and steps[-1].endswith("menu tests done"), "test mod ran to the end (progress file)",
+              "last step: " + (steps[-1] if steps else "none"))
     crit = [ln for ln in text.splitlines() if "[ModLoader][Critical]" in ln]
     check(not crit, "no [Critical] loader lines", "; ".join(c.strip()[:160] for c in crit[:5]))
     errs = [ln for ln in text.splitlines() if ln.startswith("SCRIPT ERROR")]

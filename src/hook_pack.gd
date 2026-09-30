@@ -353,7 +353,10 @@ func _hook_pack_wrap_surface(script_paths: Array[String], needed_paths: Dictiona
 				_mask_widen(hook_mask[rt_path])
 			if reconcile.has(rt_path):
 				# Also declared via [hooks]: registry opt-in widens it to a wildcard.
+				# The declared names stay on the record so a method the game
+				# removed is still reported, wildcard or not.
 				(reconcile[rt_path] as Dictionary)["declared"] = "[hooks]+[registry]"
+				(reconcile[rt_path] as Dictionary)["declared_methods"] = (reconcile[rt_path] as Dictionary)["methods"]
 				(reconcile[rt_path] as Dictionary)["methods"] = []
 				(reconcile[rt_path] as Dictionary)["status"] = "pending"
 				(reconcile[rt_path] as Dictionary)["detail"] = ""
@@ -490,6 +493,20 @@ func _hook_pack_write_zip(pack_zip_rel: String, script_paths: Array[String], nee
 					missing_partial.append(mk)
 			if not rec_v.is_empty() and missing_partial.size() > 0:
 				rec_v["missing_methods"] = missing_partial
+		elif not rec_v.is_empty() and rec_v.has("declared_methods"):
+			# A registry target wraps every method, so the mask says nothing
+			# about the [hooks] names a mod declared; check those by hand.
+			var lower_names: Dictionary = {}
+			for mn in matched_names:
+				lower_names[str(mn).to_lower()] = true
+			var missing_declared: Array = []
+			for dm in (rec_v["declared_methods"] as Array):
+				if not lower_names.has(str(dm).to_lower()):
+					missing_declared.append(dm)
+			if missing_declared.size() > 0:
+				rec_v["missing_methods"] = missing_declared
+				for dm in missing_declared:
+					_log_warning("[RTVCodegen] Hook on %s::%s will NEVER fire: no such method in vanilla. Check the spelling, or the game update renamed/removed it." % [filename, str(dm)])
 
 		# Scripts with module-scope PackedScene preloads are deferred from eager
 		# activation (see _activate_rewritten_scripts), except the registry
