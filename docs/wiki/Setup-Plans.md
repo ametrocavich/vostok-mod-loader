@@ -220,7 +220,7 @@ func _ready() -> void:
         # --- prepend: insert at the front ---------------------------------
         # SOUNDS ids are AudioLibrary field names; audioClips is the Array field.
         ["prepend", _lib.Registry.SOUNDS, "audioClips", {
-            "knifeSlash": preload("res://my_mod/sounds/squelch.ogg"),
+            "knifeHitFleshSlash": preload("res://my_mod/sounds/squelch.ogg"),
         }],
 
         # --- remove_from: drop matching entries ---------------------------

@@ -124,7 +124,7 @@ Use `lib.Registry.<NAME>` instead of raw strings so typos surface at parse time:
 | `SHELTERS` | `"shelters"` | `Loader.shelters` append-only list | register, remove (revert = alias) |
 | `MAPS` | `"maps"` | Non-persistent named areas on `Loader`; shares the shelters storage | register, remove (revert = alias) |
 | `RANDOM_SCENES` | `"random_scenes"` | `Loader.randomScenes` append-only list | register, remove (revert = alias) |
-| `AI_TYPES` | `"ai_types"` | Zone -> agent scene overrides on `AISpawner` | register, override, remove, revert |
+| `AI_TYPES` | `"ai_types"` | Zone -> enemy scene overrides on `AISpawner` | register, override, remove, revert |
 | `AI_LOADOUTS` | `"ai_loadouts"` | Per-AI-category weapon injections (`AI.SelectWeapon` prelude) | register, override, remove, revert |
 | `FISH_SPECIES` | `"fish_species"` | `FishPool` extra species | register, remove (revert = alias) |
 | `RESOURCES` | `"resources"` | Arbitrary `.tres` by absolute `res://` path | patch, append/prepend/remove_from, revert |
@@ -153,7 +153,7 @@ The aggregator-only registries (`WEAPONS`, `MAGAZINES`, `ATTACHMENTS`) reject `o
 | scene_paths | `{path: String, menu?, shelter?, permadeath?, tutorial?}`; `path` must exist | same shape | open dict; any field accepted, and a `path` must exist |
 | shelters / maps | `{path?, transition_text?, exit_spawn?, entrance_spawn?, connected_to?, connected_content?, shelter?}` | n/a | n/a |
 | random_scenes | `{path: String}`; `path` must exist | n/a | n/a |
-| ai_types | `{scene: PackedScene, zone: String}` (zone: Area05 / BorderZone / Vostok) | same shape (forcibly claims the zone) | no patch |
+| ai_types | `{scene: PackedScene, zone: String}` (zone: Area05 / BorderZone / Vostok / Debug) | same shape (forcibly claims the zone) | no patch |
 | ai_loadouts | `{weapon_scene: PackedScene or String, ai_types: [String], chance? = 1.0, replace? = false}` | same shape (id must exist) | no patch; override to replace |
 | fish_species | `{scene: PackedScene, pool_id? = "all"}` | n/a | n/a |
 | resources | n/a | n/a | id = absolute `res://` path; any declared field |
@@ -206,7 +206,7 @@ lib.append(lib.Registry.ITEMS, "AKM", "compatible", [magA, magB])
 lib.append(lib.Registry.ITEMS, "AKM", "compatible", magC)
 
 # Insert at the front instead of the end:
-lib.prepend(lib.Registry.SOUNDS, "knifeSlash", "audioClips", newClip)
+lib.prepend(lib.Registry.SOUNDS, "knifeHitFleshSlash", "audioClips", newClip)
 
 # Remove an entry; silent skip if it isn't there.
 lib.remove_from(lib.Registry.ITEMS, "AKM", "compatible", oldMag)
@@ -427,7 +427,7 @@ lib.remove(lib.Registry.LOOT, "mymod_fancy_in_master")
 lib.revert(lib.Registry.LOOT, "mymod_swap_bandage")
 ```
 
-`table:` accepts a known name or an absolute `res://` path. Known names: `LT_Master`, `LT_Airdrop`, `LT_Patient_Report`, `LT_Punisher`, `LT_Oil_Sample`, `LT_Weapons_01` .. `LT_Weapons_04`, `LT_Ammo`, `LT_Medical`, `LT_Equipment`, `LT_Armor`, `LT_Grenades`, `LT_Attachments`, `LT_Items`, `Kit_Colt`, `Kit_Glock`, `Kit_MP5K`, `Kit_Makarov`, `Kit_Mosin`, `Kit_Remington`.
+`table:` accepts a known name or an absolute `res://` path. Known names: `LT_Master`, `LT_Airdrop_01` .. `LT_Airdrop_03`, `LT_Patient_Report`, `LT_Punisher_01` .. `LT_Punisher_03`, `LT_Bogeyman_01`, `LT_Oil_Sample`, `LT_Weapons_01` .. `LT_Weapons_04`, `LT_Ammo`, `LT_Medical`, `LT_Equipment`, `LT_Armor`, `LT_Grenades`, `LT_Attachments`, `LT_Items`, `Kit_Colt`, `Kit_Glock`, `Kit_MP5K`, `Kit_Makarov`, `Kit_Mosin`, `Kit_Remington`.
 
 There is no patch on loot; entries are whole `ItemData` references. Patch the `ItemData` through `items` instead.
 
@@ -456,18 +456,18 @@ lib.register(lib.Registry.SOUNDS, "mymod_dict_sound", {
 # override: replace a vanilla AudioLibrary @export field.
 # `id` must be a real @export field name on AudioLibrary.tres;
 # override rejects mod-registered ids.
-lib.override(lib.Registry.SOUNDS, "knifeSlash", custom_event)
+lib.override(lib.Registry.SOUNDS, "knifeHitFleshSlash", custom_event)
 
 # patch: mutate AudioEvent fields (audioClips, volume, randomPitch)
-lib.patch(lib.Registry.SOUNDS, "knifeSlash", {"volume": -10.0, "randomPitch": true})
+lib.patch(lib.Registry.SOUNDS, "knifeHitFleshSlash", {"volume": -10.0, "randomPitch": true})
 
 # revert per-field / full / remove
-lib.revert(lib.Registry.SOUNDS, "knifeSlash", ["randomPitch"])
-lib.revert(lib.Registry.SOUNDS, "knifeSlash")
+lib.revert(lib.Registry.SOUNDS, "knifeHitFleshSlash", ["randomPitch"])
+lib.revert(lib.Registry.SOUNDS, "knifeHitFleshSlash")
 lib.remove(lib.Registry.SOUNDS, "mymod_custom_footstep")
 ```
 
-Only `override` and `patch` change what vanilla plays. Vanilla code reads `audioLibrary.propertyName` directly, so a mod-registered id is unreachable from vanilla code paths. Fetch it with `lib.get_entry` and play it from your own code or hooks. Registrations live in the registry's lookup dict, not on the AudioLibrary Resource, so `audioLibrary.get("mymod_id")` returns null.
+Only `override` and `patch` change what vanilla plays. The field names are whatever the current game build's `AudioLibrary.gd` exports; Build 2 (Nomads) renamed or removed many of them (for example `vostokEnter` became `vostok`, `firemodeSemi` became `semi`, the knife draw and slash fields are gone), and an override on a name the build does not have is refused with `no vanilla AudioLibrary field with that name`. Vanilla code reads `audioLibrary.propertyName` directly, so a mod-registered id is unreachable from vanilla code paths. Fetch it with `lib.get_entry` and play it from your own code or hooks. Registrations live in the registry's lookup dict, not on the AudioLibrary Resource, so `audioLibrary.get("mymod_id")` returns null.
 
 `register` on a vanilla `@export` field name is rejected (use `override`). `override` only works on vanilla fields, never on mod-registered ids. Otherwise the rules are the same as items.
 
@@ -548,7 +548,7 @@ var potato = load("res://Items/Consumables/Potato/Potato.tres")
 # register: enable item for the Doctor trader
 lib.register(lib.Registry.TRADER_POOLS, "mymod_potato_doctor", {
     "item": potato,
-    "trader": "Doctor",  # Generalist / Doctor / Gunsmith / Grandma; case-insensitive
+    "trader": "Doctor",  # Generalist / Doctor / Gunsmith / Driver / Hunter / Grandma; case-insensitive
 })
 
 # remove / revert: restore the original flag value
@@ -561,7 +561,7 @@ When a second mod registers the same (item, trader) pair, its stash inherits the
 
 ### TRADER_TASKS
 
-`TaskData` entries in per-trader `tasks` arrays. Verbs: all five plus the array verbs. Patch accepts a String handle or a direct `TaskData` ref. `trader` is `"Generalist"`, `"Doctor"`, `"Gunsmith"`, or an absolute `res://` path to a `TraderData` resource.
+`TaskData` entries in per-trader `tasks` arrays. Verbs: all five plus the array verbs. Patch accepts a String handle or a direct `TaskData` ref. `trader` is `"Generalist"`, `"Doctor"`, `"Gunsmith"`, `"Driver"`, `"Hunter"`, or an absolute `res://` path to a `TraderData` resource.
 
 ```gdscript
 var lib = Engine.get_meta("RTVModLib")
@@ -734,7 +734,7 @@ A `path` that does not exist is refused. The same handle or the same path regist
 
 ### AI_TYPES
 
-Zone -> agent scene overrides on `AISpawner`. Valid zones: `"Area05"`, `"BorderZone"`, `"Vostok"`. Verbs: `register`, `override`, `remove`, `revert`. One registration per zone.
+Zone -> enemy scene overrides on `AISpawner`. Valid zones: `"Area05"`, `"BorderZone"`, `"Vostok"`, `"Debug"`. Verbs: `register`, `override`, `remove`, `revert`. One registration per zone. The override replaces the zone's enemy scene; Build 2's nomads (spawned from a separate, zone-independent pool) and the bosses are not affected.
 
 ```gdscript
 var lib = Engine.get_meta("RTVModLib")
@@ -771,7 +771,7 @@ var lib = Engine.get_meta("RTVModLib")
 
 lib.register(lib.Registry.AI_LOADOUTS, "mymod_rifle_loadout", {
     "weapon_scene": preload("res://mymod/MyRifle.tscn"),  # PackedScene, or a String id resolvable via Database
-    "ai_types": ["Bandit", "Guard"],  # subset of Bandit / Guard / Military / Punisher; case-insensitive
+    "ai_types": ["Bandit", "Guard"],  # subset of Nomad / Bandit / Guard / Military / Boss / Punisher / Bogeyman; case-insensitive
     "chance": 0.5,                    # optional, default 1.0; clamped to 0..1
     "replace": false,                 # optional, default false
 })
@@ -786,7 +786,7 @@ lib.revert(lib.Registry.AI_LOADOUTS, "mymod_rifle_loadout")  # undo the override
 lib.remove(lib.Registry.AI_LOADOUTS, "mymod_rifle_loadout")
 ```
 
-`ai_types` names are canonicalized to CamelCase; an unknown name fails the whole call with a warning, so a typo surfaces at register time instead of when nothing spawns. `chance` values outside 0..1 are clamped with a warning. `replace: true` clears the agent's existing weapon options before adding this one, which also wipes weapons added by other mods' entries that ran earlier. `register_ai_loadout(entries)` is a batched wrapper over this registry, and `register_weapon` can create an entry for you through its `ai_loadout` field.
+`ai_types` names are canonicalized to CamelCase; an unknown name fails the whole call with a warning, so a typo surfaces at register time instead of when nothing spawns. An AI matches an entry when any of its categories is listed: since Build 2 that is its `AIData` faction (`Nomad`, `Bandit`, `Guard`, `Military`, `Boss`) plus its variant name (`Punisher`, `Bogeyman`, or the faction name again), so `"Boss"` covers both bosses and `"Punisher"` only one. `chance` values outside 0..1 are clamped with a warning. `replace: true` clears the agent's existing weapon options before adding this one, which also wipes weapons added by other mods' entries that ran earlier. `register_ai_loadout(entries)` is a batched wrapper over this registry, and `register_weapon` can create an entry for you through its `ai_loadout` field.
 
 No patch; entries are flat dicts, so `override` to replace.
 
@@ -911,7 +911,7 @@ var result: Dictionary = lib.register_item({
         "scene_path":   "res://mymod/items/MyMedkit.tscn",     # optional
         "icon_path":    "res://mymod/icons/MyMedkit.png",      # optional, sets ItemData.icon
         "loot_tables":  ["LT_Master"],                         # optional
-        "trader_pools": ["Doctor"],                            # optional; Generalist, Doctor, Gunsmith, Grandma
+        "trader_pools": ["Doctor"],                            # optional; Generalist, Doctor, Gunsmith, Driver, Hunter, Grandma
     },
 })
 # result.results.MyMedkit = {ok, items, scene, loot_count, trader_pool_count,

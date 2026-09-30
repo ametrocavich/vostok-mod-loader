@@ -69,7 +69,7 @@ Hooks on these scripts never fire. A mod that declares one gets a warning naming
 
 Resource-serialized scripts in `RTV_RESOURCE_SERIALIZED_SKIP` (save data: `CharacterSave`, `ContainerSave`, `FurnitureSave`, `ItemSave`, `Preferences`, `ShelterSave`, `SlotData`, `SwitchSave`, `TraderSave`, `Validator`, `WorldSave`) are not rewritten either. `ResourceSaver` embeds the script path in user save files; wrapping the script would make saves depend on the mod.
 
-Data-resource scripts in `RTV_RESOURCE_DATA_SKIP` (25 entries: `AIWeaponData`, `AttachmentData`, `ItemData`, `LootTable`, `Recipes`, ...) are loaded from `res://` only and have no call sites to intercept. Hook the consumers.
+Data-resource scripts in `RTV_RESOURCE_DATA_SKIP` (25 entries: `AIData`, `AttachmentData`, `ItemData`, `LootTable`, `Recipes`, ...) are loaded from `res://` only and have no call sites to intercept. Hook the consumers.
 
 ### Scene-preload deferred compile
 
@@ -85,7 +85,7 @@ The remaining eager targets can still bake a scene early. `AI.gd` and `Loader.gd
 
 ### A game update can outdate the registry code
 
-Problem: the code injected into the registry targets names vanilla members (`weapons` and `boss` in `AI.gd`, `Zone` in `AISpawner.gd`, `shelters` and the `LoadScene` locals in `Loader.gd`, `species` in `FishPool.gd`, `spawnTarget` in `Compiler.gd`). A game update that renames one leaves a rewrite that does not compile. The pack serves its `.gd` over the game's bytecode, so until 3.4.0 that broke the vanilla script itself.
+Problem: the code injected into the registry targets names vanilla members (`weapons` and `variant` in `AI.gd`, `Zone` and the `enemy =` assignments in `AISpawner.gd`, `shelters` and the `LoadScene` locals in `Loader.gd`, `species` in `FishPool.gd`, `spawnTarget` in `Compiler.gd`). A game update that renames one leaves a rewrite that does not compile. The pack serves its `.gd` over the game's bytecode, so until 3.4.0 that broke the vanilla script itself.
 
 Detection: every rewrite is probe-compiled before it is packed (`_hook_pack_vet_rewrite` in [src/hook_pack.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd)).
 

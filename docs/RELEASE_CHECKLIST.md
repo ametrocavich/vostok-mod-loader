@@ -113,6 +113,17 @@ new install until someone notices.
       pre-release never becomes "latest": both installers, the README link
       and the in-launcher update check keep resolving to the previous stable
       tag.
+- [ ] Publishing the draft: the run that created it also opened the NEXT
+      release PR, and it did so before the tag existed (a draft release has
+      no tag). With no last-release commit to stop at, release-please read
+      the whole history, and the old `Release-As: 3.0.0` footers from the
+      3.0.0 era set the version: that is how a "chore(master): release
+      3.0.0" PR appeared minutes after v3.4.0. Never merge it. After the
+      draft is published, run the release-please workflow by hand
+      (`gh workflow run release-please.yml`, the `workflow_dispatch`
+      trigger); it recomputes the PR from the new tag, closes it when there
+      is nothing to release, or rewrites it to the next version. The next
+      push to master does the same.
 
 ## After the release
 
