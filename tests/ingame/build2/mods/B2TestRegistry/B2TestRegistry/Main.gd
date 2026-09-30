@@ -88,10 +88,12 @@ func _registry_tests() -> void:
 	_report(not bad, "R2 ai_loadouts unknown category refused", "Zombie -> %s (expected false)" % str(bad))
 
 	_mark("R3")
-	_area05_scene = _packed("B2TestAgentArea05")
+	# A real AI scene, so the override is visible in a map: Area 05 spawns
+	# guards instead of bandits while this profile is active.
+	_area05_scene = load("res://AI/Guard/AI_Guard.tscn")
 	_debug_scene = _packed("B2TestAgentDebug")
-	ok = _lib.override("ai_types", "b2test_area05", {"scene": _area05_scene, "zone": "Area05"})
-	_report(ok, "R3a ai_types override Area05", str(ok))
+	ok = _area05_scene != null and _lib.override("ai_types", "b2test_area05", {"scene": _area05_scene, "zone": "Area05"})
+	_report(ok, "R3a ai_types override Area05", "Area05 -> AI_Guard.tscn: %s" % str(ok))
 	ok = _lib.register("ai_types", "b2test_debug", {"scene": _debug_scene, "zone": "Debug"})
 	_report(ok, "R3b ai_types register Debug", str(ok))
 	bad = _lib.register("ai_types", "b2test_nowhere", {"scene": _debug_scene, "zone": "Nowhere"})

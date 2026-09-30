@@ -32,17 +32,20 @@ func _ready() -> void:
 	var id: int = lib.hook("menu-_ready-post", _on_menu_ready)
 	_line("PASS", "H0 hooks mod registered menu-_ready-post", "id %d" % id)
 	# These fire only in a map; their lines are informational.
-	lib.hook("aispawner-initialize-post", func(): print("%s INFO AISpawner.Initialize post hook fired" % TAG))
-	lib.hook("aispawner-spawnenemy-post", func(): print("%s INFO AISpawner.SpawnEnemy post hook fired" % TAG))
+	lib.hook("aispawner-initialize-post", func():
+		var sp = lib._caller
+		_line("INFO", "map AISpawner.Initialize post hook", "zone=%s enemy=%s" % [str(sp.zone) if sp != null else "?", str(sp.enemy.resource_path) if sp != null and sp.enemy != null else "?"])
+	)
+	lib.hook("aispawner-spawnenemy-post", func(): _line("INFO", "map AISpawner.SpawnEnemy post hook", "fired"))
 	lib.hook("ai-selectweapon-post", func():
 		var ai = lib._caller
 		var names := PackedStringArray()
 		if ai != null and ai.weapons != null:
 			for c in ai.weapons.get_children():
 				names.append(c.name)
-		print("%s INFO AI.SelectWeapon post hook: variant=%s weapons=%s" % [TAG, str(ai.variant.name) if ai != null and ai.variant != null else "?", ", ".join(names)])
+		_line("INFO", "map AI.SelectWeapon post hook", "variant=%s weapons=%s" % [str(ai.variant.name) if ai != null and ai.variant != null else "?", ", ".join(names)])
 	)
-	lib.hook("loader-loadscene-pre", func(scene): print("%s INFO Loader.LoadScene pre hook: %s" % [TAG, str(scene)]))
+	lib.hook("loader-loadscene-pre", func(scene): _line("INFO", "map Loader.LoadScene pre hook", str(scene)))
 
 
 func _on_menu_ready() -> void:

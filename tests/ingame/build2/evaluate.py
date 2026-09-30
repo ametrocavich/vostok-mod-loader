@@ -42,8 +42,10 @@ def read_progress(path, results):
     with open(path, encoding="utf-8", errors="replace") as f:
         steps = [ln.strip() for ln in f if ln.strip()]
     for ln in steps:
-        m = re.match(r"[\d:]+ (PASS|FAIL) (\S+ [^:]*)(?:: ?(.*))?$", ln)
-        if m:
+        m = re.match(r"[\d:]+ (PASS|FAIL|INFO) (\S+ [^:]*)(?:: ?(.*))?$", ln)
+        if m and m.group(1) == "INFO":
+            results.setdefault("_info", []).append((m.group(2), m.group(3) or ""))
+        elif m:
             results[m.group(2)] = (m.group(1), (m.group(3) or "") + " (from progress file)")
     return steps
 
@@ -98,12 +100,38 @@ def main():
     button = "Injected Mods button into main menu" in text or \
         any(k.startswith("M8") and v[0] == "PASS" for k, v in seen.items())
     check(button, "Mods button injected", "log line or M8 check")
+    infos = seen.pop("_info", [])
     for name in sorted(seen):
         kind, detail = seen[name]
         if kind == "INFO":
-            print("INFO %s: %s" % (name, detail))
+            infos.append((name, detail))
         else:
             check(kind == "PASS", "mod " + name, detail)
+    # Optional map section: only when a map was loaded with the test profile.
+    map_lines = [d for n, d in infos if n.startswith("map ")]
+    if map_lines:
+        selects = [d for n, d in infos if n.startswith("map AI.SelectWeapon")]
+        inits = [d for n, d in infos if n.startswith("map AISpawner.Initialize")]
+        print("MAP  %d Initialize / %d SelectWeapon hook line(s) from a real map" % (len(inits), len(selects)))
+        for d in inits[:3]:
+            print("MAP  spawner: " + d)
+        variants = {}
+        for d in selects:
+            v = d.split(" ")[0]
+            variants[v] = variants.get(v, 0) + 1
+        print("MAP  AI variants seen: " + ", ".join("%s x%d" % kv for kv in sorted(variants.items())))
+        guard_in_area05 = any("zone=0" in d and "AI_Guard" in d for d in inits)
+        if any("zone=0" in d for d in inits):
+            check(guard_in_area05, "map: Area05 spawner uses the ai_types override (AI_Guard)", "; ".join(inits[:2]))
+            check("variant=Guard" in " ".join(selects), "map: guards spawned in Area05 (override took effect in play)", "%d SelectWeapon lines" % len(selects))
+        boss = [d for d in selects if "variant=Punisher" in d or "variant=Bogeyman" in d]
+        if boss:
+            check(all("Makarov" in d for d in boss), "map: boss carries the injected Makarov", "; ".join(boss[:2]))
+        else:
+            print("INFO map: no boss SelectWeapon line (bosses pool at map load; none seen)")
+    else:
+        for n, d in infos:
+            print("INFO %s: %s" % (n, d))
     prefixes = {n.split(" ")[0] for n in seen}
     missing = [e for e in EXPECTED if e not in prefixes]
     check(not missing, "every expected test reported", "missing: " + ", ".join(missing) if missing else "all %d" % len(EXPECTED))
