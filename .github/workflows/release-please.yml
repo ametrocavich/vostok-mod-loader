@@ -4,6 +4,11 @@ on:
   push:
     branches:
       - master
+  # Re-run by hand after publishing a draft release: the run that creates the
+  # draft opens the next release PR before the tag exists, so that PR is
+  # computed from the whole history (this is how a "release 3.0.0" PR appeared
+  # after v3.4.0). A manual run after publishing recomputes it from the tag.
+  workflow_dispatch:
 
 permissions:
   contents: write
