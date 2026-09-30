@@ -52,7 +52,8 @@ func _is_registry_target(filename: String) -> bool:
 # Registry targets that keep the scene-preload deferral. AISpawner.gd's
 # injected resolver reads Engine meta at call time, so nothing a mod
 # registers needs the script live; and its module-scope preloads are the
-# four AI scenes, which bake res://Scripts/AI.gd the moment it compiles.
+# AI scenes (six since Build 2), which bake res://Scripts/AI.gd the moment
+# they compile.
 # Compiled eagerly, it orphaned every mod's overrideScript() of AI.gd.
 const REGISTRY_TARGETS_DEFERRABLE: Array[String] = ["AISpawner.gd"]
 
@@ -72,7 +73,7 @@ func _defers_scene_preloads(filename: String, scene_preloads: PackedStringArray)
 const REGISTRY_EXPECTED_MARKERS: Dictionary = {
 	"Database.gd": "var _rtv_vanilla_scenes",
 	"Loader.gd": "scene_paths registry prelude",
-	"AISpawner.gd": "agent = _rtv_resolve_ai_type(",
+	"AISpawner.gd": " = _rtv_resolve_ai_type(zone, ",
 	"AI.gd": "ai_loadouts registry prelude",
 	"FishPool.gd": "fish_species registry prelude",
 	"Compiler.gd": "shelters/maps registry prelude",

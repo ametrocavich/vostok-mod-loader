@@ -1,16 +1,18 @@
 ## ----- registry/ai.gd -----
-## Vanilla AISpawner.gd hardcodes a zone -> agent-scene if-elif. The
-## rewriter turns each `agent = <name>` into
-## `agent = _rtv_resolve_ai_type(zone, <name>)`, and the injected resolver
-## reads Engine.get_meta("_rtv_ai_overrides") -- Engine meta because
+## Vanilla AISpawner.gd hardcodes a zone -> enemy-scene if-elif. The
+## rewriter turns each `enemy = <name>` (`agent = <name>` before Build 2)
+## into `enemy = _rtv_resolve_ai_type(zone, <name>)`, and the injected
+## resolver reads Engine.get_meta("_rtv_ai_overrides") -- Engine meta because
 ## AISpawner is a per-scene Node3D with many independent instances. Zone
 ## keys are String names matching the Zone enum ("Area05", "BorderZone",
-## "Vostok"); the resolver converts via Zone.keys()[zone_int].
+## "Vostok", "Debug"); the resolver converts via Zone.keys()[zone_int].
+## Build 2's nomad pool (`nomad.instantiate()`, zone-independent) is not
+## routed through the resolver; ai_types covers the zone's enemy scene only.
 ##
-## One agent scene per zone, so register and override share a slot.
+## One enemy scene per zone, so register and override share a slot.
 ## Data shape: {scene: PackedScene, zone: String}
 
-const _VALID_ZONES := ["Area05", "BorderZone", "Vostok"]
+const _VALID_ZONES := ["Area05", "BorderZone", "Vostok", "Debug"]
 
 # The engine-meta dict is derived from _registry_registered on each write.
 const _AI_ENGINE_META_KEY := "_rtv_ai_overrides"

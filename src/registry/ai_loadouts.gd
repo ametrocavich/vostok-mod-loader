@@ -7,13 +7,20 @@
 ## into `weapons` before vanilla picks. Mirrors registry/ai.gd.
 ##
 ## Input shape: {weapon_scene: PackedScene|String (Database id),
-##   ai_types: Array[String] subset of [Bandit, Guard, Military, Punisher],
+##   ai_types: Array[String] subset of _VALID_AI_CATEGORIES,
 ##   chance?: float clamped [0,1] (default 1.0), replace?: bool}.
 ## Stored shape is the same, canonicalized: weapon_scene always a ref,
 ## ai_types canonical CamelCase, chance clamped.
+##
+## Categories: an AI matches an entry when any of its categories is listed.
+## Since Build 2 every AI carries an AIData variant; its faction key (Nomad,
+## Bandit, Guard, Military, Boss) and its variant name (Punisher, Bogeyman,
+## or the faction name again) are the AI's categories. Before Build 2 the
+## category came from the spawner zone (Bandit, Guard, Military) or the boss
+## flag (Punisher), so those four names keep working on either game build.
 
 const _AI_LOADOUTS_ENGINE_META_KEY := "_rtv_ai_loadouts"
-const _VALID_AI_CATEGORIES := ["Bandit", "Guard", "Military", "Punisher"]
+const _VALID_AI_CATEGORIES := ["Nomad", "Bandit", "Guard", "Military", "Boss", "Punisher", "Bogeyman"]
 
 func _rebuild_ai_loadouts_engine_meta() -> void:
 	# Flat list: the prelude rolls per-entry independently, so order carries
