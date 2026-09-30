@@ -440,6 +440,9 @@ func _make_banner(text: String, edge_color: Color) -> Dictionary:
 	var lbl := Label.new()
 	lbl.text = text
 	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	# Wrap long messages: without autowrap the label's minimum width is the
+	# whole sentence, which widens every ancestor past the window edge.
+	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	lbl.add_theme_font_size_override("font_size", FS_BODY)
 	row.add_child(lbl)
 	return {"panel": panel, "row": row, "label": lbl}
