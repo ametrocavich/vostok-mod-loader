@@ -1,11 +1,12 @@
 ## ----- host_vostokmods.gd -----
 ## VostokMods adapter (vostokmods.net/api).
 ##
-## A mod's identity here is its slug, not its numeric id: every route is
-## slug-keyed and the id addresses nothing, so a ref is
-## host_ref("vostokmods", "<slug>") and mod.txt declares
-## source="vostokmods:my-mod-slug". A rename can change the slug; accepted,
-## since the id cannot address any endpoint.
+## A mod is addressed by its slug or its UUID: every route resolves either.
+## Listing rows, modpack manifests and download URLs carry the slug, so a
+## Browse ref is host_ref("vostokmods", "<slug>"); the mod.txt the site
+## serves carries source="vostokmods:<uuid>", so an installed mod's ref is
+## the UUID. The Mods-tab memo maps one to the other for the Browse install
+## map. A rename can change the slug; accepted.
 ##
 ## The host scans uploads and refuses to serve versions whose scan is not
 ## clean (`downloadable` false); this adapter treats those as having no file.
@@ -70,72 +71,20 @@ func _vmp_scalars() -> Dictionary:
 	return s
 
 
-func _vmp_mod_page_url(slug: String) -> String:
-	if slug.is_empty():
+func _vmp_mod_page_url(id: String) -> String:
+	if id.is_empty():
 		return ""
-	var token := slug
-	if _vmp_is_uuid(token) and _vmp_uuid_slugs.has(token.to_lower()):
-		token = str(_vmp_uuid_slugs[token.to_lower()])
 	# Singular /mod/, not /mods/ -- the listing route is plural, the page is not.
-	return VM_SITE_BASE + "/mod/" + token.uri_encode()
+	return VM_SITE_BASE + "/mod/" + id.uri_encode()
 
 
-# ----- mod ids: slug or UUID -------------------------------------------------
-# Since 2026-09-30 the site writes `source="vostokmods:<uuid>"` into every
-# mod.txt it serves, while its listing, modpack manifests and download URLs
-# name mods by slug. /api/mods/{x} takes either once the site's UUID lookup
-# is deployed; when it answers 404 for a UUID, the listing (id and slug per
-# card) maps one to the other. Resolutions are kept for the session.
-var _vmp_uuid_slugs: Dictionary = {}
-const _VM_UUID_MAX_PAGES := 50
-
-func _vmp_is_uuid(s: String) -> bool:
-	if s.length() != 36:
-		return false
-	for i in s.length():
-		var c := s[i]
-		if i == 8 or i == 13 or i == 18 or i == 23:
-			if c != "-":
-				return false
-		elif not ((c >= "0" and c <= "9") or (c >= "a" and c <= "f") or (c >= "A" and c <= "F")):
-			return false
-	return true
-
-## Listing rows under either key the site has used: `mods`, then `entries`.
-func _vmp_raw_rows(body: Variant) -> Array:
+## The listing's rows, or null when the body is not a listing: an empty page
+## still carries `entries: []`.
+func _vmp_rows(body: Variant) -> Variant:
 	if not (body is Dictionary):
-		return []
-	for key in ["mods", "entries"]:
-		var rows: Variant = (body as Dictionary).get(key)
-		if rows is Array:
-			return rows
-	return []
-
-## The slug of the listing row whose id is `uuid`, or "" when it is not there.
-func _vmp_slug_in_rows(body: Variant, uuid: String) -> String:
-	for row in _vmp_raw_rows(body):
-		if row is Dictionary and _host_str((row as Dictionary).get("id")).to_lower() == uuid.to_lower():
-			return _host_str((row as Dictionary).get("slug")).strip_edges()
-	return ""
-
-func _vmp_slug_for_uuid(uuid: String) -> String:
-	var key := uuid.to_lower()
-	if _vmp_uuid_slugs.has(key):
-		return str(_vmp_uuid_slugs[key])
-	var page := 1
-	while page <= _VM_UUID_MAX_PAGES:
-		var res := await _hnet_get_json(HOST_VOSTOKMODS,
-				VM_API_BASE + "/mods" + _hnet_query({"page": page, "limit": 100}), _VM_TTL_LIST_MS)
-		if not res["ok"] or not (res["data"] is Dictionary):
-			return ""
-		var slug := _vmp_slug_in_rows(res["data"], key)
-		if slug != "":
-			_vmp_uuid_slugs[key] = slug
-			return slug
-		if _host_count((res["data"] as Dictionary).get("pageCount")) <= page:
-			return ""
-		page += 1
-	return ""
+		return null
+	var rows: Variant = (body as Dictionary).get("entries")
+	return rows if rows is Array else null
 
 
 ## The host announces no rate-limit dialect (no Retry-After, no
@@ -162,14 +111,14 @@ func _vmp_summary(v: Variant) -> Dictionary:
 	s["name"] = _host_str(row.get("name"))
 	if s["name"] == "":
 		s["name"] = slug
-	# `author` is the owner's display name; authorId is their username.
-	s["author_name"] = _host_str(row.get("author"))
+	# ownerDisplayName is the owner's display name; ownerUsername their username.
+	s["author_name"] = _host_str(row.get("ownerDisplayName"))
 	s["short_description"] = _host_str(row.get("summary"))
 	s["downloads"] = _host_count(row.get("downloadsCount"))
 	s["views"] = _host_count(row.get("viewsCount"))
 	s["updated_at"] = _host_str(row.get("updatedAt"))
 	s["published_at"] = _host_str(row.get("createdAt"))
-	s["category_name"] = _vmp_primary_category(row.get("categories"))
+	s["category_name"] = _vmp_primary_category(row.get("taxonomies"))
 	# thumbnailUrl is null when a mod has no screenshot. No separate thumb
 	# size is served, and the empty cache_key keeps the image out of the disk
 	# cache: the host promises nothing about the URL staying the same bytes.
@@ -184,7 +133,7 @@ func _vmp_summary(v: Variant) -> Dictionary:
 	return s
 
 
-## The categories array mixes real categories and tags; `group` is the
+## The taxonomies array mixes real categories and tags; the group is the
 ## discriminator. Prefer a category-ish group, else the first entry of any.
 func _vmp_primary_category(v: Variant) -> String:
 	if not (v is Array):
@@ -199,9 +148,16 @@ func _vmp_primary_category(v: Variant) -> String:
 			continue
 		if first_any.is_empty():
 			first_any = name
-		if _host_str(rec.get("group")).to_lower().begins_with("categor"):
+		if _vmp_group_slug(rec.get("group")).to_lower().begins_with("categor"):
 			return name
 	return first_any
+
+
+## A taxonomy's group is an object; its slug is "categories" or "tags".
+func _vmp_group_slug(v: Variant) -> String:
+	if not (v is Dictionary):
+		return ""
+	return _host_str((v as Dictionary).get("slug"))
 
 
 ## One entry of a detail payload's versions[] -> FileRecord. downloadUrl is
@@ -241,8 +197,8 @@ func _vmp_list_mods(q: Dictionary) -> Dictionary:
 		params["sort"] = sort_key
 	var category := str(q.get("category_ref", ""))
 	if category != "":
-		# The filter takes comma-separated category slugs.
-		params["categories"] = category
+		# The filter takes comma-separated taxonomy slugs.
+		params["taxonomies"] = category
 	var limit := int(q.get("limit", 0))
 	if limit > 0:
 		params["limit"] = limit
@@ -253,9 +209,14 @@ func _vmp_list_mods(q: Dictionary) -> Dictionary:
 	var body: Variant = res["data"]
 	if not (body is Dictionary):
 		return host_err(HOST_ERR_BAD_RESPONSE, 0, "VostokMods sent an unexpected response")
+	# A missing rows key is a changed listing shape (the key moved once and
+	# the loader listed nothing for a day), so it is an error, not an empty page.
+	var raw_rows: Variant = _vmp_rows(body)
+	if raw_rows == null:
+		return host_err(HOST_ERR_BAD_RESPONSE, 0, "VostokMods sent an unexpected response")
 
 	var rows := []
-	for row in _vmp_raw_rows(body):
+	for row in (raw_rows as Array):
 		var summary := _vmp_summary(row)
 		# A row with no slug cannot be opened or downloaded; drop it.
 		if host_ref_valid(summary["ref"]):
@@ -269,29 +230,12 @@ func _vmp_list_mods(q: Dictionary) -> Dictionary:
 
 
 ## Shared fetch: versions arrive only with the mod detail, so detail, file
-## history and resolve all go through here and share one cache entry.
-func _vmp_detail(slug: String) -> Dictionary:
-	if slug.is_empty():
-		return host_err(HOST_ERR_NOT_FOUND, 0, "no mod slug")
-	var is_uuid := _vmp_is_uuid(slug)
-	var token := slug
-	if is_uuid and _vmp_uuid_slugs.has(slug.to_lower()):
-		token = str(_vmp_uuid_slugs[slug.to_lower()])
-	var res := await _vmp_detail_fetch(token)
-	if is_uuid and token == slug:
-		if res["ok"]:
-			# The site resolved the UUID itself; remember its slug for page links.
-			var known := _host_str((res["data"] as Dictionary).get("slug")).strip_edges()
-			if known != "":
-				_vmp_uuid_slugs[slug.to_lower()] = known
-		elif str(res["code"]) == HOST_ERR_NOT_FOUND:
-			var resolved := await _vmp_slug_for_uuid(slug)
-			if resolved != "":
-				res = await _vmp_detail_fetch(resolved)
-	return res
-
-func _vmp_detail_fetch(token: String) -> Dictionary:
-	var url := VM_API_BASE + "/mods/" + token.uri_encode()
+## history and resolve all go through here and share one cache entry. `id`
+## is the slug or the UUID.
+func _vmp_detail(id: String) -> Dictionary:
+	if id.is_empty():
+		return host_err(HOST_ERR_NOT_FOUND, 0, "no mod id")
+	var url := VM_API_BASE + "/mods/" + id.uri_encode()
 	var res := await _hnet_get_json(HOST_VOSTOKMODS, url, _VM_TTL_DETAIL_MS)
 	if not res["ok"]:
 		return res
@@ -379,10 +323,10 @@ func _vmp_file_result(v: Variant) -> Dictionary:
 	return host_ok(f)
 
 
-## Categories are a flat list ordered by group; the group is carried as the
-## parent so the filter can render two levels.
+## Taxonomies are a flat list ordered by group; the group's slug is carried
+## as the parent so the filter can render two levels.
 func _vmp_list_categories() -> Dictionary:
-	var res := await _hnet_get_json(HOST_VOSTOKMODS, VM_API_BASE + "/categories", _VM_TTL_CATEGORIES_MS)
+	var res := await _hnet_get_json(HOST_VOSTOKMODS, VM_API_BASE + "/taxonomies", _VM_TTL_CATEGORIES_MS)
 	if not res["ok"]:
 		return res
 	var rows: Variant = res["data"]
@@ -397,7 +341,7 @@ func _vmp_list_categories() -> Dictionary:
 		var slug := _host_str(rec.get("slug")).strip_edges()
 		if slug.is_empty():
 			continue
-		out.append(host_category(slug, _host_str(rec.get("name")), _host_str(rec.get("group"))))
+		out.append(host_category(slug, _host_str(rec.get("name")), _vmp_group_slug(rec.get("group"))))
 	return host_ok(out)
 
 
@@ -454,8 +398,8 @@ func _vmp_modpack_summary(v: Variant) -> Dictionary:
 	if s["name"] == "":
 		s["name"] = s["slug"]
 	s["summary"] = _host_str(row.get("summary"))
-	s["author"] = _host_str(row.get("author"))
-	s["cover_url"] = _host_str(row.get("coverUrl"))
+	s["author"] = _host_str(row.get("ownerDisplayName"))
+	s["cover_url"] = _host_str(row.get("thumbnailUrl"))
 	s["mod_count"] = _host_count(row.get("modCount"))
 	s["manifest_url"] = _host_str(row.get("manifestUrl"))
 	if s["manifest_url"] == "" and s["slug"] != "":
