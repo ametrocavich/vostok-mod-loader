@@ -67,7 +67,7 @@ const BODY_MODIFIED := {
 	"Compiler.gd": ["Spawn"],
 	"FishPool.gd": ["_ready"],
 	"AI.gd": ["SelectWeapon"],
-	"AISpawner.gd": ["_ready"],
+	"AISpawner.gd": ["_ready", "Initialize"],  # zone if/elif moved to Initialize in Build 2
 }
 
 const WRAPPER_MARKER := "# --- Metro mod loader inline hook dispatch wrappers ---"
@@ -286,6 +286,12 @@ func _check_fixture(ml, fx: Dictionary) -> void:
 	if marker_idx < 0:
 		_fail(fname, "wrapper marker comment missing from rewritten output")
 		return
+	# A registry transform is anchored to vanilla text and no-ops silently when
+	# the game moves the pattern (Build 2 renamed AISpawner's `agent =` to
+	# `enemy =`); the loader checks the same markers at pack time.
+	var expected_markers: Dictionary = ml.get("REGISTRY_EXPECTED_MARKERS")
+	if expected_markers.has(fname) and not (str(expected_markers[fname]) in rewritten):
+		_fail(fname, "REGISTRY: transform marker '%s' missing from the full rewrite -- the vanilla anchor no longer matches this corpus" % str(expected_markers[fname]))
 
 	for fe in nonstatic:
 		_check_method(fname, fe, plines, rlines, marker_idx, fx)

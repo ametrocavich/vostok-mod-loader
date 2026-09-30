@@ -96,7 +96,9 @@ if [[ ! -f "$OUT" ]]; then
 fi
 
 # Decompiled vanilla game source (plain .gd) -- the input corpus.
-VANILLA_SRC="${VANILLA_SRC:-/c/Users/ametr/Documents/Road to Vostok}"
+# Build 2 (Nomads, 2026-09-30) corpus; the pre-Build 2 decompile is at
+# /c/Users/ametr/Documents/rtv0.1.1.3 for the old-shape AI.gd path.
+VANILLA_SRC="${VANILLA_SRC:-/c/Users/ametr/Documents/rtv-build2}"
 # Without the decompiled game source the ten vanilla fixtures cannot run. The
 # two synthetic fixtures need nothing but the engine, so they still do: the
 # rewriter's output gets compiled on every machine, CI included.
