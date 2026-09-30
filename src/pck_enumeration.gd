@@ -36,11 +36,13 @@ func _build_class_name_lookup() -> void:
 		_log_warning("Could not load global_script_class_cache.cfg -- using hardcoded fallback")
 		_class_name_to_path = _get_hardcoded_class_map()
 
-# Snapshot of vanilla RTV's global_script_class_cache.cfg. Fallback only;
-# re-capture from a fresh vanilla install when the game updates.
+# Snapshot of vanilla RTV's global_script_class_cache.cfg (Build 2, Godot
+# 4.6.3, 2026-09-30). Fallback only; re-capture from a fresh vanilla install
+# when the game updates.
 func _get_hardcoded_class_map() -> Dictionary:
 	return {
-		"AIWeaponData": "res://Scripts/AIWeaponData.gd",
+		"AIData": "res://Scripts/AIData.gd",
+		"AimModifier": "res://Scripts/AimModifier.gd",
 		"Area": "res://Scripts/Area.gd",
 		"AttachmentData": "res://Scripts/AttachmentData.gd",
 		"AudioEvent": "res://Scripts/AudioEvent.gd",
@@ -60,10 +62,10 @@ func _get_hardcoded_class_map() -> Dictionary:
 		"Furniture": "res://Scripts/Furniture.gd",
 		"FurnitureSave": "res://Scripts/FurnitureSave.gd",
 		"GameData": "res://Scripts/GameData.gd",
-		"Grenade": "res://Scripts/Grenade.gd",
 		"GrenadeData": "res://Scripts/GrenadeData.gd",
 		"Grid": "res://Scripts/Grid.gd",
 		"Hitbox": "res://Scripts/Hitbox.gd",
+		"ImpulseModifier": "res://Scripts/ImpulseModifier.gd",
 		"Inspect": "res://Scripts/Inspect.gd",
 		"InstrumentData": "res://Scripts/InstrumentData.gd",
 		"Item": "res://Scripts/Item.gd",

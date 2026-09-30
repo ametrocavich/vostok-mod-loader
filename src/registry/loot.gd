@@ -13,10 +13,16 @@
 # Short table names -> res:// paths; absolute paths pass through as-is.
 const _LOOT_TABLE_PATHS := {
 	"LT_Master": "res://Loot/LT_Master.tres",
-	# Custom tables (event-driven): res://Loot/Custom/
-	"LT_Airdrop": "res://Loot/Custom/LT_Airdrop.tres",
+	# Custom tables (event-driven): res://Loot/Custom/. The airdrop and boss
+	# tables are numbered; the game picks one at random.
+	"LT_Airdrop_01": "res://Loot/Custom/LT_Airdrop_01.tres",
+	"LT_Airdrop_02": "res://Loot/Custom/LT_Airdrop_02.tres",
+	"LT_Airdrop_03": "res://Loot/Custom/LT_Airdrop_03.tres",
 	"LT_Patient_Report": "res://Loot/Custom/LT_Patient_Report.tres",
-	"LT_Punisher": "res://Loot/Custom/LT_Punisher.tres",
+	"LT_Punisher_01": "res://Loot/Custom/LT_Punisher_01.tres",
+	"LT_Punisher_02": "res://Loot/Custom/LT_Punisher_02.tres",
+	"LT_Punisher_03": "res://Loot/Custom/LT_Punisher_03.tres",
+	"LT_Bogeyman_01": "res://Loot/Custom/LT_Bogeyman_01.tres",
 	"LT_Oil_Sample": "res://Loot/Custom/LT_Oil_Sample.tres",
 	# Tutorial tables: res://Loot/Tutorial/
 	"LT_Weapons_01": "res://Loot/Tutorial/LT_Weapons_01.tres",

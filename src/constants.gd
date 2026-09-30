@@ -99,7 +99,7 @@ const RTV_RESOURCE_SERIALIZED_SKIP: Array[String] = [
 
 # res://-only data scripts; mods should hook the call sites instead.
 const RTV_RESOURCE_DATA_SKIP: Array[String] = [
-	"AIWeaponData.gd", "AttachmentData.gd", "AudioEvent.gd", "AudioLibrary.gd",
+	"AIData.gd", "AttachmentData.gd", "AudioEvent.gd", "AudioLibrary.gd",
 	"CasetteData.gd", "CatData.gd", "EventData.gd", "Events.gd",
 	"FishingData.gd", "FurnitureData.gd", "GrenadeData.gd",
 	"InstrumentData.gd", "ItemData.gd", "KnifeData.gd", "LootTable.gd",

@@ -1,6 +1,6 @@
 ## ----- registry/sounds.gd -----
 ## AudioLibrary is a plain Resource (not an autoload) that scripts preload
-## and read by direct property name (audioLibrary.knifeSlash). The Resource
+## and read by direct property name (audioLibrary.knifeHitFleshSlash). The Resource
 ## cache makes every preload the same instance, so mutations propagate to
 ## every holder.
 ##
