@@ -88,8 +88,8 @@ A modpack's `profile.json` uses the metroprofile v1 format; see [Profile-Format]
 {
   "metroprofile":      1,
   "name":              "Tarkov-style Economy",
-  "modloader_version": "3.3.1",
-  "exported_at":       "2026-06-20T18:02:55",
+  "modloader_version": "3.4.1",
+  "exported_at":       "2026-09-30T18:02:55",
   "description":       "Harder AI + scarce loot",
   "author":            "somemodder",
   "enabled": {
@@ -119,7 +119,7 @@ Required fields are validated before apply touches any state: `metroprofile` mus
 | Field | Type | Required | Meaning |
 |---|---|---|---|
 | `provider` | string | yes (new format) | Host token: `modworkshop` or `vostokmods`. |
-| `id` | string | yes (new format) | That host's mod id. For VostokMods this is the slug. |
+| `id` | string | yes (new format) | That host's mod id. For VostokMods this is the slug, which is what the site's manifests carry; a mod UUID resolves too. |
 | `modworkshop_id` | int | mirror | Compatibility mirror for older loaders, for a hand-written `provider == "modworkshop"` record only; packs the launcher writes are VostokMods-only and never carry it. An older loader reads this; a newer one reads `provider` + `id` and never consults the mirror. Absent for other hosts so an old loader does not download an unrelated ModWorkshop mod with the same number. |
 | `version` | string | no | Exact version to pin. When set, apply fetches that version, or fails if the host no longer has it; when absent, it fetches the host's current file. |
 

@@ -69,14 +69,14 @@ MyModMain="res://MyMod/Main.gd"
 EarlyNode="!res://MyMod/Early.gd"
 
 [updates]
-source="vostokmods:my-mod"
+source="vostokmods:019ff1f0-00ac-76a9-a23f-7151e4531131"
 
 [dependencies]
 required=["mod_configuration_menu"]
 optional=["some_soft_integration"]
 
 [hooks]
-res://Scripts/Interface.gd = "_ready, update_tooltip"
+res://Scripts/Interface.gd = "Close, CalculateDeal"
 
 [script_extend]
 res://Scripts/Camera.gd = "res://MyMod/MyCamera.gd"
@@ -161,13 +161,13 @@ Duplicate autoload names are logged and skipped (first wins). A path that exists
 | `source` | String | Where this mod is hosted, as `"<provider>:<id>"`. Enables the update check and modpack auto-download. Preferred over `modworkshop`. |
 | `modworkshop` | int | Legacy ModWorkshop mod id. Still read, no sunset planned; equivalent to `source="modworkshop:<id>"`. |
 
-`source` is the provider-qualified form. The provider is a known host token: `vostokmods` (the id is the mod's slug, the last part of its page URL) or `modworkshop` (the numeric mod id). The provider is matched case-insensitively. A value with no colon is rejected, not guessed, so `source="12345"` is an error, not a ModWorkshop id; in developer mode the row carries the note `mod.txt has an unrecognized [updates] source=...`. A malformed `source=` falls through to `modworkshop=` when both are present.
+`source` is the provider-qualified form. The provider is a known host token: `vostokmods` (the id is the mod's UUID, which the site writes into the file; the slug, the last part of the page URL, also works) or `modworkshop` (the numeric mod id). The provider is matched case-insensitively. A value with no colon is rejected, not guessed, so `source="12345"` is an error, not a ModWorkshop id; in developer mode the row carries the note `mod.txt has an unrecognized [updates] source=...`. A malformed `source=` falls through to `modworkshop=` when both are present.
 
-For a VostokMods mod, declare the slug, which is the last part of the mod's page URL (`vostokmods.net/mod/<slug>`):
+For a VostokMods mod you normally write nothing: the site adds the line to every `mod.txt` it serves, with the mod's UUID as the id. Writing it yourself is fine too, with the UUID or the slug (the last part of the mod's page URL, `vostokmods.net/mod/<slug>`); every site route resolves either:
 
 ```
 [updates]
-source="vostokmods:my-mod"
+source="vostokmods:019ff1f0-00ac-76a9-a23f-7151e4531131"
 ```
 
 For a ModWorkshop mod, declare BOTH keys during the compatibility window:
@@ -202,12 +202,12 @@ Format:
 
 ```ini
 [hooks]
-res://Scripts/Interface.gd = "_ready, update_tooltip"   # specific methods
+res://Scripts/Interface.gd = "Close, CalculateDeal"    # specific methods
 res://Scripts/Controller.gd = "*"                       # wildcard: all methods
 res://Scripts/Camera.gd = ""                            # empty == *
 ```
 
-Quote the value (right-hand side). ConfigFile parses the RHS as a Variant literal, so an unquoted method list like `_ready, update_tooltip` or a bare `*` is rejected as "Unexpected identifier". This loader quote-wraps unquoted `[hooks]` values (and strips inline `#`/`;` comments) for backward compat, but a mod is more portable (other loaders, raw `ConfigFile.parse()`) when written quoted from the start.
+Quote the value (right-hand side). ConfigFile parses the RHS as a Variant literal, so an unquoted method list like `Close, CalculateDeal` or a bare `*` is rejected as "Unexpected identifier". This loader quote-wraps unquoted `[hooks]` values (and strips inline `#`/`;` comments) for backward compat, but a mod is more portable (other loaders, raw `ConfigFile.parse()`) when written quoted from the start.
 
 Method names are case-insensitive (lowercased on write to match the rewriter's comparison). The wildcard leaves the inner mask empty, and the generator reads that as "wrap every non-static method".
 
@@ -246,7 +246,7 @@ Opt-in gate for the registry API (`lib.register`, `lib.override`, `lib.patch`, `
 ; empty body; presence is sufficient
 ```
 
-An empty `[registry]` section tells the loader to wrap `Database.gd`, `Loader.gd`, `AISpawner.gd`, `AI.gd`, `FishPool.gd` and `Compiler.gd` with the injected fields the registry API needs. Without the declaration these scripts stay vanilla, and a registry call finds no injected fields, warns (`Database.gd is missing injected scene fields (rewriter didn't fire). Does your mod.txt include a [registry] section?`), and returns false.
+An empty `[registry]` section tells the loader to wrap `Database.gd`, `Loader.gd`, `AISpawner.gd`, `AI.gd`, `FishPool.gd` and `Compiler.gd` with the injected fields the registry API needs. Without the declaration these scripts stay vanilla (unless a mod hooks one of them, which wraps that script and carries the registry code with it), and a registry call finds no injected fields, warns (`Database.gd is missing injected scene fields (rewriter didn't fire). Does your mod.txt include a [registry] section?`), and returns false.
 
 You do not enumerate what you will register here. The section's presence alone enables the subsystem. Use the runtime API to add, override or patch individual entries. Mods that call `Loader.add_shelter` / `Loader.add_map` (the B_Loader style) are treated as if they had declared `[registry]`, so they work without a mod.txt edit.
 

@@ -2,6 +2,8 @@
 
 Mod loader for Road to Vostok (Godot 4.6). Adds a pre-game window for installing mods, managing load order and profiles, applying modpacks, and checking for updates.
 
+3.4.1 supports Road to Vostok Build 2 (Nomads, Godot 4.6.3). Mod authors coming from the build before it: see the [Build-2-Migration wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Build-2-Migration).
+
 Docs live on the [Wiki](https://github.com/ametrocavich/vostok-mod-loader/wiki): setup, Browse, modpacks, the mod format, hook internals, stability canaries, limitations.
 
 Changing the loader itself? Start with [CONTRIBUTING](CONTRIBUTING.md) and the
@@ -66,7 +68,7 @@ priority=0
 MyModMain="res://MyMod/Main.gd"
 
 [updates]
-source="vostokmods:my-mod"
+source="vostokmods:019ff1f0-00ac-76a9-a23f-7151e4531131"
 
 [dependencies]
 required=["mod_configuration_menu"]
@@ -80,7 +82,7 @@ optional=["some_soft_integration"]
 | `version` | Used by the update check to compare against the mod's site |
 | `priority` | Higher loads later, wins file conflicts. Default 0 |
 | `[autoload]` | `Name="res://path.gd"` (or `.tscn`). Prefix the value with `!` to load before the game's own autoloads |
-| `[updates] source` | Where the mod is hosted: `"vostokmods:<slug>"` or `"modworkshop:<id>"`. The older `modworkshop=<id>` form still works |
+| `[updates] source` | Where the mod is hosted: `"vostokmods:<uuid>"` (VostokMods writes this line into every file it serves; the slug works too) or `"modworkshop:<id>"`. The older `modworkshop=<id>` form still works |
 | `[dependencies] required/optional` | Godot string arrays of mod IDs. Required deps must be installed, enabled, and load before the dependent mod |
 
 Mods without `mod.txt` still mount as resource packs. Their files override vanilla resources, but no autoloads run.
@@ -106,7 +108,7 @@ The escape hatch is `[hooks]`. The scanner can't find every hook. If your mod re
 
 ```ini
 [hooks]
-res://Scripts/Interface.gd = "_ready, update_tooltip"   # specific methods
+res://Scripts/Interface.gd = "Close, CalculateDeal"    # specific methods
 res://Scripts/Controller.gd = "*"                       # or wrap all methods
 ```
 

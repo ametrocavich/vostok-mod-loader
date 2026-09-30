@@ -16,6 +16,7 @@
 - [Mod-Format](Mod-Format)
 - [Setup-Plans](Setup-Plans)
 - [Config-Files](Config-Files)
+- [Build-2-Migration](Build-2-Migration)
 
 **For developers**
 - [Development](Development)

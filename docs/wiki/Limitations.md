@@ -79,19 +79,19 @@ Detection: `_collect_module_scope_scene_preloads` in [src/pck_enumeration.gd](ht
 
 Workaround: the activator in [src/hook_pack.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd) skips eager compile for these scripts. VFS precedence (`.gd` plus `.gd.remap` plus empty `.gdc`) still serves the rewrite when game code lazy-loads them after mod overrides have run. A 60-second watchdog checks that it did ([Stability-Canaries](Stability-Canaries#defer-verify-watchdog)).
 
-Exception: the six `REGISTRY_TARGETS` (`Database.gd`, `Loader.gd`, `AISpawner.gd`, `AI.gd`, `FishPool.gd`, `Compiler.gd`) are activated eagerly, so the injected `_rtv_mod_scenes` / `_rtv_override_scenes` / `_get()` and the other preludes are live on the autoload instances when mods call `lib.register`. `AISpawner.gd` is the one registry target that keeps the deferral (`REGISTRY_TARGETS_DEFERRABLE`, decided by `_defers_scene_preloads`): its injected resolver reads Engine meta at call time, so nothing needs the script live, and its module-scope preloads are the four AI scenes. Compiled eagerly, it baked `res://Scripts/AI.gd` into those scenes before any mod autoload ran, so a mod's `overrideScript` of `AI.gd` was orphaned whenever `AISpawner.gd` was in the wrap surface, which is any mod set that declares `[registry]` or hooks `AISpawner.gd`. That held from 3.0.0 until 3.4.0.
+Exception: the six `REGISTRY_TARGETS` (`Database.gd`, `Loader.gd`, `AISpawner.gd`, `AI.gd`, `FishPool.gd`, `Compiler.gd`) are activated eagerly, so the injected `_rtv_mod_scenes` / `_rtv_override_scenes` / `_get()` and the other preludes are live on the autoload instances when mods call `lib.register`. `AISpawner.gd` is the one registry target that keeps the deferral (`REGISTRY_TARGETS_DEFERRABLE`, decided by `_defers_scene_preloads`): its injected resolver reads Engine meta at call time, so nothing needs the script live, and its module-scope preloads are the AI scenes (six on Build 2) and an audio instance scene. Compiled eagerly, it baked `res://Scripts/AI.gd` into those scenes before any mod autoload ran, so a mod's `overrideScript` of `AI.gd` was orphaned whenever `AISpawner.gd` was in the wrap surface, which is any mod set that declares `[registry]` or hooks `AISpawner.gd`. That held from 3.0.0 until 3.4.0.
 
 The remaining eager targets can still bake a scene early. `AI.gd` and `Loader.gd` preload a few scenes and `Database.gd` preloads hundreds, so a mod that calls `overrideScript` on a script one of those scenes carries can meet the same orphaning. The supported route for those is the registry, not `take_over_path`.
 
 ### A game update can outdate the registry code
 
-Problem: the code injected into the registry targets names vanilla members (`weapons` and `variant` in `AI.gd`, `Zone` and the `enemy =` assignments in `AISpawner.gd`, `shelters` and the `LoadScene` locals in `Loader.gd`, `species` in `FishPool.gd`, `spawnTarget` in `Compiler.gd`). A game update that renames one leaves a rewrite that does not compile. The pack serves its `.gd` over the game's bytecode, so until 3.4.0 that broke the vanilla script itself.
+Problem: the code injected into the registry targets names vanilla members (`weapons` and `variant` in `AI.gd`, or `weapons`, `boss` and `AISpawner` on a game before Build 2, chosen from the source; `Zone` and the `enemy =` assignments in `AISpawner.gd`; `shelters` and the `LoadScene` locals in `Loader.gd`, `species` in `FishPool.gd`, `spawnTarget` in `Compiler.gd`). A game update that renames one leaves a rewrite that does not compile. The pack serves its `.gd` over the game's bytecode, so until 3.4.0 that broke the vanilla script itself.
 
 Detection: every rewrite is probe-compiled before it is packed (`_hook_pack_vet_rewrite` in [src/hook_pack.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd)).
 
 Result: the failure is now confined to the loader's side. The script ships with hooks only and the registries that depend on it are inert, or, when no rewritten form compiles, the script runs vanilla and hooks on it do not fire. The game itself is unaffected. One `[STABILITY]` critical per script, a `demoted` record for the launcher banner, and `false` from the affected registry verbs. The fix is a loader update. See [Stability-Canaries](Stability-Canaries#pre-ship-compile-probe).
 
-A transform that merely finds no anchor (the pattern moved, nothing renamed) still compiles; that case is caught by the registry marker check and reported `PARTIAL` by reconciliation.
+A transform that merely finds no anchor (the pattern moved, nothing renamed) still compiles; that case is caught by the registry marker check and reported `PARTIAL` by reconciliation. Build 2 did both at once: `AI.gd` lost `boss` (a compile failure, so `AI.gd` shipped wrap-only under 3.4.0) and `AISpawner.gd` renamed `agent =` to `enemy =` (a missing anchor, so `ai_types` was inert, with only a log critical and a `PARTIAL` reconciliation line to show for it). 3.4.1 handles both shapes.
 
 ### Direct const access bypasses `_get()`
 
@@ -151,11 +151,11 @@ Not auto-fixed. Re-pack with 7-Zip or similar.
 
 ### Mod-shadowed global_script_class_cache
 
-If a mod ships its own `res://.godot/global_script_class_cache.cfg` (Mod Configuration Menu does), mounting it shadows the game's cache with a one-entry version. `_build_class_name_lookup` in [src/pck_enumeration.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/pck_enumeration.gd) treats fewer than 10 entries as shadowing and falls back to the 58-entry `_get_hardcoded_class_map`.
+If a mod ships its own `res://.godot/global_script_class_cache.cfg` (Mod Configuration Menu does), mounting it shadows the game's cache with a one-entry version. `_build_class_name_lookup` in [src/pck_enumeration.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/pck_enumeration.gd) treats fewer than 10 entries as shadowing and falls back to the 59-entry `_get_hardcoded_class_map` (a Build 2 snapshot).
 
 ### Zero-byte PCK entries
 
-The base game ships some `.gd` entries as zero bytes (`CasettePlayer.gd` in RTV 4.6.1). PCK enumeration records them in `_pck_zero_byte_paths` and the detokenizer returns empty for them without logging. Not a loader failure; these files cannot be hooked, and a `[hooks]` declaration on one is reported as lost by the reconciliation.
+Some game builds ship a `.gd` entry as zero bytes (`CasettePlayer.gd` before Build 2; Build 2 has none). PCK enumeration records them in `_pck_zero_byte_paths` and the detokenizer returns empty for them without logging. Not a loader failure; these files cannot be hooked, and a `[hooks]` declaration on one is reported as lost by the reconciliation.
 
 ### `reload()` does not re-parse bytecode
 
@@ -177,7 +177,7 @@ A mod that re-declares an existing game `class_name` at a different path trigger
 CONFLICT: <mod_file> re-declares class_name <ClassName> (game has it at <path>)
 ```
 
-Do not reuse a `class_name` vanilla RTV defines. The 58-entry `_get_hardcoded_class_map` in [src/pck_enumeration.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/pck_enumeration.gd) is the list.
+Do not reuse a `class_name` vanilla RTV defines. The 59-entry `_get_hardcoded_class_map` in [src/pck_enumeration.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/pck_enumeration.gd) is the list.
 
 ### FileAccess vs ResourceLoader inconsistency
 

@@ -151,10 +151,10 @@ You generally shouldn't touch this file. It is regenerated each session. If you 
 restart_count=0
 mods_hash="d90eae97b1868a4e9051f17ced71b7a6"
 archive_paths=PackedStringArray("C:/Program Files (x86)/Steam/steamapps/common/Road to Vostok/mods/RTVCoopVMZ.vmz")
-modloader_version="3.3.1"
-exe_mtime=1776042534
-pck_stamp="1776042534:5837583904"
-timestamp=1776897837.26
+modloader_version="3.4.1"
+exe_mtime=1790789335
+pck_stamp="1790789335:5916016200"
+timestamp=1790795412.26
 script_overrides=[]
 hook_pack_path="user://modloader_hooks/framework_pack_5758.zip"
 hook_pack_wrapped_paths=PackedStringArray("res://Scripts/Menu.gd")
@@ -235,7 +235,6 @@ Everything here is regenerated on demand:
 | `user://modloader_conflicts.txt` | Developer mode only. The conflict report (which mods claim the same `res://` paths). |
 | `user://modloader_filescope.log` | What static init mounted and reset before the launcher opened, rewritten every launch. The first place to look when mods did not mount. |
 | `user://modloader_hook_status.json` | What happened to the hook system last session (whether the script rewrites took effect, why generation stopped, or which scripts the compile probe left out). The launcher reads it on the next start and shows a banner on the Mods tab when hooks did not work. Ignored once the loader, the game executable or the game `.pck` changes. |
-| `user://modloader_game_updated` | Written when the game executable or `.pck` changed since the last run. The Mods tab shows a "Road to Vostok was updated" notice while it exists; the next session in which the hook rewrites work removes it. |
 | `user://mws_cache/` | Browse-tab caches. `thumbs/` holds ModWorkshop thumbnail and banner images (VostokMods images stay in memory). `landing_<site>.json` holds each site's last successful Browse landing so the offline view survives a relaunch. `mods_meta_v2.json` caches the host detail each installed mod's row shows on the Mods tab. Search and filter responses are cached in memory only. |
 
 Deleting anything in that table is safe. Next launch regenerates whatever it needs; the cost is a slower cold boot while the hook pack rebuilds.

@@ -14,8 +14,8 @@ The JSON is plain UTF-8 `profile.json` at the root of a modpack zip, next to an 
 {
   "metroprofile":      1,
   "name":              "My Build",
-  "modloader_version": "3.3.1",
-  "exported_at":       "2026-04-22T23:14:11",
+  "modloader_version": "3.4.1",
+  "exported_at":       "2026-09-30T23:14:11",
   "enabled": {
     "rtvcoop@1.2.3":       true,
     "immersivexp@0.4.1":   true

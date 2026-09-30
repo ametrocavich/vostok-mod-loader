@@ -1,8 +1,35 @@
+<!--
+Listing text for https://modworkshop.net/mod/55623
+State seen 2026-09-30: still serves 3.2.1, and the changelog field still
+carries the v2.1.0 -> v3.1.0 text. On release day: replace the description
+with everything below the second marker, upload the 3.4.1 zip built from the
+PUBLISHED GitHub release assets, and paste the block between the two markers
+into the changelog field. Same body as VOSTOKMODS_PAGE.md; keep the two in
+step.
+-->
+
+<!-- changelog for the 3.4.1 version entry (everything since 3.2.1, the version both listings still host) -->
+**3.4.1**
+
+* Runs on Road to Vostok Build 2 (Nomads). AI loadouts follow the new AI variants, AI type overrides follow the new spawner, and the trader, loot table and class lists know the Build 2 names. Mod authors: the Build-2-Migration page on the GitHub wiki lists what the game changed for mods.
+* Browse and install mods from VostokMods (the default) or ModWorkshop without leaving the launcher. Check for updates asks each mod's own site.
+* Modpacks from VostokMods (beta): one small zip carries a mod selection, load order, MCM settings and download sources. Apply switches to the author's setup, Unload puts yours back.
+* Required and optional dependencies: a mod that is missing something says what it needs, with one-click Enable dependency.
+* The launcher tells you when a game update has stopped script hooks from working, and the loader's own update notice reads the GitHub release.
+* After a game update, a loader change that no longer fits a game script is left out instead of breaking that script: the game keeps running and the launcher names what was skipped.
+* The loader no longer edits mod scripts in any way. Mods run exactly as their authors shipped them.
+* Many fixes to load order, profiles, crash recovery and hook reliability. Full notes on GitHub.
+
+Coming from 3.2.1: copy the new `modloader.gd` and `override.cfg` over the old ones (or run the installer). Profiles, enabled mods and load order carry over.
+<!-- end changelog -->
+
 # Community Mod Loader
 
 Mod loader for Road to Vostok (Godot 4.6). Adds a pre-game launcher for installing mods from VostokMods or ModWorkshop, managing load order and profiles, applying modpacks and checking for updates. It restores mod loading now that the original --main-pack injector method no longer works.
 
 Back up your saves before installing any mods.
+
+3.4.1 supports Road to Vostok Build 2 (Nomads). Mod authors: the Build-2-Migration page on the GitHub wiki lists what the game changed for mods.
 
 # What you get
 
