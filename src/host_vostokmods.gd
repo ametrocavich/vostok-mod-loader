@@ -73,8 +73,69 @@ func _vmp_scalars() -> Dictionary:
 func _vmp_mod_page_url(slug: String) -> String:
 	if slug.is_empty():
 		return ""
+	var token := slug
+	if _vmp_is_uuid(token) and _vmp_uuid_slugs.has(token.to_lower()):
+		token = str(_vmp_uuid_slugs[token.to_lower()])
 	# Singular /mod/, not /mods/ -- the listing route is plural, the page is not.
-	return VM_SITE_BASE + "/mod/" + slug.uri_encode()
+	return VM_SITE_BASE + "/mod/" + token.uri_encode()
+
+
+# ----- mod ids: slug or UUID -------------------------------------------------
+# Since 2026-09-30 the site writes `source="vostokmods:<uuid>"` into every
+# mod.txt it serves, while its listing, modpack manifests and download URLs
+# name mods by slug. /api/mods/{x} takes either once the site's UUID lookup
+# is deployed; when it answers 404 for a UUID, the listing (id and slug per
+# card) maps one to the other. Resolutions are kept for the session.
+var _vmp_uuid_slugs: Dictionary = {}
+const _VM_UUID_MAX_PAGES := 50
+
+func _vmp_is_uuid(s: String) -> bool:
+	if s.length() != 36:
+		return false
+	for i in s.length():
+		var c := s[i]
+		if i == 8 or i == 13 or i == 18 or i == 23:
+			if c != "-":
+				return false
+		elif not ((c >= "0" and c <= "9") or (c >= "a" and c <= "f") or (c >= "A" and c <= "F")):
+			return false
+	return true
+
+## Listing rows under either key the site has used: `mods`, then `entries`.
+func _vmp_raw_rows(body: Variant) -> Array:
+	if not (body is Dictionary):
+		return []
+	for key in ["mods", "entries"]:
+		var rows: Variant = (body as Dictionary).get(key)
+		if rows is Array:
+			return rows
+	return []
+
+## The slug of the listing row whose id is `uuid`, or "" when it is not there.
+func _vmp_slug_in_rows(body: Variant, uuid: String) -> String:
+	for row in _vmp_raw_rows(body):
+		if row is Dictionary and _host_str((row as Dictionary).get("id")).to_lower() == uuid.to_lower():
+			return _host_str((row as Dictionary).get("slug")).strip_edges()
+	return ""
+
+func _vmp_slug_for_uuid(uuid: String) -> String:
+	var key := uuid.to_lower()
+	if _vmp_uuid_slugs.has(key):
+		return str(_vmp_uuid_slugs[key])
+	var page := 1
+	while page <= _VM_UUID_MAX_PAGES:
+		var res := await _hnet_get_json(HOST_VOSTOKMODS,
+				VM_API_BASE + "/mods" + _hnet_query({"page": page, "limit": 100}), _VM_TTL_LIST_MS)
+		if not res["ok"] or not (res["data"] is Dictionary):
+			return ""
+		var slug := _vmp_slug_in_rows(res["data"], key)
+		if slug != "":
+			_vmp_uuid_slugs[key] = slug
+			return slug
+		if _host_count((res["data"] as Dictionary).get("pageCount")) <= page:
+			return ""
+		page += 1
+	return ""
 
 
 ## The host announces no rate-limit dialect (no Retry-After, no
@@ -194,13 +255,11 @@ func _vmp_list_mods(q: Dictionary) -> Dictionary:
 		return host_err(HOST_ERR_BAD_RESPONSE, 0, "VostokMods sent an unexpected response")
 
 	var rows := []
-	var raw_rows: Variant = (body as Dictionary).get("mods")
-	if raw_rows is Array:
-		for row in (raw_rows as Array):
-			var summary := _vmp_summary(row)
-			# A row with no slug cannot be opened or downloaded; drop it.
-			if host_ref_valid(summary["ref"]):
-				rows.append(summary)
+	for row in _vmp_raw_rows(body):
+		var summary := _vmp_summary(row)
+		# A row with no slug cannot be opened or downloaded; drop it.
+		if host_ref_valid(summary["ref"]):
+			rows.append(summary)
 
 	var page := _host_count((body as Dictionary).get("page"))
 	var page_count := _host_count((body as Dictionary).get("pageCount"))
@@ -214,7 +273,25 @@ func _vmp_list_mods(q: Dictionary) -> Dictionary:
 func _vmp_detail(slug: String) -> Dictionary:
 	if slug.is_empty():
 		return host_err(HOST_ERR_NOT_FOUND, 0, "no mod slug")
-	var url := VM_API_BASE + "/mods/" + slug.uri_encode()
+	var is_uuid := _vmp_is_uuid(slug)
+	var token := slug
+	if is_uuid and _vmp_uuid_slugs.has(slug.to_lower()):
+		token = str(_vmp_uuid_slugs[slug.to_lower()])
+	var res := await _vmp_detail_fetch(token)
+	if is_uuid and token == slug:
+		if res["ok"]:
+			# The site resolved the UUID itself; remember its slug for page links.
+			var known := _host_str((res["data"] as Dictionary).get("slug")).strip_edges()
+			if known != "":
+				_vmp_uuid_slugs[slug.to_lower()] = known
+		elif str(res["code"]) == HOST_ERR_NOT_FOUND:
+			var resolved := await _vmp_slug_for_uuid(slug)
+			if resolved != "":
+				res = await _vmp_detail_fetch(resolved)
+	return res
+
+func _vmp_detail_fetch(token: String) -> Dictionary:
+	var url := VM_API_BASE + "/mods/" + token.uri_encode()
 	var res := await _hnet_get_json(HOST_VOSTOKMODS, url, _VM_TTL_DETAIL_MS)
 	if not res["ok"]:
 		return res

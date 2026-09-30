@@ -598,6 +598,36 @@ func _t8_vm_pure_surface(ml: Object) -> void:
 	var nullurl: Variant = ml._vmp_file(JSON.parse_string('{"id": "v_11", "downloadUrl": null}'))
 	_assert(str(nullurl["download_url"]) == "",
 			"T8: null downloadUrl -> '' never '<null>' (got %s)" % str(nullurl["download_url"]))
+
+	# Mod ids: the site writes a UUID into mod.txt, its listing names mods by
+	# slug, and the listing body has used both `mods` and `entries` as its
+	# rows key (2026-09-30: `entries`). A UUID must map to the slug from the
+	# listing rows, case-insensitively, and the page link must use the slug.
+	var uuid := "019ff1f0-00ac-76a9-a23f-7151e4531131"
+	_assert(ml._vmp_is_uuid(uuid) and ml._vmp_is_uuid(uuid.to_upper()),
+			"T8: a UUID is recognized in either case")
+	_assert(not ml._vmp_is_uuid("example") and not ml._vmp_is_uuid(uuid + "x") and not ml._vmp_is_uuid(uuid.replace("-", "_")),
+			"T8: a slug, a long string and a malformed UUID are not UUIDs")
+	var listing: Variant = JSON.parse_string("""
+	{"entries": [{"id": "019ff204-4d5c-7a17-92b7-f9a6a5a4dc88", "slug": "loot-modifier", "name": "Loot Modifier"},
+	             {"id": "019FF1F0-00AC-76A9-A23F-7151E4531131", "slug": "rtvcoop", "name": "RTVCoop"}],
+	 "page": 1, "pageCount": 1, "total": 2}
+	""")
+	_assert(ml._vmp_raw_rows(listing).size() == 2, "T8: listing rows are read from `entries`")
+	_assert(ml._vmp_raw_rows(JSON.parse_string('{"mods": [{"slug": "a"}]}')).size() == 1,
+			"T8: listing rows are still read from `mods`")
+	_assert(ml._vmp_raw_rows(JSON.parse_string('{"page": 1}')).is_empty() and ml._vmp_raw_rows(null).is_empty(),
+			"T8: a body with neither key, or no body, has no rows")
+	_assert(str(ml._vmp_slug_in_rows(listing, uuid)) == "rtvcoop",
+			"T8: a UUID maps to its slug from the listing rows, case-insensitively (got %s)" % str(ml._vmp_slug_in_rows(listing, uuid)))
+	_assert(str(ml._vmp_slug_in_rows(listing, "019ff1f0-0000-0000-0000-000000000000")) == "",
+			"T8: an unknown UUID maps to nothing")
+	_assert(str(ml._vmp_mod_page_url(uuid)) == "https://vostokmods.net/mod/" + uuid,
+			"T8: an unresolved UUID page url passes the UUID through")
+	(ml.get("_vmp_uuid_slugs") as Dictionary)[uuid] = "rtvcoop"
+	_assert(str(ml._vmp_mod_page_url(uuid)) == "https://vostokmods.net/mod/rtvcoop",
+			"T8: a resolved UUID page url uses the slug (got %s)" % str(ml._vmp_mod_page_url(uuid)))
+	(ml.get("_vmp_uuid_slugs") as Dictionary).clear()
 	var nofile: Variant = ml._vmp_file_result(JSON.parse_string('{"id": "v_12", "downloadUrl": null}'))
 	_assert(not nofile["ok"] and str(nofile["code"]) == ml.HOST_ERR_NO_FILE,
 			"T8: a record with no url resolves to NO_FILE, never a bad ok")
