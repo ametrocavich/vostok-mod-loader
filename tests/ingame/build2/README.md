@@ -36,13 +36,31 @@ bash tests/ingame/build2/restore.sh
 restores `mod_config.cfg` (your previous profile and selection) and removes
 the zips.
 
+## Runs with real mods
+
+`loader_health.py` reports on ANY launch (no test mods needed): mods listed,
+`[STABILITY]` lines, the hook reconciliation (LOST / PARTIAL lines verbatim),
+script-override reports, every `[Critical]`, `[Warning]`, `SCRIPT ERROR` and
+engine `ERROR` line. Select the profile with your real mods in the loader
+window, launch to the menu (or into a map), quit, then:
+
+```bash
+python tests/ingame/build2/loader_health.py --minutes 10
+```
+
+Exit 1 means a `[Critical]`, a probe demotion, or a `SCRIPT ERROR` inside
+`modloader.gd`; script errors inside a mod's own files are listed but are
+the mod's to fix (a full-script override written for the previous build
+fails on Build 2 whatever the loader does).
+
 ## Optional: in a map
 
-With the test profile still active, load a save or start a new game and
-walk in Area 05 until an enemy spawns, then quit and run `evaluate.py`
-again. The `INFO` lines from the hooks mod show `AISpawner.Initialize`,
-`SpawnEnemy` and `AI.SelectWeapon` firing, and the weapons each AI picked
-from (a boss shows the injected Makarov).
+With the test profile still active, load a save or start a new game into
+Area 05, wait until you are in the world, then quit and run `evaluate.py`
+again. The test profile overrides Area 05's enemy scene with the Guard
+scene, so the grader's `MAP` section shows the spawner using `AI_Guard`,
+`AI.SelectWeapon` firing on real AI instances (variant names and the
+weapons each picked from), and, when a boss pooled, the injected Makarov.
 
 ## What each check covers
 
