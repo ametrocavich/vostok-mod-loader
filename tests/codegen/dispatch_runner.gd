@@ -67,6 +67,9 @@
 ##   T22 registry scene_nodes: a per-field revert reports whether it reverted
 ##       anything
 ##   T23 coroutine detection ignores `await` inside strings and comments
+##   T24 registry sounds: a clip given bare, in a dict or by patch lands in
+##       the event's typed audioClips array; a clip the type refuses fails
+##       the override instead of leaving a silent sound
 extends SceneTree
 
 const FIXTURE_PATH := "res://Scripts/FixtureDispatch.gd"
@@ -112,7 +115,7 @@ func _finish() -> void:
 	_done = true
 	var ms := Time.get_ticks_msec() - _t0
 	if _failures.is_empty():
-		print("[dispatch] PASS: %d assertion(s) across T1..T23, %d frame(s), %d ms in-engine" % [_checks, _frames, ms])
+		print("[dispatch] PASS: %d assertion(s) across T1..T24, %d frame(s), %d ms in-engine" % [_checks, _frames, ms])
 		quit(0)
 	else:
 		printerr("[dispatch] FAILED: %d of %d assertion(s) (%d ms in-engine); first: %s" % [_failures.size(), _checks, ms, _failures[0]])
@@ -256,6 +259,7 @@ func _run_tests() -> void:
 	_t21_batch_verbs_survive_bad_values()
 	_t22_scene_node_revert_reports_what_it_did()
 	_t23_await_in_a_string_is_not_a_coroutine()
+	_t24_sound_clips_keep_their_type()
 
 func _t1_pre() -> void:
 	var id: int = _lib.hook("fixturedispatch-add-pre", func(x, y): _log.append("pre:add:%d:%d" % [x, y]))
@@ -781,3 +785,40 @@ func _t23_await_in_a_string_is_not_a_coroutine() -> void:
 	_expect_eq(bool(coro.get("noted", true)), false, "T23", "await inside a trailing comment")
 	_expect_eq(bool(coro.get("waits", false)), true, "T23", "a real await")
 	_expect_eq(bool(coro.get("both", false)), true, "T23", "a real await after a string that also says await")
+
+# --- registry sounds keep the clip array's type ---------------------------------
+
+# The game's AudioEvent types audioClips as Array[AudioStreamWAV], and
+# Object.set silently refuses an untyped Array for a typed property. The
+# registry used to set one, so an override left the event with no clips: a
+# silent sound and a call that reported success. The stand-ins carry the
+# same typed field.
+func _t24_sound_clips_keep_their_type() -> void:
+	var ev_script := GDScript.new()
+	ev_script.source_code = "extends Resource\n@export var audioClips: Array[AudioStreamWAV]\n@export var volume: float = 0.0\n@export var randomPitch: bool = false\n"
+	ev_script.reload()
+	var lib_script := GDScript.new()
+	lib_script.source_code = "extends Resource\n@export var transition: Resource\n"
+	lib_script.reload()
+	var library: Resource = lib_script.new()
+	var vanilla_event: Resource = ev_script.new()
+	library.set("transition", vanilla_event)
+	_ml.set("_audio_library_cache", library)
+	var wav := AudioStreamWAV.new()
+	_expect(_lib.override("sounds", "transition", wav), "T24", "a bare WAV override succeeds")
+	var clips: Array = (library.get("transition") as Resource).get("audioClips")
+	_expect(clips.size() == 1 and clips[0] == wav, "T24", "the bare WAV is the event's clip (got %s)" % str(clips))
+	_expect(_lib.override("sounds", "transition", {"audioClips": [wav], "volume": 3}), "T24", "a dict override succeeds")
+	clips = (library.get("transition") as Resource).get("audioClips")
+	_expect(clips.size() == 1 and clips[0] == wav, "T24", "the dict's clip lands (got %s)" % str(clips))
+	_expect(not _lib.override("sounds", "transition", AudioStreamGenerator.new()), "T24",
+			"a clip the typed array refuses fails the override")
+	clips = (library.get("transition") as Resource).get("audioClips")
+	_expect(clips.size() == 1 and clips[0] == wav, "T24", "and the earlier override stays in place")
+	var wav2 := AudioStreamWAV.new()
+	_lib.patch("sounds", "transition", {"audioClips": [wav2]})
+	clips = (library.get("transition") as Resource).get("audioClips")
+	_expect(clips.size() == 1 and clips[0] == wav2, "T24", "a patch of audioClips lands (got %s)" % str(clips))
+	_expect(_lib.revert("sounds", "transition"), "T24", "the override reverts")
+	_expect(library.get("transition") == vanilla_event, "T24", "and the vanilla event is back")
+	_ml.set("_audio_library_cache", null)

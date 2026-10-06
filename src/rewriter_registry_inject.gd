@@ -117,7 +117,11 @@ func _rtv_rewrite_loader_shelters(source: String) -> String:
 func _rtv_apply_prelude_injections(filename: String, lines: PackedStringArray, rename_prefix: String, indent_unit: String = "\t") -> PackedStringArray:
 	match filename:
 		"Loader.gd":
-			return _rtv_inject_prelude(lines, rename_prefix + "LoadScene", _rtv_loader_loadscene_prelude(), false, indent_unit, filename)
+			var with_prelude := _rtv_inject_prelude(lines, rename_prefix + "LoadScene", _rtv_loader_loadscene_prelude(), false, indent_unit, filename)
+			# The re-apply reads the prelude's local, so it needs the prelude.
+			if with_prelude.size() == lines.size():
+				return with_prelude
+			return _rtv_inject_loader_scene_reapply(with_prelude, rename_prefix + "LoadScene", indent_unit)
 		"FishPool.gd":
 			return _rtv_inject_prelude(lines, rename_prefix + "_ready", _rtv_fishpool_ready_prelude(), false, indent_unit, filename)
 		"AI.gd":
@@ -193,34 +197,99 @@ func _rtv_inject_prelude(lines: PackedStringArray, func_name: String, prelude_li
 
 # LoadScene prelude: checks the mod + override scene-path dicts; on match
 # sets `scenePath` and gameData flags, then falls through (no early
-# return). Vanilla's if-elif won't match mod names, so the tail's
-# change_scene_to_file picks up the scenePath set here and mods reuse the
-# full vanilla loading flow (fade, label, timer, scene change).
+# return), so mods reuse the full vanilla loading flow (fade, label, timer,
+# scene change). Vanilla's if-elif won't match a mod name; for a vanilla
+# name it reassigns scenePath, and for most it sets that scene's flags too,
+# which _rtv_inject_loader_scene_reapply then applies the entry over.
 # Vanilla anchor: Loader.gd::LoadScene relies on locals `scenePath` + `scene`, gameData.menu/shelter/permadeath/tutorial flags, and the tail change_scene_to_file(scenePath).
 func _rtv_loader_loadscene_prelude() -> PackedStringArray:
 	var p := PackedStringArray()
 	p.append("\t# --- Metro mod loader: scene_paths registry prelude ---")
 	p.append("\tvar _rtv_scene_entry: Dictionary = {}")
+	# The name asked for, before transition_text relabels `scene`.
+	p.append("\tvar _rtv_scene_name: String = scene")
 	p.append("\tif _rtv_override_scene_paths.has(scene):")
 	p.append("\t\t_rtv_scene_entry = _rtv_override_scene_paths[scene]")
 	p.append("\telif _rtv_mod_scene_paths.has(scene):")
 	p.append("\t\t_rtv_scene_entry = _rtv_mod_scene_paths[scene]")
 	p.append("\tif not _rtv_scene_entry.is_empty():")
 	p.append("\t\tscenePath = _rtv_scene_entry.get(\"path\", \"\")")
-	# Flag defaults favor a generic non-shelter non-tutorial zone.
-	p.append("\t\tgameData.menu = _rtv_scene_entry.get(\"menu\", false)")
-	p.append("\t\tgameData.shelter = _rtv_scene_entry.get(\"shelter\", false)")
-	p.append("\t\tgameData.permadeath = _rtv_scene_entry.get(\"permadeath\", false)")
-	p.append("\t\tgameData.tutorial = _rtv_scene_entry.get(\"tutorial\", false)")
+	# A mod scene gets every flag (false unless set); a vanilla name only the
+	# ones the entry names, the chain below sets that scene's own.
+	p.append("\t\t_rtv_scene_entry_flags(_rtv_scene_entry, _rtv_scene_name, gameData)")
 	# B_Loader compat: transition_text reassigns the `scene` arg so the
 	# vanilla loading label shows it. Vanilla never reads `scene` again
-	# after the label code, so clobbering is safe.
+	# after the label code, so clobbering is safe. Not for a vanilla scene
+	# name: the chain has to match it to set that scene's flags, or a Cabin
+	# override with a label loads with shelter false and quitting there
+	# resets the character instead of saving it.
 	p.append("\t\tvar _rtv_label: String = String(_rtv_scene_entry.get(\"transition_text\", \"\"))")
-	p.append("\t\tif _rtv_label != \"\":")
+	p.append("\t\tif _rtv_label != \"\" and not _rtv_is_vanilla_scene(_rtv_scene_name):")
 	p.append("\t\t\tscene = _rtv_label")
 	p.append("\t# Fall through: vanilla if-elif won't match mod names; the tail")
 	p.append("\t# runs change_scene_to_file(scenePath) with our path set above.")
 	return p
+
+# The vanilla if/elif in LoadScene runs after the prelude and reassigns
+# scenePath for every vanilla scene name (and, for all but Menu, Intro and
+# Death, that scene's gameData flags), so an
+# override of a vanilla scene ("Cabin") loaded the vanilla scene anyway, as
+# did a mod scene whose transition_text names one. The entry is applied
+# again just before the tail's timer and scene change. Its flags go through
+# _rtv_scene_entry_flags (Loader appendix): an override of a vanilla scene
+# keeps that scene's own flags unless it names them, since a Cabin loaded
+# with shelter=false resets the character on quit instead of saving it.
+# Vanilla anchor: Loader.gd::LoadScene ends with body-level `await get_tree().create_timer(...).timeout` then `get_tree().change_scene_to_file(scenePath)`.
+func _rtv_inject_loader_scene_reapply(lines: PackedStringArray, func_name: String, indent_unit: String) -> PackedStringArray:
+	var start := -1
+	for i in lines.size():
+		if lines[i].begins_with("func " + func_name + "("):
+			start = i
+			break
+	if start < 0:
+		return lines
+	var target := -1
+	var i := start + 1
+	while i < lines.size():
+		var ln: String = lines[i]
+		if ln.strip_edges() != "" and not (ln.begins_with("\t") or ln.begins_with(" ")):
+			break
+		# Body level only: a scene change nested in a branch is not the tail.
+		if _rtv_body_level(ln, indent_unit) \
+				and ln.strip_edges().replace(" ", "").trim_suffix(";") == "get_tree().change_scene_to_file(scenePath)":
+			target = i
+		i += 1
+	if target < 0:
+		_log_critical("[RTVCodegen] Loader.gd: LoadScene no longer ends in change_scene_to_file(scenePath) (game update?) -- overriding a vanilla scene with scene_paths will NOT work. Update the modloader.")
+		return lines
+	# Land before the timer the scene change waits on, where vanilla's own
+	# branch set the flags.
+	var insert_at := target
+	var j := target - 1
+	while j > start and lines[j].strip_edges() == "":
+		j -= 1
+	if _rtv_body_level(lines[j], indent_unit) and lines[j].strip_edges().begins_with("await "):
+		insert_at = j
+	var block := PackedStringArray([
+		"# --- Metro mod loader: scene_paths registry, after the vanilla chain ---",
+		"if not _rtv_scene_entry.is_empty():",
+		"\tscenePath = _rtv_scene_entry.get(\"path\", \"\")",
+		"\t_rtv_scene_entry_flags(_rtv_scene_entry, _rtv_scene_name, gameData)",
+	])
+	var result := lines.slice(0, insert_at)
+	for b in block:
+		var depth := 0
+		while depth < b.length() and b[depth] == "\t":
+			depth += 1
+		result.append(indent_unit.repeat(depth + 1) + b.substr(depth))
+	result.append_array(lines.slice(insert_at))
+	return result
+
+# A line indented exactly one unit: a statement of the function body itself.
+func _rtv_body_level(line: String, indent_unit: String) -> bool:
+	if indent_unit.is_empty():
+		return false
+	return line.begins_with(indent_unit) and not line.substr(indent_unit.length()).begins_with(indent_unit[0])
 
 func _rtv_inject_loader_registry(indent: String) -> String:
 	# Loader.gd registry appendix: mod-scene-path dicts, a vanilla-shelters
@@ -237,6 +306,27 @@ func _rtv_inject_loader_registry(indent: String) -> String:
 		+ "var _rtv_override_scene_paths: Dictionary = {}\n" \
 		+ "var _rtv_mod_shelters: Dictionary = {}\n" \
 		+ "@onready var _rtv_vanilla_shelters: Array = shelters.duplicate()\n"
+	# Scene-name consts live on the vanilla script; a mod that replaces
+	# Loader.gd with a subclass moves them to the base script, and a
+	# script's constant map lists only its own.
+	out += "\n# --- Metro mod loader: scene_paths helpers ---\n"
+	out += "func _rtv_is_vanilla_scene(scene_name: String) -> bool:\n"
+	out += I1 + "var s: Script = get_script()\n"
+	out += I1 + "while s != null:\n"
+	out += I2 + "if s.get_script_constant_map().has(scene_name):\n"
+	out += I3 + "return true\n"
+	out += I2 + "s = s.get_base_script()\n"
+	out += I1 + "return false\n"
+	out += "\n"
+	# Before and after the vanilla chain: a mod scene gets every flag, false
+	# unless the entry sets it. A vanilla scene name keeps the flags the chain
+	# gives it (Menu, Intro and Death keep the ones they arrived with), and an
+	# override replaces only the flags it names.
+	out += "func _rtv_scene_entry_flags(entry: Dictionary, scene_name: String, data: Object) -> void:\n"
+	out += I1 + "var vanilla_name: bool = _rtv_is_vanilla_scene(scene_name)\n"
+	out += I1 + "for flag in [\"menu\", \"shelter\", \"permadeath\", \"tutorial\"]:\n"
+	out += I2 + "if entry.has(flag) or not vanilla_name:\n"
+	out += I3 + "data.set(flag, entry.get(flag, false))\n"
 	# Same dict shape as BitByteBytes/B_Loader README.
 	out += "\n# --- Metro mod loader: B_Loader compat shim ---\n"
 	out += "func add_shelter(d: Dictionary) -> bool:\n"
@@ -262,6 +352,11 @@ func _rtv_inject_loader_registry(indent: String) -> String:
 	out += I1 + "var is_shelter: bool = bool(d.get(\"shelter\", default_shelter))\n"
 	# B_Loader uses 'scene_path'; this schema uses 'path'. Accept both.
 	out += I1 + "var scene_path: String = String(d.get(\"path\", d.get(\"scene_path\", \"\")))\n"
+	# A path under a vanilla scene name (Village, Bridge) would replace that
+	# map in LoadScene; register('scene_paths') refuses the same collision.
+	out += I1 + "if scene_path != \"\" and _rtv_is_vanilla_scene(id):\n"
+	out += I2 + "push_warning(\"[B_Loader compat] '\" + id + \"' is a vanilla scene name; pick a new name\")\n"
+	out += I2 + "return false\n"
 	out += I1 + "var entry: Dictionary = {\n"
 	out += I2 + "\"shelter\": is_shelter,\n"
 	out += I2 + "\"transition_text\": String(d.get(\"transition_text\", id)),\n"

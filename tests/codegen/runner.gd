@@ -378,7 +378,54 @@ func _runtime_loader(fname: String, path: String) -> void:
 		_fail(fname, "RUNTIME: add_shelter accepted a vanilla shelter name")
 	if ldr.add_map({"path": "res://x.tscn"}):
 		_fail(fname, "RUNTIME: add_map accepted a dict without map_name")
+	if ldr.add_map({"map_name": "Village", "path": "res://Scenes/Cabin.tscn"}):
+		_fail(fname, "RUNTIME: add_map with a path accepted a vanilla scene name, which would replace that map")
+	# The flags applied after the vanilla chain. A Cabin override that names
+	# no flags must keep the shelter flag the Cabin branch set: a Cabin
+	# loaded with shelter=false resets the character on quit.
+	var flags_script := GDScript.new()
+	flags_script.source_code = "extends RefCounted\nvar menu := false\nvar shelter := false\nvar permadeath := false\nvar tutorial := false\n"
+	flags_script.reload()
+	var data = flags_script.new()
+	data.shelter = true
+	ldr._rtv_scene_entry_flags({"path": "res://Scenes/Cabin.tscn"}, "Cabin", data)
+	if not data.shelter:
+		_fail(fname, "RUNTIME: an override of Cabin that names no flags dropped the shelter flag the vanilla branch set")
+	ldr._rtv_scene_entry_flags({"path": "res://Scenes/Cabin.tscn", "shelter": false}, "Cabin", data)
+	if data.shelter:
+		_fail(fname, "RUNTIME: an override of Cabin that sets shelter=false did not apply it")
+	data.shelter = true
+	data.tutorial = true
+	ldr._rtv_scene_entry_flags({"path": "res://Scenes/Cabin.tscn"}, "CodegenPlace", data)
+	if data.shelter or data.tutorial or data.menu or data.permadeath:
+		_fail(fname, "RUNTIME: a mod scene kept flags the vanilla chain set for its relabelled name")
+	if not ldr._rtv_is_vanilla_scene("Village") or ldr._rtv_is_vanilla_scene("CodegenPlace"):
+		_fail(fname, "RUNTIME: _rtv_is_vanilla_scene does not tell vanilla scene names from mod ones")
 	ldr.free()
+	# The vanilla if/elif reassigns scenePath (and most of the flags) for a
+	# vanilla scene name, so the entry has to be applied again after the
+	# chain and before the tail's scene change, or an override of "Cabin"
+	# is a no-op.
+	var src := FileAccess.get_file_as_string(path)
+	var start := src.find("func _rtv_vanilla_LoadScene(")
+	var next := src.find("\nfunc ", start + 1)
+	var body := src.substr(start, next - start if next > start else -1)
+	var at_prelude := body.find("scene_paths registry prelude")
+	var at_last_branch := body.rfind("elif scene ==")
+	var at_reapply := body.find("scene_paths registry, after the vanilla chain")
+	var at_change := body.rfind("change_scene_to_file(scenePath)")
+	if start < 0 or not (at_prelude >= 0 and at_prelude < at_last_branch and at_last_branch < at_reapply and at_reapply < at_change):
+		_fail(fname, "RUNTIME: LoadScene does not apply the scene_paths entry again between the vanilla chain and the scene change (prelude %d, last branch %d, re-apply %d, change %d)"
+				% [at_prelude, at_last_branch, at_reapply, at_change])
+	# Both applications set the flags through _rtv_scene_entry_flags, which
+	# keeps a vanilla scene's own flags, and the prelude relabels only a mod
+	# scene: an override's transition_text must not rename "Cabin", or the
+	# chain loses the branch that sets its flags.
+	var prelude := body.substr(at_prelude, at_last_branch - at_prelude) if at_prelude >= 0 and at_last_branch > at_prelude else ""
+	if body.count("_rtv_scene_entry_flags(") < 2 or prelude.count("_rtv_scene_entry_flags(") != 1:
+		_fail(fname, "RUNTIME: LoadScene does not set the scene_paths flags through _rtv_scene_entry_flags both before and after the vanilla chain")
+	if not prelude.contains("not _rtv_is_vanilla_scene(_rtv_scene_name)"):
+		_fail(fname, "RUNTIME: the LoadScene prelude relabels a scene without checking it is not a vanilla scene name")
 
 # --- fixture pipeline -------------------------------------------------------
 

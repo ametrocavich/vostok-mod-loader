@@ -3,8 +3,10 @@
 ## injects into Loader.gd: _rtv_mod_scene_paths / _rtv_override_scene_paths,
 ## the _rtv_vanilla_shelters snapshot, `shelters` rewritten const->var, and
 ## a LoadScene prelude that checks the dicts and sets scenePath + gameData
-## flags before the vanilla if-elif. Loader is an autoload, so the prelude
-## is active from boot; registering from mod _ready() is safe.
+## flags before the vanilla if-elif, then applies them again after it (the
+## chain reassigns scenePath for a vanilla scene name, and for most of them
+## that scene's flags). Loader is an autoload, so
+## the prelude is active from boot; registering from mod _ready() is safe.
 ##
 ## - scene_paths: named scene lookups with optional gameData flags.
 ##     register/override: {path: String, menu?, shelter?, permadeath?,
@@ -27,9 +29,12 @@ var _vanilla_scene_const_cache: Dictionary = {}
 var _vanilla_scene_const_built: bool = false
 func _vanilla_scene_const_exists(ldr: Node, id: String) -> bool:
 	if not _vanilla_scene_const_built:
+		# A script's constant map lists only its own, and a mod that replaces
+		# Loader.gd with a subclass leaves the scene consts on the base script.
 		var script = ldr.get_script()
-		if script != null:
-			_vanilla_scene_const_cache = script.get_script_constant_map()
+		while script != null:
+			_vanilla_scene_const_cache.merge(script.get_script_constant_map())
+			script = script.get_base_script()
 		_vanilla_scene_const_built = true
 	return _vanilla_scene_const_cache.has(id)
 
