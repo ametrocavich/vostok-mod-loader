@@ -15,6 +15,7 @@ step.
 * Browse thumbnails over 1 MB load, and animated covers show their first frame.
 * An empty mod_config.cfg left by a crash or a full disk is recovered from its backup instead of losing your profiles.
 * Update explains when an enabled .zip mod is locked by the game, and never replaces a mod with a different one.
+* The launcher stays in view when dragged on screens larger than 1920x1080, and clicks beside it no longer reach the main menu. External mod managers can skip it with --modloader-skip-ui.
 * The malware scan reads binary scenes and resources, and turning off the last hooking mod no longer leaves its hook pack mounted.
 * For mod authors: scene_paths overrides of vanilla scenes and sounds-registry clips now work. Full notes on GitHub.
 <!-- end changelog -->
