@@ -18,7 +18,7 @@ The sentinel files and `override.cfg` live in the game's install directory (next
 
 ## `mod_config.cfg`. Your profiles and settings
 
-This is the user-facing config. The pre-launch UI reads and writes it. Plain INI, safe to inspect or edit by hand while the game is closed. Every save first copies the previous file to `mod_config.cfg.bak`, and the launcher falls back to that copy if the live file fails to parse.
+This is the user-facing config. The pre-launch UI reads and writes it. Plain INI, safe to inspect or edit by hand while the game is closed. Every save first copies the previous file to `mod_config.cfg.bak`, and the launcher falls back to that copy if the live file fails to parse, or is empty while the backup is not (what a save cut short by a crash or a full disk leaves). An empty or unreadable live file is never copied over the backup.
 
 ### Shape
 
@@ -104,7 +104,7 @@ Managed profile sections. The launcher creates these and the Mods-tab profile dr
 
 | Section prefix | Meaning |
 |---|---|
-| `[profile.modpack__<name>.enabled]` / `.priority` / `.dep_ignore` | Live state of the applied modpack `<name>`. Edits you make while it is active save here. Kept on unload so a re-apply resumes your edits, and dropped when **Refresh** rewrites the pack from VostokMods. |
+| `[profile.modpack__<name>.enabled]` / `.priority` / `.dep_ignore` | Live state of the applied modpack `<name>`. Edits you make while it is active save here. Kept on unload so a re-apply resumes your edits, and dropped when **Refresh** rewrites the pack from Vostok Mods. |
 | `[profile._before_modpack_<name>.enabled]` / `.priority` | Backup of your profile taken at apply time. Unload restores from here, then removes it. If these are gone and `modpack_backup_valid` is unset, unload aborts and your real profile survives. |
 
 `<name>` is the modpack's sanitized name (letters, digits, space, hyphen, underscore). Don't name your own profiles `modpack__*` or `_before_modpack_*`; the launcher treats those prefixes as reserved and filters them out of the dropdown.
@@ -129,7 +129,7 @@ Restore these files as a matching set while the game is closed. Boot caches and 
 **Copy your setup to another install**
 Two ways:
 1. Copy the profile backup described above into the other machine's `user://` directory, and install the same mods and pack zips in its game `mods/` directory.
-2. For a published pack's original setup, get and apply the same pack from VostokMods. This does not transfer your local edits or unrelated profiles. See [Modpacks](Modpacks).
+2. For a published pack's original setup, get and apply the same pack from Vostok Mods. This does not transfer your local edits or unrelated profiles. See [Modpacks](Modpacks).
 
 **Disable installed mods in one profile**
 Select the profile, clear the Mods-tab search filter and click **Disable all**. This disables the visible installed mods while retaining the profile and its settings. To start a separate empty selection, use **New profile** with **Empty**. Deleting a profile's sections removes its stored state; it does not create an empty profile, and a fresh `Default` enables installed mods.
@@ -212,6 +212,7 @@ These live in the game's install directory (next to the `.exe`), not `user://`. 
 | File | Effect |
 |---|---|
 | `modloader_disabled` | Full bypass. The loader's static init resets `override.cfg`, pass state and the hook pack, then mounts nothing; the game boots vanilla. Use when the loader itself is broken or you want to confirm a problem is mod-related. |
+| `modloader_skip_ui_once` | The next launch skips the launcher window and loads the active profile, as if **Launch** had been clicked; the loader deletes the file when it does. For external mod managers that start the game through Steam; the `--modloader-skip-ui` command-line flag does the same on every launch it is given. |
 | `modloader_disabled_once` | One-shot version of `modloader_disabled`: the next launch boots vanilla, then the file is deleted so the launch after that is modded again. The launcher's **Launch vanilla** button creates this for you; you can also create it by hand. |
 | `modloader_safe_mode` | One-shot reset. On the next launch the loader restores a clean `override.cfg`, deletes `mod_pass_state.cfg` and the crash heartbeat, then deletes the safe-mode file itself. The launcher still opens, so you can change profiles or disable a bad mod before the next modded boot. The reset runs when the launcher is about to open, after the previous session's archives and `!` early autoloads are already up; a mod that crashes the game before that point needs `modloader_disabled` instead. |
 
@@ -235,7 +236,7 @@ Everything here is regenerated on demand:
 | `user://modloader_conflicts.txt` | Developer mode only. The conflict report (which mods claim the same `res://` paths). |
 | `user://modloader_filescope.log` | What static init mounted and reset before the launcher opened, rewritten every launch. The first place to look when mods did not mount. |
 | `user://modloader_hook_status.json` | What happened to the hook system last session (whether the script rewrites took effect, why generation stopped, or which scripts the compile probe left out). The launcher reads it on the next start and shows a banner on the Mods tab when hooks did not work. Ignored once the loader, the game executable or the game `.pck` changes. |
-| `user://mws_cache/` | Browse-tab caches. `thumbs/` holds ModWorkshop thumbnail and banner images (VostokMods images stay in memory). `landing_<site>.json` holds each site's last successful Browse landing so the offline view survives a relaunch. `mods_meta_v2.json` caches the host detail each installed mod's row shows on the Mods tab. Search and filter responses are cached in memory only. |
+| `user://mws_cache/` | Browse-tab caches. `thumbs/` holds ModWorkshop thumbnail and banner images (Vostok Mods images stay in memory). `landing_<site>.json` holds each site's last successful Browse landing so the offline view survives a relaunch. `mods_meta_v2.json` caches the host detail each installed mod's row shows on the Mods tab. Search and filter responses are cached in memory only. |
 
 Deleting anything in that table is safe. Next launch regenerates whatever it needs; the cost is a slower cold boot while the hook pack rebuilds.
 
@@ -281,7 +282,7 @@ A: `user://` is per-user state (your profiles, generated caches), preserved acro
 
 - [Mod-Format](Mod-Format): `mod.txt` schema (what each mod declares)
 - [Profile-Format](Profile-Format): the JSON format inside a modpack's `profile.json`
-- [Browse](Browse): installing mods from VostokMods or ModWorkshop (`user://mws_cache/`)
+- [Browse](Browse): installing mods from Vostok Mods or ModWorkshop (`user://mws_cache/`)
 - [Modpacks](Modpacks): `active_modpack`, the managed profile slots, and `.profile_snapshots`
 - [Architecture](Architecture): two-pass boot flow, `override.cfg` lifecycle
 - [Stability-Canaries](Stability-Canaries): crash recovery, safe mode, sentinel files

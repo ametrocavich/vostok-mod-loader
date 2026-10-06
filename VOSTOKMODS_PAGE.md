@@ -2,7 +2,7 @@
 Listing text for https://vostokmods.net/mod/metro-mod-loader
 State seen 2026-09-30: still serves 3.2.1 (MetroModLoader321.zip), game
 version 0.1.1.3, category Libraries, tag Tools, "No changelog provided", and
-a description that predates Browse, modpacks and the VostokMods host. The
+a description that predates Browse, modpacks and the Vostok Mods host. The
 3.4.0 pre-release (2026-09-29) was never listed here or on ModWorkshop, so
 3.4.1 is the first version since 3.2.1 that reaches either site.
 
@@ -16,12 +16,23 @@ On release day:
 Same body as MWS_PAGE.md; keep the two in step.
 -->
 
+<!-- changelog for the 3.4.2 version entry. If the listing still hosts 3.2.1 on release day, paste this block and then the 3.4.1 block below it -->
+**3.4.2**
+
+* Vostok Mods modpacks apply with their mods turned on. Mods you already had are found whether their mod.txt names them by slug or by UUID, so they are no longer downloaded again, and Get from Vostok Mods lists the site's packs again.
+* Browse thumbnails over 1 MB load, and animated covers show their first frame.
+* An empty mod_config.cfg left by a crash or a full disk is recovered from its backup instead of losing your profiles.
+* Update explains when an enabled .zip mod is locked by the game, and never replaces a mod with a different one.
+* The malware scan reads binary scenes and resources, and turning off the last hooking mod no longer leaves its hook pack mounted.
+* For mod authors: scene_paths overrides of vanilla scenes and sounds-registry clips now work. Full notes on GitHub.
+<!-- end changelog -->
+
 <!-- changelog for the 3.4.1 version entry (everything since 3.2.1, the version both listings still host) -->
 **3.4.1**
 
 * Runs on Road to Vostok Build 2 (Nomads). AI loadouts follow the new AI variants, AI type overrides follow the new spawner, and the trader, loot table and class lists know the Build 2 names. Mod authors: the Build-2-Migration page on the GitHub wiki lists what the game changed for mods.
-* Browse and install mods from VostokMods (the default) or ModWorkshop without leaving the launcher. Check for updates asks each mod's own site.
-* Modpacks from VostokMods (beta): one small zip carries a mod selection, load order, MCM settings and download sources. Apply switches to the author's setup, Unload puts yours back.
+* Browse and install mods from Vostok Mods (the default) or ModWorkshop without leaving the launcher. Check for updates asks each mod's own site.
+* Modpacks from Vostok Mods (beta): one small zip carries a mod selection, load order, MCM settings and download sources. Apply switches to the author's setup, Unload puts yours back.
 * Required and optional dependencies: a mod that is missing something says what it needs, with one-click Enable dependency.
 * The launcher tells you when a game update has stopped script hooks from working, and the loader's own update notice reads the GitHub release.
 * After a game update, a loader change that no longer fits a game script is left out instead of breaking that script: the game keeps running and the launcher names what was skipped.
@@ -33,21 +44,21 @@ Coming from 3.2.1: copy the new `modloader.gd` and `override.cfg` over the old o
 
 # Community Mod Loader
 
-Mod loader for Road to Vostok (Godot 4.6). Adds a pre-game launcher for installing mods from VostokMods or ModWorkshop, managing load order and profiles, applying modpacks and checking for updates. It restores mod loading now that the original --main-pack injector method no longer works.
+Mod loader for Road to Vostok (Godot 4.6). Adds a pre-game launcher for installing mods from Vostok Mods or ModWorkshop, managing load order and profiles, applying modpacks and checking for updates. It restores mod loading now that the original --main-pack injector method no longer works.
 
 Back up your saves before installing any mods.
 
-3.4.1 supports Road to Vostok Build 2 (Nomads). Mod authors: the Build-2-Migration page on the GitHub wiki lists what the game changed for mods.
+3.4.1 and later support Road to Vostok Build 2 (Nomads). Mod authors: the Build-2-Migration page on the GitHub wiki lists what the game changed for mods.
 
 # What you get
 
-Pre-game launcher. Mod profiles. In-launcher browser and installer for VostokMods and ModWorkshop. Modpacks from VostokMods. Dependency handling. Update check for both sites. Malware scanner. Crash auto-recovery. Drop `.zip` or `.vmz` straight into the mods folder.
+Pre-game launcher. Mod profiles. In-launcher browser and installer for Vostok Mods and ModWorkshop. Modpacks from Vostok Mods. Dependency handling. Update check for both sites. Malware scanner. Crash auto-recovery. Drop `.zip` or `.vmz` straight into the mods folder.
 
 The launcher has three tabs: **Mods**, **Browse** and **Modpacks**.
 
 * **Mods** -- every detected mod with a checkbox and a priority spinbox; a higher priority loads later and wins file conflicts. Profiles, Developer Mode and **Check for updates** live here; a mod with a newer version on its site is listed under Updates available with an Update button. Mods that declare required dependencies get a clear "won't load -- needs X" line with one-click **Enable dependency** and **Load anyway** buttons, and mods whose requirements aren't met are skipped instead of crashing.
-* **Browse** -- search VostokMods, or switch the source menu to ModWorkshop, and install mods without leaving the launcher. Downloads land in your mods folder and show up enabled in the Default profile (off in any other profile until you tick them). Multiple installs queue and run one at a time.
-* **Modpacks** (beta) -- apply a setup published on VostokMods: a mod selection with load order, MCM settings and download sources, shipped as one small `.zip`. Apply pulls down any mods you're missing and switches you to the author's exact setup; Unload puts your previous setup back.
+* **Browse** -- search Vostok Mods, or switch the source menu to ModWorkshop, and install mods without leaving the launcher. Downloads land in your mods folder and show up enabled in the Default profile (off in any other profile until you tick them). Multiple installs queue and run one at a time.
+* **Modpacks** (beta) -- apply a setup published on Vostok Mods: a mod selection with load order, MCM settings and download sources, shipped as one small `.zip`. Apply pulls down any mods you're missing and switches you to the author's exact setup; Unload puts your previous setup back.
 
 # Installation
 

@@ -473,6 +473,8 @@ lib.remove(lib.Registry.SOUNDS, "mymod_custom_footstep")
 
 Only `override` and `patch` change what vanilla plays. The field names are whatever the current game build's `AudioLibrary.gd` exports; Build 2 (Nomads) renamed or removed many of them (for example `vostokEnter` became `vostok`, `firemodeSemi` became `semi`, the knife draw and slash fields are gone), and an override on a name the build does not have is refused with `no vanilla AudioLibrary field with that name (register can't be overridden; revert the register first). Current names: ...`, where the tail lists every field the running build's library has. `patch` and the array verbs refuse an unknown id the same way (`no sound with that id. Current names: ...`), so one refused call is the quickest way to read the current list. Vanilla code reads `audioLibrary.propertyName` directly, so a mod-registered id is unreachable from vanilla code paths. Fetch it with `lib.get_entry` and play it from your own code or hooks. Registrations live in the registry's lookup dict, not on the AudioLibrary Resource, so `audioLibrary.get("mymod_id")` returns null.
 
+The game's `AudioEvent` holds WAV clips only (`audioClips: Array[AudioStreamWAV]`). A bare stream or a dict whose clips are another type, such as an OGG or MP3 stream, makes `register` and `override` return `false` with a warning naming the type; a `patch` of `audioClips` skips that field with the same warning. Import your sound as WAV.
+
 Build 2 also moved some sounds out of the library into `const` preloads inside the script that plays them (the airdrop sounds in `CASA.gd`, the grenade bounce sounds in `Grenade.gd`, the lure impacts in `Lure.gd`). Those have no `AudioLibrary` field, so the `sounds` registry cannot reach them; hook the script instead.
 
 `register` on a vanilla `@export` field name is rejected (use `override`). `override` only works on vanilla fields, never on mod-registered ids. Otherwise the rules are the same as items.
@@ -659,6 +661,8 @@ lib.revert(lib.Registry.SCENE_PATHS, "Cabin")
 lib.remove(lib.Registry.SCENE_PATHS, "mymod_bunker")
 ```
 
+An override of a vanilla scene keeps that scene's own flags for any flag the entry leaves out, so overriding `Cabin` with just a `path` still loads it as a shelter (a shelter loaded with `shelter` false resets the character on quit instead of saving it). A flag the entry sets replaces the vanilla one. A mod scene gets every flag from its entry, `false` when left out. A `transition_text` on the entry sets the loading-screen label of a mod scene only; an override of a vanilla scene keeps that scene's label, because the game picks the scene's flags by that name.
+
 `register` and `override` refuse a `path` that does not exist on disk. A missing scene would freeze the loading screen with no way back to the menu, so the check happens at registration, the last point where it can fail safely. Check the path and that the file shipped in your archive.
 
 A `register` that collides with a vanilla const is rejected; use `override`. Two mods overriding the same vanilla scene path: both succeed and the last write wins. `revert` from either drops the override and vanilla resolution returns.
@@ -701,7 +705,7 @@ lib.register(lib.Registry.SHELTERS, "mymod_cave", {})  # promote to shelter list
 lib.remove(lib.Registry.SHELTERS, "mymod_bunker")
 ```
 
-The registration dict mirrors the B_Loader mod's `add_shelter`/`add_map` shape, so B_Loader-pattern mods migrate by changing one call site. `menu`, `permadeath` and `tutorial`, if present, are forwarded to the auto-created `scene_paths` entry, and so is `transition_text`. Rotations in `connected_content` are degrees. A `path` that does not exist is refused, as for `scene_paths`. The loader does not check that a path-less registration resolves; if it doesn't, `LoadScene` fails at runtime.
+The registration dict mirrors the B_Loader mod's `add_shelter`/`add_map` shape, so B_Loader-pattern mods migrate by changing one call site. `menu`, `permadeath` and `tutorial`, if present, are forwarded to the auto-created `scene_paths` entry, and so is `transition_text`. Rotations in `connected_content` are degrees. A `path` that does not exist is refused, as for `scene_paths`. A `path` under a vanilla scene's name (`Village`, `Bridge`, ...) is refused too, by `register` and by the B_Loader-compatible `Loader.add_shelter`/`Loader.add_map`: it would replace that map. To change a vanilla scene, `override` its `scene_paths` entry. The loader does not check that a path-less registration resolves; if it doesn't, `LoadScene` fails at runtime.
 
 No `override` or `patch`; the list is append-only. To swap a shelter's scene, `override` the matching `scene_paths` entry.
 

@@ -47,7 +47,9 @@ _load_developer_mode_setting()
 _ui_mod_entries = collect_mod_metadata()   # scan <exe>/mods/, no mounting
 _clean_stale_cache(); _remove_retired_state()
 _load_ui_config()
+_modpack_reconcile_active()      # active pack's mods found installed since
 await show_mod_ui()              # the user configures and clicks Launch
+                                   # (skipped with --modloader-skip-ui, see below)
 _save_ui_config()
 _applied_script_overrides.clear()
 load_all_mods()                  # mount archives, scan, queue autoloads
@@ -85,6 +87,8 @@ else:
 `_generate_hook_pack(true)` on the pre-restart path is deliberate. Without `defer_activation`, activation would run against the PCK bytecode this engine process already pinned, log a misleading "hooks WILL NOT fire this session" alarm, and restart anyway. With it, the call writes the zip and the pass-state entry and lets Pass 2's fresh engine mount it at static init. The branch is at the end of `_generate_hook_pack` in [src/hook_pack.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd).
 
 This is also the one generation that probe-compiles its rewrites before packing them (`_hook_pack_begin_vetting`, `_hook_pack_vet_rewrite`). A probe compiles the script and whatever its module-scope preloads pull in, which is harmless in a process about to exit and would get ahead of mod overrides anywhere else. A rewrite that does not compile is demoted to hooks only or left out of the pack, and the verdicts are persisted as `hook_pack_demotions` for the generations that follow. The `_finish_with_existing_mounts` path reads them from pass state and does not probe. The crash-breaker path has deleted pass state, so its generation probes live, skipping scripts deferred to lazy compile. See [Stability-Canaries](Stability-Canaries#pre-ship-compile-probe).
+
+`--modloader-skip-ui`, before or after `--` on the command line (`SKIP_UI_ARG`, read by `_launcher_skipped`), or a `<exe_dir>/modloader_skip_ui_once` file (`SKIP_UI_ONCE_FILE`, deleted by `_consume_skip_ui_once` on every Pass 1 and on a disabled launch, so it never outlives the next launch), skips `show_mod_ui` and continues as if Launch had been clicked: an external mod manager that has already set the mods up starts the game with one of them. Everything after the launcher runs unchanged, restart included.
 
 `_modloader_restart` re-injects `--rendering-driver` and `--rendering-method` (Godot's own parser strips them from `OS.get_cmdline_args()`, and RTV's Steam launch presets set exactly those two) and forwards user args after `--`.
 

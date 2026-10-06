@@ -39,7 +39,7 @@ in-game checks, separate from the automated headless checks:
 - [ ] Reopen Mods from the main menu. Toggle a mod or change load order;
       closing restarts into the selected set. Rename a profile without
       changing its selection; closing does not restart.
-- [ ] Switch between VostokMods and ModWorkshop in Browse, download a mod,
+- [ ] Switch between Vostok Mods and ModWorkshop in Browse, download a mod,
       and use its resulting profile checkbox. Check for updates on Mods.
       Neither source lists the loader itself, on the landing or in a search.
 - [ ] Change the mod set and launch on the current game build (Build 2,
@@ -138,15 +138,16 @@ new install until someone notices.
       3.0.0 era set the version: that is how "chore(master): release 3.0.0"
       (PR #91) appeared minutes after v3.4.0, and the 3.4.1 merge will open
       or rewrite one the same way. Never merge it.
-- [ ] Once the release is published, run the release-please workflow by
-      hand: `gh workflow run release-please.yml` (the `workflow_dispatch`
-      trigger). It recomputes the release PR from the new tag, closes it when
-      there is nothing to release, or rewrites it to the next version. The
-      next push to master does the same. Only then move on to the listings.
+- [ ] Once the release is published, close that stale release PR by hand
+      and remove its `autorelease: pending` label. Do not count on the
+      workflow to close it: for 3.4.1 two `gh workflow run
+      release-please.yml` runs left it open (PR #93), although a dry run on
+      master opened nothing. The next push to master opens the real next
+      release PR. Only then move on to the listings.
 
 ## After the release
 
-- [ ] Update the VostokMods and ModWorkshop listings: bump the version and
+- [ ] Update the Vostok Mods and ModWorkshop listings: bump the version and
       replace the hosted zip on each. Manual steps outside the pipeline.
       Build the zip from the published release assets, not from a local
       build: a local tree that has not pulled the release commit still says

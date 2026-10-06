@@ -30,7 +30,7 @@ The JSON is plain UTF-8 `profile.json` at the root of a modpack zip, next to an 
 | Key | Required | Type | Meaning |
 |---|---|---|---|
 | `metroprofile` | yes | int | Schema version. Always `1` for v1 payloads. |
-| `name` | yes | String | Modpack display name, the pack's name on the site, whitespace-stripped. The profile slot used on apply is derived with `_sanitize_profile_name` (cased letters such as Latin, Cyrillic and Greek, ASCII digits, space, hyphen, underscore; CJK, Arabic and emoji are dropped). When the site name sanitizes to nothing, the writer stores the pack's slug as `name` instead. The loader does not export modpack zips. A pack added from VostokMods is saved as `vostokmods-<slug>.zip`, named from its site slug and not from `name`. |
+| `name` | yes | String | Modpack display name, the pack's name on the site, whitespace-stripped. The profile slot used on apply is derived with `_sanitize_profile_name` (cased letters such as Latin, Cyrillic and Greek, ASCII digits, space, hyphen, underscore; CJK, Arabic and emoji are dropped). When the site name sanitizes to nothing, the writer stores the pack's slug as `name` instead. The loader does not export modpack zips. A pack added from Vostok Mods is saved as `vostokmods-<slug>.zip`, named from its site slug and not from `name`. |
 | `enabled` | yes | Dictionary | `profile_key -> bool`. The hosted writer includes manifest members with true values. The reader accepts false values for activation, but availability and download planning inspect every declared key and source, including false entries. |
 | `priority` | no | Dictionary | `profile_key -> int`, load-order priority in `[-999, 999]`. A mod with no entry keeps its own default priority (`mod.txt` `priority=` or the filename prefix, else 0). A non-numeric value reads as 0. |
 | `modloader_version` | no | String | The `MODLOADER_VERSION` of the loader that wrote the file. Advisory only. |
@@ -51,7 +51,7 @@ Profile keys identify mods across installs. Supported shapes:
 
 - `"<mod_id>@<version>"` for mods whose `mod.txt` declares `[mod] id=...`. The version segment may be empty (`"foo@"`). Identity survives a `.vmz` rename. See `_entry_from_config` in [mod_discovery.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd).
 - `"zip:<file_name>"` for mods without a declared `mod_id`. Identity is the archive filename. A re-package that changes only the extension or a trailing version (`CoolMod_v1.0.zip` to `CoolMod_v1.1.vmz`) keeps its state, matched by normalized filename stem, and the old key is dropped at the next save; any other rename orphans the profile entry.
-- `"vostokmods:<slug>"` in a pack pulled from VostokMods, where the mod's `mod.txt` id is not known until the file is downloaded. After the downloads land, apply rewrites these keys to the installed mods' own keys by matching each pack entry's source record against the installed mod's source.
+- `"vostokmods:<slug>"` in a pack pulled from Vostok Mods, where the mod's `mod.txt` id is not known until the file is downloaded. After the downloads land, apply rewrites these keys to the installed mods' own keys by matching each pack entry's source record against the installed mod's source.
 
 ## Profile key matching and pack pins
 

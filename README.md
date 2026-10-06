@@ -30,8 +30,8 @@ Changing the loader itself? Start with [CONTRIBUTING](CONTRIBUTING.md) and the
 Three tabs:
 
 - **Mods**: detected mods with checkboxes and a priority spinbox. Higher priority loads later and wins file conflicts. The load-order preview on the right updates as you edit. Profiles, the Developer Mode toggle, dependency handling and **Check for updates** live here too; a mod with a newer version on its site is listed under **Updates available** with an Update button. See the [Mods wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Mods).
-- **Browse**: search and install mods from [VostokMods](https://vostokmods.net), or switch the source menu to [ModWorkshop](https://modworkshop.net). Each site has a landing view plus search, sort and category filters. **Download** installs into your `mods/` folder; downloads queue and run one at a time. See the [Browse wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Browse).
-- **Modpacks** (beta in 3.4): apply a setup published on [VostokMods](https://vostokmods.net). A modpack is a small `.zip` listing which mods to enable (plus their settings), not the mod files themselves. Apply downloads any missing mods and switches you to the author's setup; Unload restores your prior profile and MCM settings. Only one modpack can be active at a time. See the [Modpacks wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Modpacks).
+- **Browse**: search and install mods from [Vostok Mods](https://vostokmods.net), or switch the source menu to [ModWorkshop](https://modworkshop.net). Each site has a landing view plus search, sort and category filters. **Download** installs into your `mods/` folder; downloads queue and run one at a time. See the [Browse wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Browse).
+- **Modpacks** (beta in 3.4): apply a setup published on [Vostok Mods](https://vostokmods.net). A modpack is a small `.zip` listing which mods to enable (plus their settings), not the mod files themselves. Apply downloads any missing mods and switches you to the author's setup; Unload restores your prior profile and MCM settings. Only one modpack can be active at a time. See the [Modpacks wiki page](https://github.com/ametrocavich/vostok-mod-loader/wiki/Modpacks).
 
 Dependencies are handled inline on the Mods tab. A mod with `[dependencies] required=[...]` in `mod.txt` shows an orange `won't load -- needs ...` line when a requirement is missing or disabled, with **Enable dependency** and **Load anyway** buttons beside it, and the loader skips mods whose required dependencies are not loadable.
 
@@ -82,7 +82,7 @@ optional=["some_soft_integration"]
 | `version` | Used by the update check to compare against the mod's site |
 | `priority` | Higher loads later, wins file conflicts. Default 0 |
 | `[autoload]` | `Name="res://path.gd"` (or `.tscn`). Prefix the value with `!` to load before the game's own autoloads |
-| `[updates] source` | Where the mod is hosted: `"vostokmods:<uuid>"` (VostokMods writes this line into every file it serves; the slug works too) or `"modworkshop:<id>"`. The older `modworkshop=<id>` form still works |
+| `[updates] source` | Where the mod is hosted: `"vostokmods:<uuid>"` (Vostok Mods writes this line into every file it serves; the slug works too) or `"modworkshop:<id>"`. The older `modworkshop=<id>` form still works |
 | `[dependencies] required/optional` | Godot string arrays of mod IDs. Required deps must be installed, enabled, and load before the dependent mod |
 
 Mods without `mod.txt` still mount as resource packs. Their files override vanilla resources, but no autoloads run.

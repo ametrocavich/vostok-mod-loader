@@ -45,7 +45,7 @@ A mod that runs `script.take_over_path(vanilla_path)` on a vanilla `class_name` 
 
 ### A replacement script loses to a hook rewrite at the same path
 
-If a mod replaces a vanilla script through `[script_extend]` or `[script_overrides]` and that same path is in the hook wrap surface (some mod declared `[hooks]` on it, calls `.hook()` on it, or it is a registry target with `[registry]` declared), the rewrite wins. Activation reloads the vanilla path with the rewritten source, so the replacement's code never runs that session.
+If a mod replaces a vanilla script through `[script_extend]` or `[script_overrides]` and that same path is in the hook wrap surface (some mod declared `[hooks]` on it, calls `.hook()` on it, or it is a registry target with `[registry]` declared), the rewrite wins when the loader activates that script up front. Activation reloads the vanilla path with the rewritten source, so the replacement's code never runs that session. A script deferred to lazy compile (one with a module-scope scene preload, such as `Interface.gd`; the boot log lists them under `DEFER`) is not reloaded: it compiles after the overrides, the replacement extends the rewrite, and both run.
 
 The loader says so twice, naming the mod: once during generation (`[RTVCodegen] <path> is rewritten for hooks and also replaced by <mod> -- the rewrite wins at that path ...`) and again at activation (`[RTVCodegen] activate <path>: replacing the script installed by <mod> with the rewritten vanilla script ...`). Both are warnings in `hook_pack.gd`.
 
@@ -204,7 +204,7 @@ Workaround in `_generate_hook_pack`: each generation writes a new uniquely named
 ### What is not supported
 
 - Replacing a `class_name` vanilla script with `take_over_path`: Godot bug #83542 can crash, and the safety scanner flags it. Replacing a script without `class_name` this way works but is discouraged; prefer hooks or `[script_extend]`.
-- A `[script_extend]` / `[script_overrides]` replacement on a path in the hook wrap surface: the rewrite wins, see above.
+- A `[script_extend]` / `[script_overrides]` replacement on a path in the hook wrap surface that is activated up front: the rewrite wins, see above.
 - Hot reload of mods without a full restart.
 - `export(Type) var` to `@export var X: Type` migration.
 - New `class_name` declarations that collide with vanilla.

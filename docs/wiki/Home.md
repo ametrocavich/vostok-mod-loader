@@ -5,8 +5,8 @@ Documentation for the community mod loader for Road to Vostok (Godot 4.6).
 What the loader gives you in-game:
 
 - A [Mods](Mods) tab to turn installed mods on and off, set load order, keep profiles, and see why a mod is blocked
-- A [Browse](Browse) tab to find and download mods from VostokMods or ModWorkshop
-- A [Modpacks](Modpacks) tab to apply a setup published on VostokMods; applying it downloads the mods for you
+- A [Browse](Browse) tab to find and download mods from Vostok Mods or ModWorkshop
+- A [Modpacks](Modpacks) tab to apply a setup published on Vostok Mods; applying it downloads the mods for you
 - A **Check for updates** button on the Mods tab that tells you when installed mods have newer versions on their site
 
 Players: start at [Setup](Setup), then [Mods](Mods), [Browse](Browse) and [Modpacks](Modpacks). When something goes wrong, [Troubleshooting](Troubleshooting). Known engine limits are in [Limitations](Limitations).
