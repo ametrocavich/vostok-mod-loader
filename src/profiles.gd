@@ -4,7 +4,7 @@
 
 func _load_developer_mode_setting() -> void:
 	var cfg := ConfigFile.new()
-	if cfg.load(UI_CONFIG_PATH) != OK:
+	if _ui_cfg_load(cfg) != OK:
 		# Read from the same .bak _load_ui_config recovers from; otherwise a
 		# recoverable corrupt config strands every folder mod for the session.
 		var bak := UI_CONFIG_PATH + ".bak"
@@ -17,7 +17,7 @@ func _load_developer_mode_setting() -> void:
 func _load_ui_config() -> void:
 	_active_profile = "Default"
 	var cfg := ConfigFile.new()
-	if cfg.load(UI_CONFIG_PATH) != OK:
+	if _ui_cfg_load(cfg) != OK:
 		# Live config missing or corrupt. Try the rolling .bak before falling
 		# through to a fresh Default, which would wipe every stored profile.
 		var bak := UI_CONFIG_PATH + ".bak"
@@ -29,7 +29,12 @@ func _load_ui_config() -> void:
 			if FileAccess.file_exists(UI_CONFIG_PATH):
 				DirAccess.copy_absolute(UI_CONFIG_PATH, UI_CONFIG_PATH + ".corrupt")
 			cfg = bak_cfg
-			cfg.save(UI_CONFIG_PATH)
+			var restore_err := cfg.save(UI_CONFIG_PATH)
+			if restore_err != OK:
+				# Writers keep refusing the unreadable live file, so the backup
+				# stays the good copy and the next launch recovers again.
+				_log_critical("[Config] Could not write the recovered settings back to %s (error %d) -- this session runs on the backup, and changes made now are not saved." \
+						% [UI_CONFIG_PATH, restore_err])
 		else:
 			# Fresh install, or the backup is also unreadable: materialize the
 			# Default profile on disk, preserving any corrupt live config as .corrupt.
@@ -262,7 +267,7 @@ func _list_profiles_in_cfg(cfg: ConfigFile) -> Array[String]:
 
 func _list_profiles() -> Array[String]:
 	var cfg := ConfigFile.new()
-	if cfg.load(UI_CONFIG_PATH) != OK:
+	if _ui_cfg_load(cfg) != OK:
 		return []
 	return _list_profiles_in_cfg(cfg)
 
@@ -391,9 +396,28 @@ func _rewrite_profile_section(cfg: ConfigFile, section: String, live: Dictionary
 # then writes and there is no Windows-safe atomic rename, so copy the good
 # file to .bak first. Best-effort; returns the ConfigFile.save error.
 func _persist_ui_cfg(cfg: ConfigFile) -> int:
-	if FileAccess.file_exists(UI_CONFIG_PATH):
+	# A live file that is blank or does not parse is what a save cut short
+	# leaves behind; rolling it over the backup would lose the last good copy
+	# of every profile.
+	if FileAccess.file_exists(UI_CONFIG_PATH) and not _ui_cfg_blank(UI_CONFIG_PATH):
 		DirAccess.copy_absolute(UI_CONFIG_PATH, UI_CONFIG_PATH + ".bak")
 	return cfg.save(UI_CONFIG_PATH)
+
+# Load mod_config.cfg into `cfg`. Godot reads an empty file as a successful
+# load with no sections, but an empty live file beside a backup is a save
+# cut short (the game killed or the disk full mid-write), not a fresh
+# install, so it reports ERR_FILE_CORRUPT: the backup recovery in
+# _load_ui_config runs and writers stand down instead of saving over it.
+func _ui_cfg_load(cfg: ConfigFile) -> int:
+	var err := cfg.load(UI_CONFIG_PATH)
+	if err == OK and cfg.get_sections().is_empty() and not _ui_cfg_blank(UI_CONFIG_PATH + ".bak"):
+		return ERR_FILE_CORRUPT
+	return err
+
+# True for a config file that is missing, does not parse, or holds no section.
+func _ui_cfg_blank(path: String) -> bool:
+	var probe := ConfigFile.new()
+	return probe.load(path) != OK or probe.get_sections().is_empty()
 
 func _profile_sec(name: String, suffix: String) -> String:
 	return "profile." + name + suffix
@@ -405,7 +429,7 @@ const PROFILE_SUBSECTIONS := [".enabled", ".priority", ".settings", ".dep_ignore
 # Read a single value from mod_config.cfg; `default` when missing/unparseable.
 func _get_ui_cfg_value(section: String, key: String, default: Variant) -> Variant:
 	var cfg := ConfigFile.new()
-	if cfg.load(UI_CONFIG_PATH) != OK:
+	if _ui_cfg_load(cfg) != OK:
 		return default
 	return cfg.get_value(section, key, default)
 
@@ -417,7 +441,7 @@ var _ui_cfg_refusal_notified := false
 
 func _load_ui_cfg_for_write() -> ConfigFile:
 	var cfg := ConfigFile.new()
-	var err := cfg.load(UI_CONFIG_PATH)
+	var err := _ui_cfg_load(cfg)
 	if err != OK and err != ERR_FILE_NOT_FOUND:
 		_log_warning("mod_config.cfg exists but could not be read (error %d) -- refusing to overwrite it. This change is not saved." % err)
 		if not _ui_cfg_refusal_notified and is_instance_valid(_ui_window):
@@ -465,7 +489,7 @@ func _reload_entries_for_active_profile() -> void:
 		_save_ui_config()
 	_ui_mod_entries = collect_mod_metadata()
 	var cfg := ConfigFile.new()
-	cfg.load(UI_CONFIG_PATH)
+	_ui_cfg_load(cfg)
 	_apply_profile_to_entries(cfg, _active_profile)
 	_mark_mod_set_changed()
 
@@ -507,7 +531,7 @@ func _save_profile_bookkeeping() -> void:
 # the first remaining profile. Caller ensures another profile exists.
 func _delete_active_profile() -> void:
 	var cfg := ConfigFile.new()
-	if cfg.load(UI_CONFIG_PATH) != OK:
+	if _ui_cfg_load(cfg) != OK:
 		return
 	var target := _active_profile
 	for suffix: String in PROFILE_SUBSECTIONS:
@@ -552,7 +576,7 @@ func _switch_profile(name: String) -> void:
 	else:
 		# Unreadable cfg: do not rewrite it, but still apply what is readable.
 		cfg = ConfigFile.new()
-		cfg.load(UI_CONFIG_PATH)
+		_ui_cfg_load(cfg)
 	_apply_profile_to_entries(cfg, _active_profile)
 	if name != VANILLA_PROFILE:
 		if _has_mcm_snapshot(name):
@@ -572,7 +596,7 @@ func _rename_profile(new_name: String) -> void:
 	_active_profile = new_name
 	_save_profile_bookkeeping()
 	var cfg := ConfigFile.new()
-	if cfg.load(UI_CONFIG_PATH) != OK:
+	if _ui_cfg_load(cfg) != OK:
 		return
 	# .settings has no in-memory backing, so copy it explicitly.
 	var old_settings := _profile_sec(old, ".settings")
@@ -605,7 +629,7 @@ func _rename_profile(new_name: String) -> void:
 # version count as present (_apply_profile_to_entries flags those). Red stub rows.
 func _missing_mods_in_active_profile() -> Array[String]:
 	var cfg := ConfigFile.new()
-	if cfg.load(UI_CONFIG_PATH) != OK:
+	if _ui_cfg_load(cfg) != OK:
 		return []
 	var en_sec := _profile_sec(_active_profile, ".enabled")
 	if not cfg.has_section(en_sec):
@@ -664,7 +688,7 @@ func _missing_mod_sources_combined() -> Dictionary:
 # Strip an orphaned stored key from the active profile (stub-row Remove).
 func _remove_missing_entry_from_profile(stored_key: String) -> void:
 	var cfg := ConfigFile.new()
-	if cfg.load(UI_CONFIG_PATH) != OK:
+	if _ui_cfg_load(cfg) != OK:
 		return
 	for suffix: String in [".enabled", ".priority", ".dep_ignore"]:
 		var sec := _profile_sec(_active_profile, suffix)
@@ -678,7 +702,7 @@ func _remove_all_missing_entries_from_profile() -> void:
 	if missing.is_empty():
 		return
 	var cfg := ConfigFile.new()
-	if cfg.load(UI_CONFIG_PATH) != OK:
+	if _ui_cfg_load(cfg) != OK:
 		return
 	for suffix: String in [".enabled", ".priority", ".dep_ignore"]:
 		var sec := _profile_sec(_active_profile, suffix)
@@ -714,7 +738,7 @@ func _delete_mod_file_and_cleanup(entry: Dictionary) -> bool:
 			return false
 	var profile_key: String = str(entry["profile_key"])
 	var cfg := ConfigFile.new()
-	if cfg.load(UI_CONFIG_PATH) == OK:
+	if _ui_cfg_load(cfg) == OK:
 		for section in cfg.get_sections():
 			if not section.begins_with("profile."):
 				continue

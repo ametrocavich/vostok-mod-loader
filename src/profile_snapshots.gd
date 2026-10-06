@@ -58,6 +58,9 @@ func _snapshot_mcm_to(profile_name: String) -> bool:
 	var dst := _mcm_snapshot_dir(profile_name)
 	# Wipe stale snapshot first so deleted-from-MCM files don't survive.
 	_remove_tree(dst, false)
+	# No live MCM folder is a state too. Without a slot, returning to this
+	# profile would find no snapshot and seed it from another profile's MCM.
+	DirAccess.make_dir_recursive_absolute(dst)
 	return _copy_dir_recursive(MCM_SOURCE_DIR, dst)
 
 # Replace user://MCM/ with a profile's snapshot. False when the profile has no
