@@ -2,11 +2,11 @@
 ## Launcher palette tokens, the Theme, the style_* voices and the code-drawn glyphs.
 
 # -- Design tokens ------------------------------------------------------------
-# Matches the VostokMods site palette: one accent green, one success green,
+# Matches the Vostok Mods site palette: one accent green, one success green,
 # one red, and one amber so a warning does not read as the brand color.
 
 # Base surfaces
-const COL_BG         := Color("1b1d1d")  # window/panel floor -- VostokMods --ui-bg
+const COL_BG         := Color("1b1d1d")  # window/panel floor -- Vostok Mods --ui-bg
 const COL_SURFACE    := Color("2b2e2e")  # buttons, inputs, rows -- --ui-bg-muted
 const COL_SURFACE_2  := Color("3b3e3e")  # hover, elevated rows
 const COL_BORDER     := Color("434747")  # 1px structural borders -- --ui-border-accented

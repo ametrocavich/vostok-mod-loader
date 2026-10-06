@@ -152,7 +152,7 @@ func host_latest_versions(provider: String, ids: PackedStringArray, on_progress:
 func host_display_name(provider: String) -> String:
 	match provider:
 		HOST_MODWORKSHOP: return "ModWorkshop"
-		HOST_VOSTOKMODS: return "VostokMods"
+		HOST_VOSTOKMODS: return "Vostok Mods"
 		_: return provider
 
 
@@ -172,6 +172,35 @@ func host_mod_page_url(ref: Dictionary) -> String:
 		HOST_MODWORKSHOP: return _mwsp_mod_page_url(str(ref["id"]))
 		HOST_VOSTOKMODS: return _vmp_mod_page_url(str(ref["id"]))
 		_: return ""
+
+
+## Ids that name the same mod on one host, as {ref key -> [other ref keys]}.
+## Vostok Mods answers to a slug and a UUID, and the two travel apart:
+## listing rows, packs and Browse downloads use the slug, while the site
+## writes the UUID into the mod.txt of every file it serves. Learned from
+## host responses that carry both; session-only, since every listing and
+## detail response teaches the pairs again.
+var _host_ref_aliases: Dictionary = {}
+
+func host_note_same_mod(provider: String, id_a: String, id_b: String) -> void:
+	var a := host_ref_key(host_ref(provider, id_a))
+	var b := host_ref_key(host_ref(provider, id_b))
+	if a == "" or b == "" or a == b:
+		return
+	_host_alias_link(a, b)
+	_host_alias_link(b, a)
+
+
+## The other ref keys known to name the same mod as `key`.
+func host_ref_aliases(key: String) -> Array:
+	return _host_ref_aliases.get(key, [])
+
+
+func _host_alias_link(from_key: String, to_key: String) -> void:
+	var known: Array = _host_ref_aliases.get(from_key, [])
+	if not known.has(to_key):
+		known.append(to_key)
+	_host_ref_aliases[from_key] = known
 
 
 ## Let the adapter read its own rate-limit dialect off a completed response

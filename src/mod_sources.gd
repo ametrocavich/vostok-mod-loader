@@ -91,6 +91,31 @@ func _entry_source_record(entry: Dictionary, persisted: Dictionary) -> Dictionar
 	return _resolve_mod_source(declared, stored)
 
 
+## Every ref key an installed mod answers to: the one _entry_host_ref
+## resolves, then the ids its host is known to give the same mod. The
+## Mods-tab memo holds the id a host answered a detail under (asked by UUID,
+## answered by slug), and host_ref_aliases the pairs host responses carried.
+## A pack or a Browse row matched against these finds the mod whichever id
+## it was written with. Empty when the mod has no host.
+func _entry_ref_keys(entry: Dictionary, persisted: Dictionary) -> PackedStringArray:
+	var keys := PackedStringArray()
+	var primary := host_ref_key(_entry_host_ref(entry, persisted))
+	if primary == "":
+		return keys
+	keys.append(primary)
+	_mods_meta_sidecar_load()
+	var meta_v: Variant = _mods_meta_by_key.get(primary)
+	if meta_v is Dictionary and (meta_v as Dictionary).get("ref") is Dictionary:
+		var answered := host_ref_key((meta_v as Dictionary)["ref"])
+		if answered != "" and not keys.has(answered):
+			keys.append(answered)
+	for known in keys.duplicate():
+		for alias in host_ref_aliases(known):
+			if not keys.has(str(alias)):
+				keys.append(str(alias))
+	return keys
+
+
 ## Normalize a [mod_sources]/profile.json record of either era. With a
 ## "provider" key present, modworkshop_id is never consulted, even as a fallback.
 func _normalize_source_record(v: Variant) -> Dictionary:
@@ -157,7 +182,8 @@ func _serialize_mod_source_rec(rec: Dictionary) -> String:
 
 # Whether a [mod_sources] write must stand down after mod_config.cfg failed to
 # load, logging why. Both cases keep the rolling backup usable. A file that
-# exists but does not parse would be saved over. A missing file with a .bak
+# exists but does not parse, or is blank beside a backup (_ui_cfg_load),
+# would be saved over. A missing file with a .bak
 # beside it is what _load_ui_config recovers from: the scan runs before that
 # load, a fresh file written here would hide the loss from it, and the next
 # save would copy the near-empty file over the backup. A missing file with no
@@ -179,7 +205,7 @@ func _mod_sources_write_blocked(load_err: int, what: String) -> bool:
 # displaces a record another host's download wrote.
 func _persist_mod_sources_for_entries(entries: Array[Dictionary]) -> void:
 	var cfg := ConfigFile.new()
-	var load_err := cfg.load(UI_CONFIG_PATH)
+	var load_err := _ui_cfg_load(cfg)
 	if _mod_sources_write_blocked(load_err, "the mod-source cache"):
 		return
 	var changed := false
@@ -207,7 +233,7 @@ func _persist_mod_sources_for_entries(entries: Array[Dictionary]) -> void:
 func _get_persisted_mod_sources() -> Dictionary:
 	var out: Dictionary = {}
 	var cfg := ConfigFile.new()
-	if cfg.load(UI_CONFIG_PATH) != OK:
+	if _ui_cfg_load(cfg) != OK:
 		return out
 	if not cfg.has_section("mod_sources"):
 		return out
@@ -226,7 +252,7 @@ func _persist_single_mod_source(profile_key: String, rec: Dictionary) -> void:
 	if profile_key.is_empty() or str(rec.get("provider", "")) == "":
 		return
 	var cfg := ConfigFile.new()
-	var load_err := cfg.load(UI_CONFIG_PATH)
+	var load_err := _ui_cfg_load(cfg)
 	if _mod_sources_write_blocked(load_err, "the mod source for '" + profile_key + "'"):
 		return
 	var serialized := _serialize_mod_source_rec(rec)
