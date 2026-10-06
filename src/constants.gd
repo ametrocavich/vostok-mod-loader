@@ -32,6 +32,12 @@ const SAFE_MODE_FILE := "modloader_safe_mode"
 const DISABLED_FILE := "modloader_disabled"
 # DISABLED_FILE, but auto-cleared after one launch ("Launch Vanilla" button).
 const DISABLED_ONCE_FILE := "modloader_disabled_once"
+# Command-line flag for an external mod manager that has already set up the
+# mods: the first pass loads the active profile without showing the launcher.
+const SKIP_UI_ARG := "--modloader-skip-ui"
+# The same for one launch, as a file beside the game: a manager that starts
+# the game through Steam cannot pass an argument without Steam's prompt.
+const SKIP_UI_ONCE_FILE := "modloader_skip_ui_once"
 const MAX_RESTART_COUNT := 2
 # Consecutive crashed two-pass restarts. Its own file, not a pass-state key:
 # the crashed-Pass-2 wipe deletes pass state, the very event being counted.

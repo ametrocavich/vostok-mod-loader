@@ -170,6 +170,9 @@ func _run() -> void:
 	_t25_mounting_a_scene_remap_loads_nothing()
 	_t26_the_hook_pack_carries_no_mod_scripts()
 	_t27_probe_verdicts_outlive_the_probing_launch()
+	_t28_blank_config_recovers_from_backup()
+	_t29_no_pack_forgets_the_previous_pack()
+	_t30_skip_ui_flag_is_read_from_either_side()
 
 	_finish()
 
@@ -604,6 +607,160 @@ func _t13_missing_config_recovers_from_backup() -> void:
 	_reset_user_state()
 	_ml._persist_mod_sources_for_entries(entries)
 	_assert(FileAccess.file_exists(cfg_path), "T13: with no backup the persist creates the file as before")
+	_reset_user_state()
+
+# --- T29: a launch that builds no hook pack forgets the previous one --------
+
+# Static init mounts the hook pack pass state names. When the last mod that
+# declares hooks is disabled, no pack is built, and a pack left named there
+# was mounted on every later launch over the zip mods still enabled, so a
+# legacy mod's own copy of a script that pack rewrote never ran. Pins: no
+# pack clears the record, and with no pass state nothing is created.
+func _t29_no_pack_forgets_the_previous_pack() -> void:
+	_reset_user_state()
+	var state_path := str(_ml.PASS_STATE_PATH)
+	var seeded := ConfigFile.new()
+	seeded.set_value("state", "mods_hash", "abc")
+	seeded.set_value("state", "hook_pack_path", "user://modloader_hooks/framework_pack_9.zip")
+	seeded.set_value("state", "hook_pack_wrapped_paths", PackedStringArray(["res://Scripts/Interface.gd"]))
+	_assert(seeded.save(state_path) == OK, "T29: seeded pass state")
+	_ml.set("_loaded_mod_ids", {})
+	_assert(str(_ml._generate_hook_pack(true)) == "", "T29: with no mod.txt mod loaded no pack is built")
+	var after := ConfigFile.new()
+	_assert(after.load(state_path) == OK, "T29: pass state is still readable")
+	_assert(str(after.get_value("state", "hook_pack_path", "x")) == ""
+			and (after.get_value("state", "hook_pack_wrapped_paths", PackedStringArray(["x"])) as PackedStringArray).is_empty(),
+			"T29: the previous pack is no longer named for static init (got '%s')" % str(after.get_value("state", "hook_pack_path", "")))
+	_assert(str(after.get_value("state", "mods_hash", "")) == "abc", "T29: the rest of pass state is kept")
+
+	_reset_user_state()
+	_ml._generate_hook_pack(true)
+	_assert(not FileAccess.file_exists(state_path), "T29: with no pass state, building no pack creates none")
+	_reset_user_state()
+
+# --- T30: the skip-launcher flag ---------------------------------------------
+
+# An external mod manager starts the game with --modloader-skip-ui so the
+# first pass loads the active profile without showing the launcher. Godot
+# hands an argument it does not know to get_cmdline_args(), and one after
+# "--" to get_cmdline_user_args(), where --modloader-restart also lives.
+func _t30_skip_ui_flag_is_read_from_either_side() -> void:
+	var none := PackedStringArray()
+	_assert(str(_ml.SKIP_UI_ARG) == "--modloader-skip-ui", "T30: the flag is --modloader-skip-ui")
+	_assert(not bool(_ml._launcher_skipped(PackedStringArray(["--rendering-driver", "vulkan"]), PackedStringArray(["--modloader-restart"]))),
+			"T30: an ordinary command line shows the launcher")
+	_assert(bool(_ml._launcher_skipped(PackedStringArray(["--modloader-skip-ui"]), none)),
+			"T30: the flag before -- skips the launcher")
+	_assert(bool(_ml._launcher_skipped(none, PackedStringArray(["--modloader-restart", "--modloader-skip-ui"]))),
+			"T30: the flag after -- skips the launcher")
+
+	# A manager that starts the game through Steam cannot pass the flag, so it
+	# writes a one-shot file beside the game instead. One launch, then gone.
+	var once := OS.get_executable_path().get_base_dir().path_join(str(_ml.SKIP_UI_ONCE_FILE))
+	_assert(not FileAccess.file_exists(once), "T30: no skip file beside the test engine before the test")
+	_assert(str(_ml._launcher_skip_reason()) == "", "T30: with neither flag nor file the launcher shows")
+	var f := FileAccess.open(once, FileAccess.WRITE)
+	_assert(f != null, "T30: wrote the skip file")
+	if f != null:
+		f.close()
+	_assert(str(_ml._launcher_skip_reason()) == "modloader_skip_ui_once", "T30: the skip file skips the launcher")
+	_assert(not FileAccess.file_exists(once), "T30: the skip file is consumed")
+	_assert(str(_ml._launcher_skip_reason()) == "", "T30: the launch after that shows the launcher again")
+	# The file asks to skip the next launch only, so a launch that skips for
+	# the flag, or sits idle while the loader is disabled, consumes it too.
+	f = FileAccess.open(once, FileAccess.WRITE)
+	if f != null:
+		f.close()
+	_assert(bool(_ml._consume_skip_ui_once()) and not FileAccess.file_exists(once), "T30: consuming the skip file deletes it")
+	_assert(not bool(_ml._consume_skip_ui_once()), "T30: with no skip file there is nothing to consume")
+	var src := FileAccess.get_file_as_string(str(_ml.get_script().resource_path))
+	var reason_at := src.find("func _launcher_skip_reason(")
+	var reason_body := src.substr(reason_at, src.find("\nfunc ", reason_at + 1) - reason_at)
+	_assert(reason_at >= 0 and reason_body.find("_consume_skip_ui_once()") >= 0
+			and reason_body.find("_consume_skip_ui_once()") < reason_body.find("_launcher_skipped("),
+			"T30: the skip file is consumed before the flag is read, so a launch with both consumes it")
+	var ready_at := src.find("func _ready(")
+	var ready_body := src.substr(ready_at, src.find("\nfunc ", ready_at + 1) - ready_at)
+	var disabled_at := ready_body.find("_is_modloader_disabled()")
+	_assert(disabled_at >= 0 and ready_body.find("_consume_skip_ui_once()", disabled_at) >= 0
+			and ready_body.find("_consume_skip_ui_once()", disabled_at) < ready_body.find("\n\t\treturn", disabled_at),
+			"T30: a disabled launch consumes the skip file before it sits idle")
+	if FileAccess.file_exists(once):
+		DirAccess.remove_absolute(once)
+
+# --- T28: a blank mod_config.cfg recovers from its backup --------------------
+
+# A save cut short by a crash or a full disk leaves mod_config.cfg empty, and
+# Godot loads an empty file as OK with no sections. Read as a fresh install,
+# the scan-time persist would write a file holding only [mod_sources], the
+# load would find no profiles, and the next save would roll that over the
+# backup. Pins: the persist stands down, the load recovers every profile and
+# keeps the blank file as .corrupt, a later save does not roll a blank file
+# over the backup, and with no backup a blank file is still a fresh install.
+func _t28_blank_config_recovers_from_backup() -> void:
+	var cfg_path := str(_ml.UI_CONFIG_PATH)
+	var bak_path := cfg_path + ".bak"
+	var good := ConfigFile.new()
+	good.set_value("settings", "active_profile", "Hardcore")
+	good.set_value("profile.Default.enabled", "a@1.0", true)
+	good.set_value("profile.Hardcore.enabled", "a@1.0", false)
+	good.set_value("profile.Hardcore.priority", "a@1.0", 40)
+	var mod_txt := ConfigFile.new()
+	mod_txt.parse("[mod]\nname=\"A\"\nid=\"a\"\nversion=\"1.0\"\n\n[updates]\nsource=\"vostokmods:a\"\n")
+	var entries: Array[Dictionary] = [{"profile_key": "a@1.0", "cfg": mod_txt}]
+	var empty: Array[Dictionary] = []
+
+	for blank_text in ["", "\n\n; cut short\n"]:
+		var label := "empty file" if blank_text == "" else "comment-only file"
+		_reset_user_state()
+		_assert(good.save(bak_path) == OK, "T28: wrote the backup")
+		_write_file(cfg_path, blank_text)
+		_ml._persist_mod_sources_for_entries(entries)
+		_assert(FileAccess.get_file_as_string(cfg_path) == blank_text,
+				"T28 (%s): the scan-time persist does not write over a blank config beside a backup" % label)
+		_ml.set("_ui_mod_entries", empty)
+		_ml._load_ui_config()
+		_assert(str(_ml.get("_active_profile")) == "Hardcore",
+				"T28 (%s): the load recovers the active profile (got '%s')" % [label, str(_ml.get("_active_profile"))])
+		var profiles: Array = _ml._list_profiles()
+		_assert(profiles.has("Default") and profiles.has("Hardcore"),
+				"T28 (%s): every profile is back (got %s)" % [label, str(profiles)])
+		_assert(FileAccess.file_exists(cfg_path + ".corrupt"), "T28 (%s): the blank file is kept as .corrupt" % label)
+
+	# A writer that meets a blank live file beside a backup stands down: the
+	# partial file it would write no longer looks blank, and the save after
+	# it would roll that over the backup.
+	_reset_user_state()
+	_assert(good.save(bak_path) == OK, "T28: wrote the backup for the writer case")
+	_write_file(cfg_path, "")
+	_ml.set("_active_profile", "Hardcore")
+	_ml._delete_active_profile()
+	_assert(FileAccess.get_file_as_string(cfg_path) == "",
+			"T28: a profile edit does not write a partial config over a blank one beside a backup")
+	var kept := ConfigFile.new()
+	_assert(kept.load(bak_path) == OK and kept.has_section("profile.Hardcore.priority"),
+			"T28: and the backup still has every profile")
+
+	# A blank live file met mid-session is not rolled over the backup.
+	_reset_user_state()
+	_assert(good.save(bak_path) == OK, "T28: wrote the backup again")
+	_write_file(cfg_path, "")
+	var partial := ConfigFile.new()
+	partial.set_value("settings", "developer_mode", true)
+	_ml._persist_ui_cfg(partial)
+	var bak := ConfigFile.new()
+	_assert(bak.load(bak_path) == OK and bak.has_section("profile.Hardcore.priority"),
+			"T28: saving over a blank config leaves the backup's profiles in place")
+	_assert(_ml._load_ui_cfg_for_write() != null,
+			"T28: once the live file has content again, writes proceed")
+
+	# With no backup a blank file is a fresh install, as before.
+	_reset_user_state()
+	_write_file(cfg_path, "")
+	_ml._persist_mod_sources_for_entries(entries)
+	var fresh := ConfigFile.new()
+	_assert(fresh.load(cfg_path) == OK and fresh.has_section("mod_sources"),
+			"T28: with no backup a blank config is written as a fresh install")
 	_reset_user_state()
 
 # --- T14: the state hash follows the load order --------------------------------
@@ -1420,7 +1577,7 @@ func _cleanup_exe_cfg() -> void:
 func _finish() -> void:
 	_cleanup_exe_cfg()
 	if _failures.is_empty():
-		print("[boot-state] PASS: %d assertion(s) across T1..T27" % _assertions)
+		print("[boot-state] PASS: %d assertion(s) across T1..T30" % _assertions)
 		quit(0)
 		return
 	for m in _failures:

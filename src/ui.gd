@@ -6,7 +6,7 @@
 const UI_HINT_MODS := "Higher number loads later and wins when mods share files.\n" \
 		+ "Required dependencies must be enabled or the mod won't load."
 const UI_HINT_BROWSE := "Download saves a mod into your mods folder. Tick its box to enable it in the active profile.\n" \
-		+ "Use the source menu to switch between VostokMods and ModWorkshop."
+		+ "Use the source menu to switch between Vostok Mods and ModWorkshop."
 const UI_HINT_MODPACKS := "Apply switches you to the pack's mods and settings and downloads what is missing.\n" \
 		+ "Unload brings your previous setup back."
 
@@ -14,7 +14,7 @@ const UI_HINT_MODPACKS := "Apply switches you to the pack's mods and settings an
 # Launcher zoom, read from config each call so the reopen path sees changes.
 func _ui_scale_setting() -> float:
 	var cfg := ConfigFile.new()
-	if cfg.load(UI_CONFIG_PATH) != OK:
+	if _ui_cfg_load(cfg) != OK:
 		return 1.0
 	return clampf(float(cfg.get_value("settings", "ui_scale", 1.0)), 1.0, 2.0)
 
@@ -26,17 +26,52 @@ func _apply_ui_scale(win: Window, ui_scale: float) -> void:
 	win.content_scale_factor = ui_scale
 	var want := Vector2i(roundi(960.0 * ui_scale), roundi(640.0 * ui_scale))
 	var want_min := Vector2i(roundi(640.0 * ui_scale), roundi(420.0 * ui_scale))
-	# Clamp to the usable display area so the Launch bar stays on-screen;
+	# Clamp to the area the window lives in so the Launch bar stays on-screen;
 	# keep min_size <= size or Godot rejects the pair.
-	var usable := DisplayServer.screen_get_usable_rect(win.current_screen).size
-	if usable.x > 0 and usable.y > 0:
-		want.x = mini(want.x, maxi(320, usable.x - 40))
-		want.y = mini(want.y, maxi(240, usable.y - 40))
+	var area := _ui_window_area(win).size
+	if area.x > 0 and area.y > 0:
+		want.x = mini(want.x, maxi(320, area.x - 40))
+		want.y = mini(want.y, maxi(240, area.y - 40))
 	want_min.x = mini(want_min.x, want.x)
 	want_min.y = mini(want_min.y, want.y)
 	win.min_size = Vector2i.ZERO
 	win.size = want
 	win.min_size = want_min
+	# A zoom changed in session grows the window from its top-left corner;
+	# centre it again so the Launch bar does not end up off-screen.
+	if win.is_inside_tree():
+		win.move_to_center()
+
+# The rect the launcher window lives in, in the units of its position and
+# size. Embedded in the game's root viewport that is the viewport's own
+# coordinates, which RTV's canvas_items stretch keeps at a 1920x1080 base
+# whatever the screen resolution; as a separate OS window, the usable
+# screen area.
+func _ui_window_area(win: Window) -> Rect2i:
+	if get_tree().root.gui_embed_subwindows:
+		return Rect2i(Vector2i.ZERO, Vector2i(get_tree().root.get_visible_rect().size))
+	return DisplayServer.screen_get_usable_rect(win.current_screen)
+
+# The mouse in the same units. DisplayServer reports screen pixels, which
+# for an embedded window on a 4K screen are twice the viewport's units: a
+# header drag moved the launcher twice as far as the mouse and could throw
+# it out of view, leaving the loader waiting on a window nobody can reach.
+func _ui_pointer(win: Window) -> Vector2:
+	if get_tree().root.gui_embed_subwindows:
+		return get_tree().root.get_mouse_position()
+	return Vector2(DisplayServer.mouse_get_position())
+
+# A window position that keeps the header on screen: enough of it to grab
+# horizontally, and all of its height vertically. Both margins are content
+# pixels, so they grow with the launcher's UI scale.
+func _ui_keep_on_screen(win: Window, pos: Vector2i) -> Vector2i:
+	var area := _ui_window_area(win)
+	var scale: float = maxf(win.content_scale_factor, 1.0)
+	var grab_margin := mini(int(120 * scale), win.size.x)
+	var header_height := mini(int(48 * scale), win.size.y)
+	pos.x = clampi(pos.x, area.position.x - win.size.x + grab_margin, area.end.x - grab_margin)
+	pos.y = clampi(pos.y, area.position.y, area.end.y - header_height)
+	return pos
 
 # One-shot vanilla boot: writes DISABLED_ONCE_FILE so the next launch skips
 # the loader; _ready clears the sentinel. No _save_ui_config here, which
@@ -115,7 +150,8 @@ func show_mod_ui() -> void:
 	win.queue_free()
 
 
-# The borderless, always-on-top launcher Window with its scrim and theme.
+# The borderless, always-on-top launcher Window, its theme, and a clear
+# click shield over the game behind it.
 func _ui_create_window() -> Window:
 	var win := Window.new()
 	win.title = "Road to Vostok -- Mod Loader"
@@ -129,6 +165,22 @@ func _ui_create_window() -> Window:
 	_apply_ui_scale(win, _ui_scale_setting())
 	win.wrap_controls = false
 	win.always_on_top = true
+	# A click beside the launcher used to reach the game's main menu, which
+	# could start the game while the loader still waited for Launch: no mods
+	# loaded and no Mods button afterwards. The shield takes those clicks;
+	# embedded windows get input before any canvas layer, so the launcher
+	# and its dialogs are unaffected.
+	var shield_layer := CanvasLayer.new()
+	shield_layer.layer = 128
+	var shield := Control.new()
+	shield.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	shield.mouse_filter = Control.MOUSE_FILTER_STOP
+	shield_layer.add_child(shield)
+	get_tree().root.add_child(shield_layer)
+	win.tree_exiting.connect(func():
+		if is_instance_valid(shield_layer):
+			shield_layer.queue_free()
+	)
 	get_tree().root.add_child(win)
 	win.popup_centered()
 	# Stash for dialogs triggered by profile-bar controls. Cleared on close.
@@ -227,18 +279,17 @@ func _ui_build_header(root: VBoxContainer, win: Window) -> Button:
 	close_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	header_row.add_child(close_btn)
 
-	# Header plate drags the window. Track absolute mouse position: ev.relative
-	# would self-cancel as the window moves and trail the cursor at half speed.
-	var drag := {"on": false, "grab": Vector2i.ZERO}
+	# Header plate drags the window. Track the absolute mouse position, in the
+	# units of win.position (_ui_pointer): ev.relative would self-cancel as the
+	# window moves and trail the cursor at half speed.
+	var drag := {"on": false, "grab": Vector2.ZERO}
 	header.gui_input.connect(func(ev: InputEvent):
 		if ev is InputEventMouseButton and ev.button_index == MOUSE_BUTTON_LEFT:
 			drag["on"] = ev.pressed
 			if ev.pressed:
-				# ev.global_position is in Control space (shrunk by content_scale_factor);
-				# mouse_get_position() is raw screen pixels.
-				drag["grab"] = Vector2i(ev.global_position * win.content_scale_factor)
+				drag["grab"] = _ui_pointer(win) - Vector2(win.position)
 		elif ev is InputEventMouseMotion and drag["on"]:
-			win.position = DisplayServer.mouse_get_position() - drag["grab"]
+			win.position = _ui_keep_on_screen(win, Vector2i(_ui_pointer(win) - drag["grab"]))
 	)
 	return close_btn
 
