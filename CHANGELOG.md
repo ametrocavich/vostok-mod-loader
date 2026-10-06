@@ -3,17 +3,18 @@
 ## [3.4.2](https://github.com/ametrocavich/vostok-mod-loader/compare/v3.4.1...v3.4.2) (2026-10-06)
 
 
+Fixes for Vostok Mods modpacks, Browse covers, settings recovery, updates, the launcher and the registry, plus a launcher skip for external mod managers.
+
 ### Bug Fixes
 
-* 3.4.2 modpack, Browse, launcher and registry fixes ([37838ef](https://github.com/ametrocavich/vostok-mod-loader/commit/37838efa190370714f73357e793d4128dcd3482b))
-* **browse:** load animated and large covers ([d02d15f](https://github.com/ametrocavich/vostok-mod-loader/commit/d02d15f3d6e2b21932cfcb5c628b0c2fc870c169))
-* **config:** keep every profile when mod_config.cfg is left empty ([f2bb7d1](https://github.com/ametrocavich/vostok-mod-loader/commit/f2bb7d180e157586691464327d6a5c963175db59))
-* **hooks:** forget a stale hook pack and drop a false override warning ([b99222a](https://github.com/ametrocavich/vostok-mod-loader/commit/b99222a2c75b81ccceffc58082c4ec892abe38dd))
-* **launcher:** keep the window on screen and let a manager skip it ([b4f7c21](https://github.com/ametrocavich/vostok-mod-loader/commit/b4f7c21fa072a0feec6e04b2b59c303925bb50f8))
-* **modpacks:** match installed mods by slug, UUID or checksum ([333f3cf](https://github.com/ametrocavich/vostok-mod-loader/commit/333f3cf48ac0c197c24b650fc477f7d7214f0d4e))
-* **registry:** make scene_paths overrides and sound clips take effect ([2dc5e39](https://github.com/ametrocavich/vostok-mod-loader/commit/2dc5e39ec5bd45780c2f0b6f9fb79230a47f7758))
-* **scanner:** read binary scenes and resources past their header ([47a7f73](https://github.com/ametrocavich/vostok-mod-loader/commit/47a7f734c4b0646179f3551e32cb464e5562ec8a))
-* **updates:** refuse an update that cannot or should not replace the mod ([aa6581b](https://github.com/ametrocavich/vostok-mod-loader/commit/aa6581be9a38620bc06bcf546952727ad7090bf2))
+* **modpacks:** Vostok Mods packs apply with their mods enabled: installed mods are matched by slug, UUID or the pack's checksum, and **Get from Vostok Mods** lists packs again ([333f3cf](https://github.com/ametrocavich/vostok-mod-loader/commit/333f3cf48ac0c197c24b650fc477f7d7214f0d4e))
+* **browse:** animated WebP covers show their first frame, and covers up to 8 MB load ([d02d15f](https://github.com/ametrocavich/vostok-mod-loader/commit/d02d15f3d6e2b21932cfcb5c628b0c2fc870c169))
+* **config:** an empty `mod_config.cfg` is recovered from its backup instead of losing every profile ([f2bb7d1](https://github.com/ametrocavich/vostok-mod-loader/commit/f2bb7d180e157586691464327d6a5c963175db59))
+* **launcher:** the title-bar drag keeps the window on screen above 1920x1080, clicks beside it no longer reach the main menu, and `--modloader-skip-ui` or a `modloader_skip_ui_once` file skips it for external mod managers ([b4f7c21](https://github.com/ametrocavich/vostok-mod-loader/commit/b4f7c21fa072a0feec6e04b2b59c303925bb50f8))
+* **updates:** a locked `.zip`/`.pck` says to disable the mod and relaunch, and a download naming another mod id no longer replaces the mod ([aa6581b](https://github.com/ametrocavich/vostok-mod-loader/commit/aa6581be9a38620bc06bcf546952727ad7090bf2))
+* **registry:** a `scene_paths` override of a vanilla scene loads the mod scene and keeps that scene's flags, and `sounds` clips play ([2dc5e39](https://github.com/ametrocavich/vostok-mod-loader/commit/2dc5e39ec5bd45780c2f0b6f9fb79230a47f7758))
+* **hooks:** a stale hook pack is no longer mounted after the last hooking mod is disabled, and deferred scripts no longer get a false "rewrite wins" warning ([b99222a](https://github.com/ametrocavich/vostok-mod-loader/commit/b99222a2c75b81ccceffc58082c4ec892abe38dd))
+* **scanner:** the malware scan reads binary `.scn`/`.res` files past their header ([47a7f73](https://github.com/ametrocavich/vostok-mod-loader/commit/47a7f734c4b0646179f3551e32cb464e5562ec8a))
 
 ## [3.4.1](https://github.com/ametrocavich/vostok-mod-loader/compare/v3.4.0...v3.4.1) (2026-09-30)
 
