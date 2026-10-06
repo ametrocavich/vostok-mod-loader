@@ -163,7 +163,7 @@ Duplicate autoload names are logged and skipped (first wins). A path that exists
 
 `source` is the provider-qualified form. The provider is a known host token: `vostokmods` (the id is the mod's UUID, which the site writes into the file; the slug, the last part of the page URL, also works) or `modworkshop` (the numeric mod id). The provider is matched case-insensitively. A value with no colon is rejected, not guessed, so `source="12345"` is an error, not a ModWorkshop id; in developer mode the row carries the note `mod.txt has an unrecognized [updates] source=...`. A malformed `source=` falls through to `modworkshop=` when both are present.
 
-For a VostokMods mod you normally write nothing: the site adds the line to every `mod.txt` it serves, with the mod's UUID as the id. Writing it yourself is fine too, with the UUID or the slug (the last part of the mod's page URL, `vostokmods.net/mod/<slug>`); every site route resolves either:
+For a Vostok Mods mod you normally write nothing: the site adds the line to every `mod.txt` it serves, with the mod's UUID as the id. Writing it yourself is fine too, with the UUID or the slug (the last part of the mod's page URL, `vostokmods.net/mod/<slug>`); every site route resolves either:
 
 ```
 [updates]
@@ -211,7 +211,7 @@ Quote the value (right-hand side). ConfigFile parses the RHS as a Variant litera
 
 Method names are case-insensitive (lowercased on write to match the rewriter's comparison). The wildcard leaves the inner mask empty, and the generator reads that as "wrap every non-static method".
 
-Declaring `[hooks]` in one mod enrolls that path for every mod. A full-script replacement of that same vanilla script (`[script_extend]` / `[script_overrides]`) does not currently compose with it: when the hook pack activates, the rewritten vanilla script wins at that path, the replacement's code does not run that session, and the loader logs a `[RTVCodegen]` warning naming the mod. If a script you replace is hooked by any loaded mod, hook its methods instead. Chaining a replacement on top of the rewrite is planned.
+Declaring `[hooks]` in one mod enrolls that path for every mod. A full-script replacement of that same vanilla script (`[script_extend]` / `[script_overrides]`) composes with it only when the loader defers that script to lazy compile (scripts with a module-scope scene preload, such as `Interface.gd`; the boot log lists them under `DEFER`): the replacement then extends the rewrite and both run. A script activated up front is reloaded with the rewritten source, the replacement's code does not run that session, and the loader logs a `[RTVCodegen]` warning naming the mod. If a script you replace is hooked by any loaded mod and is not deferred, hook its methods instead.
 
 ### `[script_extend]` section
 
@@ -233,7 +233,7 @@ Processing, per [mod_loading.gd `_apply_script_overrides`](https://github.com/am
 
 The source is compiled unchanged: the loader does not edit a chain script, so it has to be valid Godot 4 GDScript. A script that fails to compile is skipped with `[Overrides] Compile failed for <path>`.
 
-Interaction with the hook system: if the vanilla path is also in the hook wrap surface (through `[hooks]` or a mod calling `.hook()` on one of its methods), the replacement currently loses. Overrides are applied before the hook pack is generated, and activating the pack reloads the vanilla path with the rewritten source, discarding the replacement for that session. The loader logs a `[RTVCodegen]` warning naming your mod at both points. Until activation is reordered so a replacement chains onto the rewrite, hook the methods you need instead of replacing a hooked script. See [Hooks#composing-with-script_extend](Hooks#composing-with-script_extend).
+Interaction with the hook system: if the vanilla path is also in the hook wrap surface (through `[hooks]` or a mod calling `.hook()` on one of its methods), what happens depends on when the loader compiles that script. A script deferred to lazy compile (one with a module-scope scene preload; the boot log lists them under `DEFER`) composes: the replacement extends the rewrite and both run. A script activated up front loses the replacement for that session: overrides are applied before the hook pack is generated, and activating the pack reloads the vanilla path with the rewritten source. The loader logs a `[RTVCodegen]` warning naming your mod at both points in that case. Until activation is reordered so a replacement chains onto every rewrite, hook the methods you need instead of replacing a hooked script that is not deferred. See [Hooks#composing-with-script_extend](Hooks#composing-with-script_extend).
 
 `[script_overrides]` is the legacy alias, kept for mods written before v3.0.1. New mods should use `[script_extend]`.
 

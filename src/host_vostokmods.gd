@@ -1,5 +1,5 @@
 ## ----- host_vostokmods.gd -----
-## VostokMods adapter (vostokmods.net/api).
+## Vostok Mods adapter (vostokmods.net/api).
 ##
 ## A mod is addressed by its slug or its UUID: every route resolves either.
 ## Listing rows, modpack manifests and download URLs carry the slug, so a
@@ -208,15 +208,16 @@ func _vmp_list_mods(q: Dictionary) -> Dictionary:
 		return res
 	var body: Variant = res["data"]
 	if not (body is Dictionary):
-		return host_err(HOST_ERR_BAD_RESPONSE, 0, "VostokMods sent an unexpected response")
+		return host_err(HOST_ERR_BAD_RESPONSE, 0, "Vostok Mods sent an unexpected response")
 	# A missing rows key is a changed listing shape (the key moved once and
 	# the loader listed nothing for a day), so it is an error, not an empty page.
 	var raw_rows: Variant = _vmp_rows(body)
 	if raw_rows == null:
-		return host_err(HOST_ERR_BAD_RESPONSE, 0, "VostokMods sent an unexpected response")
+		return host_err(HOST_ERR_BAD_RESPONSE, 0, "Vostok Mods sent an unexpected response")
 
 	var rows := []
 	for row in (raw_rows as Array):
+		_vmp_note_ids(row)
 		var summary := _vmp_summary(row)
 		# A row with no slug cannot be opened or downloaded; drop it.
 		if host_ref_valid(summary["ref"]):
@@ -240,8 +241,28 @@ func _vmp_detail(id: String) -> Dictionary:
 	if not res["ok"]:
 		return res
 	if not (res["data"] is Dictionary):
-		return host_err(HOST_ERR_BAD_RESPONSE, 0, "VostokMods sent an unexpected response")
+		return host_err(HOST_ERR_BAD_RESPONSE, 0, "Vostok Mods sent an unexpected response")
+	_vmp_note_ids(res["data"])
 	return res
+
+
+## Whether a Vostok Mods id is a mod UUID (what the site writes into
+## mod.txt) rather than a slug (what listings, packs and URLs carry).
+var _vmp_uuid_re: RegEx = null
+
+func _vmp_is_uuid(id: String) -> bool:
+	if _vmp_uuid_re == null:
+		_vmp_uuid_re = RegEx.new()
+		_vmp_uuid_re.compile("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+	return _vmp_uuid_re.search(id) != null
+
+
+## A row carries the mod's slug and its UUID; pair them so a mod installed
+## under one id is found when a pack or a Browse row names the other.
+func _vmp_note_ids(row: Variant) -> void:
+	if row is Dictionary:
+		host_note_same_mod(HOST_VOSTOKMODS, _host_str((row as Dictionary).get("slug")).strip_edges(),
+				_host_str((row as Dictionary).get("id")).strip_edges())
 
 
 func _vmp_get_mod(ref: Dictionary) -> Dictionary:
@@ -331,7 +352,7 @@ func _vmp_list_categories() -> Dictionary:
 		return res
 	var rows: Variant = res["data"]
 	if not (rows is Array):
-		return host_err(HOST_ERR_BAD_RESPONSE, 0, "VostokMods sent an unexpected response")
+		return host_err(HOST_ERR_BAD_RESPONSE, 0, "Vostok Mods sent an unexpected response")
 	var out := []
 	for r in (rows as Array):
 		if not (r is Dictionary):
@@ -380,7 +401,7 @@ func _vmp_latest_versions(ids: PackedStringArray, on_progress: Callable) -> Dict
 
 # ----- modpacks --------------------------------------------------------------
 #
-# Packs are a VostokMods feature (the site hosts VostokMods mods only), so
+# Packs are a Vostok Mods feature (the site hosts Vostok Mods mods only), so
 # these are called by hosted_modpacks.gd directly rather than through the
 # seam. Same transport, cache and cooldown as everything else here.
 
@@ -424,16 +445,21 @@ func _vmp_list_modpacks(q: Dictionary) -> Dictionary:
 	var res := await _hnet_get_json(HOST_VOSTOKMODS, VM_API_BASE + "/modpacks" + _hnet_query(params), _VM_TTL_LIST_MS)
 	if not res["ok"]:
 		return res
-	var body: Variant = res["data"]
-	if not (body is Dictionary):
-		return host_err(HOST_ERR_BAD_RESPONSE, 0, "VostokMods sent an unexpected response")
+	return _vmp_modpack_page(res["data"])
+
+
+## The body of GET /api/modpacks -> a host_page of pack summaries. The rows
+## sit under `entries`, as in the mod listing. A body without the key is an
+## error: read as an empty page it tells the player nobody has published a pack.
+func _vmp_modpack_page(body: Variant) -> Dictionary:
+	var raw_rows: Variant = _vmp_rows(body)
+	if raw_rows == null:
+		return host_err(HOST_ERR_BAD_RESPONSE, 0, "Vostok Mods sent an unexpected response")
 	var rows := []
-	var raw_rows: Variant = (body as Dictionary).get("modpacks")
-	if raw_rows is Array:
-		for row in (raw_rows as Array):
-			var s := _vmp_modpack_summary(row)
-			if str(s["slug"]) != "":
-				rows.append(s)
+	for row in (raw_rows as Array):
+		var s := _vmp_modpack_summary(row)
+		if str(s["slug"]) != "":
+			rows.append(s)
 	var page := _host_count((body as Dictionary).get("page"))
 	var page_count := _host_count((body as Dictionary).get("pageCount"))
 	var has_more := page > 0 and page_count > page
@@ -519,7 +545,7 @@ func _vmp_validate_manifest(m: Variant) -> String:
 ## a refresh has to show the current list.
 func _vmp_fetch_modpack_manifest(url: String) -> Dictionary:
 	if not url.begins_with(VM_API_BASE + "/modpacks/"):
-		return host_err(HOST_ERR_NOT_FOUND, 0, "not a VostokMods modpack link")
+		return host_err(HOST_ERR_NOT_FOUND, 0, "not a Vostok Mods modpack link")
 	var res := await _hnet_get_json(HOST_VOSTOKMODS, url, 0)
 	if not res["ok"]:
 		return res

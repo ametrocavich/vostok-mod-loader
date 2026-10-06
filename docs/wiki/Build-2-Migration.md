@@ -199,7 +199,7 @@ For each such file, ask: did Build 2 change this? Anything under `AI/`, `Traders
 ## Step 7: Release it
 
 - Bump `version` in your `mod.txt`.
-- On your mod's VostokMods or ModWorkshop page, set the game version to Build 2, and say in the changelog whether the old build still works. Players on both builds read the same page.
+- On your mod's Vostok Mods or ModWorkshop page, set the game version to Build 2, and say in the changelog whether the old build still works. Players on both builds read the same page.
 
 ## Reading the game's current scripts
 

@@ -731,6 +731,8 @@ func _mods_build_updates_section(list: VBoxContainer, tabs: TabContainer) -> voi
 						_rebuild_mods_tab(tabs)
 					var err_name := str(captured_upd.get("mod_name", "this mod"))
 					var err_msg := "Could not download %s. Check your connection and try again." % err_name
+					if bool(result.get("local", false)):
+						err_msg = "Could not update %s." % err_name
 					var err_detail := str(result.get("error", ""))
 					if err_detail != "" and err_detail != "unknown":
 						err_msg += "\n\nDetails: " + err_detail

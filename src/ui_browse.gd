@@ -3,25 +3,15 @@
 
 # ----- Browse: source-neutral helpers ---------------------------------------
 
-# Installed mods keyed by host_ref_key. Last wins on duplicates. A host may
-# answer a detail under another id than it was asked for (VostokMods: asked
-# by the UUID its mod.txt carries, answered with the slug its listing rows
-# carry); the Mods-tab memo holds that answer, so the entry is keyed under
-# both and a Browse row finds it either way.
+# Installed mods keyed by every ref key they answer to (_entry_ref_keys), so
+# a Browse row keyed by a Vostok Mods slug finds a mod whose mod.txt carries
+# the UUID. Last wins on duplicates.
 func _browse_install_map() -> Dictionary:
 	var out: Dictionary = {}
 	var persisted: Dictionary = _get_persisted_mod_sources()
-	_mods_meta_sidecar_load()
 	for entry in _ui_mod_entries:
-		var key := host_ref_key(_entry_host_ref(entry, persisted))
-		if key == "":
-			continue
-		out[key] = entry
-		var meta_v: Variant = _mods_meta_by_key.get(key)
-		if meta_v is Dictionary and (meta_v as Dictionary).get("ref") is Dictionary:
-			var answered := host_ref_key((meta_v as Dictionary)["ref"])
-			if answered != "":
-				out[answered] = entry
+		for key in _entry_ref_keys(entry, persisted):
+			out[key] = entry
 	return out
 
 

@@ -3,7 +3,7 @@
 ## 2: the ordered mod list, each with slug, version and download details,
 ## plus the pack's MCM settings). The loader turns that manifest into an
 ## ordinary local modpack zip in mods/, so Apply, Unload and the failure
-## dialog all work unchanged. Packs are a VostokMods feature by
+## dialog all work unchanged. Packs are a Vostok Mods feature by
 ## the site's decision, so this file talks to the _vmp_* adapter directly
 ## instead of going through the host seam.
 ##
@@ -246,7 +246,7 @@ func _hosted_import_manifest(manifest: Dictionary) -> Dictionary:
 func _hosted_fetch_error_copy(res: Dictionary) -> String:
 	var reason := str(res.get("message", "")).strip_edges()
 	if str(res.get("code", "")) == HOST_ERR_BAD_RESPONSE and reason != "":
-		return "VostokMods sent a modpack the loader cannot use: " + reason
+		return "Vostok Mods sent a modpack the loader cannot use: " + reason
 	return host_error_message(HOST_VOSTOKMODS, res)
 
 
@@ -255,11 +255,11 @@ func _hosted_fetch_error_copy(res: Dictionary) -> String:
 func _hosted_pack_from_link(text: String) -> Dictionary:
 	var url := _vmp_modpack_manifest_url(text)
 	if url.is_empty():
-		return {"ok": false, "error": "That is not a VostokMods modpack link. Paste the pack's page address or its loader link.", "file_path": "", "name": ""}
+		return {"ok": false, "error": "That is not a Vostok Mods modpack link. Paste the pack's page address or its loader link.", "file_path": "", "name": ""}
 	var res := await _vmp_fetch_modpack_manifest(url)
 	if not res["ok"]:
 		if str(res["code"]) == HOST_ERR_NOT_FOUND:
-			return {"ok": false, "error": "VostokMods has no modpack at that link.", "file_path": "", "name": ""}
+			return {"ok": false, "error": "Vostok Mods has no modpack at that link.", "file_path": "", "name": ""}
 		return {"ok": false, "error": _hosted_fetch_error_copy(res), "file_path": "", "name": ""}
 	return _hosted_import_manifest(res["data"])
 
@@ -276,7 +276,7 @@ func _hosted_refresh_pack(entry: Dictionary) -> Dictionary:
 	var res := await _vmp_fetch_modpack_manifest(url)
 	if not res["ok"]:
 		if str(res["code"]) == HOST_ERR_NOT_FOUND:
-			return {"ok": false, "error": "This pack is no longer on VostokMods.", "changed": false, "name": str(entry.get("raw_name", ""))}
+			return {"ok": false, "error": "This pack is no longer on Vostok Mods.", "changed": false, "name": str(entry.get("raw_name", ""))}
 		return {"ok": false, "error": _hosted_fetch_error_copy(res), "changed": false, "name": str(entry.get("raw_name", ""))}
 	var manifest: Dictionary = res["data"]
 	if str(manifest.get("hash", "")) != "" and str(manifest.get("hash", "")) == str(hosted.get("hash", "")):
@@ -291,10 +291,10 @@ func _hosted_refresh_pack(entry: Dictionary) -> Dictionary:
 func _hosted_unavailable_copy(reason: String) -> String:
 	match reason:
 		"removed":
-			return "this mod was removed from VostokMods -- install it manually"
+			return "this mod was removed from Vostok Mods -- install it manually"
 		"scanning":
-			return "this mod's file is still being scanned by VostokMods -- try again in a while"
+			return "this mod's file is still being scanned by Vostok Mods -- try again in a while"
 		"no_files":
-			return "this mod has no downloadable file on VostokMods yet -- try again later"
+			return "this mod has no downloadable file on Vostok Mods yet -- try again later"
 		_:
-			return "VostokMods cannot serve this mod right now -- install it manually"
+			return "Vostok Mods cannot serve this mod right now -- install it manually"

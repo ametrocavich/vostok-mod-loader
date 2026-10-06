@@ -4,7 +4,7 @@ The **Mods** tab is the first tab in the launcher window and the one you use mos
 
 ## The list
 
-Each row is one mod: a checkbox, the mod's name, and its load-order number. A mod the launcher can match to a site also shows its thumbnail and `by <author>`. Click the name of a mod that came from VostokMods or ModWorkshop to see its site details without leaving the launcher. A mod that is off in the current profile shows dimmed.
+Each row is one mod: a checkbox, the mod's name, and its load-order number. A mod the launcher can match to a site also shows its thumbnail and `by <author>`. Click the name of a mod that came from Vostok Mods or ModWorkshop to see its site details without leaving the launcher. A mod that is off in the current profile shows dimmed.
 
 The **Load order** column on the right previews the order the game will load your enabled mods in. It updates as you edit.
 
@@ -12,7 +12,7 @@ Above the list:
 
 - **Filter mods...** narrows the list by name. **Enable all** and **Disable all** act on the visible rows only, so filter first to toggle a subset.
 - **Hide disabled** hides the rows of mods that are off in this profile.
-- **Check for updates** asks each mod's site for a newer version. Mods that do not say where they came from are skipped, and so are developer-mode folders and mods whose mod.txt has no `version`; the result message counts the last kind. If the site rate-limited the check, the message says so and when to try again. Mods with a newer version appear in an **Updates available** section, each with an **Update** button that downloads the new file and replaces the installed one.
+- **Check for updates** asks each mod's site for a newer version. Mods that do not say where they came from are skipped, and so are developer-mode folders and mods whose mod.txt has no `version`; the result message counts the last kind. If the site rate-limited the check, the message says so and when to try again. Mods with a newer version appear in an **Updates available** section, each with an **Update** button that downloads the new file and replaces the installed one. Update keeps the installed file and says why when it cannot replace it: an enabled `.zip` or `.pck` is held open by the game until it exits (disable the mod, relaunch, then update), and a download whose `mod.txt` names a different mod id is not installed over yours.
 
 ## Load order
 
@@ -64,6 +64,6 @@ Once the game is running, the **Mods** button on the main menu reopens this wind
 ## Related
 
 - [Setup](Setup): installing the loader and your first mods.
-- [Browse](Browse): installing mods from VostokMods or ModWorkshop.
+- [Browse](Browse): installing mods from Vostok Mods or ModWorkshop.
 - [Troubleshooting](Troubleshooting): when the game will not start or a mod does nothing.
 - [Config-Files](Config-Files): where profiles and settings live on disk.

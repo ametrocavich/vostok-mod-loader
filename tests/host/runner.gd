@@ -98,6 +98,14 @@ func _run() -> void:
 	await _t31_hosted_pack_names_and_errors(ml)
 	_t32_browse_hides_the_loaders_own_listing(ml)
 	_t33_install_map_keys_both_ids(ml)
+	_t34_animated_webp_shows_its_first_frame(ml)
+	await _t35_pack_slug_finds_the_mod_txt_uuid(ml)
+	_t36_binary_scan_reads_past_the_first_nul(ml)
+	await _t37_update_guards(ml)
+	_t38_leaving_a_profile_without_mcm_records_none(ml)
+	await _t39_pairing_asks_little_and_covers_unavailable_mods(ml)
+	await _t40_pinned_file_matches_by_checksum(ml)
+	await _t41_one_installed_test_and_cheap_pairing(ml)
 
 	_finish()
 
@@ -121,7 +129,7 @@ const MWS_ROW_JSON := """
  "thumbnail": {"file": "abc123.png", "has_thumb": true}}
 """
 
-# A VostokMods ModCard row, shaped from the site's own listing route rather
+# A Vostok Mods ModCard row, shaped from the site's own listing route rather
 # than inferred from one observed response. followersCount is present ON
 # PURPOSE: the adapter deliberately does NOT map it onto likes, and T2 pins
 # that. `group` on a category is the discriminator between a real category and
@@ -195,11 +203,11 @@ func _t1_mws_summary(ml: Object) -> void:
 
 func _t2_vm_summary(ml: Object) -> void:
 	var row: Variant = JSON.parse_string(VM_ROW_JSON)
-	_assert(row is Dictionary, "T2: VostokMods fixture JSON parses")
+	_assert(row is Dictionary, "T2: Vostok Mods fixture JSON parses")
 	var s: Variant = ml._vmp_summary(row)
 	_assert_same_keys(ml, s, "T2")
 	var key := str(ml.host_ref_key(s["ref"]))
-	# IDENTITY IS THE SLUG, not the numeric id. Every VostokMods route --
+	# IDENTITY IS THE SLUG, not the numeric id. Every Vostok Mods route --
 	# detail, download, public page -- is slug-keyed and the numeric id
 	# addresses nothing, so a ref built from the id would 404 everywhere.
 	_assert(key == "vostokmods:example",
@@ -275,7 +283,7 @@ func _t3_null_and_float_ids(ml: Object) -> void:
 			"T3: MWS row with null id stays the empty summary (name '')")
 	var vm: Variant = ml._vmp_summary(JSON.parse_string('{"id": null, "name": "X"}'))
 	_assert(str(ml.host_ref_key(vm["ref"])) == "",
-			"T3: VostokMods row with null id -> invalid ref, empty key")
+			"T3: Vostok Mods row with null id -> invalid ref, empty key")
 	_assert(not ml.host_ref_valid(ml.host_ref("modworkshop", "")),
 			"T3: a ref with an empty id is invalid")
 	# ModWorkshop sends JSON null for a field a mod never filled in.
@@ -444,7 +452,7 @@ func _t7_modtxt_reader(ml: Object) -> void:
 
 # Ranking a mod.txt declaration against the [mod_sources] record the launcher
 # stored for the same mod. Files served by vostokmods.net carry only a legacy
-# modworkshop= line, so a mod downloaded from VostokMods must keep the identity
+# modworkshop= line, so a mod downloaded from Vostok Mods must keep the identity
 # the download recorded; otherwise Browse shows it as not installed, the update
 # check asks the wrong host and a hosted pack re-downloads it on every apply.
 # An explicit source= is the author's word and wins over everything.
@@ -549,7 +557,7 @@ func _remove_user_file(path: String) -> void:
 # The "every field always present" rule: a normalizer's output must carry
 # exactly the key set host_empty_summary declares, no more, no fewer.
 
-# T8: the pure half of the VostokMods adapter. The seam has no live consumer
+# T8: the pure half of the Vostok Mods adapter. The seam has no live consumer
 # yet, so nothing has ever executed these; the async operations need a network
 # and stay out of reach here, but everything below is a pure function and has
 # no excuse for being untested.
@@ -657,7 +665,7 @@ func _t8_vm_pure_surface(ml: Object) -> void:
 func _t9_caps_match_wiring(ml: Object) -> void:
 	# Each host has its own id grammar, and a page-URL builder is right to
 	# refuse an id that cannot be one of its own (ModWorkshop ids are integers,
-	# VostokMods ids are slugs). Probe each with an id IT would accept, or the
+	# Vostok Mods ids are slugs). Probe each with an id IT would accept, or the
 	# check measures the fixture rather than the wiring.
 	var sample := {
 		ml.HOST_MODWORKSHOP: "12345",
@@ -751,6 +759,27 @@ func _t10_hosted_modpacks(ml: Object) -> void:
 	_assert(str(s["page_url"]) == "https://vostokmods.net/modpack/test", "T10: pack summary page_url")
 	_assert(str(s["cover_url"]) == "", "T10: null thumbnailUrl reads as empty, not '<null>'")
 
+	# The pack listing carries its rows under `entries`, like the mod listing.
+	# A body without the key is a changed shape and must be an error: read as
+	# an empty page it tells the player nobody has published a pack.
+	_assert(ml.has_method("_vmp_modpack_page"), "T10: the loader has _vmp_modpack_page")
+	var pack_listing: Variant = JSON.parse_string(
+			'{"entries": [' + VM_PACK_ROW_JSON + ', {"id": "x", "name": "No slug"}], "total": 2, "page": 1, "pageCount": 1}')
+	var pack_page: Dictionary = ml._vmp_modpack_page(pack_listing)
+	_assert(bool(pack_page["ok"]), "T10: a pack listing under `entries` is read")
+	if bool(pack_page["ok"]):
+		var pack_rows: Array = pack_page["data"]["rows"]
+		_assert(pack_rows.size() == 1 and str(pack_rows[0]["slug"]) == "test",
+				"T10: pack rows come from `entries`, a row with no slug dropped (got %d)" % pack_rows.size())
+		_assert(int(pack_page["data"]["total"]) == 2 and not bool(pack_page["data"]["has_more"]),
+				"T10: pack listing total and paging")
+	var pack_more: Dictionary = ml._vmp_modpack_page(JSON.parse_string('{"entries": [], "total": 45, "page": 2, "pageCount": 3}'))
+	_assert(bool(pack_more["ok"]) and bool(pack_more["data"]["has_more"]) and str(pack_more["data"]["next_cursor"]) == "3",
+			"T10: an empty pack page is still a listing, and pages on")
+	for bad in ['{"modpacks": [{"slug": "a"}], "total": 1}', '{"page": 1}', '[]']:
+		_assert(not bool(ml._vmp_modpack_page(JSON.parse_string(bad))["ok"]),
+				"T10: a pack body without `entries` is an error, not an empty listing (%s)" % bad)
+
 	# Manifest validation.
 	var manifest: Variant = JSON.parse_string(VM_MANIFEST_JSON)
 	_assert(manifest is Dictionary, "T10: manifest fixture parses")
@@ -781,7 +810,7 @@ func _t10_hosted_modpacks(ml: Object) -> void:
 	var rec: Dictionary = ml._normalize_source_record(src)
 	_assert(str(rec["provider"]) == "vostokmods" and str(rec["version"]) == "2.9.2",
 			"T10: the source record round-trips through the normalizer")
-	_assert(not src.has("modworkshop_id"), "T10: no ModWorkshop mirror on a VostokMods record")
+	_assert(not src.has("modworkshop_id"), "T10: no ModWorkshop mirror on a Vostok Mods record")
 	var unavailable: Dictionary = profile.get("unavailable", {})
 	_assert(str(unavailable.get("vostokmods:still-scanning", "")) == "scanning" and str(unavailable.get("vostokmods:gone", "")) == "removed",
 			"T10: unavailable mods keep the site's reason")
@@ -920,7 +949,7 @@ func _pack_cleanup(ml: Object) -> void:
 	ml.set("_modpack_entries", none)
 
 # Two installed mods on the Default profile, a@1.0 and foo@2.0. foo came from
-# VostokMods and its mod.txt says nothing, so only [mod_sources] knows its host.
+# Vostok Mods and its mod.txt says nothing, so only [mod_sources] knows its host.
 func _pack_setup(ml: Object) -> void:
 	_pack_cleanup(ml)
 	var installed: Array[Dictionary] = [_installed_entry("a@1.0", "a", "1.0"), _installed_entry("foo@2.0", "foo", "2.0")]
@@ -1455,6 +1484,12 @@ func _t29_pack_version_pins(ml: Object) -> void:
 				"T29: conflict is refused before downloading")
 		_assert(before == FileAccess.get_file_as_bytes(str(ml.UI_CONFIG_PATH)),
 				"T29: conflict does not change the profile or backup state")
+		# A pack from the site pins the versions it had when fetched; a mod
+		# updated since is fixed by refreshing the pack.
+		var hosted_pack: Dictionary = pack.duplicate(true)
+		hosted_pack["hosted"] = {"provider": "vostokmods", "slug": "round-trip"}
+		_assert(str(ml._modpack_pin_conflict(_pack_write(ml, hosted_pack, "1"))).contains("Refresh the pack"),
+				"T29: a pack from the site says to refresh it when a pinned mod was updated since")
 		pack["sources"]["vostokmods:foo"]["version"] = "3.0"
 		_assert(str(ml._modpack_pin_conflict(_pack_write(ml, pack, "1"))).is_empty(),
 				"T29: a newer requested version can still be downloaded")
@@ -1545,12 +1580,12 @@ func _t14_modpack_source_installed(ml: Object) -> void:
 	for c in cases:
 		var got := bool(ml._modpack_source_installed(c[1], installed))
 		_assert(got == bool(c[2]), "T14 %s: want %s, got %s" % [str(c[0]), str(c[2]), str(got)])
-	_assert(bool(ml._modpack_ref_downloadable(ml.host_ref("vostokmods", "x"))), "T14: a VostokMods ref is downloadable")
+	_assert(bool(ml._modpack_ref_downloadable(ml.host_ref("vostokmods", "x"))), "T14: a Vostok Mods ref is downloadable")
 	_assert(bool(ml._modpack_ref_downloadable(ml.host_ref("modworkshop", "1"))), "T14: a ModWorkshop ref is downloadable")
 	_assert(not bool(ml._modpack_ref_downloadable({})), "T14: an empty ref is not downloadable")
 	_assert(not bool(ml._modpack_ref_downloadable({"provider": "steam", "id": "1"})), "T14: an unknown host is not downloadable")
 
-# An installed mod whose mod.txt carries the UUID VostokMods writes since
+# An installed mod whose mod.txt carries the UUID Vostok Mods writes since
 # 2026-09-30 is keyed by that UUID, while Browse rows carry the slug. The
 # Mods-tab memo holds the detail the UUID resolved to, so the install map
 # must answer under both ids or Browse offers Download for an installed mod.
@@ -1577,6 +1612,483 @@ func _t33_install_map_keys_both_ids(ml: Object) -> void:
 			"T33: once the detail answered with the slug, both keys find the entry (got %s)" % str(map.keys()))
 	memo.clear()
 	_pack_cleanup(ml)
+
+# Godot's WebP loader refuses a file with the animation flag, and both hosts
+# serve animated covers, so the decoder rewraps the first frame as a still
+# WebP. The fixtures wrap Godot's own still encodings, one per kind of frame:
+# lossy, lossy with an ALPH chunk, lossless, and a frame smaller than the
+# canvas. The second frame is always blue, so a blue result means the wrong
+# frame was decoded.
+func _t34_animated_webp_shows_its_first_frame(ml: Object) -> void:
+	var red := Image.create_empty(48, 32, false, Image.FORMAT_RGB8)
+	red.fill(Color(1, 0, 0))
+	var blue := Image.create_empty(48, 32, false, Image.FORMAT_RGB8)
+	blue.fill(Color(0, 0, 1))
+	var blue_frame := {"chunks": _webp_frame_chunks(blue.save_webp_to_buffer(true, 0.9)),
+			"offset": Vector2i.ZERO, "size": Vector2i(48, 32)}
+	var full := Vector2i(48, 32)
+
+	var still: Image = ml._decode_image_buffer(red.save_webp_to_buffer(true, 0.9))
+	_assert(still != null and still.get_size() == full, "T34: a still lossy WebP still decodes")
+
+	var lossy := _animated_webp(full, [{"chunks": _webp_frame_chunks(red.save_webp_to_buffer(true, 0.9)),
+			"offset": Vector2i.ZERO, "size": full}, blue_frame])
+	var img: Image = ml._decode_image_buffer(lossy)
+	_assert(img != null and img.get_size() == full and _near(img.get_pixel(24, 16), Color(1, 0, 0)),
+			"T34: an animated lossy WebP decodes to its red first frame (got %s)" % _describe(img, Vector2i(24, 16)))
+
+	var half := Image.create_empty(48, 32, false, Image.FORMAT_RGBA8)
+	half.fill_rect(Rect2i(0, 0, 24, 32), Color(0, 1, 0, 1))
+	var alpha_still := half.save_webp_to_buffer(true, 0.9)
+	_assert(alpha_still.slice(12, 16).get_string_from_ascii() == "VP8X" and ml._decode_image_buffer(alpha_still) != null,
+			"T34: a still WebP with alpha is not mistaken for an animated one")
+	var with_alpha := _animated_webp(full, [{"chunks": _webp_frame_chunks(alpha_still),
+			"offset": Vector2i.ZERO, "size": full}, blue_frame])
+	img = ml._decode_image_buffer(with_alpha)
+	_assert(img != null and _near(img.get_pixel(8, 16), Color(0, 1, 0)) and img.get_pixel(40, 16).a < 0.1,
+			"T34: a lossy first frame keeps its ALPH transparency (got %s / %s)"
+					% [_describe(img, Vector2i(8, 16)), _describe(img, Vector2i(40, 16))])
+
+	var lossless := _animated_webp(full, [{"chunks": _webp_frame_chunks(red.save_webp_to_buffer(false)),
+			"offset": Vector2i.ZERO, "size": full}, blue_frame])
+	img = ml._decode_image_buffer(lossless)
+	_assert(img != null and img.get_pixel(24, 16).is_equal_approx(Color(1, 0, 0)),
+			"T34: an animated lossless WebP decodes to its red first frame (got %s)" % _describe(img, Vector2i(24, 16)))
+
+	var small := Image.create_empty(32, 32, false, Image.FORMAT_RGB8)
+	small.fill(Color(1, 0, 0))
+	var inset := _animated_webp(Vector2i(64, 64), [{"chunks": _webp_frame_chunks(small.save_webp_to_buffer(false)),
+			"offset": Vector2i(16, 16), "size": Vector2i(32, 32)}, blue_frame])
+	img = ml._decode_image_buffer(inset)
+	_assert(img != null and img.get_size() == Vector2i(64, 64) and img.get_pixel(4, 4).a == 0.0
+			and img.get_pixel(32, 32).is_equal_approx(Color(1, 0, 0)),
+			"T34: a first frame smaller than the canvas sits at its offset on a clear canvas (got %s / %s)"
+					% [_describe(img, Vector2i(4, 4)), _describe(img, Vector2i(32, 32))])
+
+	_assert(ml._decode_image_buffer(lossy.slice(0, 60)) == null,
+			"T34: an animated WebP cut off inside its first frame decodes to null")
+
+# Vostok Mods names a mod by slug or UUID. A hosted pack keys its mods by
+# slug, and the site writes the UUID into the mod.txt of every file it
+# serves, so the installed mod resolves to the UUID. Unpaired, the pack's
+# mod reads as missing and the apply would leave it disabled. Once a host
+# response has paired the ids, the slug finds the mod: nothing is missing,
+# the slot is keyed by the installed mod, and the mod is enabled.
+func _t35_pack_slug_finds_the_mod_txt_uuid(ml: Object) -> void:
+	_pack_cleanup(ml)
+	var uuid := "01a0a18a-3e89-7977-a03a-c3b839ea00cf"
+	var foo := _installed_entry("foo@2.0", "foo", "2.0")
+	foo["enabled"] = false
+	var foo_cfg := ConfigFile.new()
+	foo_cfg.set_value("mod", "version", "2.0")
+	foo_cfg.set_value("updates", "source", "vostokmods:" + uuid)
+	foo["cfg"] = foo_cfg
+	var installed: Array[Dictionary] = [_installed_entry("a@1.0", "a", "1.0"), foo]
+	ml.set("_ui_mod_entries", installed)
+	ml.set("_active_profile", "Default")
+	var seed := ConfigFile.new()
+	seed.set_value("settings", "active_profile", "Default")
+	seed.set_value("profile.Default.enabled", "a@1.0", true)
+	seed.set_value("mod_sources", "foo@2.0",
+			ml._serialize_mod_source_rec({"provider": "vostokmods", "id": uuid, "version": "2.0"}))
+	_assert(seed.save(str(ml.UI_CONFIG_PATH)) == OK, "T35: seeded mod_config.cfg")
+	var entry := _pack_write(ml, {"metroprofile": 1, "name": "Round Trip",
+			"enabled": {"a@1.0": true, "vostokmods:foo": true},
+			"sources": {"vostokmods:foo": {"provider": "vostokmods", "id": "foo", "version": "2.0"}}}, "1")
+	var aliases: Dictionary = ml.get("_host_ref_aliases")
+	aliases.clear()
+	(ml.get("_mods_meta_by_key") as Dictionary).clear()
+
+	var ask: Array = ml._modpack_unpaired_host_refs(entry)
+	_assert(ask.size() == 1 and str(ml.host_ref_key(ask[0])) == "vostokmods:" + uuid,
+			"T35: unpaired, the apply asks the host about the installed mod's UUID (got %s)" % str(ask))
+	_assert((ml._get_missing_mods_for_modpack(entry) as Array).size() == 1,
+			"T35: unpaired, the pack's slug reads as missing")
+
+	ml._vmp_note_ids({"id": uuid, "slug": "foo"})
+	_assert("vostokmods:" + uuid in ml.host_ref_aliases("vostokmods:foo")
+			and "vostokmods:foo" in ml.host_ref_aliases("vostokmods:" + uuid),
+			"T35: a row with an id and a slug pairs them both ways")
+	_assert((ml._modpack_unpaired_host_refs(entry) as Array).is_empty(), "T35: paired, the apply asks nothing")
+	_assert((ml._get_missing_mods_for_modpack(entry) as Array).is_empty(),
+			"T35: paired, the pack's slug finds the installed mod")
+	_assert(ml._browse_install_map().has("vostokmods:foo"), "T35: paired, a Browse row keyed by slug finds the mod")
+
+	var r: Dictionary = await ml.apply_modpack(entry, null, Callable())
+	_assert(bool(r.get("ok", false)) and int(r.get("downloaded", -1)) == 0 and int(r.get("failed_downloads", -1)) == 0,
+			"T35: the pack applies without trying to download anything (got %s)" % str(r))
+	var after := ConfigFile.new()
+	after.load(str(ml.UI_CONFIG_PATH))
+	var en_sec := "profile.modpack__" + str(entry.get("sanitized_name", "")) + ".enabled"
+	_assert(after.has_section_key(en_sec, "foo@2.0") and not after.has_section_key(en_sec, "vostokmods:foo"),
+			"T35: the pack's slot is keyed by the installed mod")
+	var live_foo: Dictionary = {}
+	for e in (ml.get("_ui_mod_entries") as Array):
+		if str((e as Dictionary).get("profile_key", "")) == "foo@2.0":
+			live_foo = e
+	_assert(bool(live_foo.get("enabled", false)), "T35: the pack's mod is enabled after the apply")
+	ml.unload_modpack(null)
+	aliases.clear()
+	_pack_cleanup(ml)
+
+# A binary resource starts "RSRC" and a zero word, and Godot's string
+# decoders stop at the first NUL, so the scanner's binary rules used to see
+# four characters. The fixture is a real binary scene saved by the engine,
+# carrying a payload in a string property the way a built-in script carries
+# its source; a clean scene must still scan clean.
+func _t36_binary_scan_reads_past_the_first_nul(ml: Object) -> void:
+	var path := "user://scan_payload.scn"
+	var bad := _scene_bytes(path, "func _ready():\n\tOS.execute(\"cmd.exe\", [\"/c\", \"calc\"])\n\tvar e = Expression.new()\n")
+	_assert(bad.slice(0, 4).get_string_from_ascii() == "RSRC" and bad.find(0) == 4,
+			"T36: the fixture is a binary resource with a NUL right after its magic")
+	ml._security_compile_rules()
+	var findings: Array = []
+	ml._security_scan_binary("scan_payload.scn", bad, findings)
+	var rules := PackedStringArray()
+	for f in findings:
+		rules.append(str((f as Dictionary).get("rule", "")))
+	_assert(rules.has("os_execute") and rules.has("expression_eval"),
+			"T36: a payload in a binary scene is found (got %s)" % str(rules))
+	_assert(int(ml.compute_risk_level(findings)) == int(ml.RISK_RED), "T36: and it is rated red")
+	var clean_findings: Array = []
+	ml._security_scan_binary("scan_clean.scn", _scene_bytes(path, "A note about how the cabin door opens."), clean_findings)
+	_assert(clean_findings.is_empty(), "T36: a clean binary scene has no findings (got %s)" % str(clean_findings))
+	# Every binary rule fires on a sample call inside a binary scene: one
+	# sample per rule, all in one scene.
+	var binary_ids := PackedStringArray()
+	for rule in (ml._SECURITY_RULES as Array):
+		if bool((rule as Dictionary).get("binary", false)):
+			binary_ids.append(str(rule["id"]))
+	var every := "OS.execute(\"x\", [])\nOS.create_process(\"x\", [])\nOS.create_instance([])\nOS.kill(1)\n" \
+			+ "OS.crash(\"x\")\nOS.set_use_file_access_save_and_swap(false)\nExpression.new()\n" \
+			+ "s.set_source_code(src)\nbytes_to_var_with_objects(b)\nMarshalls.base64_to_variant(s, true)\n"
+	var all_findings: Array = []
+	ml._security_scan_binary("scan_every.scn", _scene_bytes(path, every), all_findings)
+	var found := PackedStringArray()
+	for f in all_findings:
+		found.append(str((f as Dictionary).get("rule", "")))
+	for rule_id in binary_ids:
+		_assert(found.has(rule_id), "T36: binary rule %s fires on its sample inside a binary scene (found %s)" % [rule_id, str(found)])
+	_remove_user_file(path)
+
+# Update replaces the installed archive, so it refuses what would go wrong
+# after a full download: a .zip the game mounted at startup is locked until
+# it exits, and a file whose mod.txt names another mod would delete this
+# one. Both answer before any network request and say the cause is local.
+func _t37_update_guards(ml: Object) -> void:
+	var mounted_path := ProjectSettings.globalize_path("user://t37_mounted.zip")
+	var mounted: Dictionary = ml.get("_filescope_mounted")
+	mounted[mounted_path] = true
+	var r: Dictionary = await ml.replace_mod_from_ref(mounted_path, ml.host_ref("vostokmods", "t37"))
+	_assert(not bool(r["ok"]) and bool(r.get("local", false)) and str(r["error"]).contains("relaunch"),
+			"T37: updating a mounted .zip says to disable and relaunch (got %s)" % str(r))
+	mounted.erase(mounted_path)
+
+	var old_zip := _write_zip("user://t37_old.zip", {"mod.txt": "[mod]\nname=\"A\"\nid=\"mod_a\"\nversion=\"1.0\"\n"})
+	var other := ConfigFile.new()
+	other.parse("[mod]\nname=\"B\"\nid=\"mod_b\"\nversion=\"2.3\"\n")
+	_assert(str(ml._update_names_another_mod(old_zip, other, "modworkshop")).contains("different mod"),
+			"T37: a download whose mod.txt names another id is refused")
+	var same := ConfigFile.new()
+	same.parse("[mod]\nname=\"A\"\nid=\"MOD_A\"\nversion=\"1.1\"\n")
+	_assert(str(ml._update_names_another_mod(old_zip, same, "modworkshop")) == "",
+			"T37: the same id in another case is the same mod")
+	var no_id := ConfigFile.new()
+	no_id.parse("[mod]\nname=\"A\"\nversion=\"1.1\"\n")
+	_assert(str(ml._update_names_another_mod(old_zip, no_id, "modworkshop")) == "",
+			"T37: with no id to compare the update goes ahead")
+	_remove_user_file("user://t37_old.zip")
+
+# A profile left while user://MCM does not exist still gets a snapshot slot,
+# an empty one. Without it, coming back finds no snapshot and seeds the
+# profile from whichever profile's MCM settings are live.
+func _t38_leaving_a_profile_without_mcm_records_none(ml: Object) -> void:
+	_pack_cleanup(ml)
+	_assert(not DirAccess.dir_exists_absolute(ProjectSettings.globalize_path("user://MCM")), "T38: no live MCM folder")
+	ml._snapshot_mcm_to("T38Light")
+	_assert(bool(ml._has_mcm_snapshot("T38Light")), "T38: the profile has a snapshot slot")
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("user://MCM/heavy-mod"))
+	var f := FileAccess.open("user://MCM/heavy-mod/config.ini", FileAccess.WRITE)
+	f.store_string("[a]\nv=heavy\n")
+	f.close()
+	_assert(bool(ml._restore_mcm_from("T38Light")) and not FileAccess.file_exists("user://MCM/heavy-mod/config.ini"),
+			"T38: coming back restores no MCM settings, not another profile's")
+	_pack_cleanup(ml)
+
+# The pairing before an apply asks the site only about installs that could
+# be what an unmatched pack mod names: a pack names mods by slug, so a mod
+# installed under its slug (a Browse download before the site wrote UUIDs)
+# is never asked about. A mod the site marks unavailable has no source in
+# the pack, and its key still finds an installed copy.
+func _t39_pairing_asks_little_and_covers_unavailable_mods(ml: Object) -> void:
+	_pack_cleanup(ml)
+	var uuid := "019ff1f0-00ac-76a9-a23f-7151e4531131"
+	var foo := _installed_entry("foo@2.0", "foo", "2.0")
+	var foo_cfg := ConfigFile.new()
+	foo_cfg.set_value("mod", "version", "2.0")
+	foo_cfg.set_value("updates", "source", "vostokmods:" + uuid)
+	foo["cfg"] = foo_cfg
+	var bar := _installed_entry("bar@1.0", "bar", "1.0")
+	var installed: Array[Dictionary] = [foo, bar]
+	ml.set("_ui_mod_entries", installed)
+	ml.set("_active_profile", "Default")
+	var seed := ConfigFile.new()
+	seed.set_value("settings", "active_profile", "Default")
+	seed.set_value("mod_sources", "bar@1.0", ml._serialize_mod_source_rec({"provider": "vostokmods", "id": "bar", "version": "1.0"}))
+	_assert(seed.save(str(ml.UI_CONFIG_PATH)) == OK, "T39: seeded mod_config.cfg")
+	var aliases: Dictionary = ml.get("_host_ref_aliases")
+	aliases.clear()
+	(ml.get("_mods_meta_by_key") as Dictionary).clear()
+
+	var entry := _pack_write(ml, {"metroprofile": 1, "name": "Round Trip",
+			"enabled": {"vostokmods:bar": true, "vostokmods:qux": true},
+			"sources": {"vostokmods:bar": {"provider": "vostokmods", "id": "bar"},
+					"vostokmods:qux": {"provider": "vostokmods", "id": "qux"}}}, "1")
+	var ask: Array = ml._modpack_unpaired_host_refs(entry)
+	_assert(ask.size() == 1 and str(ml.host_ref_key(ask[0])) == "vostokmods:" + uuid,
+			"T39: only the install known by UUID is asked about, not the one known by slug (got %s)" % str(ask))
+
+	entry = _pack_write(ml, {"metroprofile": 1, "name": "Round Trip",
+			"enabled": {"vostokmods:foo": true},
+			"unavailable": {"vostokmods:foo": "scanning"}}, "1")
+	_assert((ml._get_missing_mods_for_modpack(entry) as Array).size() == 1,
+			"T39: unpaired, an unavailable pack mod reads as missing")
+	ml._vmp_note_ids({"id": uuid, "slug": "foo"})
+	_assert((ml._get_missing_mods_for_modpack(entry) as Array).is_empty(),
+			"T39: paired, the pack key of an unavailable mod finds the installed copy")
+	foo["enabled"] = false
+	var r: Dictionary = await ml.apply_modpack(entry, null, Callable())
+	var after := ConfigFile.new()
+	after.load(str(ml.UI_CONFIG_PATH))
+	var en_sec := "profile.modpack__" + str(entry.get("sanitized_name", "")) + ".enabled"
+	_assert(bool(r.get("ok", false)) and after.has_section_key(en_sec, "foo@2.0") and bool(foo.get("enabled", false)),
+			"T39: the apply keys the unavailable mod by its installed copy and enables it (got %s)" % str(r))
+	ml.unload_modpack(null)
+	aliases.clear()
+	_pack_cleanup(ml)
+
+# A site's version label can differ from the version in the file's own
+# mod.txt: Vehicle Doors is 1.0.0 on Vostok Mods and says 0.9.0 inside. The
+# pack pins the label, so the installed copy never matched, the apply left
+# the mod as a missing row, and its Download fetched the same 142 MB file a
+# second time. The pack's checksum is for the exact pinned file, so an
+# installed archive with those bytes is that version.
+func _t40_pinned_file_matches_by_checksum(ml: Object) -> void:
+	_pack_cleanup(ml)
+	var uuid := "01a108b6-2a9e-75bb-b9ac-43623230bebb"
+	var mod_txt := "[mod]\nname=\"Vehicle Doors\"\nid=\"vehicle-doors\"\nversion=\"0.9.0\"\n\n[updates]\nsource=\"vostokmods:" + uuid + "\"\n"
+	var vd_path := _write_zip("user://t40_VehicleDoors.vmz", {"mod.txt": mod_txt})
+	var vd_sha := FileAccess.get_sha256(vd_path)
+	var vd := _installed_entry("vehicle-doors@0.9.0", "vehicle-doors", "0.9.0")
+	vd["full_path"] = vd_path
+	vd["enabled"] = false
+	var vd_cfg := ConfigFile.new()
+	vd_cfg.parse(mod_txt)
+	vd["cfg"] = vd_cfg
+	var installed: Array[Dictionary] = [vd]
+	ml.set("_ui_mod_entries", installed)
+	ml.set("_active_profile", "Default")
+	var seed := ConfigFile.new()
+	seed.set_value("settings", "active_profile", "Default")
+	_assert(seed.save(str(ml.UI_CONFIG_PATH)) == OK, "T40: seeded mod_config.cfg")
+	var aliases: Dictionary = ml.get("_host_ref_aliases")
+	aliases.clear()
+	ml._vmp_note_ids({"id": uuid, "slug": "vehicle-doors"})
+	var pin := {"provider": "vostokmods", "id": "vehicle-doors", "version": "1.0.0"}
+	var pack := {"metroprofile": 1, "name": "Round Trip", "enabled": {"vostokmods:vehicle-doors": true},
+			"sources": {"vostokmods:vehicle-doors": pin}, "checksums": {"vostokmods:vehicle-doors": "0".repeat(64)}}
+
+	var entry := _pack_write(ml, pack, "1")
+	_assert((ml._get_missing_mods_for_modpack(entry) as Array).size() == 1,
+			"T40: other bytes under the pinned label still read as missing")
+	pack["checksums"]["vostokmods:vehicle-doors"] = vd_sha
+	entry = _pack_write(ml, pack, "1")
+	_assert((ml._get_missing_mods_for_modpack(entry) as Array).is_empty(),
+			"T40: the pinned file is installed although its mod.txt says another version")
+
+	var r: Dictionary = await ml.apply_modpack(entry, null, Callable())
+	var after := ConfigFile.new()
+	after.load(str(ml.UI_CONFIG_PATH))
+	var en_sec := "profile.modpack__" + str(entry.get("sanitized_name", "")) + ".enabled"
+	_assert(bool(r.get("ok", false)) and int(r.get("downloaded", -1)) == 0 and int(r.get("failed_downloads", -1)) == 0,
+			"T40: the pack applies without downloading anything (got %s)" % str(r))
+	_assert(after.has_section_key(en_sec, "vehicle-doors@0.9.0") and not after.has_section_key(en_sec, "vostokmods:vehicle-doors")
+			and bool(vd.get("enabled", false)),
+			"T40: the slot is keyed by the installed mod and the mod is enabled")
+
+	# A slot left keyed by the pack (what 3.4.1 wrote) heals at boot.
+	var stale := ConfigFile.new()
+	stale.load(str(ml.UI_CONFIG_PATH))
+	stale.erase_section_key(en_sec, "vehicle-doors@0.9.0")
+	stale.set_value(en_sec, "vostokmods:vehicle-doors", true)
+	stale.save(str(ml.UI_CONFIG_PATH))
+	_assert(int(ml._modpack_reconcile_active()) == 1, "T40: the active pack's stale key is reconciled")
+	ml.unload_modpack(null)
+
+	# A mod.txt that claims a newer version than the label is the same file,
+	# not a newer copy that would block the pin.
+	ml.set("_ui_mod_entries", installed)
+	vd["version"] = "1.1.0"
+	_assert(str(ml._modpack_pin_conflict(entry)).is_empty(),
+			"T40: the pinned file is not a newer copy whatever its mod.txt says")
+	pack["checksums"]["vostokmods:vehicle-doors"] = "0".repeat(64)
+	_assert(not str(ml._modpack_pin_conflict(_pack_write(ml, pack, "1"))).is_empty(),
+			"T40: another file with a newer version still blocks the pin")
+	aliases.clear()
+	_remove_user_file("user://t40_VehicleDoors.vmz")
+	_pack_cleanup(ml)
+
+# The pack's details dialog and the apply ask one question of each pack mod
+# (_modpack_key_installed). The dialog skipped the id@version match in
+# another case and the key of a hosted mod the site could not serve, so it
+# showed mods missing that the apply then found installed. Then two costs
+# the apply avoids: a pinned file is hashed only when its version would
+# block the pin, and an installed mod the site has answered for is not
+# asked about again this session, while an ask that never reached the site is.
+func _t41_one_installed_test_and_cheap_pairing(ml: Object) -> void:
+	_pack_cleanup(ml)
+	var foo := _installed_entry("Foo@1.0", "Foo", "1.0")
+	var bar := _installed_entry("bar@2.0", "bar", "2.0")
+	var bar_cfg := ConfigFile.new()
+	bar_cfg.set_value("mod", "version", "2.0")
+	bar_cfg.set_value("updates", "source", "vostokmods:bar")
+	bar["cfg"] = bar_cfg
+	var installed: Array[Dictionary] = [foo, bar]
+	ml.set("_ui_mod_entries", installed)
+	ml.set("_active_profile", "Default")
+	var seed := ConfigFile.new()
+	seed.set_value("settings", "active_profile", "Default")
+	_assert(seed.save(str(ml.UI_CONFIG_PATH)) == OK, "T41: seeded mod_config.cfg")
+	var aliases: Dictionary = ml.get("_host_ref_aliases")
+	aliases.clear()
+
+	var sources := {"vostokmods:qux": {"provider": "vostokmods", "id": "qux"}}
+	var index: Dictionary = ml._modpack_installed_index()
+	_assert(bool(ml._modpack_key_installed("foo@1.0", sources, {}, index)),
+			"T41: the same id@version in another case is installed")
+	_assert(bool(ml._modpack_key_installed("vostokmods:bar", sources, {}, index)),
+			"T41: a hosted key with no source finds the mod it names")
+	_assert(not bool(ml._modpack_key_installed("vostokmods:qux", sources, {}, index)),
+			"T41: a mod that is not installed reads as missing")
+	var entry := _pack_write(ml, {"metroprofile": 1, "name": "Round Trip",
+			"enabled": {"foo@1.0": true, "vostokmods:bar": true, "vostokmods:qux": true}, "sources": sources}, "1")
+	var missing: Array = ml._get_missing_mods_for_modpack(entry)
+	_assert(missing.size() == 1 and str((missing[0] as Dictionary)["profile_key"]) == "vostokmods:qux",
+			"T41: the apply finds the same one mod missing (got %s)" % str(missing))
+
+	# Only an installed copy newer than the pin is hashed.
+	var sha_cache: Dictionary = ml.get("_modpack_sha256_cache")
+	sha_cache.clear()
+	var bar_path := _write_zip("user://t41_bar.vmz", {"mod.txt": "[mod]\nid=\"bar\"\n"})
+	bar["full_path"] = bar_path
+	var pin_pack := {"metroprofile": 1, "name": "Round Trip", "enabled": {"vostokmods:bar": true},
+			"sources": {"vostokmods:bar": {"provider": "vostokmods", "id": "bar", "version": "2.0"}},
+			"checksums": {"vostokmods:bar": "0".repeat(64)}}
+	_assert(str(ml._modpack_pin_conflict(_pack_write(ml, pin_pack, "1"))).is_empty() and sha_cache.is_empty(),
+			"T41: an installed copy at the pinned version is not hashed")
+	bar["version"] = "2.1"
+	_assert(not str(ml._modpack_pin_conflict(_pack_write(ml, pin_pack, "1"))).is_empty() and sha_cache.has(bar_path),
+			"T41: a newer installed copy is hashed, and blocks the pin when it is other bytes")
+	bar["version"] = "2.0"
+
+	# A UUID-only install that the pack's slug may name.
+	var uuid := "01a108b6-2a9e-75bb-b9ac-43623230be41"
+	var baz := _installed_entry("baz@1.0", "baz", "1.0")
+	var baz_cfg := ConfigFile.new()
+	baz_cfg.set_value("updates", "source", "vostokmods:" + uuid)
+	baz["cfg"] = baz_cfg
+	var with_baz: Array[Dictionary] = [foo, bar, baz]
+	ml.set("_ui_mod_entries", with_baz)
+	var asked: Dictionary = ml.get("_modpack_host_ids_asked")
+	asked.clear()
+	entry = _pack_write(ml, {"metroprofile": 1, "name": "Round Trip", "enabled": {"vostokmods:baz-slug": true},
+			"sources": {"vostokmods:baz-slug": {"provider": "vostokmods", "id": "baz-slug"}}}, "1")
+	_assert((ml._modpack_unpaired_host_refs(entry) as Array).size() == 1, "T41: the UUID-only install is asked about")
+	# Out of the tree every request fails as offline.
+	await ml._modpack_learn_host_ids(entry, false)
+	_assert(asked.is_empty() and (ml._modpack_unpaired_host_refs(entry) as Array).size() == 1,
+			"T41: an ask that never reached the site is asked again")
+	# In the tree, a cached detail answers without the network. _has_loaded
+	# keeps _ready from booting the loader.
+	ml.set("_has_loaded", true)
+	root.add_child(ml)
+	ml._hnet_cache_put(str(ml.VM_API_BASE) + "/mods/" + uuid.uri_encode(), {"id": uuid, "name": "Baz"}, 60000)
+	await ml._modpack_learn_host_ids(entry, false)
+	root.remove_child(ml)
+	_assert(asked.has("vostokmods:" + uuid) and (ml._modpack_unpaired_host_refs(entry) as Array).is_empty(),
+			"T41: an install the site answered for is not asked about again (asked %s)" % str(asked))
+	asked.clear()
+	(ml.get("_host_cache") as Dictionary).clear()
+	aliases.clear()
+	_remove_user_file("user://t41_bar.vmz")
+	_pack_cleanup(ml)
+
+func _scene_bytes(path: String, payload: String) -> PackedByteArray:
+	var node := Node.new()
+	node.name = "Root"
+	node.set_meta("payload", payload)
+	var scene := PackedScene.new()
+	scene.pack(node)
+	node.free()
+	if ResourceSaver.save(scene, path) != OK:
+		_fail("harness could not save " + path)
+	return FileAccess.get_file_as_bytes(path)
+
+func _near(c: Color, want: Color) -> bool:
+	return absf(c.r - want.r) < 0.1 and absf(c.g - want.g) < 0.1 and absf(c.b - want.b) < 0.1 and c.a > 0.9
+
+func _describe(img: Image, at: Vector2i) -> String:
+	if img == null:
+		return "null"
+	return "%s, %s at %s" % [str(img.get_size()), str(img.get_pixelv(at)), str(at)]
+
+# The ALPH and bitstream chunks of a still WebP, padding included: what an
+# ANMF frame carries after its 16-byte header.
+func _webp_frame_chunks(still: PackedByteArray) -> PackedByteArray:
+	var out := PackedByteArray()
+	var pos := 12
+	while pos + 8 <= still.size():
+		var chunk_size := still.decode_u32(pos + 4)
+		var next := pos + 8 + chunk_size + (chunk_size & 1)
+		var tag := still.slice(pos, pos + 4).get_string_from_ascii()
+		if tag == "ALPH" or tag == "VP8 " or tag == "VP8L":
+			out.append_array(still.slice(pos, next))
+		pos = next
+	return out
+
+# An animated WebP: VP8X with the animation and alpha flags, ANIM, then one
+# ANMF per frame ({chunks, offset, size}).
+func _animated_webp(canvas: Vector2i, frames: Array) -> PackedByteArray:
+	var body := "WEBP".to_ascii_buffer()
+	body.append_array(_riff_chunk("VP8X", PackedByteArray([0x12, 0, 0, 0]) + _u24(canvas.x - 1) + _u24(canvas.y - 1)))
+	body.append_array(_riff_chunk("ANIM", PackedByteArray([0, 0, 0, 0, 0, 0])))
+	for f in frames:
+		var off: Vector2i = f["offset"]
+		var sz: Vector2i = f["size"]
+		var payload := _u24(off.x >> 1) + _u24(off.y >> 1) + _u24(sz.x - 1) + _u24(sz.y - 1) + _u24(100) + PackedByteArray([0])
+		payload.append_array(f["chunks"])
+		body.append_array(_riff_chunk("ANMF", payload))
+	var out := "RIFF".to_ascii_buffer()
+	out.append_array(_u32(body.size()))
+	out.append_array(body)
+	return out
+
+func _riff_chunk(tag: String, payload: PackedByteArray) -> PackedByteArray:
+	var out := tag.to_ascii_buffer()
+	out.append_array(_u32(payload.size()))
+	out.append_array(payload)
+	if payload.size() % 2 == 1:
+		out.append(0)
+	return out
+
+func _u24(v: int) -> PackedByteArray:
+	return PackedByteArray([v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF])
+
+func _u32(v: int) -> PackedByteArray:
+	var out := PackedByteArray()
+	out.resize(4)
+	out.encode_u32(0, v)
+	return out
 
 # Row warnings are for the player: the mod will not work. Author notes are
 # for the mod's author: it works, but its mod.txt could be better. Each
@@ -1692,7 +2204,7 @@ func _fail(msg: String) -> void:
 func _finish() -> void:
 	_done = true
 	if _failures.is_empty():
-		print("[host] PASS: %d assertion(s) across T1..T33" % _assertions)
+		print("[host] PASS: %d assertion(s) across T1..T41" % _assertions)
 		quit(0)
 		return
 	for m in _failures:

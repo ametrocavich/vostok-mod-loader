@@ -17,6 +17,7 @@ func _ready() -> void:
 			print("[ModLoader] one-shot vanilla launch -- sentinel cleared, next launch is normal")
 		else:
 			print("[ModLoader] disabled via sentinel file -- sitting idle")
+		_consume_skip_ui_once()
 		return
 	# Before the first await: the engine runs the `!` early autoloads' _ready
 	# while this one is suspended, and they look the API up through this meta.
@@ -28,6 +29,37 @@ func _ready() -> void:
 		await _run_pass_2()
 	else:
 		await _run_pass_1()
+
+# Whether the launch asked to skip the launcher (SKIP_UI_ARG). Accepted
+# before or after "--": Godot passes an argument it does not know through
+# to get_cmdline_args(), and a Steam launch option can carry either form.
+# The restart into Pass 2 forwards the command line, so the flag stays set
+# there, where nothing reads it. The main menu's Mods button still opens
+# the launcher.
+func _launcher_skipped(args: PackedStringArray, user_args: PackedStringArray) -> bool:
+	return SKIP_UI_ARG in args or SKIP_UI_ARG in user_args
+
+# Why this launch skips the launcher, or "" to show it: SKIP_UI_ARG on the
+# command line, or SKIP_UI_ONCE_FILE beside the game, which an external mod
+# manager writes before starting the game through Steam. The file is
+# consumed even when the flag is also set, so a later launch from Steam
+# shows the launcher again.
+func _launcher_skip_reason() -> String:
+	var once_used := _consume_skip_ui_once()
+	if _launcher_skipped(OS.get_cmdline_args(), OS.get_cmdline_user_args()):
+		return SKIP_UI_ARG
+	return SKIP_UI_ONCE_FILE if once_used else ""
+
+# Deletes SKIP_UI_ONCE_FILE beside the game; true when it was there. A
+# disabled launch calls this too: the file asks to skip the next launch, not
+# a later one.
+func _consume_skip_ui_once() -> bool:
+	var once := OS.get_executable_path().get_base_dir().path_join(SKIP_UI_ONCE_FILE)
+	if not FileAccess.file_exists(once):
+		return false
+	if DirAccess.remove_absolute(once) != OK:
+		_log_warning("[Launcher] Could not delete %s -- every launch skips the launcher until it is removed" % once)
+	return true
 
 # Shared restart helper. `clean_pass1` strips --modloader-restart for a clean Pass 1.
 func _modloader_restart(clean_pass1: bool) -> void:
@@ -94,7 +126,16 @@ func _run_pass_1() -> void:
 	_clean_stale_cache()
 	_remove_retired_state()
 	_load_ui_config()
-	await show_mod_ui()
+	# An active pack's slot keeps a mod under its pack key until the mod is
+	# found installed; a mod installed since, or one only a later loader can
+	# match, moves to its own key here instead of showing as missing.
+	_modpack_reconcile_active()
+	var skip_reason := _launcher_skip_reason()
+	if skip_reason != "":
+		_log_info("[Launcher] Skipped (%s): loading profile \"%s\" as if Launch was clicked" \
+				% [skip_reason, _active_profile])
+	else:
+		await show_mod_ui()
 	_save_ui_config()
 
 	# Pass 2 applies the overrides before its load_all_mods call and the hook

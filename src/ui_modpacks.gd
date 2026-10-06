@@ -5,6 +5,10 @@
 # whose listener calls _rebuild_modpacks_tab again.
 var _rebuilding_modpacks_tab: bool = false
 
+# Set while an Apply asks Vostok Mods about installed mods before its
+# confirm; a second Apply click in that time is ignored.
+var _modpack_pairing_busy: bool = false
+
 # Modpack-apply failure summary: per-failure rows with an open-page button
 # when the host has one, and "Retry failed" for the failed downloads.
 func _show_modpack_failure_dialog(downloaded: int, failures: Array, tabs: TabContainer) -> void:
@@ -174,7 +178,7 @@ func build_modpacks_tab(tabs: TabContainer) -> Control:
 	hdr_row.add_child(hdr)
 
 	var hosted_btn := Button.new()
-	hosted_btn.text = "Get from VostokMods"
+	hosted_btn.text = "Get from Vostok Mods"
 	hosted_btn.tooltip_text = "Browse the modpacks published on vostokmods.net, or paste a pack link."
 	hdr_row.add_child(hosted_btn)
 	hosted_btn.pressed.connect(func():
@@ -202,7 +206,7 @@ func build_modpacks_tab(tabs: TabContainer) -> Control:
 
 	if _modpack_entries.is_empty():
 		var empty := Label.new()
-		empty.text = "No modpacks yet.\n\nA modpack is a list of mods with their load order and settings in one small zip; applying it downloads the mods you are missing and switches you to that setup.\n\nModpacks come from VostokMods: click Get from VostokMods above."
+		empty.text = "No modpacks yet.\n\nA modpack is a list of mods with their load order and settings in one small zip; applying it downloads the mods you are missing and switches you to that setup.\n\nModpacks come from Vostok Mods: click Get from Vostok Mods above."
 		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		empty.add_theme_color_override("font_color", COL_TEXT_DIM)
 		list.add_child(empty)
@@ -344,7 +348,7 @@ func _modpacks_row_info(row: HBoxContainer, entry: Dictionary, is_hosted: bool) 
 	else:
 		meta_lbl.text = str(entry.get("file_name", ""))
 	if is_hosted:
-		meta_lbl.text = "from VostokMods - " + meta_lbl.text
+		meta_lbl.text = "from Vostok Mods - " + meta_lbl.text
 	meta_lbl.add_theme_font_size_override("font_size", FS_META)
 	meta_lbl.add_theme_color_override("font_color", COL_TEXT_DIM)
 	meta_lbl.clip_text = true
@@ -354,15 +358,15 @@ func _modpacks_row_info(row: HBoxContainer, entry: Dictionary, is_hosted: bool) 
 	info_col.add_child(meta_lbl)
 
 
-# Refresh for a pack that came from VostokMods; disabled while the pack is active.
+# Refresh for a pack that came from Vostok Mods; disabled while the pack is active.
 func _modpacks_row_refresh_button(row: HBoxContainer, entry: Dictionary, tabs: TabContainer, is_active: bool) -> void:
 	var refresh_btn := Button.new()
 	refresh_btn.text = "Refresh"
 	refresh_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	refresh_btn.disabled = is_active
 	row.add_child(refresh_btn)
-	_wire_hint(refresh_btn, "Unload this pack before refreshing it from VostokMods." if is_active \
-			else "Fetch the pack's current mod list from VostokMods.")
+	_wire_hint(refresh_btn, "Unload this pack before refreshing it from Vostok Mods." if is_active \
+			else "Fetch the pack's current mod list from Vostok Mods.")
 	var captured_hosted_entry := entry
 	refresh_btn.pressed.connect(func():
 		refresh_btn.disabled = true
@@ -378,9 +382,9 @@ func _modpacks_row_refresh_button(row: HBoxContainer, entry: Dictionary, tabs: T
 		elif bool(r.get("changed", false)):
 			if is_instance_valid(tabs):
 				_rebuild_modpacks_tab(tabs)
-			_show_accept_dialog("Modpack updated", "\"" + str(r.get("name", "")) + "\" was updated from VostokMods. Apply it to get the changes. Edits you made to this pack are reset to the author's new setup.")
+			_show_accept_dialog("Modpack updated", "\"" + str(r.get("name", "")) + "\" was updated from Vostok Mods. Apply it to get the changes. Edits you made to this pack are reset to the author's new setup.")
 		else:
-			_show_info_toast("\"" + str(r.get("name", "")) + "\" is up to date with VostokMods.")
+			_show_info_toast("\"" + str(r.get("name", "")) + "\" is up to date with Vostok Mods.")
 	)
 
 
@@ -394,6 +398,21 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 	var apply_enabled := int(validation.get("enabled_count", 0))
 	var apply_total := int(validation.get("total_count", 0))
 	var name_str := str(entry.get("raw_name", "?"))
+	# Pair Vostok Mods slugs and UUIDs first, so the preview counts a pack mod
+	# installed under its other id as installed. Usually nothing to ask.
+	if _modpack_pairing_busy:
+		return
+	if not _modpack_apply_in_progress and not _modpack_unpaired_host_refs(entry).is_empty():
+		_modpack_pairing_busy = true
+		var busy_text := "Checking Vostok Mods for this pack's installed mods..."
+		if is_instance_valid(_ui_hint_label):
+			_ui_hint_label.text = busy_text
+		await _modpack_learn_host_ids(entry, false)
+		_modpack_pairing_busy = false
+		if is_instance_valid(_ui_hint_label) and _ui_hint_label.text == busy_text:
+			_ui_hint_label.text = _ui_hint_default
+		if not is_instance_valid(tabs):
+			return
 	var preview_counts := _modpack_download_counts(_get_missing_mods_for_modpack(entry))
 	var dl_count := int(preview_counts["download"])
 	var blocked_count := int(preview_counts["blocked"])
@@ -467,6 +486,9 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 					pd.queue_free()
 				if is_instance_valid(tabs):
 					_rebuild_modpacks_tab(tabs)
+					# Mods downloaded before the cancel stay on disk; list them.
+					if dl > 0:
+						_rebuild_mods_tab(tabs)
 				var cancel_msg := "Apply cancelled -- the modpack was not applied and your profiles are unchanged."
 				if dl > 0:
 					cancel_msg += "\n%d downloaded mod(s) remain in your mods folder." % dl
@@ -479,6 +501,8 @@ func _apply_modpack_with_ui_flow(entry: Dictionary, tabs: TabContainer) -> void:
 			if outcome == "failed":
 				if is_instance_valid(pd):
 					pd.queue_free()
+				if dl > 0 and is_instance_valid(tabs):
+					_rebuild_mods_tab(tabs)
 				var fail_msg := str(result.get("error", "unknown"))
 				if dl_failed > 0:
 					fail_msg += "\n\n%d mod download(s) had also failed." % dl_failed
@@ -650,11 +674,10 @@ func _show_modpack_detail_dialog(entry: Dictionary, active_modpack: String, tabs
 	var missing_count := 0
 
 	var index := _modpack_installed_index()
-	var installed_keys: Dictionary = index["keys"]
-	var installed_refs: Dictionary = index["refs"]
 	var unavailable_map: Dictionary = parsed.get("unavailable", {}) if parsed.get("unavailable") is Dictionary else {}
+	var checksums_map: Dictionary = parsed.get("checksums", {}) if parsed.get("checksums") is Dictionary else {}
 	var key_installed := func(k: String) -> bool:
-		return installed_keys.has(k) or _modpack_source_installed(sources_map.get(k), installed_refs)
+		return _modpack_key_installed(k, sources_map, checksums_map, index)
 
 	for k_v in enabled_map.keys():
 		if key_installed.call(str(k_v)):
@@ -758,7 +781,7 @@ func _modpack_detail_buttons(d: AcceptDialog, entry: Dictionary, tabs: TabContai
 	var hosted_d: Dictionary = entry.get("hosted", {}) if entry.get("hosted") is Dictionary else {}
 	var page_url := str(hosted_d.get("url", ""))
 	if page_url.begins_with("https://vostokmods.net/"):
-		var page_btn := d.add_button("Open page on VostokMods", false, "")
+		var page_btn := d.add_button("Open page on Vostok Mods", false, "")
 		page_btn.pressed.connect(func():
 			OS.shell_open(page_url)
 		)
@@ -784,7 +807,7 @@ func _modpack_detail_buttons(d: AcceptDialog, entry: Dictionary, tabs: TabContai
 		)
 
 
-# Modpacks published on VostokMods: paste a pack link or search the list.
+# Modpacks published on Vostok Mods: paste a pack link or search the list.
 # "Get" writes the pack into mods/ as a local modpack zip.
 func _show_hosted_packs_dialog(tabs: TabContainer) -> void:
 	# Built like the launcher window, not like a message box: black floor,
@@ -873,7 +896,7 @@ func _hosted_dialog_widgets(d: AcceptDialog, tabs: TabContainer) -> Dictionary:
 	header_row.add_theme_constant_override("separation", SP_M)
 	header.add_child(header_row)
 	var plate_title := Label.new()
-	plate_title.text = "MODPACKS ON VOSTOKMODS"
+	plate_title.text = "MODPACKS ON VOSTOK MODS"
 	plate_title.add_theme_font_size_override("font_size", FS_HEAD)
 	plate_title.add_theme_color_override("font_color", COL_TEXT_HI)
 	header_row.add_child(plate_title)
@@ -1155,10 +1178,10 @@ func _hosted_fetch(hp: Dictionary, append: bool) -> void:
 			status.text = "No packs match."
 			_hosted_render_empty(hp, "No pack matches that search.")
 		else:
-			status.text = "No modpacks on VostokMods yet."
-			_hosted_render_empty(hp, "Nobody has published a modpack on VostokMods yet; pack pages on the site are new.\n\nPublished packs will be listed here. If someone sent you a pack link, paste it below.")
+			status.text = "No modpacks on Vostok Mods yet."
+			_hosted_render_empty(hp, "Nobody has published a modpack on Vostok Mods yet; pack pages on the site are new.\n\nPublished packs will be listed here. If someone sent you a pack link, paste it below.")
 	elif total >= 0:
-		status.text = "%d pack(s) on VostokMods" % total
+		status.text = "%d pack(s) on Vostok Mods" % total
 	else:
 		status.text = ""
 

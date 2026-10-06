@@ -42,7 +42,10 @@ func _coerce_audio_event(id: String, verb: String, data: Variant) -> Resource:
 			push_warning("[Registry] %s('sounds', '%s'): couldn't locate AudioEvent class (library may be empty or unmigrated)" % [verb, id])
 			return null
 		var ev = ev_class.new()
-		ev.set("audioClips", [data])
+		var clips: Variant = _sound_clips_for(ev, [data], id, verb)
+		if clips == null:
+			return null
+		ev.set("audioClips", clips)
 		ev.set("volume", 0.0)
 		ev.set("randomPitch", false)
 		return ev
@@ -53,10 +56,10 @@ func _coerce_audio_event(id: String, verb: String, data: Variant) -> Resource:
 			push_warning("[Registry] %s('sounds', '%s'): couldn't locate AudioEvent class to construct from dict" % [verb, id])
 			return null
 		var ev = ev_class_d.new()
-		if d.has("audioClips"):
-			ev.set("audioClips", d["audioClips"])
-		else:
-			ev.set("audioClips", [])
+		var clips_d: Variant = _sound_clips_for(ev, d.get("audioClips", []), id, verb)
+		if clips_d == null:
+			return null
+		ev.set("audioClips", clips_d)
 		# .get's default only covers absent keys; a present-but-null value
 		# would crash float()/bool(), so type-check first.
 		var raw_vol = d.get("volume", 0.0)
@@ -76,6 +79,27 @@ func _coerce_audio_event(id: String, verb: String, data: Variant) -> Resource:
 		return ev
 	push_warning("[Registry] %s('sounds', '%s', ...) expects AudioEvent / AudioStream / Dictionary, got %s" % [verb, id, typeof(data)])
 	return null
+
+# AudioEvent.audioClips is a typed Array[AudioStreamWAV], and Object.set
+# silently refuses an untyped Array for a typed property: the event kept no
+# clips and the sound went silent while the call reported success. Clips go
+# into an array of the field's own type, and a clip the type refuses (an
+# OGG or MP3 stream) fails the call with a warning. null on refusal.
+func _sound_clips_for(ev: Resource, clips: Variant, id: String, verb: String) -> Variant:
+	if not (clips is Array):
+		push_warning("[Registry] %s('sounds', '%s'): 'audioClips' must be an Array, got %s" % [verb, id, type_string(typeof(clips))])
+		return null
+	var current: Variant = ev.get("audioClips")
+	var typed: Array = (current as Array).duplicate() if current is Array else []
+	typed.clear()
+	for clip in (clips as Array):
+		if not _typed_array_accepts(typed, clip):
+			var got: String = (clip as Object).get_class() if clip is Object else type_string(typeof(clip))
+			push_warning("[Registry] %s('sounds', '%s'): audioClips takes %s clips only, got %s" \
+					% [verb, id, String(typed.get_typed_class_name()), got])
+			return null
+		typed.append(clip)
+	return typed
 
 # First non-null @export AudioEvent on the live library supplies the class;
 # hardcoding the AudioEvent.gd path would break if the game moves it.
@@ -196,10 +220,15 @@ func _patch_sound(id: String, fields: Dictionary) -> bool:
 			push_warning("[Registry] patch('sounds', '%s'): field '%s' doesn't exist on AudioEvent (valid: audioClips, volume, randomPitch)" \
 					% [id, field_name])
 			continue
+		var value: Variant = fields[field]
+		if field_name == "audioClips":
+			value = _sound_clips_for(target, value, id, "patch")
+			if value == null:
+				continue
 		if not stash.has(field_name):
 			stash[field_name] = target.get(field_name)
 			_patch_source_note("sounds", id, field_name, target)
-		target.set(field_name, fields[field])
+		target.set(field_name, value)
 	patched[id] = stash
 	_registry_patched["sounds"] = patched
 	_log_debug("[Registry] patched sound '%s' fields %s" % [id, fields.keys()])

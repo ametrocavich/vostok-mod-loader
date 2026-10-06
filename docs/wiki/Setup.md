@@ -21,11 +21,20 @@ That's it. From that window you can turn mods on and off, download new ones, and
 
 ## Get some mods
 
-- The **Browse** tab searches [VostokMods](https://vostokmods.net) from inside the loader, or [ModWorkshop](https://modworkshop.net) if you pick it in the source menu. Click **Download** on a mod to install it. See [Browse](Browse).
-- The **Modpacks** tab applies a whole setup published on VostokMods in one go. See [Modpacks](Modpacks).
+- The **Browse** tab searches [Vostok Mods](https://vostokmods.net) from inside the loader, or [ModWorkshop](https://modworkshop.net) if you pick it in the source menu. Click **Download** on a mod to install it. See [Browse](Browse).
+- The **Modpacks** tab applies a whole setup published on Vostok Mods in one go. See [Modpacks](Modpacks).
 - You can also install a mod by hand: drop its `.vmz` (or `.zip` / `.pck`) file into the `mods` folder.
 
 Some things mods can't do are engine limits, not bugs. See [Limitations](Limitations).
+
+## Starting the game from another mod manager
+
+A mod manager outside the game can set the mods up itself and have the loader skip its window, loading the active profile's mods straight away as if **Launch** had been clicked. Two ways to ask for it:
+
+- Start the game with `--modloader-skip-ui` on the command line, for example `RTV.exe --modloader-skip-ui`, or put the flag in Steam's launch options to skip the window every time.
+- Create an empty file named `modloader_skip_ui_once` in the game folder (beside `RTV.exe`) before starting the game, for a manager that launches through Steam and so cannot pass arguments. The loader deletes it as it skips the window, so the next launch from Steam shows the window again.
+
+When the set of mods changed since the last launch the game still restarts once to load them, the same as after **Launch**. The **Mods** button on the main menu opens the window as usual.
 
 ## When something goes wrong
 

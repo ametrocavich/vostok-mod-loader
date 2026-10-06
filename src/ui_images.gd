@@ -18,8 +18,94 @@ func _decode_image_buffer(bytes: PackedByteArray) -> Image:
 	# WebP: "RIFF" <4-byte size> "WEBP"
 	if bytes[0] == 0x52 and bytes[1] == 0x49 and bytes[2] == 0x46 and bytes[3] == 0x46 \
 			and bytes[8] == 0x57 and bytes[9] == 0x45 and bytes[10] == 0x42 and bytes[11] == 0x50:
+		if _webp_is_animated(bytes):
+			return _webp_first_frame(bytes)
 		return img if img.load_webp_from_buffer(bytes) == OK else null
 	return null
+
+# The engine decodes WebP with libwebp's still-image API, which refuses any
+# file whose VP8X header sets the animation flag. Both hosts serve animated
+# covers: Vostok Mods keeps the upload as is, and ModWorkshop converts GIF
+# uploads to animated WebP. VP8X is always the first chunk of an extended
+# file, so the flags byte sits at offset 20.
+func _webp_is_animated(bytes: PackedByteArray) -> bool:
+	return bytes.size() >= 30 and bytes[12] == 0x56 and bytes[13] == 0x50 \
+			and bytes[14] == 0x38 and bytes[15] == 0x58 and (bytes[20] & 0x02) != 0
+
+# First frame of an animated WebP, painted on the file's canvas. Returns null
+# when the file has no readable frame.
+func _webp_first_frame(bytes: PackedByteArray) -> Image:
+	var canvas := Vector2i(_webp_u24(bytes, 24) + 1, _webp_u24(bytes, 27) + 1)
+	var pos := 12
+	while pos + 8 <= bytes.size():
+		var size := bytes.decode_u32(pos + 4)
+		if pos + 8 + size > bytes.size():
+			return null
+		if bytes.slice(pos, pos + 4).get_string_from_ascii() == "ANMF":
+			return _webp_frame_image(bytes, pos + 8, size, canvas)
+		pos += 8 + size + (size & 1)
+	return null
+
+# An ANMF payload is the frame's X/2, Y/2, width-1, height-1 and duration as
+# 24-bit little-endian fields and a flags byte, then the frame's own chunks:
+# an optional ALPH, one VP8 or VP8L bitstream, maybe unknown chunks. Those
+# are rewrapped as a still WebP for the engine to decode.
+func _webp_frame_image(bytes: PackedByteArray, body: int, size: int, canvas: Vector2i) -> Image:
+	if size < 16:
+		return null
+	var offset := Vector2i(_webp_u24(bytes, body) * 2, _webp_u24(bytes, body + 3) * 2)
+	var frame_size := Vector2i(_webp_u24(bytes, body + 6) + 1, _webp_u24(bytes, body + 9) + 1)
+	var alph := PackedByteArray()
+	var bitstream := PackedByteArray()
+	var pos := body + 16
+	var end := body + size
+	while pos + 8 <= end and bitstream.is_empty():
+		var chunk_size := bytes.decode_u32(pos + 4)
+		if pos + 8 + chunk_size > end:
+			return null
+		var tag := bytes.slice(pos, pos + 4).get_string_from_ascii()
+		if tag == "ALPH":
+			alph = bytes.slice(pos, pos + 8 + chunk_size)
+		elif tag == "VP8 " or tag == "VP8L":
+			bitstream = bytes.slice(pos, pos + 8 + chunk_size)
+		pos += 8 + chunk_size + (chunk_size & 1)
+	if bitstream.is_empty():
+		return null
+	var chunks: Array[PackedByteArray] = [bitstream]
+	# A lossy frame keeps its alpha in ALPH, which a still file may carry
+	# only behind a VP8X header whose canvas is the frame. VP8L holds its own.
+	if not alph.is_empty() and bitstream[3] == 0x20:
+		var w := frame_size.x - 1
+		var h := frame_size.y - 1
+		var vp8x := PackedByteArray([0x56, 0x50, 0x38, 0x58, 10, 0, 0, 0, 0x10, 0, 0, 0,
+				w & 0xFF, (w >> 8) & 0xFF, (w >> 16) & 0xFF, h & 0xFF, (h >> 8) & 0xFF, (h >> 16) & 0xFF])
+		chunks = [vp8x, alph, bitstream]
+	var riff_body := "WEBP".to_ascii_buffer()
+	for chunk in chunks:
+		riff_body.append_array(chunk)
+		if chunk.size() % 2 == 1:
+			riff_body.append(0)
+	var still := "RIFF".to_ascii_buffer()
+	still.resize(8)
+	still.encode_u32(4, riff_body.size())
+	still.append_array(riff_body)
+	var frame := Image.new()
+	if frame.load_webp_from_buffer(still) != OK:
+		return null
+	if offset == Vector2i.ZERO and frame.get_size() == canvas:
+		return frame
+	# A first frame that does not cover the canvas sits at its offset on a
+	# transparent canvas. Past 4096x4096 the canvas is not worth allocating
+	# for a thumbnail, so the frame is shown alone.
+	if canvas.x * canvas.y > 4096 * 4096:
+		return frame
+	var full := Image.create_empty(canvas.x, canvas.y, false, Image.FORMAT_RGBA8)
+	frame.convert(Image.FORMAT_RGBA8)
+	full.blit_rect(frame, Rect2i(Vector2i.ZERO, frame.get_size()), offset)
+	return full
+
+func _webp_u24(bytes: PackedByteArray, at: int) -> int:
+	return bytes[at] | (bytes[at + 1] << 8) | (bytes[at + 2] << 16)
 
 # Caption for a thumbnail cell with no texture yet, centered in the cell's
 # parent PanelContainer. Three states, so a fetch in flight, a host that
@@ -139,10 +225,14 @@ func _browse_load_thumbnail_async(rect: TextureRect, image: Dictionary) -> void:
 						return
 
 	_set_thumb_state(rect, "loading")
-	# 1MB cap defends against a malformed response; real covers run 100-300KB.
+	# Covers are the full uploads, not thumbnails: in October 2026 a quarter
+	# of Vostok Mods covers were over 1 MB, the largest 3.9 MB. The cap only
+	# stops a runaway or malformed response. HTTPRequest's timeout covers the
+	# whole download, and Browse fetches a page of covers at once, so the API
+	# timeout would fail a large cover on a slow line.
 	var req := HTTPRequest.new()
-	req.timeout = API_CHECK_TIMEOUT
-	req.download_body_size_limit = 1024 * 1024
+	req.timeout = 60.0
+	req.download_body_size_limit = 8 * 1024 * 1024
 	add_child(req)
 	var err := req.request(url, PackedStringArray(["User-Agent: " + (HOST_USER_AGENT_TEMPLATE % MODLOADER_VERSION)]))
 	if err != OK:

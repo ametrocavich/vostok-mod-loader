@@ -120,7 +120,8 @@ func _derive_updated_filename(old_file_name: String, headers: PackedStringArray,
 # serializes, so two surfaces can race on the same file (hence the
 # _live_full_path re-resolution in profiles.gd).
 
-# Returns {ok, new_path, new_file_name}; failures also carry "error". On
+# Returns {ok, new_path, new_file_name}; failures also carry "error", and
+# "local": true when the cause is on this machine, not the network. On
 # success new_path may differ from target_path (Content-Disposition or
 # version bump). On failure temp and backup are cleaned up and the original is intact.
 func replace_mod_from_ref(target_path: String, ref: Dictionary) -> Dictionary:
@@ -128,6 +129,13 @@ func replace_mod_from_ref(target_path: String, ref: Dictionary) -> Dictionary:
 	var failure := {"ok": false, "new_path": target_path, "new_file_name": target_path.get_file(), "error": ""}
 	if not host_ref_valid(ref):
 		failure["error"] = "This mod has no download source recorded."
+		return failure
+	# A .zip or .pck the game mounted at startup stays locked until the game
+	# exits (a .vmz mounts through a cache copy), so the swap below would
+	# fail after a full download with a "file in use" error nobody can act on.
+	if _filescope_mounted.has(target_path) and target_path.get_extension().to_lower() != "vmz":
+		failure["error"] = "The game has this mod's archive open while the mod is enabled. Disable the mod, relaunch the game, then update it."
+		failure["local"] = true
 		return failure
 	var provider := str(ref["provider"])
 	var resolved := await host_resolve_file(ref, "")
@@ -153,12 +161,21 @@ func replace_mod_from_ref(target_path: String, ref: Dictionary) -> Dictionary:
 	if new_cfg == null:
 		DirAccess.remove_absolute(temp_path)
 		failure["error"] = "Downloaded file is not a valid mod archive (no readable mod.txt)"
+		failure["local"] = true
+		return failure
+
+	var other_mod := _update_names_another_mod(target_path, new_cfg, provider)
+	if other_mod != "":
+		DirAccess.remove_absolute(temp_path)
+		failure["error"] = other_mod
+		failure["local"] = true
 		return failure
 
 	var dir_access := DirAccess.open(target_path.get_base_dir())
 	if dir_access == null:
 		DirAccess.remove_absolute(temp_path)
 		failure["error"] = "Could not open the mods folder"
+		failure["local"] = true
 		return failure
 
 	var old_file_name := target_path.get_file()
@@ -170,6 +187,7 @@ func replace_mod_from_ref(target_path: String, ref: Dictionary) -> Dictionary:
 	if not _same_file_name(new_file_name, old_file_name) and FileAccess.file_exists(new_path):
 		DirAccess.remove_absolute(temp_path)
 		failure["error"] = "A different file named \"%s\" is already in the mods folder -- move or delete it and retry" % new_file_name
+		failure["local"] = true
 		return failure
 
 	# Stash the old archive under .bak so a failed rename can roll back.
@@ -177,6 +195,7 @@ func replace_mod_from_ref(target_path: String, ref: Dictionary) -> Dictionary:
 		if dir_access.rename(target_path.get_file(), backup_path.get_file()) != OK:
 			DirAccess.remove_absolute(temp_path)
 			failure["error"] = "Could not back up the current archive (file in use?) -- close anything using it and retry"
+			failure["local"] = true
 			return failure
 
 	if dir_access.rename(temp_path.get_file(), new_file_name) != OK:
@@ -184,6 +203,7 @@ func replace_mod_from_ref(target_path: String, ref: Dictionary) -> Dictionary:
 			dir_access.rename(backup_path.get_file(), target_path.get_file())
 		DirAccess.remove_absolute(temp_path)
 		failure["error"] = "Could not finalize the update (file may be locked) -- the old version was kept"
+		failure["local"] = true
 		return failure
 
 	# New file is in place; the .bak (which is the old archive) can go.
@@ -191,6 +211,20 @@ func replace_mod_from_ref(target_path: String, ref: Dictionary) -> Dictionary:
 		DirAccess.remove_absolute(backup_path)
 	_record_installed_mod_source(new_file_name, ref, str(file["version"]))
 	return {"ok": true, "new_path": new_path, "new_file_name": new_file_name}
+
+
+# Only the same mod replaces an installed one. A mod.txt copied from another
+# mod can point the update check at that mod's page, and the swap would then
+# delete this mod for a different one. The error to show, or "" when both
+# archives name the same [mod] id or either names none.
+func _update_names_another_mod(target_path: String, new_cfg: ConfigFile, provider: String) -> String:
+	var old_cfg: ConfigFile = read_mod_config(target_path)["cfg"] if FileAccess.file_exists(target_path) else null
+	var old_id := str(old_cfg.get_value("mod", "id", "")).strip_edges().to_lower() if old_cfg != null else ""
+	var new_id := str(new_cfg.get_value("mod", "id", "")).strip_edges().to_lower() if new_cfg != null else ""
+	if old_id == "" or new_id == "" or old_id == new_id:
+		return ""
+	return "The file on %s is a different mod (id \"%s\", this one is \"%s\"), so the installed mod was kept. Its mod.txt may point at the wrong mod page." \
+			% [host_display_name(provider), new_id, old_id]
 
 
 # True when two names in one folder are the same file: equal, or equal but for

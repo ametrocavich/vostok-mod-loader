@@ -30,8 +30,8 @@ const _MAX_TEXT_SCAN_BYTES: int = 8 * 1024 * 1024
 # is RegEx source compiled once in _security_compile_rules; text scans run
 # it over comment-stripped source, first match per rule per file, and
 # multi-line patterns need [\s\S] (RegEx `.` does not cross newlines).
-# `binary: true` also runs it over .scn/.res/.gdc blobs flattened to ASCII,
-# so the pattern must not false-positive on serialized data. To affect the
+# `binary: true` also runs it over .scn/.res blobs read run by run between
+# NUL bytes, so the pattern must not false-positive on serialized data. To affect the
 # badge the id must also appear in _RED_SOLO_RULES or a family array --
 # a typo there silently drops the rule from the red logic. compute_risk_level
 # also hardcodes the byte_decode_loop + large_int_array pair check.
@@ -413,15 +413,7 @@ func _security_scan_binary(file: String, bytes: PackedByteArray, findings: Array
 				"description": "This mod ships compiled GDScript (.gdc) that the scanner cannot read, starting with this file. Compiled code was NOT checked -- treat this mod as unscanned unless you trust its author.",
 			})
 		return
-	var as_text := bytes.get_string_from_utf8()
-	if as_text.is_empty():
-		var out := PackedByteArray()
-		for b in bytes:
-			if b >= 32 and b < 127:
-				out.append(b)
-			else:
-				out.append(0x20)
-		as_text = out.get_string_from_ascii()
+	var as_text := _security_binary_text(bytes)
 	for rule: Dictionary in _SECURITY_RULES:
 		if not bool(rule.get("binary", false)):
 			continue
@@ -439,6 +431,27 @@ func _security_scan_binary(file: String, bytes: PackedByteArray, findings: Array
 			"preview": "(matched in binary file)",
 			"description": rule["description"],
 		})
+
+# Godot's byte-to-string decoders stop at the first NUL, and a binary
+# resource has one at byte 4 (its "RSRC" magic is followed by a zero word),
+# so decoding the whole blob saw four characters and no rule ever matched.
+# Each NUL-free run is decoded on its own; a script or string property is
+# one run. Latin-1 decoding accepts any byte without logging, and the rules
+# are ASCII. A run shorter than the shortest rule match ("OS.kill(") is
+# dropped. Runs are joined with U+0001, which \s does not match, so a
+# rule's \s* cannot bridge two runs. The loop turns once per NUL, not per byte.
+func _security_binary_text(bytes: PackedByteArray) -> String:
+	var runs := PackedStringArray()
+	var start := 0
+	while start < bytes.size():
+		var nul := bytes.find(0, start)
+		var end := bytes.size() if nul == -1 else nul
+		if end - start >= 8:
+			runs.append(bytes.slice(start, end).get_string_from_ascii())
+		if nul == -1:
+			break
+		start = nul + 1
+	return String.chr(1).join(runs)
 
 ## Whether a blob is compiled GDScript, by its GDSC magic rather than by its
 ## extension -- the extension is attacker-controlled and the magic is not.
