@@ -143,6 +143,7 @@ func _source_has_indented_func_body(source: String) -> bool:
 func _generate_hook_pack(defer_activation: bool = false) -> String:
 	var pack_zip_rel := _hook_pack_preflight()
 	if pack_zip_rel == "":
+		_hook_pack_forget_previous()
 		return ""
 	_hook_pack_begin_vetting(defer_activation)
 	var script_paths := _hook_pack_script_paths()
@@ -155,6 +156,21 @@ func _generate_hook_pack(defer_activation: bool = false) -> String:
 	if hook_count < 0:
 		return ""
 	return _hook_pack_mount_and_activate(pack_zip_rel, packed_paths, hook_count, reconcile, defer_activation)
+
+# A launch that wants no pack (no mod.txt mod loaded, a failed canary, or
+# nothing to rewrite) must not leave the previous one in pass state: static
+# init would mount it over the mods enabled now, and a zip mod's own copy of
+# a script that pack rewrote would never run. A pack that failed to write or
+# mount keeps the record, like the canary path, since the mod set still wants
+# it. Only touches a pass state that already names a pack.
+func _hook_pack_forget_previous() -> void:
+	var cfg := ConfigFile.new()
+	if cfg.load(PASS_STATE_PATH) != OK or _state_str(cfg, "hook_pack_path", "") == "":
+		return
+	cfg.set_value("state", "hook_pack_path", "")
+	cfg.set_value("state", "hook_pack_wrapped_paths", PackedStringArray())
+	if cfg.save(PASS_STATE_PATH) == OK:
+		_log_info("[RTVCodegen] No hook pack this launch -- the previous pack is no longer mounted at startup")
 
 # Decide whether this generation probes its rewrites or repeats the verdicts
 # of the vetted generation before it. Pass 1 probes. Any other generation
@@ -445,14 +461,6 @@ func _hook_pack_write_zip(pack_zip_rel: String, script_paths: Array[String], nee
 			_log_debug("[RTVCodegen] Surface-skip %s (no mod declared it)" % filename)
 			continue
 
-		# A mod's [script_extend] / [script_overrides] replacement at this path
-		# loses to the rewrite: activation reloads the vanilla path with the
-		# rewritten source. Say so here, once per path, and again when it happens.
-		var claimants := _override_claimants(script_path)
-		if not claimants.is_empty():
-			_log_warning("[RTVCodegen] %s is rewritten for hooks and also replaced by %s -- the rewrite wins at that path, so the replacement will not run this session. Hook the methods instead ([hooks] or .hook()), or drop the replacement." \
-					% [script_path, ", ".join(claimants)])
-
 		var source := _read_vanilla_source(script_path)
 		if source.is_empty():
 			_log_debug("[RTVCodegen] Empty detokenized source for %s -- skipped (reported by reconciliation)" % script_path)
@@ -525,6 +533,16 @@ func _hook_pack_write_zip(pack_zip_rel: String, script_paths: Array[String], nee
 				rec_v["status"] = "lost"
 				rec_v["detail"] = "the rewritten script does not compile against this game build; left unmodified"
 			continue
+		# A mod's [script_extend] / [script_overrides] replacement at this path
+		# loses to the rewrite only when activation reloads the path with the
+		# rewritten source. A deferred script is not reloaded: it lazy-compiles
+		# after the overrides, so the replacement extends the rewrite and both
+		# run. Say so here, once per path, and again when it happens.
+		if not _scripts_with_scene_preloads.has(script_path):
+			var claimants := _override_claimants(script_path)
+			if not claimants.is_empty():
+				_log_warning("[RTVCodegen] %s is rewritten for hooks and also replaced by %s -- the rewrite wins at that path, so the replacement will not run this session. Hook the methods instead ([hooks] or .hook()), or drop the replacement." \
+						% [script_path, ", ".join(claimants)])
 		var rewritten := str(vetted["source"])
 		# Rename check: the parser and the rename pass find methods two different
 		# ways; any divergence silently produces a wrapper-less rewrite.
@@ -704,6 +722,7 @@ func _hook_pack_mount_and_activate(pack_zip_rel: String, packed_paths: Array[Str
 			return ""
 	else:
 		_log_info("[RTVCodegen] No scripts rewritten -- no pack mounted")
+		_hook_pack_forget_previous()
 		if not _hook_pack_demotions.is_empty():
 			# Every rewrite was left out. The verdicts still have to reach the
 			# generation that follows, which would otherwise probe live and skip
