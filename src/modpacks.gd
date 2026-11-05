@@ -1,62 +1,61 @@
-## ----- modpacks.gd -----
-## Modpack discovery, apply, unload. A modpack is a .zip in <game>/mods/ with
-## profile.json at the root; scan time routes it to the Modpacks tab. An
-## applied modpack lives as a regular profile ("modpack__" prefix) so the
-## profile lifecycle handles it; the zip is a template read on first apply,
-## and again after a changed hosted import (_modpack_forget_slot). Pre-apply
-## state is backed up in a "_before_modpack_" profile slot plus an MCM snapshot.
-##
-## Config conventions:
-##   modpack__<name>         live state of an applied modpack
-##   _before_modpack_<name>  backup of pre-apply state
-##   [settings] active_modpack         active pack ("" = none)
-##   [settings] modpack_backup_profile profile to restore on unload
-##   [settings] modpack_backup_valid   apply wrote a (possibly empty) backup
-##
-## States (owners: apply_modpack, unload_modpack and the boot reconciler in
-## profiles.gd _load_ui_config):
-##   no pack      active_modpack is ""; stale backup sections are erased by the next apply.
-##   downloading  installs archives; profile switching has not begun. Serialized
-##                by _modpack_apply_in_progress; Cancel sets _modpack_apply_cancelled.
-##   mutating     _apply_modpack_inner's numbered steps, fresh apply only:
-##                1. copy the active profile into the backup slot and set
-##                active_modpack early (the crash trigger the reconciler keys off),
-##                2. materialize the modpack__ profile from the zip if absent,
-##                3. _switch_profile into the slot, 4. re-assert active_modpack.
-##                A failed apply can leave the flag set; the next boot's
-##                reconciler handles an incomplete managed slot.
-##   active       active_profile is the slot. Re-apply is downloads-only.
-##   unloading    aborts untouched when the backup is gone; else restore backup
-##                sections, clear flags, _switch_profile back, restore the
-##                pre-pack MCM, remove consumed MCM backup data.
-##
-## Invariants: downloads precede profile switching; reconciler recovery
-## never deletes the backup slot; at most one pack is active at a time.
+## Modpacks: a mods/*.zip with profile.json at its root, applied as its own profile slot.
 
 const MODPACK_PROFILE_PREFIX := "modpack__"
 const MODPACK_BACKUP_PREFIX := "_before_modpack_"
 
-# Mutex for the modpack apply flow; prevents concurrent applies racing on cfg
-# writes + the backup slot. UI also gates Apply buttons on it.
+## Serializes apply and retry, which race on cfg writes and the backup slot.
 var _modpack_apply_in_progress: bool = false
+var _modpack_host_ids_asked: Dictionary = {}
+## Stamped with mtime and size: a pack check can hash the same 100 MB file many times.
+var _modpack_sha256_cache: Dictionary = {}
+## {path: {stamp, is_pack, profile}}: launcher tabs rescan mods/ often, and most zips never change.
+var _modpack_zip_memo: Dictionary = {}
 
-# Profiles the modpack system manages internally; hidden from the dropdown.
 func _is_modpack_managed_profile(profile_name: String) -> bool:
 	return profile_name.begins_with(MODPACK_PROFILE_PREFIX) \
 			or profile_name.begins_with(MODPACK_BACKUP_PREFIX)
 
-# Count truthy values in a pack's `enabled` map; values are third-party, so type-check.
 func _count_truthy(d: Dictionary) -> int:
 	var count := 0
-	for k in d.keys():
+	for k in d:
 		if _json_truthy(d[k]):
 			count += 1
 	return count
 
-# profile.json carries the metroprofile v1 schema; the writer is
-# _hosted_manifest_to_profile (hosted_modpacks.gd). See docs/wiki/Profile-Format.md.
+func _pack_dict(d: Variant, field: String) -> Dictionary:
+	if not (d is Dictionary):
+		return {}
+	var v: Variant = d.get(field)
+	return v if v is Dictionary else {}
 
-# Pre-apply validation of the zip and schema. Returns {ok, error, enabled_count, total_count}.
+func _parse_profile_bytes(bytes: PackedByteArray) -> Variant:
+	if bytes.is_empty():
+		return null
+	var parsed: Variant = JSON.parse_string(bytes.get_string_from_utf8())
+	return parsed if parsed is Dictionary else null
+
+func _modpack_read_profile(file_path: String) -> Variant:
+	if not FileAccess.file_exists(file_path):
+		return null
+	var profile: Variant = _modpack_zip_info(file_path)["profile"]
+	return profile.duplicate(true) if profile is Dictionary else null
+
+# Stamped with mtime and size, like _cached_sha256.
+func _modpack_zip_info(file_path: String) -> Dictionary:
+	var stamp := "%d:%d" % [FileAccess.get_modified_time(file_path), FileAccess.get_size(file_path)]
+	var memo: Dictionary = _modpack_zip_memo.get(file_path, {})
+	if memo.get("stamp", "") == stamp:
+		return memo
+	memo = {"stamp": stamp, "is_pack": false, "profile": null}
+	var reader := ZIPReader.new()
+	if reader.open(file_path) == OK:
+		memo["is_pack"] = reader.get_files().has("profile.json")
+		if memo["is_pack"]:
+			memo["profile"] = _parse_profile_bytes(reader.read_file("profile.json"))
+		reader.close()
+	_modpack_zip_memo[file_path] = memo
+	return memo
+
 func _validate_modpack(entry: Dictionary) -> Dictionary:
 	var file_path: String = str(entry.get("file_path", ""))
 	if file_path.is_empty():
@@ -66,20 +65,19 @@ func _validate_modpack(entry: Dictionary) -> Dictionary:
 	var reader := ZIPReader.new()
 	if reader.open(file_path) != OK:
 		return {"ok": false, "error": "Cannot open modpack zip (corrupt or in use)"}
-	var files := reader.get_files()
-	if not ("profile.json" in files):
+	if not ("profile.json" in reader.get_files()):
 		reader.close()
 		return {"ok": false, "error": "This file is not a valid modpack (no mod list inside). Get a fresh copy of the modpack and try again."}
 	var bytes := reader.read_file("profile.json")
 	reader.close()
 	if bytes.is_empty():
 		return {"ok": false, "error": "This modpack file is damaged (its mod list is empty). Get a fresh copy and try again."}
-	var parsed_v: Variant = JSON.parse_string(bytes.get_string_from_utf8())
-	if not (parsed_v is Dictionary):
+	var parsed: Variant = _parse_profile_bytes(bytes)
+	if parsed == null:
 		return {"ok": false, "error": "This modpack file is damaged (its mod list is unreadable). Get a fresh copy and try again."}
-	var pd: Dictionary = parsed_v
-	# Present-but-null in a hand-edited pack; int(null) is a constructor error.
-	var mp_raw = pd.get("metroprofile", 0)
+	var pd: Dictionary = parsed
+	# Present but null in a hand-edited pack; int(null) is a constructor error.
+	var mp_raw: Variant = pd.get("metroprofile", 0)
 	var mp_ver: int = int(mp_raw) if (mp_raw is int or mp_raw is float) else 0
 	if mp_ver < 1:
 		return {"ok": false, "error": "This modpack file is damaged (it has no format version). Get a fresh copy and try again."}
@@ -90,63 +88,36 @@ func _validate_modpack(entry: Dictionary) -> Dictionary:
 	if not (pd.get("enabled") is Dictionary):
 		return {"ok": false, "error": "This modpack file is damaged (its mod list is missing). Get a fresh copy and try again."}
 	var enabled: Dictionary = pd["enabled"]
-	var enabled_count := _count_truthy(enabled)
-	return {
-		"ok": true,
-		"error": "",
-		"enabled_count": enabled_count,
-		"total_count": enabled.size(),
-	}
+	return {"ok": true, "error": "", "enabled_count": _count_truthy(enabled), "total_count": enabled.size()}
 
-# A zip with profile.json at the root is a modpack.
 func _is_modpack_zip(file_path: String) -> bool:
-	var reader := ZIPReader.new()
-	if reader.open(file_path) != OK:
-		return false
-	var files := reader.get_files()
-	var has_profile := files.has("profile.json")
-	reader.close()
-	return has_profile
+	return _modpack_zip_info(file_path)["is_pack"]
 
-# Read enough of a modpack zip to render a row; apply does full validation. {} if malformed.
 func _build_modpack_entry(file_path: String) -> Dictionary:
-	var reader := ZIPReader.new()
-	if reader.open(file_path) != OK:
+	var pd: Variant = _modpack_read_profile(file_path)
+	if pd == null:
 		return {}
-	var bytes := reader.read_file("profile.json")
-	reader.close()
-	if bytes.is_empty():
-		return {}
-	var parsed: Variant = JSON.parse_string(bytes.get_string_from_utf8())
-	if not (parsed is Dictionary):
-		return {}
-	var pd: Dictionary = parsed
-	var raw_name := str(pd.get("name", file_path.get_file().get_basename()))
-	var description := str(pd.get("description", "")).strip_edges()
-	var author := str(pd.get("author", "")).strip_edges()
-	var exported_at := str(pd.get("exported_at", ""))
-	var enabled: Dictionary = pd.get("enabled", {}) if pd.get("enabled") is Dictionary else {}
-	var enabled_count := _count_truthy(enabled)
-	# A pack imported from a mod site records where it came from (refresh, page link).
-	var hosted: Dictionary = pd.get("hosted", {}) if pd.get("hosted") is Dictionary else {}
+	var raw_name := _host_str(pd.get("name")).strip_edges()
+	if raw_name == "":
+		raw_name = file_path.get_file().get_basename()
+	var enabled := _pack_dict(pd, "enabled")
+	var hosted := _pack_dict(pd, "hosted")
 	return {
 		"file_path": file_path,
 		"file_name": file_path.get_file(),
 		"raw_name": raw_name,
-		"description": description,
-		"author": author,
-		"exported_at": exported_at,
+		"description": str(pd.get("description", "")).strip_edges(),
+		"author": str(pd.get("author", "")).strip_edges(),
 		"sanitized_name": _sanitize_profile_name(raw_name),
-		"enabled_count": enabled_count,
+		"enabled_count": _count_truthy(enabled),
 		"total_count": enabled.size(),
 		"hosted": hosted,
+		"thumbnail_url": _host_str(hosted.get("thumbnail_url")),
 	}
 
 func collect_modpack_metadata() -> Array[Dictionary]:
 	var entries: Array[Dictionary] = []
-	var mods_dir := _mods_dir
-	if mods_dir.is_empty():
-		mods_dir = OS.get_executable_path().get_base_dir().path_join(MOD_DIR)
+	var mods_dir := _mods_dir_path()
 	var dir := DirAccess.open(mods_dir)
 	if dir == null:
 		return entries
@@ -155,214 +126,170 @@ func collect_modpack_metadata() -> Array[Dictionary]:
 		var name := dir.get_next()
 		if name == "":
 			break
-		if dir.current_is_dir():
-			continue
-		if name.get_extension().to_lower() != "zip":
-			continue
 		var full := mods_dir.path_join(name)
-		if not _is_modpack_zip(full):
+		if dir.current_is_dir() or name.get_extension().to_lower() != "zip" or not _is_modpack_zip(full):
 			continue
 		var entry := _build_modpack_entry(full)
-		if entry.is_empty():
-			continue
-		entries.append(entry)
+		if not entry.is_empty():
+			entries.append(entry)
 	dir.list_dir_end()
+	if entries.size() < 2:
+		return entries
 
-	# Dedupe by sanitized_name: two zips with the same key would both render as
-	# active. Keep the newest by mtime; the rest go in duplicates_hidden.
-	if entries.size() > 1:
-		var by_sanitized: Dictionary = {}
-		for e_v in entries:
-			var e: Dictionary = e_v
-			var sn: String = str(e.get("sanitized_name", ""))
-			if sn == "":
-				continue
-			if not by_sanitized.has(sn):
-				by_sanitized[sn] = []
-			(by_sanitized[sn] as Array).append(e)
-		var deduped: Array[Dictionary] = []
-		for sn_v in by_sanitized.keys():
-			var bucket: Array = by_sanitized[sn_v]
-			if bucket.size() == 1:
-				deduped.append(bucket[0])
-				continue
-			bucket.sort_custom(func(a, b):
-				return FileAccess.get_modified_time(str(a.get("file_path", ""))) > FileAccess.get_modified_time(str(b.get("file_path", "")))
+	# Same-named hosted packs: all but the smallest slug get the slug in their slot name.
+	var slugs_by_name: Dictionary = {}
+	for e in entries:
+		var slug := str(e["hosted"].get("slug", ""))
+		if slug != "":
+			(slugs_by_name.get_or_add(e["sanitized_name"], {}) as Dictionary)[slug] = true
+	for e in entries:
+		var slug := str(e["hosted"].get("slug", ""))
+		var group: Dictionary = slugs_by_name.get(e["sanitized_name"], {})
+		if slug == "" or group.size() <= 1:
+			continue
+		var slugs := group.keys()
+		slugs.sort()
+		if slug != str(slugs[0]):
+			e["sanitized_name"] = _sanitize_profile_name(str(e["raw_name"]) + " " + slug)
+
+	# One sanitized_name for two zips would render both active: the newest by mtime wins.
+	var by_sanitized: Dictionary = {}
+	for e in entries:
+		if e["sanitized_name"] != "":
+			(by_sanitized.get_or_add(e["sanitized_name"], []) as Array).append(e)
+	var deduped: Array[Dictionary] = []
+	for bucket: Array in by_sanitized.values():
+		var kept: Dictionary = bucket[0]
+		if bucket.size() > 1:
+			bucket.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+				return FileAccess.get_modified_time(a["file_path"]) > FileAccess.get_modified_time(b["file_path"])
 			)
-			var kept: Dictionary = bucket[0]
+			kept = bucket[0]
 			var dups: Array = []
 			for i in range(1, bucket.size()):
-				dups.append({
-					"file_name": str(bucket[i].get("file_name", "?")),
-					"file_path": str(bucket[i].get("file_path", "")),
-				})
+				dups.append({"file_name": bucket[i]["file_name"], "file_path": bucket[i]["file_path"]})
 			kept["duplicates_hidden"] = dups
-			deduped.append(kept)
-		entries = deduped
-	return entries
+		deduped.append(kept)
+	return deduped
 
-# Currently applied modpack (sanitized_name) or "" if none.
 func get_active_modpack() -> String:
 	var cfg := ConfigFile.new()
 	if _ui_cfg_load(cfg) != OK:
 		return ""
 	return str(cfg.get_value("settings", "active_modpack", ""))
 
-# Mods the pack declares that are not installed at the pinned version.
-# Returns [{profile_key, ref, version, source, sha256}]; ref is {} when no host
-# is named, and an item nothing can download carries unreachable and
-# unreachable_reason. Reads only, so the Apply confirmation can preview it.
 func _get_missing_mods_for_modpack(entry: Dictionary) -> Array:
 	var missing: Array = []
-	var file_path: String = str(entry.get("file_path", ""))
-	if file_path.is_empty():
+	var pd: Variant = _modpack_read_profile(entry["file_path"])
+	if pd == null:
 		return missing
-	var reader := ZIPReader.new()
-	if reader.open(file_path) != OK:
-		return missing
-	var bytes := reader.read_file("profile.json")
-	reader.close()
-	if bytes.is_empty():
-		return missing
-	var parsed_v: Variant = JSON.parse_string(bytes.get_string_from_utf8())
-	if not (parsed_v is Dictionary):
-		return missing
-	var pd: Dictionary = parsed_v
-	var sources: Dictionary = pd.get("sources", {}) if pd.get("sources") is Dictionary else {}
-	var enabled_map: Dictionary = pd.get("enabled", {}) if pd.get("enabled") is Dictionary else {}
-	var unavailable: Dictionary = pd.get("unavailable", {}) if pd.get("unavailable") is Dictionary else {}
-	var checksums: Dictionary = pd.get("checksums", {}) if pd.get("checksums") is Dictionary else {}
-
-	var index := _modpack_installed_index()
-
-	# Lowercased ids that have a source under some key: an exporter can pair a
-	# stale enabled key with a live sources key for the same mod.
-	var sourced_ids: Dictionary = {}
-	for k_v in sources.keys():
-		var sk := str(k_v)
-		var s_at := sk.find("@")
-		if s_at > 0 and str(_normalize_source_record(sources[k_v])["provider"]) != "":
-			sourced_ids[sk.substr(0, s_at).to_lower()] = true
-
-	# Walk enabled and sources so a mod missing from `sources` surfaces as a failure.
+	var sources := _pack_dict(pd, "sources")
+	var unavailable := _pack_dict(pd, "unavailable")
+	var checksums := _pack_dict(pd, "checksums")
+	var index := _modpack_installed_index(true)
+	var sourced_ids := _pack_sourced_ids(sources)
+	# Enabled keys and sources both, so a mod missing from `sources` surfaces as a failure.
 	var seen: Dictionary = {}
-	var ordered_keys: Array[String] = []
-	for k_v in enabled_map.keys():
-		var k := str(k_v)
-		if k != "" and not seen.has(k):
-			seen[k] = true
-			ordered_keys.append(k)
-	for k_v in sources.keys():
-		var k := str(k_v)
-		if k != "" and not seen.has(k):
-			seen[k] = true
-			ordered_keys.append(k)
-
-	for src_key in ordered_keys:
-		if _modpack_key_installed(src_key, sources, checksums, index):
+	for k_v in _pack_dict(pd, "enabled").keys() + sources.keys():
+		var key := str(k_v)
+		if key == "" or seen.has(key):
 			continue
-		var src_data: Variant = sources.get(src_key)
-		if unavailable.has(src_key):
-			var reason := str(unavailable[src_key])
-			missing.append({"profile_key": src_key, "ref": {}, "version": "", "source": _normalize_source_record(null),
-					"unreachable": true, "unreachable_reason": _hosted_unavailable_copy(reason)})
+		seen[key] = true
+		if _modpack_key_installed(key, sources, checksums, index):
 			continue
-		if not (src_data is Dictionary) or (src_data as Dictionary).is_empty():
-			var at2 := src_key.find("@")
-			if at2 > 0 and sourced_ids.has(src_key.substr(0, at2).to_lower()):
-				continue
-		# Version is honored only when the record carries it; deriving it from the
-		# profile_key would strict-pin legacy packs against replaced versions.
-		var src_rec := _normalize_source_record(src_data)
-		var version: String = str(src_rec["version"])
-		var ref := _source_host_ref(src_rec)
-		var item := {"profile_key": src_key, "ref": ref, "version": version, "source": src_rec,
-				"sha256": str(checksums.get(src_key, ""))}
-		if not _modpack_ref_downloadable(ref):
-			# No usable source; surface an explanatory failure row.
-			item["unreachable"] = true
-			if not (src_data is Dictionary) or (src_data as Dictionary).is_empty():
-				item["unreachable_reason"] = "the modpack has no download info for this mod -- install it manually"
-			else:
-				item["unreachable_reason"] = "the modpack does not say where this mod is hosted -- install it manually"
-		missing.append(item)
+		if unavailable.has(key):
+			# The key still names the mod, so its Mods-tab row can offer Download later; no ref.
+			missing.append({"profile_key": key, "ref": {}, "version": "",
+					"source": _normalize_source_record(_pack_key_source(key)),
+					"unreachable": true, "unreachable_reason": _hosted_unavailable_copy(str(unavailable[key]))})
+			continue
+		var src_data: Variant = sources.get(key)
+		var no_source: bool = not (src_data is Dictionary) or (src_data as Dictionary).is_empty()
+		# A pack can pair a stale enabled key with a live sources key for the same mod.
+		if no_source and sourced_ids.has(_profile_key_id(key)):
+			continue
+		missing.append(_missing_mod_item(key, src_data, no_source, str(checksums.get(key, ""))))
 	return missing
 
+func _pack_sourced_ids(sources: Dictionary) -> Dictionary:
+	var ids: Dictionary = {}
+	for k_v in sources:
+		var sid := _profile_key_id(str(k_v))
+		if sid != "" and str(_normalize_source_record(sources[k_v])["provider"]) != "":
+			ids[sid] = true
+	return ids
 
-## Whether a pack's mod key is installed here; the apply and the pack's
-## details dialog both ask this. Matches the exact key, the same id@version
-## in any case, then the key's source record: installed from the same host at
-## the pinned version (or any when unpinned), or as the pinned file by
-## checksum. Hosted packs key by slug, so the source match is what stops a
-## re-download on every apply. A hosted pack writes no source for a mod the
-## site cannot serve right now, but its key still names the mod, which may
-## be installed already. `index` is _modpack_installed_index().
+func _missing_mod_item(key: String, src_data: Variant, no_source: bool, sha256: String) -> Dictionary:
+	# Version from the record only; one from the key would strict-pin old packs.
+	var rec := _normalize_source_record(src_data)
+	var ref := _source_host_ref(rec)
+	var item := {"profile_key": key, "ref": ref, "version": str(rec["version"]), "source": rec, "sha256": sha256}
+	if not _modpack_ref_downloadable(ref):
+		item["unreachable"] = true
+		if no_source:
+			item["unreachable_reason"] = "the modpack has no download info for this mod -- install it manually"
+		else:
+			item["unreachable_reason"] = "the modpack does not say where this mod is hosted -- install it manually"
+	return item
+
+## An old local pack (no sources, "<id>@<version>" keys) matches any installed version of the id.
 func _modpack_key_installed(key: String, sources: Dictionary, checksums: Dictionary, index: Dictionary) -> bool:
-	if (index["keys"] as Dictionary).has(key):
+	if _resolve_pack_key(key, sources.get(key), str(checksums.get(key, "")), index) != "":
 		return true
-	var at_pos := key.find("@")
-	if at_pos > 0 and (index["id_ver"] as Dictionary).has(key.substr(0, at_pos).to_lower() + "@" + key.substr(at_pos + 1)):
-		return true
-	var src_data: Variant = sources.get(key)
-	if _modpack_source_installed(src_data, index["refs"], str(checksums.get(key, "")), index["paths"]):
-		return true
-	return str(_normalize_source_record(src_data)["provider"]) == "" \
-			and _modpack_source_installed(_modpack_key_source(key), index["refs"])
+	return _normalize_source_record(sources.get(key))["provider"] == "" \
+			and _normalize_source_record(_pack_key_source(key))["provider"] == "" \
+			and index["ids"].has(_profile_key_id(key))
 
+func _resolve_pack_key(key: String, src_data: Variant, sha256: String, index: Dictionary) -> String:
+	if index["keys"].has(key):
+		return key
+	var by_id_ver: String = index["id_ver"].get(_profile_key_id(key) + "@" + _version_from_profile_key(key), "")
+	if by_id_ver != "":
+		return by_id_ver
+	var rec := _normalize_source_record(src_data)
+	if rec["provider"] == "":
+		# A hosted pack writes no source for a mod the site cannot serve; the key names it.
+		rec = _normalize_source_record(_pack_key_source(key))
+	var rk := host_ref_key(_source_host_ref(rec))
+	for cand: Dictionary in index["by_ref"].get(rk, []):
+		if _modpack_source_installed(rec, {rk: [cand["version"]]}) \
+				or _pinned_bytes_match(cand["path"], sha256, index):
+			return cand["key"]
+	return _match_unsourced_mod(rec, sha256, index)
 
-## Rewrite a modpack profile's enabled/priority/dep_ignore keys from the
-## author's keys to the keys the same mods have here. They differ when the
-## author's mod had no id or when the pack predates an update. Resolution:
-## exact key, then id@version case-insensitively, then the source record
-## against an installed mod's source. No id-prefix fallback. Unresolved keys
-## stay, so a still-missing mod keeps its stub row. Returns the count rewritten.
+# An index built without hashing (row counts) trusts any copy when the pack pins bytes.
+func _pinned_bytes_match(path: String, sha256: String, index: Dictionary) -> bool:
+	return sha256 != "" and (not index["hash"] or _cached_sha256(path) == sha256.to_lower())
+
+func _match_unsourced_mod(rec: Dictionary, sha256: String, index: Dictionary) -> String:
+	var id_l := str(rec["id"]).strip_edges().to_lower()
+	if id_l == "":
+		return ""
+	var want := str(rec["version"]).strip_edges().lstrip("vV")
+	var sha := sha256.strip_edges().to_lower()
+	for cand: Dictionary in index["by_id"].get(id_l, []):
+		if want == "" or str(cand["version"]).strip_edges().lstrip("vV") == want:
+			return cand["key"]
+		if _pinned_bytes_match(cand["path"], sha, index):
+			return cand["key"]
+	return ""
+
 func _modpack_reconcile_profile_keys(profile_name: String, sources: Dictionary, checksums: Dictionary = {}) -> int:
-	var cfg := ConfigFile.new()
-	if _ui_cfg_load(cfg) != OK:
+	var cfg := _load_ui_cfg_for_write()
+	if cfg == null:
 		return 0
-	var persisted := _get_persisted_mod_sources()
-	var by_id_ver: Dictionary = {}
-	var by_ref: Dictionary = {}
-	var installed: Dictionary = {}
-	for e in _ui_mod_entries:
-		var pk := str(e.get("profile_key", ""))
-		if pk == "":
-			continue
-		installed[pk] = true
-		var id_l := str(e.get("mod_id", "")).to_lower()
-		if id_l != "" and not by_id_ver.has(id_l + "@" + str(e.get("version", ""))):
-			by_id_ver[id_l + "@" + str(e.get("version", ""))] = pk
-		for rk in _entry_ref_keys(e, persisted):
-			if not by_ref.has(rk):
-				by_ref[rk] = e
+	var index := _modpack_installed_index(true)
 	var changed := 0
-	for suffix in [".enabled", ".priority", ".dep_ignore"]:
-		var sec := _profile_sec(profile_name, str(suffix))
+	for suffix: String in STATE_SUFFIXES:
+		var sec := _profile_sec(profile_name, suffix)
 		if not cfg.has_section(sec):
 			continue
-		for k in cfg.get_section_keys(sec):
-			var pack_key := str(k)
-			if installed.has(pack_key):
-				continue
-			var target := ""
-			var at := pack_key.find("@")
-			if at > 0:
-				target = str(by_id_ver.get(pack_key.substr(0, at).to_lower() + "@" + pack_key.substr(at + 1), ""))
-			if target == "":
-				var src_rec := _normalize_source_record(sources.get(pack_key))
-				if str(src_rec["provider"]) == "":
-					src_rec = _normalize_source_record(_modpack_key_source(pack_key))
-				var rk := host_ref_key(_source_host_ref(src_rec))
-				if by_ref.has(rk):
-					var candidate: Dictionary = by_ref[rk]
-					if _modpack_source_installed(src_rec, {rk: [str(candidate.get("version", ""))]},
-							str(checksums.get(pack_key, "")), {rk: [str(candidate.get("full_path", ""))]}):
-						target = str(candidate["profile_key"])
+		for pack_key: String in cfg.get_section_keys(sec):
+			var target := _resolve_pack_key(pack_key, sources.get(pack_key), str(checksums.get(pack_key, "")), index)
 			if target == "" or target == pack_key:
 				continue
 			var value: Variant = cfg.get_value(sec, pack_key)
 			cfg.erase_section_key(sec, pack_key)
-			# An entry the pack already keyed correctly wins over a remap.
 			if not cfg.has_section_key(sec, target):
 				cfg.set_value(sec, target, value)
 			changed += 1
@@ -371,46 +298,27 @@ func _modpack_reconcile_profile_keys(profile_name: String, sources: Dictionary, 
 		_persist_ui_cfg(cfg)
 	return changed
 
-
-## How many of the missing mods an apply downloads and how many it can only
-## report: {download, blocked}. `missing` is _get_missing_mods_for_modpack().
 func _modpack_download_counts(missing: Array) -> Dictionary:
 	var blocked := 0
-	for item_v in missing:
-		if item_v is Dictionary and bool((item_v as Dictionary).get("unreachable", false)):
+	for item: Dictionary in missing:
+		if item.get("unreachable", false):
 			blocked += 1
 	return {"download": missing.size() - blocked, "blocked": blocked}
 
-
-## Drop a pack's kept profile slot and its MCM snapshot, so the next apply
-## builds the slot from the zip again. Called when Refresh rewrote the zip
-## from the site; the player's edits to the old slot go with it. Refuses the
-## active pack's slot. False when nothing was dropped.
 func _modpack_forget_slot(sanitized: String) -> bool:
 	if sanitized.is_empty() or get_active_modpack() == sanitized:
 		return false
-	var cfg := ConfigFile.new()
-	var cfg_err := _ui_cfg_load(cfg)
-	if cfg_err != OK and cfg_err != ERR_FILE_NOT_FOUND:
+	var cfg := _load_ui_cfg_for_write()
+	if cfg == null:
 		return false
 	var slot := MODPACK_PROFILE_PREFIX + sanitized
-	var erased := false
-	for suffix: String in PROFILE_SUBSECTIONS:
-		var sec := _profile_sec(slot, suffix)
-		if cfg.has_section(sec):
-			cfg.erase_section(sec)
-			erased = true
+	var erased := _erase_profile_sections(cfg, slot)
 	if erased:
 		_persist_ui_cfg(cfg)
 	var had_snapshot := DirAccess.dir_exists_absolute(MCM_SNAPSHOT_BASE.path_join(slot))
 	_delete_mcm_snapshot(slot)
 	return erased or had_snapshot
 
-
-## With a pack active, rewrite its slot's keys to the mods installed now and
-## re-apply the slot to the live entries when any key moved. For a download
-## that lands outside the apply loop: Retry, or a missing-mod row's Download.
-## Returns the number of keys rewritten.
 func _modpack_reconcile_active() -> int:
 	var active := get_active_modpack()
 	if active == "":
@@ -418,7 +326,7 @@ func _modpack_reconcile_active() -> int:
 	if _modpack_entries.is_empty():
 		_modpack_entries = collect_modpack_metadata()
 	for mp in _modpack_entries:
-		if str(mp.get("sanitized_name", "")) != active:
+		if mp["sanitized_name"] != active:
 			continue
 		var changed := _modpack_reconcile_profile_keys(MODPACK_PROFILE_PREFIX + active, _modpack_sources(mp), _modpack_checksums(mp))
 		if changed > 0:
@@ -428,113 +336,80 @@ func _modpack_reconcile_active() -> int:
 		return changed
 	return 0
 
-
-## The pack's source map, read from the zip so reconcile sees what the download loop used.
 func _modpack_sources(entry: Dictionary) -> Dictionary:
-	return _modpack_profile_dict(entry, "sources")
+	return _pack_dict(_modpack_read_profile(entry["file_path"]), "sources")
 
-
-## The pack's checksums: {pack key -> sha256 of the exact file it pins}.
 func _modpack_checksums(entry: Dictionary) -> Dictionary:
-	return _modpack_profile_dict(entry, "checksums")
+	return _pack_dict(_modpack_read_profile(entry["file_path"]), "checksums")
 
+func _missing_mod_sources_combined() -> Dictionary:
+	var out: Dictionary = _get_persisted_mod_sources()
+	var active := get_active_modpack()
+	if active.is_empty():
+		return out
+	for entry in _modpack_entries:
+		if entry["sanitized_name"] != active:
+			continue
+		var sources := _modpack_sources(entry)
+		for k in sources:
+			var rec := _normalize_source_record(sources[k])
+			if rec["provider"] != "":
+				out[str(k)] = rec
+		return out
+	return out
 
-## One Dictionary field of the pack zip's profile.json, {} when absent.
-func _modpack_profile_dict(entry: Dictionary, field: String) -> Dictionary:
-	var file_path: String = str(entry.get("file_path", ""))
-	if file_path.is_empty():
-		return {}
-	var reader := ZIPReader.new()
-	if reader.open(file_path) != OK:
-		return {}
-	var bytes := reader.read_file("profile.json")
-	reader.close()
-	if bytes.is_empty():
-		return {}
-	var parsed_v: Variant = JSON.parse_string(bytes.get_string_from_utf8())
-	if not (parsed_v is Dictionary):
-		return {}
-	var field_v: Variant = (parsed_v as Dictionary).get(field)
-	return field_v if field_v is Dictionary else {}
-
-
-## What is installed, three ways: by profile key, by lowercased id@version,
-## and by every host ref key a mod answers to. A pack from a mod site knows
-## only the host ref, and a hosted pack names a Vostok Mods mod by slug.
-func _modpack_installed_index() -> Dictionary:
+## `hash_pins` lets a pinned checksum hash archives; only checks that decide a download set it.
+func _modpack_installed_index(hash_pins := false) -> Dictionary:
 	var keys: Dictionary = {}
 	var id_ver: Dictionary = {}
-	var refs: Dictionary = {}
-	var paths: Dictionary = {}
+	var by_ref: Dictionary = {}
+	var by_id: Dictionary = {}
+	var ids: Dictionary = {}
 	var persisted := _get_persisted_mod_sources()
 	for installed_entry in _ui_mod_entries:
-		var pk: String = str(installed_entry.get("profile_key", ""))
+		var pk := str(installed_entry.get("profile_key", ""))
 		if pk != "":
 			keys[pk] = true
-		var inst_id_l: String = str(installed_entry.get("mod_id", "")).to_lower()
-		var inst_ver: String = str(installed_entry.get("version", ""))
+		var inst_id_l := str(installed_entry.get("mod_id", "")).to_lower()
+		var inst_ver := str(installed_entry.get("version", ""))
+		var inst_path := str(installed_entry.get("full_path", ""))
 		if inst_id_l != "":
-			id_ver[inst_id_l + "@" + inst_ver] = true
-		for rk in _entry_ref_keys(installed_entry, persisted):
-			# Several installed copies: any version satisfies an unpinned record.
-			var vers: Array = refs.get(rk, [])
-			vers.append(inst_ver)
-			refs[rk] = vers
-			# Parallel to refs: the archive behind each version, for checksums.
-			var files: Array = paths.get(rk, [])
-			files.append(str(installed_entry.get("full_path", "")))
-			paths[rk] = files
-	return {"keys": keys, "id_ver": id_ver, "refs": refs, "paths": paths}
+			id_ver.get_or_add(inst_id_l + "@" + inst_ver, pk)
+			ids[inst_id_l] = true
+		var ref_keys := _entry_ref_keys(installed_entry, persisted)
+		if ref_keys.is_empty() and inst_id_l != "":
+			(by_id.get_or_add(inst_id_l, []) as Array).append({"key": pk, "version": inst_ver, "path": inst_path})
+		# The site's served version can run ahead of mod.txt's; a pin at it counts too.
+		var served := ""
+		var stored := _normalize_source_record(persisted.get(pk))
+		if _source_record_names_ref(stored, _entry_host_ref(installed_entry, persisted)) \
+				and stored["version"] != "" and stored["version"] != inst_ver:
+			served = stored["version"]
+		for rk in ref_keys:
+			var cands: Array = by_ref.get_or_add(rk, [])
+			cands.append({"key": pk, "version": inst_ver, "path": inst_path})
+			if served != "":
+				cands.append({"key": pk, "version": served, "path": inst_path})
+	return {"keys": keys, "id_ver": id_ver, "by_ref": by_ref, "by_id": by_id, "ids": ids,
+			"hash": hash_pins}
 
-
-## Bring an apply's downloads into the session: rescan, re-apply the active
-## profile and mark the mod set changed. A cancelled apply needs it as much
-## as a finished one, or the Mods tab, Browse and the next apply miss the
-## mods already on disk and the next apply downloads them a second time.
-func _modpack_take_in_downloads() -> void:
-	_ui_mod_entries = collect_mod_metadata()
-	var cfg_apply := ConfigFile.new()
-	_ui_cfg_load(cfg_apply)
-	_apply_profile_to_entries(cfg_apply, _active_profile)
-	_mark_mod_set_changed()
-
-
-## The source a pack key names on its own: a key that is a host ref key
-## ("vostokmods:<slug>", how a hosted pack keys its mods) names that mod,
-## unpinned. {} for any other key.
-func _modpack_key_source(pack_key: String) -> Dictionary:
+func _pack_key_source(pack_key: String) -> Dictionary:
 	var ref := host_ref_from_key(pack_key)
 	if ref.is_empty():
 		return {}
 	return {"provider": str(ref["provider"]), "id": str(ref["id"])}
 
-
-## The pack's Vostok Mods mods that nothing installed answers to, after the
-## same checks the missing-mod list makes; for an item with no source, the
-## mod its key names.
-func _modpack_unmatched_vm_refs(entry: Dictionary) -> Array:
-	var out: Array = []
-	for item_v in _get_missing_mods_for_modpack(entry):
-		var item: Dictionary = item_v
-		var ref: Dictionary = item.get("ref", {})
-		if ref.is_empty():
-			ref = host_ref_from_key(str(item.get("profile_key", "")))
-		if str(ref.get("provider", "")) == HOST_VOSTOKMODS:
-			out.append(ref)
-	return out
-
-
-## Installed Vostok Mods mods whose other id is unknown and could be what an
-## unmatched pack mod names: when the pack names a mod by slug, the installs
-## known only by UUID (what the site writes into mod.txt); by UUID, the
-## installs known only by slug. Usually empty: the Mods tab and Browse learn
-## the pairs as they show the mods.
 func _modpack_unpaired_host_refs(entry: Dictionary) -> Array:
 	var out: Array = []
 	var by_slug := false
 	var by_uuid := false
-	for ref in _modpack_unmatched_vm_refs(entry):
-		if _vmp_is_uuid(str((ref as Dictionary)["id"])):
+	for item: Dictionary in _get_missing_mods_for_modpack(entry):
+		var ref: Dictionary = item["ref"]
+		if ref.is_empty():
+			ref = host_ref_from_key(item["profile_key"])
+		if str(ref.get("provider", "")) != HOST_VOSTOKMODS:
+			continue
+		if _vmp_is_uuid(str(ref["id"])):
 			by_uuid = true
 		else:
 			by_slug = true
@@ -552,20 +427,13 @@ func _modpack_unpaired_host_refs(entry: Dictionary) -> Array:
 			out.append(ref)
 	return out
 
-
-## Ask Vostok Mods about each unpaired installed mod before an apply counts
-## what is missing; the detail response pairs its ids. A detail is cached,
-## and a mod that really is missing needs the same request to download.
-## Stops once every pack mod is matched or missing for real, and on a
-## failure that would fail the next request too (offline, rate limit,
-## server); a mod the site refuses on its own is skipped.
 func _modpack_learn_host_ids(entry: Dictionary, during_apply: bool = true) -> void:
-	for ref in _modpack_unpaired_host_refs(entry):
-		# The cancel flag belongs to a running apply; outside one it is stale.
-		if (during_apply and _modpack_apply_cancelled) or _modpack_cooldown_seconds(HOST_VOSTOKMODS) > 0:
+	for ref: Dictionary in _modpack_unpaired_host_refs(entry):
+		# Outside an apply the cancel flag is stale.
+		if (during_apply and _modpack_apply_cancelled) or host_rate_cooldown_seconds(HOST_VOSTOKMODS) > 0:
 			return
-		var res := await _vmp_detail(str((ref as Dictionary)["id"]))
-		var code := str(res.get("code", ""))
+		var res := await _vmp_detail(str(ref["id"]))
+		var code := str(res["code"])
 		if not res["ok"] and code in [HOST_ERR_OFFLINE, HOST_ERR_RATE_LIMITED, HOST_ERR_SERVER]:
 			return
 		if res["ok"] or code != HOST_ERR_BAD_RESPONSE:
@@ -573,22 +441,9 @@ func _modpack_learn_host_ids(entry: Dictionary, during_apply: bool = true) -> vo
 		if _modpack_unpaired_host_refs(entry).is_empty():
 			return
 
-## Installed mods already asked about this session with an answer that
-## would not change (a detail, or a refusal such as an unknown id), so the
-## next apply does not ask again. A failure that may pass later is not kept.
-var _modpack_host_ids_asked: Dictionary = {}
-
-
-## True when a pack's source record names a host ref that is installed, at
-## the record's version when it pins one. The version a site shows can differ
-## from the one in the file's own mod.txt (an author who did not bump it), so
-## with the pack's checksum for the pinned file (`sha256`) an installed
-## archive with those exact bytes counts as that version (`installed_paths`
-## parallel to `installed_refs`).
+## Site and mod.txt versions can differ, so an archive with the pinned bytes counts too.
 func _modpack_source_installed(src_data: Variant, installed_refs: Dictionary, sha256: String = "",
 		installed_paths: Dictionary = {}) -> bool:
-	if not (src_data is Dictionary):
-		return false
 	var rec := _normalize_source_record(src_data)
 	var rk := host_ref_key(_source_host_ref(rec))
 	if rk == "" or not installed_refs.has(rk):
@@ -596,38 +451,29 @@ func _modpack_source_installed(src_data: Variant, installed_refs: Dictionary, sh
 	var want := str(rec["version"]).strip_edges().lstrip("vV")
 	if want == "":
 		return true
-	for v in (installed_refs[rk] as Array):
+	for v in installed_refs[rk]:
 		if str(v).strip_edges().lstrip("vV") == want:
 			return true
 	if sha256 != "":
-		for path in (installed_paths.get(rk, []) as Array):
-			if _modpack_file_sha256(str(path)) == sha256.to_lower():
+		for path in installed_paths.get(rk, []):
+			if _cached_sha256(str(path)) == sha256.to_lower():
 				return true
 	return false
 
-
-## SHA-256 of an installed archive, cached for the session by path, size and
-## modification time: a pack check can ask about the same 100 MB file many times.
-var _modpack_sha256_cache: Dictionary = {}
-
-func _modpack_file_sha256(path: String) -> String:
+func _cached_sha256(path: String) -> String:
 	if path == "" or not FileAccess.file_exists(path):
 		return ""
 	var stamp := "%d:%d" % [FileAccess.get_modified_time(path), FileAccess.get_size(path)]
 	var cached: Dictionary = _modpack_sha256_cache.get(path, {})
-	if str(cached.get("stamp", "")) == stamp:
-		return str(cached["sha256"])
+	if cached.get("stamp", "") == stamp:
+		return cached["sha256"]
 	var sha := FileAccess.get_sha256(path).to_lower()
 	_modpack_sha256_cache[path] = {"stamp": stamp, "sha256": sha}
 	return sha
 
-
-# Discovery selects the newest installed copy. An older pin cannot become
-# active while a newer copy is present, even if its download succeeds.
+## Discovery picks the newest copy, so an older pin cannot win while a newer one is installed.
 func _modpack_pin_conflict(entry: Dictionary) -> String:
 	var index := _modpack_installed_index()
-	var refs: Dictionary = index["refs"]
-	var paths: Dictionary = index["paths"]
 	var sources := _modpack_sources(entry)
 	var checksums := _modpack_checksums(entry)
 	for key in sources:
@@ -637,62 +483,46 @@ func _modpack_pin_conflict(entry: Dictionary) -> String:
 			continue
 		var rk := host_ref_key(_source_host_ref(rec))
 		var sha := str(checksums.get(key, "")).to_lower()
-		var versions: Array = refs.get(rk, [])
-		var files: Array = paths.get(rk, [])
-		for i in versions.size():
-			var installed_version: String = str(versions[i])
+		var cands: Array = index["by_ref"].get(rk, []).duplicate()
+		var files: Array = cands.map(func(c: Dictionary) -> String: return str(c["path"]))
+		# A same-id copy no host answers for was dropped in by hand; a newer one blocks too.
+		for cand: Dictionary in index["by_id"].get(str(rec["id"]).to_lower(), []):
+			if not files.has(cand["path"]):
+				cands.append(cand)
+				files.append(cand["path"])
+		for cand: Dictionary in cands:
+			var installed_version := str(cand["version"])
 			if compare_versions(installed_version, want) <= 0:
 				continue
-			# The pinned file itself, whatever version its mod.txt claims.
-			# Hashed only here, for a file that would otherwise conflict.
-			if sha != "" and i < files.size() and _modpack_file_sha256(str(files[i])) == sha:
+			if sha != "" and _cached_sha256(str(cand["path"])) == sha:
 				continue
-			# A pack from the site pins each mod at the version it had when
-			# the pack was fetched, so a mod updated since usually means the
-			# pack zip is behind the author's current list.
-			var hosted_v: Variant = entry.get("hosted")
-			if hosted_v is Dictionary and not (hosted_v as Dictionary).is_empty():
+			if not entry["hosted"].is_empty():
 				return "This pack was fetched when %s was at %s, and %s is installed. Refresh the pack to get the author's current list, or remove the newer version before applying it." \
-						% [rk, want, str(installed_version)]
-			return "This pack requires %s at %s. Remove the newer installed version %s before applying it." % [rk, want, str(installed_version)]
+						% [rk, want, installed_version]
+			return "This pack requires %s at %s. Remove the newer installed version %s before applying it." % [rk, want, installed_version]
 	return ""
 
-
-## The host ref a normalized source record names, or {} when it names none.
 func _source_host_ref(rec: Dictionary) -> Dictionary:
 	if str(rec.get("provider", "")) == "" or str(rec.get("id", "")) == "":
 		return {}
 	return host_ref(str(rec["provider"]), str(rec["id"]))
 
-
-## Fetchable only from a host this build can download from.
 func _modpack_ref_downloadable(ref: Dictionary) -> bool:
 	if not host_ref_valid(ref):
 		return false
 	return bool(host_caps(str(ref["provider"]))["resolve_file"])
 
-
-func _modpack_cooldown_seconds(provider: String) -> int:
-	return host_rate_cooldown_seconds(provider)
-
-
-# Wait out an armed rate-limit cooldown on one host, or one mid-apply 429
-# would fail every remaining mod. Ticks the progress countdown; never retries a request.
+## One mid-apply 429 would otherwise fail every remaining mod; never retries a request.
 func _await_host_rate_cooldown(provider: String, progress: Callable, current: int, total: int) -> void:
 	while not _modpack_apply_cancelled:
-		var wait_s := _modpack_cooldown_seconds(provider)
+		var wait_s := host_rate_cooldown_seconds(provider)
 		if wait_s <= 0:
 			return
 		if progress.is_valid():
 			progress.call({"current": current, "total": total, "mod_name": "", "action": "rate_wait",
 					"wait_s": wait_s, "host": host_display_name(provider)})
-		if get_tree() == null:
-			return
 		await get_tree().create_timer(1.0).timeout
 
-
-# The apply result for a failure. Every return from apply_modpack carries
-# these keys; the counts describe the downloads that ran before the failure.
 func _modpack_apply_failure(error: String, downloaded: int = 0, failed_downloads: int = 0,
 		failures: Array = []) -> Dictionary:
 	return {
@@ -703,251 +533,181 @@ func _modpack_apply_failure(error: String, downloaded: int = 0, failed_downloads
 		"failures": failures,
 	}
 
-## Which dialog an apply result gets: "cancelled"; "failed" when the apply
-## itself did not complete, which wins over the download counts because a
-## failure after the downloads carries them too; "partial" when the pack
-## applied and some downloads failed; "applied" otherwise.
+func _modpack_failure_row(profile_key: String, error: String, ref: Dictionary, version: String,
+		sha256: String) -> Dictionary:
+	return {"profile_key": profile_key, "error": error, "ref": ref, "version": version, "sha256": sha256}
+
 func _modpack_apply_outcome(result: Dictionary) -> String:
-	if bool(result.get("cancelled", false)):
+	if result.get("cancelled", false):
 		return "cancelled"
-	if not bool(result.get("ok", false)):
+	if not result.get("ok", false):
 		return "failed"
-	if int(result.get("failed_downloads", 0)) > 0:
+	if result.get("failed_downloads", 0) > 0:
 		return "partial"
 	return "applied"
 
-# Apply a discovered modpack: back up, download missing mods, materialize,
-# switch, mark active. progress is Callable(info) with {current, total, mod_name,
-# action}, action one of downloading | skipped | applying | rate_wait.
-# Returns {ok, error, downloaded, failed_downloads, failures}, plus
-# cancelled=true when the user cancelled during the downloads.
+## progress gets {current, total, mod_name, action}, action one of downloading, skipped,
+## applying, rate_wait. Result: {ok, error, downloaded, failed_downloads, failures[, cancelled]}.
 func apply_modpack(entry: Dictionary, tabs: TabContainer, progress: Callable = Callable()) -> Dictionary:
-	# apply awaits during downloads; a second Apply click would race on cfg writes.
 	if _modpack_apply_in_progress:
 		return _modpack_apply_failure("Another apply is in progress; wait for it to finish")
 	_modpack_apply_in_progress = true
 	_modpack_apply_cancelled = false
-
 	var result := await _apply_modpack_inner(entry, tabs, progress)
 	_modpack_apply_in_progress = false
 	return result
 
-# Inner apply flow; the outer wrapper manages the in-progress flag.
+## Downloads precede any profile change; only _stage_pack leaves active_modpack set on failure.
 func _apply_modpack_inner(entry: Dictionary, tabs: TabContainer, progress: Callable) -> Dictionary:
 	var validation := _validate_modpack(entry)
-	if not bool(validation.get("ok", false)):
-		return _modpack_apply_failure(str(validation.get("error", "")))
-
-	var sanitized: String = str(entry.get("sanitized_name", ""))
+	if not validation["ok"]:
+		return _modpack_apply_failure(validation["error"])
+	var sanitized: String = entry["sanitized_name"]
 	if sanitized.is_empty():
 		return _modpack_apply_failure("Invalid modpack name")
-	var modpack_profile := MODPACK_PROFILE_PREFIX + sanitized
-	var backup_profile := MODPACK_BACKUP_PREFIX + sanitized
-
-	# The UI hides Apply while another pack is active; guard anyway.
 	var current_active := get_active_modpack()
 	if current_active != "" and current_active != sanitized:
 		return _modpack_apply_failure("Unload " + current_active + " before applying another modpack")
-
 	await _modpack_learn_host_ids(entry)
 	var pin_conflict := _modpack_pin_conflict(entry)
 	if not pin_conflict.is_empty():
 		return _modpack_apply_failure(pin_conflict)
+	var modpack_profile := MODPACK_PROFILE_PREFIX + sanitized
 
-	# Re-apply of the active pack skips backup, materialize and switch (each
-	# would clobber user state); it only re-downloads missing mods.
-	var is_reapply := current_active == sanitized
+	var tally := await _download_pack_mods(entry, sanitized, progress)
+	var done_dl: int = tally["downloaded"]
+	var failed_dl: int = tally["failed_downloads"]
+	var failures: Array = tally["failures"]
+	if tally["error"] != "":
+		var cancelled := _modpack_apply_failure(tally["error"], done_dl, failed_dl, failures)
+		cancelled["cancelled"] = true
+		return cancelled
 
-	# Download before touching state so a network failure cannot half-apply.
-	var missing := _get_missing_mods_for_modpack(entry)
-	var failed_dl: int = 0
-	var done_dl: int = 0
-	var failures: Array = []
-	if not missing.is_empty():
-		_log_info("[Modpack] applying " + sanitized + ": " + str(missing.size()) + " mod(s) to install")
-		# Cache each source so a mod that fails to download can offer it from its missing-mod row.
-		for missing_item: Dictionary in missing:
-			_persist_single_mod_source(str(missing_item.get("profile_key", "")), missing_item.get("source", {}))
-		var total := missing.size()
-		for i in range(total):
-			var item_ref: Dictionary = (missing[i] as Dictionary).get("ref", {})
-			if not item_ref.is_empty() and _modpack_cooldown_seconds(str(item_ref["provider"])) > 0:
-				await _await_host_rate_cooldown(str(item_ref["provider"]), progress, i + 1, total)
-			# Cancel check before each download; an in-flight request cannot be interrupted.
-			if _modpack_apply_cancelled:
-				_log_info("[Modpack] cancelled by user at item %d of %d" % [i + 1, total])
-				if done_dl > 0:
-					_modpack_take_in_downloads()
-				return {
-					"ok": false,
-					"error": "Cancelled by user after downloading %d of %d mod(s)" % [done_dl, total],
-					"downloaded": done_dl,
-					"failed_downloads": failed_dl,
-					"failures": failures,
-					"cancelled": true,
-				}
-			var item: Dictionary = missing[i]
-			var pk: String = str(item.get("profile_key", "?"))
-			var ref: Dictionary = item.get("ref", {})
-			var version: String = str(item.get("version", ""))
-			var sha: String = str(item.get("sha256", ""))
-			# Sourceless entries cannot be downloaded; record them so the summary shows them.
-			if bool(item.get("unreachable", false)):
-				failed_dl += 1
-				var u_reason: String = str(item.get("unreachable_reason", "no downloadable source"))
-				failures.append({
-					"profile_key": pk,
-					"error": u_reason,
-					"ref": ref,
-					"version": version,
-				})
-				_log_warning("[Modpack]   skipped: " + pk + " -- " + u_reason)
-				if progress.is_valid():
-					progress.call({"current": i + 1, "total": total, "mod_name": pk, "action": "skipped"})
-				continue
-			if progress.is_valid():
-				progress.call({"current": i + 1, "total": total, "mod_name": pk, "action": "downloading"})
-			var version_tag := (" v" + version) if version != "" else " (primary)"
-			_log_info("[Modpack] downloading " + pk + " (" + host_ref_key(ref) + version_tag + ")")
-			# allow_rename_on_collision: a different version lands beside the existing file; dedup picks one.
-			var r: Dictionary = await download_mod_from_ref(ref, version, true, sha)
-			if bool(r.get("ok", false)):
-				done_dl += 1
-				_log_info("[Modpack]   ok: " + str(r.get("file_name", "?")))
-			else:
-				var err: String = str(r.get("error", "unknown"))
-				# Both candidate filenames occupied, typically from a previous attempt; the mod is on disk.
-				if err.begins_with("Already have"):
-					done_dl += 1
-					_log_info("[Modpack]   already on disk: " + pk + " (" + err + ")")
-					continue
-				failed_dl += 1
-				failures.append({
-					"profile_key": pk,
-					"error": err,
-					"ref": ref,
-					"version": str(item.get("version", "")),
-					"sha256": sha,
-				})
-				_log_warning("[Modpack]   failed: " + pk + " -- " + err)
-		_modpack_take_in_downloads()
-		if progress.is_valid():
-			progress.call({"current": missing.size(), "total": missing.size(), "mod_name": "", "action": "applying"})
-
-	# Re-check cancel after the loop: a cancel during the final download has no
-	# next loop-top check. No state below has been mutated yet.
-	if _modpack_apply_cancelled:
-		_log_info("[Modpack] cancelled by user after the download phase; apply aborted before any state change")
-		return {
-			"ok": false,
-			"error": "Cancelled by user after downloading %d mod(s)" % done_dl,
-			"downloaded": done_dl,
-			"failed_downloads": failed_dl,
-			"failures": failures,
-			"cancelled": true,
-		}
-
-	if not is_reapply:
-		# 1. Back up the current profile's sections to the backup slot.
-		var pre_active := _active_profile
-		var cfg := ConfigFile.new()
-		# A missing file is fine, but any other load failure means an empty cfg,
-		# and persisting that would erase every profile. Abort before mutating.
-		var cfg_err := _ui_cfg_load(cfg)
-		if cfg_err != OK and cfg_err != ERR_FILE_NOT_FOUND:
-			return _modpack_apply_failure("Cannot read your mod settings file (mod_config.cfg, error %d) -- the modpack was not applied and your profiles are unchanged. Any downloaded mods remain in your mods folder. Restart the game and try again." % cfg_err,
-					done_dl, failed_dl, failures)
-
-		var src_en := _profile_sec(pre_active, ".enabled")
-		var src_pr := _profile_sec(pre_active, ".priority")
-		var bk_en := _profile_sec(backup_profile, ".enabled")
-		var bk_pr := _profile_sec(backup_profile, ".priority")
-
-		if cfg.has_section(bk_en):
-			cfg.erase_section(bk_en)
-		if cfg.has_section(bk_pr):
-			cfg.erase_section(bk_pr)
-
-		if cfg.has_section(src_en):
-			for k: String in cfg.get_section_keys(src_en):
-				cfg.set_value(bk_en, k, cfg.get_value(src_en, k))
-		if cfg.has_section(src_pr):
-			for k: String in cfg.get_section_keys(src_pr):
-				cfg.set_value(bk_pr, k, cfg.get_value(src_pr, k))
-
-		cfg.set_value("settings", "modpack_backup_profile", pre_active)
-		# Record that step 1 completed even when it copied nothing: unload must
-		# distinguish an empty backup from a missing one or it refuses forever.
-		cfg.set_value("settings", "modpack_backup_valid", true)
-		# Set active_modpack now: it is the crash trigger the boot reconciler keys off.
-		cfg.set_value("settings", "active_modpack", sanitized)
-		_persist_ui_cfg(cfg)
-
-		# Snapshot pre-modpack MCM; vanilla has no MCM state worth preserving.
-		# With no MCM folder yet the backup is an empty snapshot, so unload
-		# restores "none" and does not leave the pack's settings in place.
-		if pre_active != VANILLA_PROFILE:
-			_snapshot_mcm_to(backup_profile)
-			DirAccess.make_dir_recursive_absolute(_mcm_snapshot_dir(backup_profile))
-
-		# 2. Materialize the modpack profile from the zip unless the slot exists (user edits).
-		# ConfigFile.load merges into the object, so it is cleared before every
-		# reload: a key erased on disk since would come back from the stale copy.
-		cfg.clear()
-		var cfg2_err := _ui_cfg_load(cfg)
-		if cfg2_err != OK:
-			# Same empty-cfg hazard as step 1; the reconciler clears the flag next boot.
-			return _modpack_apply_failure("Cannot read settings (error %d) -- nothing was changed." % cfg2_err,
-					done_dl, failed_dl, failures)
-		if not cfg.has_section(_profile_sec(modpack_profile, ".enabled")):
-			var mat_result := _materialize_modpack_profile(entry, modpack_profile)
-			if not bool(mat_result.get("ok", false)):
-				# Nothing took effect on this clean return; clear the flag set in step 1.
-				cfg.set_value("settings", "active_modpack", "")
-				_persist_ui_cfg(cfg)
-				return _modpack_apply_failure(str(mat_result.get("error", "")),
-						done_dl, failed_dl, failures)
-		else:
-			# The slot was kept from an earlier apply: match its keys to the mods
-			# installed since, whether this apply downloaded them or not.
-			_modpack_reconcile_profile_keys(modpack_profile, _modpack_sources(entry), _modpack_checksums(entry))
-
-		# 3. Switch to the modpack profile (handles the MCM swap).
+	if current_active != sanitized:
+		var stage_error := _stage_pack(entry, sanitized)
+		if stage_error != "":
+			return _modpack_apply_failure(stage_error, done_dl, failed_dl, failures)
 		_switch_profile(modpack_profile)
-
-		# 4. Re-assert active_modpack (the switch rewrote cfg), but only when the
-		# reload succeeded; the flag is already on disk from step 1.
-		cfg.clear()
-		var cfg5_err := _ui_cfg_load(cfg)
-		if cfg5_err == OK:
+		# The switch rewrote the cfg; put back the flag _stage_pack set.
+		var cfg := ConfigFile.new()
+		var cfg_err := _ui_cfg_load(cfg)
+		if cfg_err == OK:
 			cfg.set_value("settings", "active_modpack", sanitized)
 			_persist_ui_cfg(cfg)
 		else:
-			_log_warning("[Modpack] could not re-read mod_config.cfg after profile switch (error %d) -- skipping the active-flag re-assert (already set at step 1)" % cfg5_err)
-
+			_log_warning("[Modpack] could not re-read mod_config.cfg after the switch (error %d)" % cfg_err)
 	elif done_dl > 0:
-		# The slot was kept; match its keys to the mods that just landed.
 		if _modpack_reconcile_profile_keys(modpack_profile, _modpack_sources(entry), _modpack_checksums(entry)) > 0:
 			var cfg_re := ConfigFile.new()
 			if _ui_cfg_load(cfg_re) == OK:
 				_apply_profile_to_entries(cfg_re, _active_profile)
 
-	# 5. Refresh the Mods tab.
+	# The launcher can close during the downloads.
 	if is_instance_valid(tabs):
 		_rebuild_mods_tab(tabs)
+	return {"ok": true, "error": "", "downloaded": done_dl, "failed_downloads": failed_dl, "failures": failures}
 
-	return {
-		"ok": true,
-		"error": "",
-		"downloaded": done_dl,
-		"failed_downloads": failed_dl,
-		"failures": failures,
-	}
+func _download_pack_mods(entry: Dictionary, sanitized: String, progress: Callable) -> Dictionary:
+	var tally := {"downloaded": 0, "failed_downloads": 0, "failures": [], "error": ""}
+	var missing := _get_missing_mods_for_modpack(entry)
+	if not missing.is_empty():
+		_log_info("[Modpack] applying %s: %d mod(s) to install" % [sanitized, missing.size()])
+		for item: Dictionary in missing:
+			_persist_single_mod_source(item["profile_key"], item["source"])
+		var total := missing.size()
+		for i in range(total):
+			var item: Dictionary = missing[i]
+			var pk: String = item["profile_key"]
+			var ref: Dictionary = item["ref"]
+			if not ref.is_empty():
+				await _await_host_rate_cooldown(str(ref["provider"]), progress, i + 1, total)
+			# An in-flight request cannot be interrupted, so cancel is checked between mods.
+			if _modpack_apply_cancelled:
+				_log_info("[Modpack] cancelled by user at item %d of %d" % [i + 1, total])
+				if tally["downloaded"] > 0:
+					_rescan_entries()
+				tally["error"] = "Cancelled by user after downloading %d of %d mod(s)" % [tally["downloaded"], total]
+				return tally
+			if item.get("unreachable", false):
+				var reason: String = item["unreachable_reason"]
+				tally["failed_downloads"] += 1
+				tally["failures"].append(_modpack_failure_row(pk, reason, ref, item["version"], item.get("sha256", "")))
+				_log_warning("[Modpack] skipped: " + pk + " -- " + reason)
+				if progress.is_valid():
+					progress.call({"current": i + 1, "total": total, "mod_name": pk, "action": "skipped"})
+				continue
+			var got := await _download_pack_mod(item, progress, i, total, "downloading")
+			if got["ok"] or got["already"]:
+				tally["downloaded"] += 1
+				if got["already"]:
+					_log_info("[Modpack] already on disk: " + pk + " (" + got["error"] + ")")
+			else:
+				tally["failed_downloads"] += 1
+				tally["failures"].append(_modpack_failure_row(pk, got["error"], ref, item["version"], item["sha256"]))
+				_log_warning("[Modpack] failed: " + pk + " -- " + got["error"])
+		_rescan_entries()
+		if progress.is_valid():
+			progress.call({"current": total, "total": total, "mod_name": "", "action": "applying"})
 
-# Read a modpack zip into a profile slot: enabled/priority sections into
-# mod_config.cfg, the MCM/ tree into the profile's snapshot slot. {ok, error}.
+	# A cancel during the last download has no loop-top check to see it.
+	if _modpack_apply_cancelled:
+		_log_info("[Modpack] cancelled by user after the download phase, before any state change")
+		tally["error"] = "Cancelled by user after downloading %d mod(s)" % tally["downloaded"]
+	return tally
+
+func _download_pack_mod(item: Dictionary, progress: Callable, i: int, total: int, action: String) -> Dictionary:
+	var pk: String = item["profile_key"]
+	var ref: Dictionary = item["ref"]
+	var version: String = item["version"]
+	if progress.is_valid():
+		progress.call({"current": i + 1, "total": total, "mod_name": pk, "action": action})
+	var pin := (" v" + version) if version != "" else " (primary)"
+	_log_info("[Modpack] %s %s (%s%s)" % [action, pk, host_ref_key(ref), pin])
+	# Renaming on collision: a different version lands beside the existing file; dedup picks one.
+	var r: Dictionary = await download_mod_from_ref(ref, version, true, item["sha256"])
+	if r["ok"]:
+		_log_info("[Modpack] ok: " + str(r["file_name"]))
+		return {"ok": true, "already": false, "error": ""}
+	return {"ok": false, "already": str(r.get("code", "")) == DOWNLOAD_ALREADY_INSTALLED, "error": str(r["error"])}
+
+func _stage_pack(entry: Dictionary, sanitized: String) -> String:
+	var pre_active := _active_profile
+	var backup_profile := MODPACK_BACKUP_PREFIX + sanitized
+	var modpack_profile := MODPACK_PROFILE_PREFIX + sanitized
+	var cfg := ConfigFile.new()
+	var cfg_err := _ui_cfg_load(cfg)
+	if cfg_err != OK and cfg_err != ERR_FILE_NOT_FOUND:
+		return "Cannot read your mod settings file (mod_config.cfg, error %d) -- the modpack was not applied and your profiles are unchanged. Any downloaded mods remain in your mods folder. Restart the game and try again." % cfg_err
+	_copy_profile_sections(cfg, pre_active, backup_profile, [".enabled", ".priority"])
+	cfg.set_value("settings", "modpack_backup_profile", pre_active)
+	# Written even for an empty backup, or unload cannot tell it from a missing one.
+	cfg.set_value("settings", "modpack_backup_valid", true)
+	# Set early: it is the crash trigger the boot reconciler keys off.
+	cfg.set_value("settings", "active_modpack", sanitized)
+	_persist_ui_cfg(cfg)
+	# With no MCM folder the backup is an empty snapshot, so unload restores "none".
+	_capture_mcm_into(backup_profile, pre_active)
+
+	cfg = ConfigFile.new()
+	cfg_err = _ui_cfg_load(cfg)
+	if cfg_err != OK:
+		return "Cannot read settings (error %d) -- nothing was changed." % cfg_err
+	# A kept slot is rebuilt when its stamp names another zip (one replaced by hand).
+	var stamp := str(cfg.get_value(_profile_sec(modpack_profile, ".settings"), "pack_sha256", ""))
+	if not cfg.has_section(_profile_sec(modpack_profile, ".enabled")) \
+			or (stamp != "" and stamp != _cached_sha256(entry["file_path"])):
+		var mat := _materialize_modpack_profile(entry, modpack_profile)
+		if not mat["ok"]:
+			cfg.set_value("settings", "active_modpack", "")
+			cfg.set_value("settings", "modpack_backup_valid", false)
+			_persist_ui_cfg(cfg)
+			return mat["error"]
+	else:
+		_modpack_reconcile_profile_keys(modpack_profile, _modpack_sources(entry), _modpack_checksums(entry))
+	return ""
+
 func _materialize_modpack_profile(entry: Dictionary, profile_name: String) -> Dictionary:
-	var file_path: String = str(entry["file_path"])
+	var file_path: String = entry["file_path"]
 	var reader := ZIPReader.new()
 	if reader.open(file_path) != OK:
 		return {"ok": false, "error": "Cannot open modpack zip"}
@@ -955,54 +715,42 @@ func _materialize_modpack_profile(entry: Dictionary, profile_name: String) -> Di
 	if not ("profile.json" in files):
 		reader.close()
 		return {"ok": false, "error": "Modpack missing profile.json"}
-	var bytes := reader.read_file("profile.json")
-	var parsed_v: Variant = JSON.parse_string(bytes.get_string_from_utf8())
-	if not (parsed_v is Dictionary):
+	var pd: Variant = _parse_profile_bytes(reader.read_file("profile.json"))
+	if pd == null:
 		reader.close()
 		return {"ok": false, "error": "Modpack profile.json is invalid"}
-	var pd: Dictionary = parsed_v
 
 	var cfg := ConfigFile.new()
-	# Same empty-cfg guard as apply step 1; missing file is fine.
 	var cfg_err := _ui_cfg_load(cfg)
 	if cfg_err != OK and cfg_err != ERR_FILE_NOT_FOUND:
 		reader.close()
 		return {"ok": false, "error": "Cannot read your mod settings file (mod_config.cfg, error %d) -- modpack profile not created. Restart the game and try again." % cfg_err}
 	var en_sec := _profile_sec(profile_name, ".enabled")
 	var pr_sec := _profile_sec(profile_name, ".priority")
-	if cfg.has_section(en_sec):
-		cfg.erase_section(en_sec)
-	if cfg.has_section(pr_sec):
-		cfg.erase_section(pr_sec)
-
-	# Third-party values: type-check before bool()/int(); junk degrades to defaults.
-	var enabled_dict: Dictionary = pd.get("enabled", {}) if pd.get("enabled") is Dictionary else {}
-	for k in enabled_dict.keys():
-		var ev = enabled_dict[k]
-		var en_on: bool = (ev is bool and ev) or ((ev is int or ev is float) and ev != 0)
-		cfg.set_value(en_sec, str(k), en_on)
-	var priority_dict: Dictionary = pd.get("priority", {}) if pd.get("priority") is Dictionary else {}
-	for k in priority_dict.keys():
-		var pv_raw = priority_dict[k]
+	var ig_sec := _profile_sec(profile_name, ".dep_ignore")
+	for sec in [en_sec, pr_sec]:
+		if cfg.has_section(sec):
+			cfg.erase_section(sec)
+	var enabled_dict := _pack_dict(pd, "enabled")
+	for k in enabled_dict:
+		cfg.set_value(en_sec, str(k), _json_truthy(enabled_dict[k]))
+	var priority_dict := _pack_dict(pd, "priority")
+	for k in priority_dict:
+		var pv_raw: Variant = priority_dict[k]
 		var pv: int = int(pv_raw) if (pv_raw is int or pv_raw is float) else 0
 		cfg.set_value(pr_sec, str(k), clampi(pv, PRIORITY_MIN, PRIORITY_MAX))
-	# dep_ignore overrides travel with the pack; sparse, true-only.
-	var ig_sec := _profile_sec(profile_name, ".dep_ignore")
 	if cfg.has_section(ig_sec):
 		cfg.erase_section(ig_sec)
-	var dep_ignore_dict: Dictionary = pd.get("dep_ignore", {}) if pd.get("dep_ignore") is Dictionary else {}
-	for k in dep_ignore_dict.keys():
-		var iv = dep_ignore_dict[k]
-		if (iv is bool and iv) or ((iv is int or iv is float) and iv != 0):
+	var dep_ignore_dict := _pack_dict(pd, "dep_ignore")
+	for k in dep_ignore_dict:
+		if _json_truthy(dep_ignore_dict[k]):
 			cfg.set_value(ig_sec, str(k), true)
+	# A settings-only pack has no keys; without the marker the next launch reads it as stranded.
+	_keep_profile_listed(cfg, profile_name)
+	cfg.set_value(_profile_sec(profile_name, ".settings"), "pack_sha256", _cached_sha256(file_path))
 	_persist_ui_cfg(cfg)
-	# The download phase already rescanned, so keys can match what landed on disk.
-	var sources_v: Variant = pd.get("sources")
-	var checksums_v: Variant = pd.get("checksums")
-	_modpack_reconcile_profile_keys(profile_name, sources_v if sources_v is Dictionary else {},
-			checksums_v if checksums_v is Dictionary else {})
+	_modpack_reconcile_profile_keys(profile_name, _pack_dict(pd, "sources"), _pack_dict(pd, "checksums"))
 
-	# Extract the MCM tree into the snapshot slot; _switch_profile restores from it.
 	var mcm_data: Dictionary = {}
 	for f in files:
 		if not f.begins_with("MCM/") or f.ends_with("/"):
@@ -1012,136 +760,167 @@ func _materialize_modpack_profile(entry: Dictionary, profile_name: String) -> Di
 			continue
 		mcm_data[rel] = reader.read_file(f)
 	reader.close()
-	_write_mcm_snapshot_from_data(profile_name, mcm_data)
-
+	_write_mcm_snapshot_from_data(profile_name, _mcm_restore_files(mcm_data))
 	return {"ok": true, "error": ""}
 
-# Unload the active modpack: restore backup state, clear the flag. The slot is kept.
-func unload_modpack(tabs: TabContainer) -> Dictionary:
+func _restamp_pack_slot(sanitized: String, file_path: String) -> void:
+	if sanitized.is_empty():
+		return
+	var cfg := _load_ui_cfg_for_write()
+	if cfg == null:
+		return
+	var sec := _profile_sec(MODPACK_PROFILE_PREFIX + sanitized, ".settings")
+	if not cfg.has_section_key(sec, "pack_sha256"):
+		return
+	_modpack_sha256_cache.erase(file_path)
+	_modpack_zip_memo.erase(file_path)
+	cfg.set_value(sec, "pack_sha256", _cached_sha256(file_path))
+	_persist_ui_cfg(cfg)
+
+# The cfg and its active pack, or {error}: a hard read failure would misreport as no pack.
+func _active_pack_cfg() -> Dictionary:
 	var cfg := ConfigFile.new()
-	# A hard read failure would misreport as "No modpack is active"; say what happened.
 	var cfg_err := _ui_cfg_load(cfg)
 	if cfg_err != OK and cfg_err != ERR_FILE_NOT_FOUND:
-		return {"ok": false, "error": "Cannot read your mod settings file (mod_config.cfg, error %d) -- nothing was unloaded. Restart the game and try again." % cfg_err}
+		return {"error": "Cannot read your mod settings file (mod_config.cfg, error %d) -- nothing was unloaded. Restart the game and try again." % cfg_err}
 	var active := str(cfg.get_value("settings", "active_modpack", ""))
 	if active == "":
-		return {"ok": false, "error": "No modpack is active"}
+		return {"error": "No modpack is active"}
+	return {"cfg": cfg, "active": active}
 
+# An empty backup has only the flag.
+func _has_pack_backup(cfg: ConfigFile, active: String) -> bool:
+	var backup_profile := MODPACK_BACKUP_PREFIX + active
+	return bool(cfg.get_value("settings", "modpack_backup_valid", false)) \
+			or cfg.has_section(_profile_sec(backup_profile, ".enabled")) \
+			or cfg.has_section(_profile_sec(backup_profile, ".priority"))
+
+# The pack's display name as a free profile name, "Name 2" style on a clash.
+func _kept_pack_name(cfg: ConfigFile, active: String) -> String:
+	var shown := active
+	for e in _modpack_entries:
+		if e["sanitized_name"] == active:
+			shown = e["raw_name"]
+	var base := _sanitize_profile_name(shown)
+	var none: Array[String] = []
+	if _validate_profile_name(base, none) != "":
+		base = "Modpack"
+	var existing := _list_profiles_in_cfg(cfg)
+	var name := base
+	var n := 2
+	while _validate_profile_name(name, existing) != "":
+		name = "%s %d" % [base, n]
+		n += 1
+	return name
+
+func unload_modpack(tabs: TabContainer) -> Dictionary:
+	var state := _active_pack_cfg()
+	if state.has("error"):
+		return {"ok": false, "error": state["error"]}
+	var cfg: ConfigFile = state["cfg"]
+	var active: String = state["active"]
 	var backup_profile := MODPACK_BACKUP_PREFIX + active
 	var pre_active := str(cfg.get_value("settings", "modpack_backup_profile", "Default"))
-
-	# 1. Restore backup sections into the pre-active profile slot.
-	var bk_en := _profile_sec(backup_profile, ".enabled")
-	var bk_pr := _profile_sec(backup_profile, ".priority")
-	var dst_en := _profile_sec(pre_active, ".enabled")
-	var dst_pr := _profile_sec(pre_active, ".priority")
-
-	# Backup gone: erasing the destination would wipe the pre-apply profile, so
-	# abort. Absent sections alone are not proof (a pack applied with no mods has
-	# an empty backup), so trust the apply-time flag; the section check covers older cfgs.
-	var backup_written := bool(cfg.get_value("settings", "modpack_backup_valid", false))
-	if not backup_written and not cfg.has_section(bk_en) and not cfg.has_section(bk_pr):
-		return {"ok": false,
-				"error": "The backup for this modpack is missing, so nothing was unloaded and your profiles are untouched. To force-remove the modpack, quit the game and delete the active_modpack line from mod_config.cfg."}
-
-	if cfg.has_section(dst_en):
-		cfg.erase_section(dst_en)
-	if cfg.has_section(dst_pr):
-		cfg.erase_section(dst_pr)
-	if cfg.has_section(bk_en):
-		for k: String in cfg.get_section_keys(bk_en):
-			cfg.set_value(dst_en, k, cfg.get_value(bk_en, k))
-	if cfg.has_section(bk_pr):
-		for k: String in cfg.get_section_keys(bk_pr):
-			cfg.set_value(dst_pr, k, cfg.get_value(bk_pr, k))
-
-	# 2. Clear backup sections + markers.
-	if cfg.has_section(bk_en):
-		cfg.erase_section(bk_en)
-	if cfg.has_section(bk_pr):
-		cfg.erase_section(bk_pr)
-	cfg.set_value("settings", "modpack_backup_profile", "")
+	# Without a backup the erase would wipe the pre-apply profile.
+	if not _has_pack_backup(cfg, active):
+		return {"ok": false, "needs_force": true, "profile": _kept_pack_name(cfg, active),
+				"error": "The backup for this pack is missing, so your previous profile cannot be restored."}
+	_copy_profile_sections(cfg, backup_profile, pre_active, [".enabled", ".priority"])
+	_erase_profile_sections(cfg, backup_profile)
 	cfg.set_value("settings", "modpack_backup_valid", false)
 	cfg.set_value("settings", "active_modpack", "")
 	_persist_ui_cfg(cfg)
 
-	# 3. Switch to the pre-active profile; step 4 overwrites its MCM.
+	# After boot the live MCM stays the pack's: the backup becomes the profile's slot until restart.
+	var deferred := _boot_complete
+	if deferred and _has_mcm_snapshot(backup_profile):
+		_snapshot_mcm_to(pre_active, _mcm_snapshot_dir(backup_profile))
 	_switch_profile(pre_active)
+	# Cleared only after the switch: a crash inside it recovers onto this name.
+	var cfg_after := _load_ui_cfg_for_write()
+	if cfg_after != null:
+		cfg_after.set_value("settings", "modpack_backup_profile", "")
+		_persist_ui_cfg(cfg_after)
 
-	# 4. Restore the pre-modpack MCM from the backup snapshot, the authoritative copy.
 	var mcm_ok := true
-	if _has_mcm_snapshot(backup_profile):
+	if _has_mcm_snapshot(backup_profile) and not deferred:
 		mcm_ok = _restore_mcm_from(backup_profile)
-		# Step 3 seeds a profile that has no snapshot yet from the live folder,
-		# which still held the pack's MCM; re-take it from the restored state.
-		if mcm_ok and pre_active != VANILLA_PROFILE:
+		# The switch seeded a snapshot-less profile from the live folder, which held the pack's MCM.
+		if mcm_ok:
 			_snapshot_mcm_to(pre_active)
-
-	# Remove the consumed MCM snapshot, then the slot only when it is empty.
-	# Files beside MCM are not consumed by unload and remain on disk.
+	# The slot directory goes only when empty: files beside MCM/ are not consumed.
 	if mcm_ok:
 		_remove_tree(_mcm_snapshot_dir(backup_profile), false)
 		DirAccess.remove_absolute(MCM_SNAPSHOT_BASE.path_join(backup_profile))
 	else:
-		_log_warning("[Modpack] unload: MCM restore incomplete -- leaving " + MCM_SNAPSHOT_BASE.path_join(backup_profile) + " in place; it will be cleaned up by the next apply/unload")
-
-	# 6. Refresh the Mods tab.
-	if is_instance_valid(tabs):
+		_log_warning("[Modpack] unload: MCM restore incomplete; kept " + MCM_SNAPSHOT_BASE.path_join(backup_profile))
+	if tabs != null:
 		_rebuild_mods_tab(tabs)
-
 	return {"ok": true, "error": ""}
 
-# Re-attempt failed downloads from a previous apply; cancelled items stay in
-# the failures list. Returns {downloaded, failures, cancelled}.
+# With no backup to restore, the pack's slot becomes a plain profile that keeps the live MCM.
+func force_unload_modpack(tabs: TabContainer) -> Dictionary:
+	_flush_priority_save()
+	var state := _active_pack_cfg()
+	if state.has("error"):
+		return {"ok": false, "error": state["error"]}
+	var cfg: ConfigFile = state["cfg"]
+	var active: String = state["active"]
+	if _has_pack_backup(cfg, active):
+		return {"ok": false, "error": "This pack's backup is intact, so use Unload instead."}
+	var slot := MODPACK_PROFILE_PREFIX + active
+	var name := _kept_pack_name(cfg, active)
+	_copy_profile_sections(cfg, slot, name, PROFILE_SUBSECTIONS)
+	if cfg.has_section_key(_profile_sec(name, ".settings"), "pack_sha256"):
+		cfg.erase_section_key(_profile_sec(name, ".settings"), "pack_sha256")
+	_keep_profile_listed(cfg, name)
+	_erase_profile_sections(cfg, slot)
+	_erase_profile_sections(cfg, MODPACK_BACKUP_PREFIX + active)
+	for key: String in cfg.get_section_keys("settings"):
+		if key.begins_with("modpack_"):
+			cfg.erase_section_key("settings", key)
+	cfg.set_value("settings", "active_modpack", "")
+	cfg.set_value("settings", "active_profile", name)
+	# The slot's MCM goes with it, a pending swap included.
+	for pk: String in ["mcm_pending_from", "mcm_pending_to"]:
+		if str(cfg.get_value("settings", pk, "")) == slot:
+			cfg.set_value("settings", pk, name)
+	_capture_mcm_into(name, slot)
+	_delete_mcm_snapshot(slot)
+	_persist_ui_cfg(cfg)
+	_active_profile = name
+	_apply_profile_to_entries(cfg, name)
+	_log_warning("[Modpack] force-unloaded %s with no backup; kept as profile '%s'" % [active, name])
+	if tabs != null:
+		_rebuild_mods_tab(tabs)
+	return {"ok": true, "error": "", "profile": name}
+
 func retry_failed_downloads(failures: Array, progress: Callable = Callable()) -> Dictionary:
-	# Same serialization guard as apply_modpack.
 	if _modpack_apply_in_progress:
 		return {"downloaded": 0, "failures": failures, "cancelled": false}
 	_modpack_apply_in_progress = true
+	# A retry is a run of its own: an earlier run's Cancel does not carry over.
+	_modpack_apply_cancelled = false
 	var still_failed: Array = []
-	var newly_downloaded: int = 0
+	var newly_downloaded := 0
 	for i in range(failures.size()):
 		var item: Dictionary = failures[i]
+		var ref: Dictionary = item["ref"]
+		if _modpack_apply_cancelled or not _modpack_ref_downloadable(ref):
+			still_failed.append(item)
+			continue
+		await _await_host_rate_cooldown(str(ref["provider"]), progress, i + 1, failures.size())
 		if _modpack_apply_cancelled:
 			still_failed.append(item)
 			continue
-		var pk: String = str(item.get("profile_key", "?"))
-		var ref: Dictionary = item.get("ref", {})
-		var version: String = str(item.get("version", ""))
-		var sha: String = str(item.get("sha256", ""))
-		if not _modpack_ref_downloadable(ref):
-			still_failed.append(item)
-			continue
-		var provider := str(ref["provider"])
-		if _modpack_cooldown_seconds(provider) > 0:
-			await _await_host_rate_cooldown(provider, progress, i + 1, failures.size())
-			if _modpack_apply_cancelled:
-				still_failed.append(item)
-				continue
-		if progress.is_valid():
-			progress.call({"current": i + 1, "total": failures.size(), "mod_name": pk, "action": "retrying"})
-		_log_info("[Modpack][Retry] " + pk + " (" + host_ref_key(ref) + ")")
-		var r: Dictionary = await download_mod_from_ref(ref, version, true, sha)
-		if bool(r.get("ok", false)):
+		var got := await _download_pack_mod(item, progress, i, failures.size(), "retrying")
+		if got["ok"]:
 			newly_downloaded += 1
-			_log_info("[Modpack][Retry]   ok: " + str(r.get("file_name", "?")))
 		else:
-			var err: String = str(r.get("error", "unknown"))
-			still_failed.append({
-				"profile_key": pk,
-				"error": err,
-				"ref": ref,
-				"version": version,
-				"sha256": sha,
-			})
-			_log_warning("[Modpack][Retry]   failed: " + pk + " -- " + err)
+			still_failed.append(_modpack_failure_row(item["profile_key"], got["error"], ref, item["version"], item["sha256"]))
+			_log_warning("[Modpack] retry failed: %s -- %s" % [item["profile_key"], got["error"]])
 	if newly_downloaded > 0:
-		_ui_mod_entries = collect_mod_metadata()
-		var cfg := ConfigFile.new()
-		_ui_cfg_load(cfg)
-		_apply_profile_to_entries(cfg, _active_profile)
-		# The retried mods may have landed under names the pack did not use.
-		_modpack_reconcile_active()
-		_mark_mod_set_changed()
+		# The reload also reconciles: retried mods may land under names the pack did not use.
+		_reload_entries_for_active_profile()
 	_modpack_apply_in_progress = false
 	return {"downloaded": newly_downloaded, "failures": still_failed, "cancelled": _modpack_apply_cancelled}

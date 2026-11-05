@@ -1,10 +1,6 @@
 extends Node
-# Synthetic codegen fixture -- exercises signature shapes the vanilla RTV
-# corpus does not contain (the 4.6.1 game ships no default parameter values
-# at all). Compiled pristine as a baseline, then rewritten + recompiled by
-# tests/codegen/runner.gd. Keep every func declaration on a single line with
-# " -> " return-annotation spacing: the harness asserts the wrapper
-# reproduces the declaration line byte-for-byte.
+# Signature shapes the vanilla corpus lacks (default values). Keep each func declaration on one
+# line with " -> " spacing: the harness compares the wrapper's declaration byte for byte.
 
 var counter := 0
 

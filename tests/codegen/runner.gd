@@ -1,167 +1,87 @@
-## runner.gd -- codegen compile-check harness. NOT part of the shipped
-## loader. Executed by check_codegen.sh inside a THROWAWAY Godot project
-## assembled under the system temp dir; never run it against this repo or
-## against the Road to Vostok install.
-##
-## What it does, per fixture (a real vanilla script copied from the
-## decompiled game source, or a synthetic Fixture*.gd from this directory):
-##   1. BASELINE: the pristine source must compile in the harness project.
-##      If it doesn't, the harness environment is broken (missing stub /
-##      class) -- that is a fixture problem, never a rewriter problem.
-##   2. REWRITE: run the real _rtv_parse_script + _rtv_rewrite_vanilla_source
-##      from the built modloader (static-init neutralized by check_codegen.sh)
-##      with an empty mask (wrap every non-static method), and where the
-##      fixture declares one, ALSO with a per-method mask (the partial-rename
-##      path v3.0.1 modlists actually take).
-##   3. OUTPUT PROPERTIES (asserted on the text, independent of compilation):
-##      - the vanilla body survives verbatim under func _rtv_vanilla_<name>
-##      - the appended wrapper reproduces the original declaration line
-##        byte-for-byte (params, defaults, return annotation)
-##      - a wrapper for a NON-coroutine vanilla method contains no `await`
-##        (the 3.3.0 bug class: any `await` marks the wrapper a coroutine
-##        and breaks every caller at parse time), and a wrapper for a real
-##        coroutine keeps its `await`
-##      - static funcs and inner-class methods are never renamed or wrapped
-##      - masked rewrites rename exactly the masked set and nothing else
-##   4. COMPILE: the rewritten source replaces the fixture on disk and is
-##      recompiled at its canonical res://Scripts/ path with the real
-##      GDScript compiler (CACHE_MODE_IGNORE, same load the game performs).
-##   5. CALLER: a generated stub that CALLS every wrapped method without
-##      `await` (assigning value returns to typed locals) is compiled. A
-##      wrapper that silently became a coroutine parses fine in isolation
-##      and only fails at its call sites ("Function X() is a coroutine, so
-##      it must be called with await") -- this step is what would have
-##      caught 3.3.0 at build time.
-##
-## ADDING A FIXTURE: see the header of check_codegen.sh.
+## Codegen harness: rewrites each fixture with the real rewriter, then compiles it and a caller stub.
+## Proves what compiles and what the text holds; check_dispatch.sh proves what the wrappers do.
 extends SceneTree
 
-## Fixture table. "file" is a res://Scripts/ basename. Optional keys:
-##   baseline=false  pristine source is INTENTIONALLY invalid: skip the
-##                   pristine compile and the body-verbatim check.
-##   mask=[...]      also run the rewrite with this per-method mask and
-##                   assert only the masked methods were renamed + wrapped.
+const H := preload("res://harness.gd")
+
+## "file" is a res://Scripts/ basename; "mask" also rewrites with that
+## per-method mask and checks that only the masked methods were wrapped.
 const FIXTURES: Array[Dictionary] = [
-	# Synthetic fixtures (from tests/codegen/, copied in by check_codegen.sh).
 	{"file": "FixtureDefaults.gd", "mask": ["DefaultsTricky", "CoroutineValue"]},
-	{"file": "FixtureSub.gd"},                     # extends-by-path + bare super()
-	# Real vanilla scripts (copied from the decompiled game source).
+	{"file": "FixtureSub.gd"},     # after FixtureDefaults.gd: compiles against the rewritten parent
+	{"file": "FixtureShapes.gd"},
 	{"file": "Loader.gd", "mask": ["ValidateShelter", "LoadScene", "FadeIn"]},
-	{"file": "Database.gd"},     # const->dict declaration transform + _get() appendix
-	{"file": "AISpawner.gd"},    # agent-assignment rewrite + Zone resolver appendix
-	{"file": "AI.gd"},           # SelectWeapon prelude + loadouts appendix
-	{"file": "FishPool.gd"},     # _ready prelude
-	{"file": "Compiler.gd"},     # Spawn prelude (after_var_decls insertion)
-	{"file": "Camera.gd"},       # class_name script
-	{"file": "Character.gd"},    # large gameplay script, several coroutines
-	{"file": "Menu.gd", "mask": ["_ready"]},  # matches _seed_core_hooks reality
-	{"file": "Bed.gd"},          # small await-heavy interactable
+	{"file": "Database.gd"},       # const->dict declaration transform + _get() appendix
+	{"file": "AISpawner.gd"},      # agent-assignment rewrite + Zone resolver appendix
+	{"file": "AI.gd"},             # SelectWeapon prelude + loadouts appendix
+	{"file": "FishPool.gd"},       # _ready prelude
+	{"file": "Compiler.gd"},       # Spawn prelude (after_var_decls insertion)
+	{"file": "Camera.gd"},         # class_name script
+	{"file": "Character.gd"},      # large, several coroutines
+	{"file": "Menu.gd", "mask": ["_ready"]},
+	{"file": "Bed.gd"},            # small, await-heavy
 ]
 
-## Methods whose body the rewriter legitimately modifies (prelude injection /
-## declaration transforms) -- excluded from the byte-verbatim body check ONLY.
-## The wrapper + coroutine assertions still apply to them. Bodies containing
-## bare super() are skipped automatically (the super rewrite is intentional).
+## Methods whose body the rewriter changes on purpose (preludes); only the
+## body-verbatim check skips them. Bodies with a bare super() are skipped too.
 const BODY_MODIFIED := {
 	"Loader.gd": ["LoadScene"],
 	"Compiler.gd": ["Spawn"],
 	"FishPool.gd": ["_ready"],
 	"AI.gd": ["SelectWeapon"],
-	"AISpawner.gd": ["_ready", "Initialize"],  # zone if/elif moved to Initialize in Build 2
+	"AISpawner.gd": ["_ready", "Initialize"],
 }
 
 const WRAPPER_MARKER := "# --- Metro mod loader inline hook dispatch wrappers ---"
 
-const BUILTIN_TYPES := ["int", "float", "bool", "String", "StringName", "NodePath",
-	"Vector2", "Vector2i", "Vector3", "Vector3i", "Vector4", "Vector4i", "Color",
-	"Rect2", "Rect2i", "Basis", "Quaternion", "Transform2D", "Transform3D", "AABB",
-	"Plane", "Dictionary", "Array", "Callable", "Signal", "RID", "Variant",
-	"PackedByteArray", "PackedStringArray", "PackedInt32Array", "PackedInt64Array",
-	"PackedFloat32Array", "PackedFloat64Array", "PackedVector2Array",
-	"PackedVector3Array", "PackedColorArray"]
+## method -> [is_coroutine, has_return_value] the parser must report.
+const EXPECTED_SHAPES := {
+	"FixtureShapes.gd": {
+		"BindLater": [false, false],
+		"ReturnInLambda": [false, false],
+		"MultiLineLambdaReturn": [false, false],
+		"CoroNoSpace": [true, true],
+		"NotAwait": [false, false],
+		"IsDead": [false, true],
+		"OneLineAwait": [true, false],
+		"Collide": [false, true],
+		"TypedDict": [false, true],
+		"InnerArray": [false, true],
+		"Annotated": [false, true],
+		"PickAfterLambdaHeader": [false, true],
+		"AwaitAfterLambdaHeader": [true, false],
+		"AnnotatedAbove": [false, true],
+		"TypedLambdaAwait": [false, false],
+		"TypedLambdaReturn": [false, false],
+		"UnderGroup": [false, true],
+		"ReturnsLambda": [false, true],
+		"ValueAfterLambda": [false, true],
+		"AwaitAfterLambda": [true, false],
+		"ReturnOnlyInLambda": [false, false],
+		"RegionStart": [false, true],
+		"RegionEnd": [false, false],
+	},
+}
 
-var _failures: PackedStringArray = []
-var _done := false
-var _global_classes: Dictionary = {}
-# Coverage booleans -- the fixture set must keep exercising every shape.
-var _saw_sync_value := false
-var _saw_void := false
-var _saw_coroutine := false
-var _saw_defaults := false
-var _saw_validateshelter := false
-var _vetted_full := 0
-var _vetted_renames := 0
-var _vetted_excluded := 0
-var _fixtures_run := 0
+## method -> what its wrapper holds: "value" returns the result, "void" does not,
+## "await" awaits the vanilla call; any other entry is the exact declaration prefix.
+const WRAPPER_FORMS := {
+	"FixtureShapes.gd": {
+		"ValueAfterLambda": ["value", ""],
+		"AwaitAfterLambda": ["void", "await"],
+		"ReturnOnlyInLambda": ["void"],
+		"RegionStart": ["value", ""],
+		"RegionEnd": ["void", ""],
+		"AnnotatedAbove": ["value", "@warning_ignore(\"unused_parameter\") "],
+	},
+}
 
-func _process(_delta: float) -> bool:
-	if _done:
-		return true
-	_done = true
-	_run()
-	return true
+const UNWRAPPED := {
+	"FixtureShapes.gd": ["Variadic"],
+}
 
-func _run() -> void:
-	var t0 := Time.get_ticks_msec()
-	print("[codegen] harness start")
-	for gc in ProjectSettings.get_global_class_list():
-		_global_classes[String(gc["class"])] = true
-	var ml_script: GDScript = load("res://modloader_neutered.gd")
-	if ml_script == null:
-		_fail("harness", "could not load res://modloader_neutered.gd -- check_codegen.sh prep failed")
-		_finish(t0)
-		return
-	var ml = ml_script.new()
-	# Belt and braces: check_codegen.sh replaced the _mount_previous_session()
-	# initializer with {}. If boot code ran anyway, refuse to continue.
-	var mounted = ml.get("_filescope_mounted")
-	if not (mounted is Dictionary) or not (mounted as Dictionary).is_empty():
-		_fail("harness", "_filescope_mounted is not an empty Dictionary -- static-init boot code RAN; the neutering failed")
-		ml.free()
-		_finish(t0)
-		return
-	# check_codegen.sh leaves this marker when the decompiled game source is
-	# absent; the synthetic fixtures need nothing but the engine.
-	var synthetic_only := FileAccess.file_exists("res://synthetic_only")
-	for fx in FIXTURES:
-		if synthetic_only and not str(fx["file"]).begins_with("Fixture"):
-			continue
-		_check_fixture(ml, fx)
-		_fixtures_run += 1
-	ml.free()
-	if not _saw_sync_value:
-		_fail("coverage", "no fixture exercised a synchronous value-returning method")
-	if not _saw_void:
-		_fail("coverage", "no fixture exercised a void method")
-	if not _saw_coroutine:
-		_fail("coverage", "no fixture exercised a coroutine method")
-	if not _saw_defaults:
-		_fail("coverage", "no fixture exercised default parameter values")
-	if _vetted_excluded == 0:
-		_fail("coverage", "no fixture exercised the probe's excluded verdict")
-	if not synthetic_only and _vetted_renames < GAME_RENAMES.size():
-		_fail("coverage", "only %d of %d renamed-member cases ran" % [_vetted_renames, GAME_RENAMES.size()])
-	if not synthetic_only and not _saw_validateshelter:
-		_fail("coverage", "Loader.gd::ValidateShelter (the known-good 3.3.0 fixture) was not checked")
-	_finish(t0)
-
-func _finish(t0: int) -> void:
-	var ms := Time.get_ticks_msec() - t0
-	if _failures.is_empty():
-		print("[codegen] PASS: %d fixture(s), all rewritten outputs + caller stubs compile (%d ms in-engine)" % [_fixtures_run, ms])
-		quit(0)
-	else:
-		printerr("[codegen] FAILED: %d problem(s) (%d ms in-engine); first: %s" % [_failures.size(), ms, _failures[0]])
-		quit(1)
-
-func _fail(where: String, msg: String) -> void:
-	_failures.append(where + ": " + msg)
-	printerr("[codegen] FAIL " + where + ": " + msg)
-
-# --- the pre-ship compile probe ------------------------------------------------
-
-## A vanilla member each registry target's injected code names. Renaming it in
-## the fixture's text is what a game update that renames it looks like.
+## A vanilla member each registry target's injected code names; renaming it is
+## what a game update looks like. tests/ingame/rehearse_build.sh parses this table.
 const GAME_RENAMES := {
 	"AI.gd": "weapons",
 	"AISpawner.gd": "Zone",
@@ -170,138 +90,254 @@ const GAME_RENAMES := {
 	"Compiler.gd": "spawnTarget",
 }
 
-func _vet(ml, path: String, source: String, parsed: Dictionary) -> Dictionary:
+## No engine call lists the builtin types the compiler accepts as parameters.
+const BUILTIN_TYPES := ["int", "float", "bool", "String", "StringName", "NodePath",
+	"Vector2", "Vector2i", "Vector3", "Vector3i", "Vector4", "Vector4i", "Color",
+	"Rect2", "Rect2i", "Basis", "Quaternion", "Transform2D", "Transform3D", "AABB",
+	"Plane", "Dictionary", "Array", "Callable", "Signal", "RID", "Variant",
+	"PackedByteArray", "PackedStringArray", "PackedInt32Array", "PackedInt64Array",
+	"PackedFloat32Array", "PackedFloat64Array", "PackedVector2Array",
+	"PackedVector3Array", "PackedColorArray"]
+
+const PLACEHOLDERS := {"": "null", "Variant": "null", "int": "0", "float": "0.0", "bool": "false",
+	"String": "\"\"", "StringName": "&\"\"", "Dictionary": "{}"}
+
+var _report := H.Report.new("codegen", "fixtures")
+var _started := false
+var _global_classes := {}
+## Shapes the fixture set exercised; the coverage step demands each one.
+var _seen := {}
+var _renames_vetted := 0
+
+# The marker prints on the first frame, after the game autoloads' startup noise.
+func _process(_delta: float) -> bool:
+	if _started:
+		printerr("[codegen] FAIL: the first frame stopped before the report")
+		quit(1)
+		return true
+	_started = true
+	print("[codegen] harness start")
+	var script := load("res://modloader_neutered.gd") as GDScript
+	var ml: Object = script.new() if script != null else null
+	var mounted: Variant = ml.get("_filescope_mounted") if ml != null else null
+	if _report.check(mounted is Dictionary and (mounted as Dictionary).is_empty(), "no loader, or boot static-init ran"):
+		var before := _report.assertions
+		_run(ml)
+		if _report.assertions == before:
+			_report.fail("no assertions ran")
+	elif ml != null:
+		ml.free()
+	_report.finish(self)
+	return true
+
+func _run(ml: Object) -> void:
+	for gc in ProjectSettings.get_global_class_list():
+		_global_classes[str(gc["class"])] = true
+	# check_codegen.sh leaves this marker when the decompiled game source is absent.
+	var synthetic_only := FileAccess.file_exists("res://synthetic_only")
+	var run := 0
+	for fx in FIXTURES:
+		if synthetic_only and not str(fx["file"]).begins_with("Fixture"):
+			continue
+		_check_fixture(ml, fx)
+		run += 1
+	_check_parser_edges(ml)
+	ml.free()
+	_report.begin("coverage")
+	var need := ["sync value", "void", "coroutine", "defaults", "excluded verdict"]
+	if not synthetic_only:
+		need.append("ValidateShelter")
+		_report.check_eq(_renames_vetted, GAME_RENAMES.size(), "renamed-member cases run")
+	for what in need:
+		_report.check(_seen.has(what), "no fixture exercised " + what)
+	_report.scope = "%d fixture(s)" % run
+
+# In-memory sources: a two-line signature, own-line annotations, the
+# declaration-prefix stripper, the shared method selection and its warnings.
+func _check_parser_edges(ml: Object) -> void:
+	_report.begin("Edges.gd")
+	var two := "extends Node\nfunc Two(a,\n\t\tb):\n\treturn a\n\nfunc One():\n\treturn 1\n"
+	var parsed: Dictionary = ml._rtv_parse_script("Edges.gd", two)
+	var unparsed: Array = parsed.get("unparsed", [])
+	_report.check("Two" in unparsed, "two-line signature not unparsed (got %s)" % str(unparsed))
+	_report.check_eq(str(ml._rtv_strip_decl_prefix("@warning_ignore(\"x\") @onready func _rtv_vanilla_Foo(a):")),
+			"func _rtv_vanilla_Foo(a):", "stripped annotated declaration")
+	_report.check_eq(str(ml._rtv_strip_decl_prefix("func Bar():")), "func Bar():", "stripped plain declaration")
+
+	var prefix_of := func(p: Dictionary, fn: String) -> String:
+		var out := ""
+		for fe in p["functions"]:
+			if str(fe["name"]) == fn:
+				out = str(fe.get("decl_prefix", ""))
+		return out
+	_report.begin("Rpc.gd")
+	var rpc_src := "extends Node\n@rpc(\"any_peer\")\nfunc Sync(x):\n\treturn x\n\nfunc Plain():\n\treturn 1\n"
+	var rpc_parsed: Dictionary = ml._rtv_parse_script("Rpc.gd", rpc_src)
+	var prefix: String = prefix_of.call(rpc_parsed, "Sync")
+	_report.check("@rpc" in prefix, "@rpc above Sync not in decl_prefix ('%s')" % prefix)
+	var rpc_out: String = ml._rtv_rewrite_vanilla_source(rpc_src, rpc_parsed, {"sync": true, "plain": true})
+	_report.check(not ("_rtv_vanilla_Sync" in rpc_out), "an @rpc method was wrapped")
+	_report.check("_rtv_vanilla_Plain" in rpc_out, "the plain method beside it unwrapped")
+	_report.begin("RpcDoc.gd")
+	var rpc_doc := "extends Node\n@rpc(\"any_peer\")\n# doc comment\nfunc Sync(x):\n\treturn x\n"
+	prefix = prefix_of.call(ml._rtv_parse_script("RpcDoc.gd", rpc_doc), "Sync")
+	_report.check("@rpc" in prefix, "a comment detached @rpc (prefix '%s')" % prefix)
+	_report.begin("Grp.gd")
+	var grp := "extends Node\n@export_group(\"Debug\")\n\nfunc Under():\n\treturn 1\n"
+	_report.check_eq(prefix_of.call(ml._rtv_parse_script("Grp.gd", grp), "Under"), "", "decl_prefix under @export_group")
+
+	# Mask keys are lowercase; statics and unwrappable methods are never
+	# selected, and only a named unwrappable method is reported with its reason.
+	_report.begin("Select.gd")
+	var sel_src := "extends Node\n@rpc(\"any_peer\")\nfunc Sync(x):\n\treturn x\n\nfunc Rest(...args):\n\tpass\n\n" \
+			+ "static func Helper():\n\tpass\n\nfunc UpdateToolTip():\n\tpass\n\nfunc Other():\n\tpass\n"
+	var sel_parsed: Dictionary = ml._rtv_parse_script("Select.gd", sel_src)
+	var mask := {"sync": true, "rest": true, "helper": true, "updatetooltip": true, "missing": true}
+	var names_of := func(sel: Dictionary) -> PackedStringArray:
+		var out := PackedStringArray()
+		for fe in sel["hookable"]:
+			out.append(str(fe["name"]))
+		return out
+	var sel: Dictionary = ml._rtv_select_hookable(sel_parsed, mask)
+	_report.check_eq(names_of.call(sel), PackedStringArray(["UpdateToolTip"]), "masked selection")
+	_report.check_eq((sel["matched_keys"] as Dictionary).keys(), ["updatetooltip"], "matched_keys")
+	var unw: Dictionary = sel["unwrappable"]
+	_report.check(unw.keys() == ["sync", "rest"] and str(unw.get("sync", "")).contains("@rpc")
+			and str(unw.get("rest", "")).contains("rest parameter"), "unwrappable is %s" % str(unw))
+	var all: Dictionary = ml._rtv_select_hookable(sel_parsed, {})
+	_report.check(names_of.call(all) == PackedStringArray(["UpdateToolTip", "Other"])
+			and (all["matched_keys"] as Dictionary).is_empty() and (all["unwrappable"] as Dictionary).is_empty(),
+			"wildcard selection is %s" % str(all))
+	# The probe may rewrite a script twice, so only the pack warns, once per script.
+	var lines: Array = ml.get("_report_lines")
+	lines.clear()
+	ml._rtv_rewrite_vanilla_source(sel_src, sel_parsed, mask)
+	_report.check(lines.is_empty(), "the rewriter logged %s" % str(lines))
+	ml._rtv_warn_mask_misses(sel_parsed, mask)
+	ml._rtv_warn_mask_misses(parsed, {"two": true})
+	ml._rtv_warn_mask_misses(sel_parsed, {})
+	var got: Array = lines.map(func(l): return str(l).trim_prefix("[ModLoader][Warning] [RTVCodegen] "))
+	_report.check_eq(got, [
+		"Hook on Select.gd::Sync will NEVER fire: the method is an @rpc, which cannot be wrapped.",
+		"Hook on Select.gd::Rest will NEVER fire: the method takes a rest parameter (...), which a wrapper cannot forward.",
+		"Hook on Select.gd::helper will NEVER fire: it is a static function, and static functions cannot be hooked.",
+		"Hook on Select.gd::missing will NEVER fire: no such method in vanilla. Check the spelling, or the game update renamed/removed it.",
+		"Hook on Edges.gd::two will NEVER fire: its declaration spans several lines, which the rewriter does not read.",
+	], "mask warnings")
+	lines.clear()
+
+func _vet(ml: Object, path: String, source: String, parsed: Dictionary) -> Dictionary:
 	ml.set("_hook_pack_vetting", true)
 	ml.set("_hook_pack_pre_restart", true)
 	(ml.get("_hook_pack_demotions") as Dictionary).clear()
 	return ml._hook_pack_vet_rewrite(path, source, parsed, {}, false)
 
-func _check_vetting(ml, fname: String, path: String, raw: String, parsed: Dictionary) -> void:
-	# 1. No false positive: the rewrite of the real script ships in full. A
-	# probe that rejected a good rewrite would switch hooks off for everyone.
-	var good: Dictionary = _vet(ml, path, raw, parsed)
-	if str(good["mode"]) != "full":
-		_fail(fname, "VET: the probe demoted a good rewrite to '%s' -- it would disable hooks on a healthy game" % str(good["mode"]))
-	_vetted_full += 1
+func _check_vetting(ml: Object, fname: String, path: String, raw: String, parsed: Dictionary) -> void:
+	_report.check_eq(str(_vet(ml, path, raw, parsed)["mode"]), "full", "VET: verdict on the real script")
 
-	# 2. The game renamed a member the registry code names: hooks stay, the
-	# registry code goes, and what ships compiles.
 	if GAME_RENAMES.has(fname):
 		var member: String = GAME_RENAMES[fname]
-		var re := RegEx.new()
-		re.compile("\\b" + member + "\\b")
-		var renamed_src := re.sub(raw, member + "Renamed", true)
-		if renamed_src == raw:
-			_fail(fname, "VET: fixture no longer contains '%s' -- pick another member for GAME_RENAMES" % member)
+		var renamed_src := RegEx.create_from_string("\\b" + member + "\\b").sub(raw, member + "Renamed", true)
+		if not _report.check(renamed_src != raw, "VET: fixture lacks GAME_RENAMES member " + member):
 			return
 		var full_attempt: String = ml._rtv_rewrite_vanilla_source(renamed_src, ml._rtv_parse_script(fname, renamed_src), {})
-		if ml._rtv_probe_compiles(full_attempt, true):
-			_fail(fname, "VET: the full rewrite still compiles with '%s' renamed -- this case proves nothing, pick a member the injected code names" % member)
+		_report.check(not ml._rtv_probe_compiles(full_attempt, true), "VET: renaming %s breaks nothing" % member)
 		var verdict: Dictionary = _vet(ml, path, renamed_src, ml._rtv_parse_script(fname, renamed_src))
-		if str(verdict["mode"]) != "wrap_only":
-			_fail(fname, "VET: with '%s' renamed the script must ship wrap-only, got '%s'" % [member, str(verdict["mode"])])
-		elif not ml._rtv_probe_compiles(str(verdict["source"]), true):
-			_fail(fname, "VET: the wrap-only source does not compile")
-		elif "Metro mod loader" in str(verdict["source"]).replace("# --- Metro mod loader inline hook dispatch wrappers ---", ""):
-			_fail(fname, "VET: the wrap-only source still carries registry code")
-		if str((ml.get("_hook_pack_demotions") as Dictionary).get(path, "")) != "wrap_only":
-			_fail(fname, "VET: the demotion was not recorded for the generations that follow")
-		_vetted_renames += 1
+		var source := str(verdict["source"])
+		if _report.check_eq(str(verdict["mode"]), "wrap_only", "VET: verdict with %s renamed" % member) \
+				and _report.check(ml._rtv_probe_compiles(source, true), "VET: wrap-only source does not compile"):
+			_report.check(not ("Metro mod loader" in source.replace(WRAPPER_MARKER, "")),
+					"VET: wrap-only source has registry code")
+		_report.check_eq(str((ml.get("_hook_pack_demotions") as Dictionary).get(path, "")), "wrap_only",
+				"VET: recorded demotion")
+		_renames_vetted += 1
 
-	# 3. Database's declaration transform found nothing: the appendix that
-	# reads its dict must go with it, or Database.gd would not compile.
+	# The scenes appendix reads the dict the declaration transform builds.
 	if fname == "Database.gd":
 		var no_consts := raw.replace("\nconst ", "\nvar ")
-		var db_verdict: Dictionary = _vet(ml, path, no_consts, ml._rtv_parse_script(fname, no_consts))
-		if str(db_verdict["mode"]) == "excluded" or not ml._rtv_probe_compiles(str(db_verdict["source"]), true):
-			_fail(fname, "VET: a Database.gd with no const preloads must still ship a compiling, hooked script (got '%s')" % str(db_verdict["mode"]))
-		if "_rtv_mod_scenes" in str(db_verdict["source"]):
-			_fail(fname, "VET: the scenes appendix was kept although the transform it depends on found nothing")
+		var db: Dictionary = _vet(ml, path, no_consts, ml._rtv_parse_script(fname, no_consts))
+		_report.check(str(db["mode"]) != "excluded" and ml._rtv_probe_compiles(str(db["source"]), true),
+				"VET: const-less Database.gd not shipped hooked (%s)" % str(db["mode"]))
+		_report.check(not ("_rtv_mod_scenes" in str(db["source"])), "VET: scenes appendix kept without its transform")
 
-	# 4. A rewrite that cannot compile in any form leaves the script vanilla.
 	if fname == "FixtureSub.gd":
 		var bogus: Dictionary = parsed.duplicate(true)
 		(bogus["functions"] as Array).append({"name": "NoSuchMethod", "params": "", "param_names": [],
 				"line_number": 1, "is_static": false, "return_type": null,
-				"is_coroutine": false, "has_return_value": false})
-		var lost: Dictionary = _vet(ml, path, raw, bogus)
-		if str(lost["mode"]) != "excluded":
-			_fail(fname, "VET: a rewrite that compiles in no form must be excluded, got '%s'" % str(lost["mode"]))
-		_vetted_excluded += 1
+				"is_coroutine": false, "has_return_value": false, "decl_prefix": ""})
+		_report.check_eq(str(_vet(ml, path, raw, bogus)["mode"]), "excluded", "VET: verdict on an uncompilable rewrite")
+		_seen["excluded verdict"] = true
 
-	# 5. A generation that follows a vetted one repeats its verdicts unprobed.
+	# A generation after a vetted one repeats the persisted verdicts unprobed.
 	if fname == "AI.gd":
 		ml.set("_hook_pack_vetting", false)
 		ml.set("_hook_pack_demotions", {path: "wrap_only"})
 		var repeated: Dictionary = ml._hook_pack_vet_rewrite(path, raw, parsed, {}, false)
-		if str(repeated["mode"]) != "wrap_only" or "_rtv_apply_ai_loadouts" in str(repeated["source"]):
-			_fail(fname, "VET: a persisted wrap-only verdict was not repeated")
+		_report.check(str(repeated["mode"]) == "wrap_only" and not ("_rtv_apply_ai_loadouts" in str(repeated["source"])),
+				"VET: persisted wrap-only verdict not repeated")
 		ml.set("_hook_pack_demotions", {path: "excluded"})
-		if str(ml._hook_pack_vet_rewrite(path, raw, parsed, {}, false)["mode"]) != "excluded":
-			_fail(fname, "VET: a persisted excluded verdict was not repeated")
+		_report.check_eq(str(ml._hook_pack_vet_rewrite(path, raw, parsed, {}, false)["mode"]), "excluded",
+				"VET: repeated excluded verdict")
 	(ml.get("_hook_pack_demotions") as Dictionary).clear()
 
-# --- injected registry code, executed ------------------------------------------
-
-# The compile steps prove the appendices parse; these run them. Each target's
-# injected helpers are called on an instance of the rewritten script (never
-# added to the tree, so @onready never runs) with the same Engine meta the
-# registry writes, and the vanilla-facing result is asserted.
+# Runs the injected registry code on an instance of the rewritten script (never
+# in the tree, so @onready never runs) with the Engine meta the registry writes.
 func _check_registry_runtime(fname: String, path: String, raw: String) -> void:
+	if not (fname in ["AI.gd", "AISpawner.gd", "Database.gd", "Loader.gd"]):
+		return
+	var scr := ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE) as Script
+	if not _report.check(scr != null and scr.can_instantiate(), "RUNTIME: rewritten script cannot be instantiated"):
+		return
+	var obj: Object = scr.new()
 	match fname:
 		"AI.gd":
-			_runtime_ai(fname, path, raw)
+			_runtime_ai(obj, raw)
 		"AISpawner.gd":
-			_runtime_aispawner(fname, path)
+			var scene := PackedScene.new()
+			var vanilla := PackedScene.new()
+			Engine.set_meta("_rtv_ai_overrides", {"Area05": scene})
+			_report.check(obj._rtv_resolve_ai_type(0, vanilla) == scene, "RUNTIME: Area05 override not resolved")
+			_report.check(obj._rtv_resolve_ai_type(1, vanilla) == vanilla, "RUNTIME: BorderZone replaced without an override")
+			Engine.set_meta("_rtv_ai_overrides", {})
+			_report.check(obj._rtv_resolve_ai_type(0, vanilla) == vanilla, "RUNTIME: empty override table ignored")
 		"Database.gd":
-			_runtime_database(fname, path)
+			var mod_scene := PackedScene.new()
+			var over_scene := PackedScene.new()
+			obj._rtv_mod_scenes["CodegenMod"] = mod_scene
+			_report.check(obj.get("CodegenMod") == mod_scene, "RUNTIME: _get() did not serve a mod scene")
+			obj._rtv_override_scenes["CodegenMod"] = over_scene
+			_report.check(obj.get("CodegenMod") == over_scene, "RUNTIME: override did not beat a mod scene")
+			var vanilla_keys: Array = obj._rtv_vanilla_scenes.keys()
+			_report.check(not vanilla_keys.is_empty() and obj.get(vanilla_keys[0]) != null,
+					"RUNTIME: _get() did not serve vanilla scenes")
+			_report.check(obj.get("NoSuchScene") == null, "RUNTIME: _get() served an unknown name")
 		"Loader.gd":
-			_runtime_loader(fname, path)
+			_runtime_loader(obj, path)
+	obj.free()
 
-func _runtime_instance(fname: String, path: String) -> Object:
-	var scr = ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE)
-	if scr == null or not (scr as Script).can_instantiate():
-		_fail(fname, "RUNTIME: rewritten script cannot be instantiated")
-		return null
-	return (scr as Script).new()
-
-func _runtime_ai(fname: String, path: String, raw: String) -> void:
-	var ai = _runtime_instance(fname, path)
-	if ai == null:
-		return
+func _runtime_ai(ai: Object, raw: String) -> void:
 	var build2 := "var variant: AIData" in raw
 	if build2:
-		# Build 2: categories come from the AIData variant.
-		var data_script = load("res://Scripts/AIData.gd")
-		var v = data_script.new()
+		var v: Object = load("res://Scripts/AIData.gd").new()
 		v.faction = 4  # Faction.Boss
 		v.name = "Punisher"
 		ai.variant = v
-		var cats: Array = ai._rtv_ai_categories()
-		if cats != ["Boss", "Punisher"]:
-			_fail(fname, "RUNTIME: Boss/Punisher variant gave categories %s" % str(cats))
+		_report.check_eq(ai._rtv_ai_categories(), ["Boss", "Punisher"], "RUNTIME: Boss/Punisher categories")
 		v.faction = 1  # Faction.Bandit
 		v.name = "Bandit"
-		if ai._rtv_ai_categories() != ["Bandit"]:
-			_fail(fname, "RUNTIME: Bandit variant gave categories %s" % str(ai._rtv_ai_categories()))
+		_report.check_eq(ai._rtv_ai_categories(), ["Bandit"], "RUNTIME: Bandit categories")
 		ai.variant = null
-		if not (ai._rtv_ai_categories() as Array).is_empty():
-			_fail(fname, "RUNTIME: no variant must give no categories")
+		_report.check((ai._rtv_ai_categories() as Array).is_empty(), "RUNTIME: no variant gave categories")
 		ai.variant = v
 		v.faction = 4
 		v.name = "Punisher"
 	else:
-		# Pre-Build 2: the boss flag and the spawner zone.
 		ai.boss = true
-		if ai._rtv_ai_categories() != ["Punisher"]:
-			_fail(fname, "RUNTIME: boss gave categories %s" % str(ai._rtv_ai_categories()))
+		_report.check_eq(ai._rtv_ai_categories(), ["Punisher"], "RUNTIME: boss categories")
 		ai.boss = false
 		ai.AISpawner = null
-		if not (ai._rtv_ai_categories() as Array).is_empty():
-			_fail(fname, "RUNTIME: no spawner must give no categories")
+		_report.check((ai._rtv_ai_categories() as Array).is_empty(), "RUNTIME: no spawner gave categories")
 		ai.boss = true
-	# A loadout for the matching category lands in weapons, hidden; a
-	# non-matching one is skipped; replace clears the vanilla children.
 	var weapon := PackedScene.new()
 	var wn := Node3D.new()
 	wn.name = "InjectedWeapon"
@@ -309,8 +345,7 @@ func _runtime_ai(fname: String, path: String, raw: String) -> void:
 	wn.free()
 	# Build 2 types `weapons` as BoneAttachment3D (a Node3D before it).
 	var container := BoneAttachment3D.new()
-	var vanilla_weapon := Node3D.new()
-	container.add_child(vanilla_weapon)
+	container.add_child(Node3D.new())
 	ai.weapons = container
 	Engine.set_meta("_rtv_ai_loadouts", [
 		{"weapon_scene": weapon, "ai_types": ["Guard"], "chance": 1.0, "replace": false},
@@ -318,94 +353,45 @@ func _runtime_ai(fname: String, path: String, raw: String) -> void:
 		"not a dictionary",
 	])
 	ai._rtv_apply_ai_loadouts()
-	if container.get_child_count() != 2 or container.get_child(1).name != "InjectedWeapon" or container.get_child(1).visible:
-		_fail(fname, "RUNTIME: loadout injection gave %d weapons children (expected vanilla + one hidden InjectedWeapon)" % container.get_child_count())
+	_report.check(container.get_child_count() == 2 and container.get_child(1).name == "InjectedWeapon"
+			and not container.get_child(1).visible, "RUNTIME: loadout gave %d weapons children" % container.get_child_count())
 	Engine.set_meta("_rtv_ai_loadouts", [
 		{"weapon_scene": weapon, "ai_types": ["Boss"], "chance": 1.0, "replace": true},
 	])
 	ai._rtv_apply_ai_loadouts()
-	if build2 and (container.get_child_count() != 1 or container.get_child(0).name != "InjectedWeapon"):
-		_fail(fname, "RUNTIME: replace loadout left %d weapons children" % container.get_child_count())
+	_report.check(not build2 or (container.get_child_count() == 1 and container.get_child(0).name == "InjectedWeapon"),
+			"RUNTIME: replace loadout left %d children" % container.get_child_count())
 	Engine.set_meta("_rtv_ai_loadouts", [])
 	container.free()
-	ai.free()
 
-func _runtime_aispawner(fname: String, path: String) -> void:
-	var sp = _runtime_instance(fname, path)
-	if sp == null:
-		return
-	var scene := PackedScene.new()
-	Engine.set_meta("_rtv_ai_overrides", {"Area05": scene})
-	var vanilla := PackedScene.new()
-	if sp._rtv_resolve_ai_type(0, vanilla) != scene:
-		_fail(fname, "RUNTIME: resolver did not return the Area05 override")
-	if sp._rtv_resolve_ai_type(1, vanilla) != vanilla:
-		_fail(fname, "RUNTIME: resolver replaced BorderZone without an override")
-	Engine.set_meta("_rtv_ai_overrides", {})
-	if sp._rtv_resolve_ai_type(0, vanilla) != vanilla:
-		_fail(fname, "RUNTIME: resolver ignored an empty override table")
-	sp.free()
-
-func _runtime_database(fname: String, path: String) -> void:
-	var db = _runtime_instance(fname, path)
-	if db == null:
-		return
-	var mod_scene := PackedScene.new()
-	var over_scene := PackedScene.new()
-	db._rtv_mod_scenes["CodegenMod"] = mod_scene
-	if db.get("CodegenMod") != mod_scene:
-		_fail(fname, "RUNTIME: _get() did not serve a mod scene")
-	db._rtv_override_scenes["CodegenMod"] = over_scene
-	if db.get("CodegenMod") != over_scene:
-		_fail(fname, "RUNTIME: an override did not win over a mod scene")
-	var vanilla_keys: Array = db._rtv_vanilla_scenes.keys()
-	if vanilla_keys.is_empty() or db.get(vanilla_keys[0]) == null:
-		_fail(fname, "RUNTIME: _get() did not serve the vanilla scene dict")
-	if db.get("NoSuchScene") != null:
-		_fail(fname, "RUNTIME: _get() returned something for an unknown name")
-	db.free()
-
-func _runtime_loader(fname: String, path: String) -> void:
-	var ldr = _runtime_instance(fname, path)
-	if ldr == null:
-		return
-	if not ("Cabin" in ldr.shelters):
-		_fail(fname, "RUNTIME: shelters is not the vanilla list (%s)" % str(ldr.shelters))
+func _runtime_loader(ldr: Object, path: String) -> void:
+	_report.check("Cabin" in ldr.shelters, "RUNTIME: shelters is %s" % str(ldr.shelters))
 	var ok: bool = ldr.add_shelter({"map_name": "CodegenShelter", "path": "res://Scenes/Cabin.tscn", "exit_spawn": "X"})
-	if not ok or not ("CodegenShelter" in ldr.shelters) or not ldr._rtv_mod_scene_paths.has("CodegenShelter"):
-		_fail(fname, "RUNTIME: add_shelter did not register (ok=%s)" % str(ok))
-	if ldr.add_shelter({"map_name": "Cabin"}):
-		_fail(fname, "RUNTIME: add_shelter accepted a vanilla shelter name")
-	if ldr.add_map({"path": "res://x.tscn"}):
-		_fail(fname, "RUNTIME: add_map accepted a dict without map_name")
-	if ldr.add_map({"map_name": "Village", "path": "res://Scenes/Cabin.tscn"}):
-		_fail(fname, "RUNTIME: add_map with a path accepted a vanilla scene name, which would replace that map")
-	# The flags applied after the vanilla chain. A Cabin override that names
-	# no flags must keep the shelter flag the Cabin branch set: a Cabin
-	# loaded with shelter=false resets the character on quit.
+	_report.check(ok and "CodegenShelter" in ldr.shelters and ldr._rtv_mod_scene_paths.has("CodegenShelter"),
+			"RUNTIME: add_shelter did not register (ok=%s)" % str(ok))
+	_report.check(not ldr.add_shelter({"map_name": "Cabin"}), "RUNTIME: add_shelter accepted a vanilla name")
+	_report.check(not ldr.add_map({"path": "res://x.tscn"}), "RUNTIME: add_map accepted no map_name")
+	_report.check(not ldr.add_map({"map_name": "Village", "path": "res://Scenes/Cabin.tscn"}),
+			"RUNTIME: add_map would replace a vanilla map")
+	# A Cabin loaded with shelter=false resets the character on quit.
 	var flags_script := GDScript.new()
 	flags_script.source_code = "extends RefCounted\nvar menu := false\nvar shelter := false\nvar permadeath := false\nvar tutorial := false\n"
 	flags_script.reload()
-	var data = flags_script.new()
+	var data: Object = flags_script.new()
 	data.shelter = true
 	ldr._rtv_scene_entry_flags({"path": "res://Scenes/Cabin.tscn"}, "Cabin", data)
-	if not data.shelter:
-		_fail(fname, "RUNTIME: an override of Cabin that names no flags dropped the shelter flag the vanilla branch set")
+	_report.check(data.shelter, "RUNTIME: flagless Cabin override dropped shelter")
 	ldr._rtv_scene_entry_flags({"path": "res://Scenes/Cabin.tscn", "shelter": false}, "Cabin", data)
-	if data.shelter:
-		_fail(fname, "RUNTIME: an override of Cabin that sets shelter=false did not apply it")
+	_report.check(not data.shelter, "RUNTIME: Cabin override shelter=false not applied")
 	data.shelter = true
 	data.tutorial = true
 	ldr._rtv_scene_entry_flags({"path": "res://Scenes/Cabin.tscn"}, "CodegenPlace", data)
-	if data.shelter or data.tutorial or data.menu or data.permadeath:
-		_fail(fname, "RUNTIME: a mod scene kept flags the vanilla chain set for its relabelled name")
-	if not ldr._rtv_is_vanilla_scene("Village") or ldr._rtv_is_vanilla_scene("CodegenPlace"):
-		_fail(fname, "RUNTIME: _rtv_is_vanilla_scene does not tell vanilla scene names from mod ones")
-	ldr.free()
-	# The vanilla if/elif reassigns scenePath (and most of the flags) for a
-	# vanilla scene name, so the entry has to be applied again after the
-	# chain and before the tail's scene change, or an override of "Cabin"
-	# is a no-op.
+	_report.check(not (data.shelter or data.tutorial or data.menu or data.permadeath),
+			"RUNTIME: mod scene kept vanilla flags")
+	_report.check(ldr._rtv_is_vanilla_scene("Village") and not ldr._rtv_is_vanilla_scene("CodegenPlace"),
+			"RUNTIME: _rtv_is_vanilla_scene misjudges names")
+	# The vanilla if/elif reassigns scenePath for a vanilla name, so the entry is
+	# applied again after the chain, or an override of "Cabin" is a no-op.
 	var src := FileAccess.get_file_as_string(path)
 	var start := src.find("func _rtv_vanilla_LoadScene(")
 	var next := src.find("\nfunc ", start + 1)
@@ -414,379 +400,378 @@ func _runtime_loader(fname: String, path: String) -> void:
 	var at_last_branch := body.rfind("elif scene ==")
 	var at_reapply := body.find("scene_paths registry, after the vanilla chain")
 	var at_change := body.rfind("change_scene_to_file(scenePath)")
-	if start < 0 or not (at_prelude >= 0 and at_prelude < at_last_branch and at_last_branch < at_reapply and at_reapply < at_change):
-		_fail(fname, "RUNTIME: LoadScene does not apply the scene_paths entry again between the vanilla chain and the scene change (prelude %d, last branch %d, re-apply %d, change %d)"
-				% [at_prelude, at_last_branch, at_reapply, at_change])
-	# Both applications set the flags through _rtv_scene_entry_flags, which
-	# keeps a vanilla scene's own flags, and the prelude relabels only a mod
-	# scene: an override's transition_text must not rename "Cabin", or the
-	# chain loses the branch that sets its flags.
-	var prelude := body.substr(at_prelude, at_last_branch - at_prelude) if at_prelude >= 0 and at_last_branch > at_prelude else ""
-	if body.count("_rtv_scene_entry_flags(") < 2 or prelude.count("_rtv_scene_entry_flags(") != 1:
-		_fail(fname, "RUNTIME: LoadScene does not set the scene_paths flags through _rtv_scene_entry_flags both before and after the vanilla chain")
-	if not prelude.contains("not _rtv_is_vanilla_scene(_rtv_scene_name)"):
-		_fail(fname, "RUNTIME: the LoadScene prelude relabels a scene without checking it is not a vanilla scene name")
+	_report.check(start >= 0 and at_prelude >= 0 and at_prelude < at_last_branch and at_last_branch < at_reapply
+			and at_reapply < at_change, "RUNTIME: LoadScene order %s" % str([at_prelude, at_last_branch, at_reapply, at_change]))
+	# The prelude relabels only a mod scene: renaming "Cabin" loses its flag branch.
+	var prelude := ""
+	if at_prelude >= 0 and at_last_branch > at_prelude:
+		prelude = body.substr(at_prelude, at_last_branch - at_prelude)
+	_report.check(body.count("_rtv_scene_entry_flags(") >= 2 and prelude.count("_rtv_scene_entry_flags(") == 1,
+			"RUNTIME: LoadScene sets flags not before and after")
+	_report.check(prelude.contains("not _rtv_is_vanilla_scene(_rtv_scene_name)"),
+			"RUNTIME: prelude relabels vanilla scene names")
 
-# --- fixture pipeline -------------------------------------------------------
-
-func _check_fixture(ml, fx: Dictionary) -> void:
+func _check_fixture(ml: Object, fx: Dictionary) -> void:
 	var fname: String = fx["file"]
 	var path := "res://Scripts/" + fname
-	var want_baseline: bool = fx.get("baseline", true)
-	var fails_before := _failures.size()
-	var f := FileAccess.open(path, FileAccess.READ)
-	if f == null:
-		_fail(fname, "fixture file missing at " + path)
+	_report.begin(fname)
+	var fails_before := _report.failures.size()
+	if not _report.check(FileAccess.file_exists(path), "fixture file missing at " + path):
 		return
-	var raw := f.get_as_text()
-	f.close()
-	var pristine := raw.replace("\r\n", "\n").replace("\r", "\n")
-	var plines: PackedStringArray = pristine.split("\n")
-
-	if want_baseline:
-		var base = ResourceLoader.load(path)
-		if base == null or not (base as Script).can_instantiate():
-			_fail(fname, "BASELINE: the PRISTINE vanilla source does not compile in the harness project. Fix the harness environment (missing preload stub / class cache entry / autoload) or pick another fixture -- this is NOT a rewriter bug.")
-			return
+	var raw := FileAccess.get_file_as_string(path)
+	var plines := raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+	var base := ResourceLoader.load(path) as Script
+	if not _report.check(base != null and base.can_instantiate(),
+			"BASELINE: pristine source fails (harness, not rewriter)"):
+		return
 
 	var parsed: Dictionary = ml._rtv_parse_script(fname, raw)
-	var nonstatic: Array = []
-	for fe in parsed["functions"]:
-		if not fe["is_static"]:
-			nonstatic.append(fe)
-	if nonstatic.is_empty():
-		_fail(fname, "fixture has no hookable (non-static) methods -- replace it with a script that has some")
+	var unwrapped: Array = UNWRAPPED.get(fname, [])
+	var hookable: Array = (parsed["functions"] as Array).filter(
+			func(fe): return not fe["is_static"] and not (str(fe["name"]) in unwrapped))
+	if not _report.check(not hookable.is_empty(), "fixture has no hookable methods"):
 		return
+	var shapes: Dictionary = EXPECTED_SHAPES.get(fname, {})
+	for mname in shapes:
+		var found: Array = (parsed["functions"] as Array).filter(func(fe): return str(fe["name"]) == mname)
+		if not _report.check(not found.is_empty(), "SHAPE: %s not parsed" % mname):
+			continue
+		_report.check_eq(bool(found[-1]["is_coroutine"]), shapes[mname][0], "SHAPE: %s is_coroutine" % mname)
+		_report.check_eq(bool(found[-1]["has_return_value"]), shapes[mname][1], "SHAPE: %s has_return_value" % mname)
 
-	# Masked rewrite first (wrap-all output is written to disk LAST so later
-	# fixtures that depend on this script see the wrap-all version).
+	# Masked first: the wrap-all output written last is what later fixtures see.
 	if fx.has("mask"):
-		_check_masked(ml, fx, fname, path, raw, plines, parsed, nonstatic)
+		_check_masked(ml, fname, path, raw, fx["mask"], plines, parsed, hookable)
 
 	var rewritten: String = ml._rtv_rewrite_vanilla_source(raw, parsed, {})
-	if rewritten == raw:
-		_fail(fname, "wrap-all rewrite returned the source unchanged -- nothing was wrapped")
+	if not _report.check(rewritten != raw, "wrap-all rewrite changed nothing"):
 		return
-	var rlines: PackedStringArray = rewritten.split("\n")
-	var marker_idx := _find_line(rlines, WRAPPER_MARKER, 0)
-	if marker_idx < 0:
-		_fail(fname, "wrapper marker comment missing from rewritten output")
+	var rlines := rewritten.split("\n")
+	var marker_idx := rlines.find(WRAPPER_MARKER)
+	if not _report.check(marker_idx >= 0, "wrapper marker missing from the rewrite"):
 		return
-	# A registry transform is anchored to vanilla text and no-ops silently when
-	# the game moves the pattern (Build 2 renamed AISpawner's `agent =` to
-	# `enemy =`); the loader checks the same markers at pack time.
-	var expected_markers: Dictionary = ml.get("REGISTRY_EXPECTED_MARKERS")
-	if expected_markers.has(fname) and not (str(expected_markers[fname]) in rewritten):
-		_fail(fname, "REGISTRY: transform marker '%s' missing from the full rewrite -- the vanilla anchor no longer matches this corpus" % str(expected_markers[fname]))
+	# A registry transform anchored to vanilla text no-ops silently when the game moves it.
+	var markers: Dictionary = ml.get("REGISTRY_EXPECTED_MARKERS")
+	if markers.has(fname):
+		_report.check(str(markers[fname]) in rewritten, "REGISTRY: marker '%s' missing" % str(markers[fname]))
 
-	for fe in nonstatic:
-		_check_method(fname, fe, plines, rlines, marker_idx, fx)
-
-	# Static funcs must never be renamed or wrapped.
+	for fe in hookable:
+		_check_method(fname, fe, plines, rlines, marker_idx)
+	_check_forms(fname, rlines, marker_idx)
+	for un in unwrapped:
+		_report.check(not (("_rtv_vanilla_" + str(un)) in rewritten), "%s (rest parameter) was wrapped" % str(un))
 	for fe in parsed["functions"]:
-		if not fe["is_static"]:
-			continue
-		var sdecl := _decl_line(plines, fe)
-		if sdecl != "" and _find_line(rlines, "func _rtv_vanilla_" + sdecl.trim_prefix("static func "), 0) >= 0:
-			_fail(fname, "static func %s was renamed/wrapped -- static methods must stay untouched" % fe["name"])
+		if fe["is_static"]:
+			var sdecl := _decl_line(plines, fe)
+			_report.check(sdecl == "" or rlines.find("func _rtv_vanilla_" + sdecl.trim_prefix("static func ")) < 0,
+					"static func %s was wrapped" % fe["name"])
 
-	# Before the rewrite is written over the pristine file: the probe must
-	# judge the real script, and the renamed-member cases read the pristine text.
+	# Before the rewrite overwrites the pristine file the probe has to judge.
 	_check_vetting(ml, fname, path, raw, parsed)
-
-	if not _compile_at_path(fname, path, rewritten, "COMPILE (wrap-all)"):
+	if not _compile_at_path(path, rewritten, "COMPILE (wrap-all)"):
 		return
-	_check_caller(fname, path, nonstatic, plines)
+	_check_caller(fname, path, hookable, plines)
 	_check_registry_runtime(fname, path, raw)
-	if _failures.size() == fails_before:
-		print("[codegen] OK %s: %d method(s) wrapped; rewritten output + caller stub compile" % [fname, nonstatic.size()])
+	if _report.failures.size() == fails_before:
+		print("[codegen] OK %s: %d method(s) wrapped; output and caller stub compile" % [fname, hookable.size()])
 
-# Overwrite the fixture on disk with generated source and recompile it at its
-# canonical res:// path, bypassing the cache -- the same load the game does.
-func _compile_at_path(fname: String, path: String, source: String, stage: String) -> bool:
-	var wf := FileAccess.open(path, FileAccess.WRITE)
-	if wf == null:
-		_fail(fname, stage + ": cannot overwrite fixture file for the compile step")
+func _check_forms(fname: String, rlines: PackedStringArray, marker_idx: int) -> void:
+	var forms: Dictionary = WRAPPER_FORMS.get(fname, {})
+	for mname in forms:
+		var re := RegEx.create_from_string("^(.*)func " + mname + "\\(")
+		var at := -1
+		var prefix := ""
+		for i in range(marker_idx, rlines.size()):
+			var m := re.search(rlines[i])
+			if m != null:
+				at = i
+				prefix = m.get_string(1)
+				break
+		if not _report.check(at >= 0, "FORM: %s has no wrapper" % mname):
+			continue
+		var body := "\n".join(_body_block(rlines, at))
+		for want in forms[mname]:
+			match want:
+				"value":
+					_report.check("return _rtv_result" in body, "FORM: %s wrapper drops the value" % mname)
+				"void":
+					_report.check(not ("return _rtv_result" in body), "FORM: %s wrapper returns a value" % mname)
+				"await":
+					_report.check(("await _rtv_vanilla_" + mname) in body, "FORM: %s wrapper not awaited" % mname)
+				_:
+					_report.check_eq(prefix, want, "FORM: %s declaration prefix" % mname)
+
+# Overwrites the fixture and reloads it uncached at its res:// path, the load the game does.
+func _compile_at_path(path: String, source: String, stage: String) -> bool:
+	if not _report.check(H.write_text(path, source), stage + ": cannot overwrite the fixture"):
 		return false
-	wf.store_string(source)
-	wf.close()
-	var scr = ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE)
-	if scr == null or not (scr as Script).can_instantiate():
-		_fail(fname, stage + ": generated output does NOT compile (see the SCRIPT ERROR lines above for file/line)")
-		return false
-	return true
+	var scr := ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE) as Script
+	return _report.check(scr != null and scr.can_instantiate(), stage + ": output does not compile (see SCRIPT ERROR)")
 
-# --- per-method output properties -------------------------------------------
+# The declaration the emitter must produce: prefix, name, params verbatim, " -> T".
+func _wrapper_sig(fe: Dictionary) -> String:
+	var rt: Variant = fe["return_type"]
+	var annot := " -> " + str(rt) if rt != null and not str(rt).is_empty() else ""
+	return "%sfunc %s(%s)%s:" % [str(fe.get("decl_prefix", "")), fe["name"], fe["params"], annot]
 
-# The wrapper signature the emitter is contractually required to produce:
-# original name, the params verbatim, the return annotation when the vanilla
-# declaration has one. Whitespace is normalized (" -> T", single ":"), which
-# is also what _rtv_dispatch_inline_src's callers depend on.
-func _expected_wrapper_sig(fe: Dictionary) -> String:
-	var annot := ""
-	var rt = fe["return_type"]
-	if rt != null and not String(rt).is_empty():
-		annot = " -> " + String(rt)
-	return "func %s(%s)%s:" % [fe["name"], fe["params"], annot]
-
-func _decl_line(plines: PackedStringArray, fe: Dictionary) -> String:
-	var ln: int = int(fe["line_number"]) - 1
-	if ln < 0 or ln >= plines.size():
-		return ""
-	return plines[ln]
-
-func _check_method(fname: String, fe: Dictionary, plines: PackedStringArray, rlines: PackedStringArray, marker_idx: int, fx: Dictionary) -> void:
+func _check_method(fname: String, fe: Dictionary, plines: PackedStringArray, rlines: PackedStringArray,
+		marker_idx: int) -> void:
 	var name: String = fe["name"]
 	var decl := _decl_line(plines, fe)
-	if not decl.begins_with("func "):
-		_fail(fname, "%s: parsed line_number %d does not hold its declaration" % [name, fe["line_number"]])
+	var at := decl.find(" func ")
+	var prefix := decl.substr(0, at + 1) if decl.begins_with("@") and at >= 0 else ""
+	if not _report.check(prefix != "" or decl.begins_with("func "), "%s: line_number misses its declaration" % name):
 		return
-	# 1. Vanilla body preserved under the renamed declaration.
-	var renamed_decl := "func _rtv_vanilla_" + decl.substr(5)
-	var renamed_idx := _find_line(rlines, renamed_decl, 0)
-	if renamed_idx < 0:
-		_fail(fname, "%s: renamed vanilla body 'func _rtv_vanilla_%s(...)' not found in the rewritten output" % [name, name])
+	var renamed_decl := prefix + "func _rtv_vanilla_" + decl.substr(prefix.length() + 5)
+	var renamed_idx := rlines.find(renamed_decl)
+	if renamed_idx < 0 and "super" in decl:
+		# A one-line body's bare super() becomes super.<name>() on the declaration line.
+		var head_end := renamed_decl.find("):")
+		if head_end > 0:
+			var head := renamed_decl.substr(0, head_end + 2)
+			for i in rlines.size():
+				if rlines[i].begins_with(head) and ("super." + name + "(") in rlines[i]:
+					renamed_idx = i
+					break
+	if prefix == "":
+		# Function annotations on their own lines above ride on the wrapper's line.
+		var parts := PackedStringArray()
+		var i := int(fe["line_number"]) - 2
+		while i >= 0:
+			var t := plines[i].strip_edges()
+			if not (t.is_empty() or t.begins_with("#")):
+				if not t.begins_with("@"):
+					break
+				if t.begins_with("@rpc") or t.begins_with("@warning_ignore("):
+					parts.insert(0, t)
+			i -= 1
+		if not parts.is_empty():
+			prefix = " ".join(parts) + " "
+	if not _report.check(renamed_idx >= 0, "%s: renamed vanilla body not found" % name):
 		return
-	# 2. Wrapper preserves the signature: same name, the params VERBATIM from
-	# the pristine declaration, and the same return annotation. (Not a raw
-	# byte-compare of the whole decl line: the decompiled corpus carries
-	# spacing artifacts like '-> void :' which the emitter normalizes.)
-	# Tie the parsed params back to the pristine text first, so the expected
-	# signature cannot drift from what vanilla actually declares.
-	if not (("(" + String(fe["params"]) + ")") in decl):
-		_fail(fname, "%s: parsed params '%s' are not a verbatim slice of the declaration '%s'" % [name, str(fe["params"]), decl])
+	# Params, not the whole line: the decompiled corpus writes "-> void :", which the emitter normalizes.
+	if not _report.check(("(" + str(fe["params"]) + ")") in decl,
+			"%s: params '%s' not in its declaration" % [name, fe["params"]]):
 		return
-	var expected_sig := _expected_wrapper_sig(fe)
-	var wrap_idx := _find_line(rlines, expected_sig, marker_idx)
-	if wrap_idx < 0:
-		_fail(fname, "%s: no wrapper with signature '%s' after the wrapper marker -- params, defaults and return annotation must be preserved" % [name, expected_sig])
+	var sig := _wrapper_sig(fe)
+	if prefix != "" and not sig.begins_with(prefix):
+		sig = prefix + sig
+	var wrap_idx := rlines.find(sig, marker_idx)
+	if not _report.check(wrap_idx >= 0, "%s: no wrapper '%s'" % [name, sig]):
 		return
-	# 3. Coroutine discipline. Ground truth: does the PRISTINE body await?
 	var pbody := _body_block(plines, int(fe["line_number"]) - 1)
-	var wbody := _body_block(rlines, wrap_idx)
 	var pbody_text := "\n".join(pbody)
-	var wbody_text := "\n".join(wbody)
-	var vanilla_is_coro := "await " in pbody_text
-	if vanilla_is_coro:
-		if not ("await " in wbody_text):
-			_fail(fname, "%s: vanilla method is a coroutine but its wrapper contains no 'await' -- the wrapper would return before the body resolves" % name)
+	var wbody_text := "\n".join(_body_block(rlines, wrap_idx))
+	var coro := _pristine_awaits(decl, pbody)
+	if coro:
+		_report.check("await " in wbody_text, "%s: coroutine wrapper has no await" % name)
 	else:
-		if "await" in wbody_text:
-			_fail(fname, "%s: wrapper for a NON-coroutine method contains 'await' -- that alone marks the wrapped method a coroutine, and every existing caller then fails at parse time ('must be called with await'). This is the 3.3.0 bug class." % name)
-	# 4. Body-verbatim preservation (skipped for legitimately modified bodies).
-	var modified: Array = BODY_MODIFIED.get(fname, [])
-	var skip: bool = (name in modified) or ("super" in pbody_text) or (not fx.get("baseline", true))
-	if not skip:
-		var rbody := _body_block(rlines, renamed_idx)
-		if "\n".join(rbody) != pbody_text:
-			_fail(fname, "%s: body under _rtv_vanilla_%s differs from the vanilla body" % [name, name])
-	# Coverage bookkeeping.
-	if vanilla_is_coro:
-		_saw_coroutine = true
-	elif bool(fe["has_return_value"]):
-		_saw_sync_value = true
-	else:
-		_saw_void = true
-	if "=" in String(fe["params"]):
-		_saw_defaults = true
+		_report.check(RegEx.create_from_string("\\bawait\\b").search(wbody_text) == null,
+				"%s: non-coroutine wrapper awaits; its callers break" % name)
+	if not (name in BODY_MODIFIED.get(fname, []) or "super" in pbody_text):
+		_report.check("\n".join(_body_block(rlines, renamed_idx)) == pbody_text,
+				"%s: renamed body differs from vanilla" % name)
+	_seen["coroutine" if coro else ("sync value" if fe["has_return_value"] else "void")] = true
+	if "=" in str(fe["params"]):
+		_seen["defaults"] = true
 	if fname == "Loader.gd" and name == "ValidateShelter":
-		if vanilla_is_coro or not bool(fe["has_return_value"]):
-			_fail(fname, "ValidateShelter is expected to be a synchronous value-returning method; the parser disagrees -- parser regression?")
-		else:
-			_saw_validateshelter = true
+		if _report.check(not coro and fe["has_return_value"], "ValidateShelter no longer parses sync value-returning"):
+			_seen["ValidateShelter"] = true
 
-# --- masked rewrite ---------------------------------------------------------
-
-func _check_masked(ml, fx: Dictionary, fname: String, path: String, raw: String, plines: PackedStringArray, parsed: Dictionary, nonstatic: Array) -> void:
-	var mask: Dictionary = {}
-	for m in fx["mask"]:
-		mask[String(m).to_lower()] = true
+func _check_masked(ml: Object, fname: String, path: String, raw: String, mask_names: Array,
+		plines: PackedStringArray, parsed: Dictionary, hookable: Array) -> void:
+	var mask := {}
+	for m in mask_names:
+		mask[str(m).to_lower()] = true
 	var masked: String = ml._rtv_rewrite_vanilla_source(raw, parsed, mask)
-	if masked == raw:
-		_fail(fname, "MASKED: mask %s matched no methods -- fixture mask is stale" % [str(fx["mask"])])
+	if not _report.check(masked != raw, "MASKED: mask %s matched nothing" % str(mask_names)):
 		return
-	var mlines: PackedStringArray = masked.split("\n")
-	var mmarker := _find_line(mlines, WRAPPER_MARKER, 0)
-	if mmarker < 0:
-		_fail(fname, "MASKED: wrapper marker missing")
+	var mlines := masked.split("\n")
+	var mmarker := mlines.find(WRAPPER_MARKER)
+	if not _report.check(mmarker >= 0, "MASKED: wrapper marker missing"):
 		return
-	for fe in nonstatic:
+	for fe in hookable:
 		var name: String = fe["name"]
 		var decl := _decl_line(plines, fe)
 		if decl == "":
 			continue
-		var renamed := "func _rtv_vanilla_" + decl.substr(5)
+		var renamed := mlines.find("func _rtv_vanilla_" + decl.substr(5))
 		if mask.has(name.to_lower()):
-			if _find_line(mlines, renamed, 0) < 0:
-				_fail(fname, "MASKED: %s is in the mask but was not renamed" % name)
-			if _find_line(mlines, _expected_wrapper_sig(fe), mmarker) < 0:
-				_fail(fname, "MASKED: %s is in the mask but has no wrapper with the original signature" % name)
+			_report.check(renamed >= 0, "MASKED: %s masked but not renamed" % name)
+			_report.check(mlines.find(_wrapper_sig(fe), mmarker) >= 0, "MASKED: %s masked but has no wrapper" % name)
 		else:
-			if _find_line(mlines, renamed, 0) >= 0:
-				_fail(fname, "MASKED: %s is NOT in the mask but was renamed -- masked-out methods must stay vanilla" % name)
-			var d := _find_line(mlines, decl, 0)
-			if d < 0 or d > mmarker:
-				_fail(fname, "MASKED: %s is NOT in the mask but its vanilla declaration is gone from the body" % name)
-	_compile_at_path(fname, path, masked, "COMPILE (masked)")
+			_report.check(renamed < 0, "MASKED: %s unmasked but renamed" % name)
+			var d := mlines.find(decl)
+			_report.check(d >= 0 and d <= mmarker, "MASKED: %s unmasked but its declaration is gone" % name)
+	_compile_at_path(path, masked, "COMPILE (masked)")
 
-# --- caller stub ------------------------------------------------------------
-
-# Generate and compile a stub that CALLS every wrapped method the way real
-# game code and mods do: no `await` on methods whose vanilla body is not a
-# coroutine, with value returns assigned to locals (typed when the return
-# annotation is resolvable from the caller's scope). A wrapper that silently
-# became a coroutine compiles fine on its own; only this file catches it.
-func _check_caller(fname: String, path: String, nonstatic: Array, plines: PackedStringArray) -> void:
-	var body := PackedStringArray()
+# Calls every wrapped method the way game code and mods do: no await unless the
+# vanilla body awaits. Only a call site shows that a wrapper became a coroutine.
+func _check_caller(fname: String, path: String, hookable: Array, plines: PackedStringArray) -> void:
+	var lines := PackedStringArray([
+		"# Compile-only caller stub for the rewritten " + fname,
+		"const TargetScript = preload(\"" + path + "\")",
+		"",
+		"func _rtv_codegen_probe(t: TargetScript) -> void:",
+	])
 	var n := 0
-	for fe in nonstatic:
-		var name: String = fe["name"]
-		var args = _caller_args(String(fe["params"]))  # String or null
+	for fe in hookable:
+		var args: Variant = _call_args(str(fe["params"]))
 		if args == null:
-			print("[codegen] note: %s::%s left out of the caller stub (parameter type not resolvable from caller scope)" % [fname, name])
+			print("[codegen] note: %s::%s left out of the caller stub (type not reachable)" % [fname, fe["name"]])
 			continue
-		var pbody_text := "\n".join(_body_block(plines, int(fe["line_number"]) - 1))
-		var is_coro := "await " in pbody_text
-		var rt = fe["return_type"]  # String or null
-		var has_value: bool = bool(fe["has_return_value"]) and (rt == null or String(rt) != "void")
-		var call := "t.%s(%s)" % [name, args]
 		n += 1
-		if is_coro:
-			if has_value:
-				body.append("\tvar r%d = await %s" % [n, call])
-			else:
-				body.append("\tawait " + call)
+		var call := "t.%s(%s)" % [fe["name"], args]
+		var rt: Variant = fe["return_type"]
+		var has_value: bool = fe["has_return_value"] and (rt == null or str(rt) != "void")
+		if _pristine_awaits(_decl_line(plines, fe), _body_block(plines, int(fe["line_number"]) - 1)):
+			lines.append("\tvar r%d = await %s" % [n, call] if has_value else "\tawait " + call)
+		elif has_value and rt != null and _type_resolvable(str(rt)):
+			lines.append("\tvar r%d: %s = %s" % [n, str(rt), call])
+		elif has_value:
+			lines.append("\tvar r%d = %s" % [n, call])
 		else:
-			if has_value and rt != null and _type_resolvable(String(rt)):
-				body.append("\tvar r%d: %s = %s" % [n, String(rt), call])
-			elif has_value:
-				body.append("\tvar r%d = %s" % [n, call])
-			else:
-				body.append("\t" + call)
-	if body.is_empty():
-		body.append("\tpass")
-	var lines := PackedStringArray()
-	lines.append("# Generated caller stub for the REWRITTEN " + fname + " -- compile-only, never run.")
-	lines.append("# Calls every wrapped method WITHOUT await unless the vanilla body is a real")
-	lines.append("# coroutine. If a wrapper silently became a coroutine, these calls fail with")
-	lines.append("# 'Function X() is a coroutine, so it must be called with \"await\"' -- the")
-	lines.append("# exact parse-time breakage 3.3.0 shipped to every mod.")
-	lines.append("const TargetScript = preload(\"" + path + "\")")
-	lines.append("")
-	lines.append("func _rtv_codegen_probe(t: TargetScript) -> void:")
-	lines.append_array(body)
+			lines.append("\t" + call)
+	if n == 0:
+		lines.append("\tpass")
 	var caller_path := "res://callers/Caller_" + fname
-	var wf := FileAccess.open(caller_path, FileAccess.WRITE)
-	if wf == null:
-		_fail(fname, "CALLER: cannot write " + caller_path)
+	if not _report.check(H.write_text(caller_path, "\n".join(lines) + "\n"), "CALLER: cannot write " + caller_path):
 		return
-	wf.store_string("\n".join(lines) + "\n")
-	wf.close()
-	var scr = ResourceLoader.load(caller_path, "", ResourceLoader.CACHE_MODE_IGNORE)
-	if scr == null or not (scr as Script).can_instantiate():
-		_fail(fname, "CALLER: calling the wrapped methods without await does not compile -- a wrapper likely became a coroutine, or the signature/return annotation drifted (see SCRIPT ERROR lines above; stub kept at %s)" % caller_path)
+	var scr := ResourceLoader.load(caller_path, "", ResourceLoader.CACHE_MODE_IGNORE) as Script
+	_report.check(scr != null and scr.can_instantiate(), "CALLER: unawaited calls do not compile (%s)" % caller_path)
 
-# Placeholder argument list for the REQUIRED (non-defaulted) parameters.
-# Returns null when a parameter type cannot be satisfied from caller scope.
-func _caller_args(params: String):
-	if params.strip_edges().is_empty():
-		return ""
+# Placeholder arguments for the required parameters, or null when a type is not
+# reachable from the stub. Splits params itself rather than trust the loader's splitter.
+func _call_args(params: String) -> Variant:
+	var parts := []
+	var depth := 0
+	var quote := ""
+	var escaped := false
+	var start := 0
+	for i in params.length():
+		var c := params[i]
+		if quote != "":
+			if escaped:
+				escaped = false
+			elif c == "\\":
+				escaped = true
+			elif c == quote:
+				quote = ""
+		elif c == "\"" or c == "'":
+			quote = c
+		elif c in "([{":
+			depth += 1
+		elif c in ")]}":
+			depth -= 1
+		elif c == "," and depth == 0:
+			parts.append(params.substr(start, i - start))
+			start = i + 1
+	parts.append(params.substr(start))
 	var args := PackedStringArray()
-	for part in _split_params_top_level(params):
-		var p := String(part).strip_edges()
+	for part in parts:
+		var p := str(part).strip_edges()
 		if p.is_empty():
 			continue
 		if "=" in p:
-			break  # first defaulted param: this and everything after is omittable
-		var t := ""
+			break
 		var colon := p.find(":")
-		if colon >= 0:
-			t = p.substr(colon + 1).strip_edges()
-		var ph := _placeholder_for_type(t)
-		if ph == "":
+		var t := p.substr(colon + 1).strip_edges() if colon >= 0 else ""
+		if t.begins_with("Array"):
+			args.append("[]")
+		elif PLACEHOLDERS.has(t):
+			args.append(PLACEHOLDERS[t])
+		elif t in BUILTIN_TYPES:
+			args.append(t + "()")
+		elif ClassDB.class_exists(t) or _global_classes.has(t):
+			args.append("null")
+		else:
 			return null
-		args.append(ph)
 	return ", ".join(args)
-
-func _placeholder_for_type(t: String) -> String:
-	if t.is_empty() or t == "Variant":
-		return "null"
-	if t.begins_with("Array"):
-		return "[]"
-	match t:
-		"int":
-			return "0"
-		"float":
-			return "0.0"
-		"bool":
-			return "false"
-		"String":
-			return "\"\""
-		"StringName":
-			return "&\"\""
-		"Dictionary":
-			return "{}"
-	if t in BUILTIN_TYPES:
-		return t + "()"
-	if ClassDB.class_exists(t) or _global_classes.has(t):
-		return "null"  # object parameters accept null
-	return ""  # unresolvable (script-local enum / inner class) -- skip the probe
 
 func _type_resolvable(t: String) -> bool:
 	if t.begins_with("Array["):
 		return _type_resolvable(t.trim_prefix("Array[").trim_suffix("]"))
 	return t in BUILTIN_TYPES or ClassDB.class_exists(t) or _global_classes.has(t)
 
-# Top-level comma split (commas inside (), [], {} or string literals belong
-# to a default value). Deliberately reimplemented here rather than calling
-# the loader's _rtv_split_params_top_level: the harness must not trust the
-# code under test to slice its own inputs.
-func _split_params_top_level(params: String) -> Array:
-	var parts: Array = []
-	var depth := 0
-	var in_str := ""
-	var escaped := false
-	var start := 0
-	for i in params.length():
-		var c := params[i]
-		if in_str != "":
-			if escaped:
-				escaped = false
-			elif c == "\\":
-				escaped = true
-			elif c == in_str:
-				in_str = ""
-		elif c == "\"" or c == "'":
-			in_str = c
-		elif c == "(" or c == "[" or c == "{":
-			depth += 1
-		elif c == ")" or c == "]" or c == "}":
-			depth -= 1
-		elif c == "," and depth == 0:
-			parts.append(params.substr(start, i - start))
-			start = i + 1
-	parts.append(params.substr(start))
-	return parts
+# Ground truth for "is this vanilla method a coroutine", independent of the
+# loader's parser: an await in its body or one-line body, outside lambdas.
+func _pristine_awaits(decl: String, body: PackedStringArray) -> bool:
+	var re := RegEx.create_from_string("\\bawait\\b")
+	var lines := PackedStringArray()
+	var colon := decl.rfind(":")
+	if colon >= 0 and colon + 1 < decl.length():
+		lines.append("\t" + decl.substr(colon + 1))
+	lines.append_array(body)
+	var lambda_indent := -1
+	for ln in lines:
+		var stripped := ln.strip_edges()
+		if stripped.is_empty() or stripped.begins_with("#"):
+			continue
+		var ind := ln.length() - ln.lstrip(" \t").length()
+		if lambda_indent >= 0 and ind > lambda_indent:
+			continue
+		lambda_indent = -1
+		var code := ln
+		var lf := _find_lambda(code, 0)
+		while lf >= 0:
+			# A lambda whose line ends at its colon owns the more-indented lines below.
+			var depth := 0
+			for i in range(code.find("(", lf), code.length()):
+				depth += int(code[i] == "(") - int(code[i] == ")")
+				if depth == 0:
+					var tail := code.substr(i + 1).strip_edges()
+					var typed := tail.begins_with("->")
+					tail = tail.trim_prefix("->").strip_edges()
+					if (tail.length() > 1 and tail.find(":") == tail.length() - 1) if typed else tail == ":":
+						lambda_indent = ind
+					break
+			# The lambda runs to the comma or bracket that closes it; text after is the method's.
+			depth = 0
+			var quote := ""
+			var end := lf
+			while end < code.length():
+				var c := code[end]
+				if quote != "":
+					if c == "\\":
+						end += 1
+					elif c == quote:
+						quote = ""
+				elif c == "\"" or c == "'":
+					quote = c
+				elif c == "#":
+					end = code.length()
+					break
+				elif c in "([{":
+					depth += 1
+				elif c in ")]}":
+					depth -= 1
+					if depth < 0:
+						break
+				elif c == "," and depth == 0:
+					break
+				end += 1
+			code = code.substr(0, lf) + code.substr(end)
+			lf = _find_lambda(code, lf)
+		if re.search(code) != null:
+			return true
+	return false
 
-# --- text helpers -----------------------------------------------------------
+func _find_lambda(code: String, from: int) -> int:
+	var a := code.find("func(", from)
+	var b := code.find("func (", from)
+	return b if a < 0 or (b >= 0 and b < a) else a
 
-func _find_line(lines: PackedStringArray, exact: String, from_idx: int) -> int:
-	for i in range(maxi(from_idx, 0), lines.size()):
-		if lines[i] == exact:
-			return i
-	return -1
+func _decl_line(plines: PackedStringArray, fe: Dictionary) -> String:
+	var ln := int(fe["line_number"]) - 1
+	return plines[ln] if ln >= 0 and ln < plines.size() else ""
 
-# The indented block under a declaration line: every following line that is
-# blank or indented, stopping at the first top-level line (trailing blanks
-# stripped). Matches how the rewriter itself scopes bodies, but computed
-# independently here.
+# The indented block under a declaration, trailing blank lines dropped.
 func _body_block(lines: PackedStringArray, decl_idx: int) -> PackedStringArray:
 	var out := PackedStringArray()
 	for i in range(decl_idx + 1, lines.size()):
-		var ln := lines[i]
-		if not ln.is_empty() and ln[0] != "\t" and ln[0] != " ":
+		if not lines[i].is_empty() and lines[i][0] != "\t" and lines[i][0] != " ":
 			break
-		out.append(ln)
-	while out.size() > 0 and out[out.size() - 1].strip_edges().is_empty():
+		out.append(lines[i])
+	while not out.is_empty() and out[-1].strip_edges().is_empty():
 		out.remove_at(out.size() - 1)
 	return out

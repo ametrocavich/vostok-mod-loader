@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
-# build.sh -- concatenate src/*.gd into modloader.gd
-#
-# Explicit ordering (not filename-based sort): the FILES list below is the
-# source of truth for concat order. Only const initializers are ordered
-# (GDScript resolves them top to bottom); function bodies can call anything.
+# build.sh [--list] -- concatenate FILES, in this order, into modloader.gd.
+# Only const initializers need the order (GDScript resolves them top to bottom).
 
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -19,18 +16,18 @@ FILES=(
     "$SRC/logging.gd"
     # File + archive helpers (no game-specific logic)
     "$SRC/fs_archive.gd"
-    # Static-init boot layer
+    # Boot layer: static-init mounts, then pass state, crash recovery, cache cleanup
     "$SRC/boot.gd"
-    # Mod discovery + loading
-    "$SRC/security_scan.gd"
-    # Mod-host seam. types -> transport -> dispatch, then one file per host.
-    # host_api.gd dispatches into adapters defined after it, the same shape
-    # registry.gd already uses for its section handlers.
+    "$SRC/pass_state.gd"
+    "$SRC/crash_recovery.gd"
+    "$SRC/cache_cleanup.gd"
+    # Mod-host seam: types, transport, dispatch, then one file per host
     "$SRC/host_types.gd"
     "$SRC/host_http.gd"
     "$SRC/host_api.gd"
     "$SRC/host_mws.gd"
     "$SRC/host_vostokmods.gd"
+    # Mod discovery + loading
     "$SRC/mod_discovery.gd"
     "$SRC/mod_dependencies.gd"
     "$SRC/mod_identity.gd"
@@ -39,10 +36,12 @@ FILES=(
     "$SRC/modpacks.gd"
     "$SRC/hosted_modpacks.gd"
     "$SRC/mod_loading.gd"
+    # Developer-mode conflict and override report
     "$SRC/conflict_report.gd"
-    # UI
+    # Profiles and their MCM snapshots
     "$SRC/profiles.gd"
     "$SRC/profile_snapshots.gd"
+    # UI
     "$SRC/ui.gd"
     "$SRC/ui_images.gd"
     "$SRC/ui_format.gd"
@@ -57,9 +56,7 @@ FILES=(
     "$SRC/ui_modpacks.gd"
     # Public API (hooks + registry)
     "$SRC/hooks_api.gd"
-    # Registry dispatcher + per-section handlers. shared.gd holds helpers
-    # used by more than one section; each section file owns its own verb
-    # implementations. New sections: add a file here + match arm in registry.gd.
+    # Registry dispatcher, then one file per section ("Adding a registry section" in Development.md)
     "$SRC/registry.gd"
     "$SRC/registry/shared.gd"
     "$SRC/registry/scenes.gd"
@@ -69,6 +66,7 @@ FILES=(
     "$SRC/registry/recipes.gd"
     "$SRC/registry/events.gd"
     "$SRC/registry/traders.gd"
+    "$SRC/registry/array_entries.gd"
     "$SRC/registry/inputs.gd"
     "$SRC/registry/loader.gd"
     "$SRC/registry/ai.gd"
@@ -77,7 +75,7 @@ FILES=(
     "$SRC/registry/resources.gd"
     "$SRC/registry/scene_nodes.gd"
     "$SRC/registry/aggregators.gd"
-    # Declarative setup() entry point (depends on registry _many verbs + hook_many)
+    # Declarative setup() entry point
     "$SRC/setup.gd"
     # Codegen pipeline
     "$SRC/gdsc_detokenizer.gd"
@@ -105,36 +103,29 @@ case "${1:-}" in
     *) echo "Usage: ./build.sh [--list]" >&2; exit 2 ;;
 esac
 
-# Validate every listed file exists before starting
 for f in "${FILES[@]}"; do
     [[ -f "$f" ]] || { echo "ERROR: missing source file: $f" >&2; exit 1; }
 done
 
-# Concatenate
 trap 'rm -f "$TMP"' EXIT
 : > "$TMP"
 for f in "${FILES[@]}"; do
     printf '# source: %s\n' "$f" >> "$TMP"
-    # Drop CRs: a Windows checkout can hold CRLF sources, and the output must
-    # match the release build, which is made on Linux from LF blobs.
+    # A Windows checkout can hold CRLF; the release is built on Linux from LF blobs.
     LC_ALL=C tr -d '\r' < "$f" >> "$TMP"
-    echo "" >> "$TMP"  # blank line between files
+    echo "" >> "$TMP"
 done
 
-# Sanity checks on the output
 extends_count=$(grep -c '^extends ' "$TMP" || true)
 if [[ $extends_count -ne 1 ]]; then
     echo "ERROR: expected exactly 1 'extends' line, found $extends_count" >&2
-    rm -f "$TMP"
     exit 1
 fi
 class_count=$(grep -c '^class_name ' "$TMP" || true)
 if [[ $class_count -gt 1 ]]; then
     echo "ERROR: multiple class_name declarations: $class_count" >&2
-    rm -f "$TMP"
     exit 1
 fi
 
 mv "$TMP" "$OUT"
-lines=$(wc -l < "$OUT")
-echo "Built $OUT: $lines lines from ${#FILES[@]} source files"
+echo "Built $OUT: $(wc -l < "$OUT") lines from ${#FILES[@]} source files"

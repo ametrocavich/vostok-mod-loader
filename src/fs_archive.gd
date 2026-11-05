@@ -1,62 +1,45 @@
-## ----- fs_archive.gd -----
-## Disk I/O with no game logic: vmz cache copies, mod.txt parsing, mounting,
-## folder-mod zipping.
+## Archives on disk: vmz cache copies, mounting, folder-mod zipping, and reading
+## mod.txt (including the unquoted [hooks] lists it allows).
 
 const TRACKED_EXTENSIONS: Array[String] = ["gd", "tscn", "tres", "gdns", "gdnlib", "scn"]
 
-# Copies a .vmz to the cache dir as .zip: load_resource_pack picks its reader
-# by extension and refuses .vmz (ZIPReader opens one as it is). Cache
-# identity is the source's mtime+size in a <zip>.src sidecar; any mismatch
-# (including an older restored/downgraded timestamp) or a missing sidecar
-# forces a re-copy. Returns the cached zip path, or "" on failure.
+# load_resource_pack picks its reader by extension and refuses .vmz, so a .vmz
+# is copied to the cache as .zip; the <zip>.src sidecar holds the source mtime:size.
 static func _static_vmz_to_zip(vmz_path: String) -> String:
 	var cache_dir := ProjectSettings.globalize_path(TMP_DIR)
 	if not DirAccess.dir_exists_absolute(cache_dir):
 		DirAccess.make_dir_recursive_absolute(cache_dir)
-	# Never return a stale cache pointer when the source is gone.
 	if not FileAccess.file_exists(vmz_path):
 		return ""
-	var zip_name := vmz_path.get_file().get_basename() + ".zip"
-	var zip_path := cache_dir.path_join(zip_name)
+	var zip_path := cache_dir.path_join(vmz_path.get_file().get_basename() + ".zip")
 	var sidecar_path := zip_path + ".src"
 	var src := FileAccess.open(vmz_path, FileAccess.READ)
 	if src == null:
 		return ""
 	var src_stamp := "%d:%d" % [FileAccess.get_modified_time(vmz_path), src.get_length()]
-	if FileAccess.file_exists(zip_path):
-		var cached_stamp := ""
-		var sf := FileAccess.open(sidecar_path, FileAccess.READ)
-		if sf != null:
-			cached_stamp = sf.get_as_text().strip_edges()
-			sf.close()
-		if cached_stamp == src_stamp:
-			src.close()
-			return zip_path
-	# Drop the old sidecar before rewriting the zip so an interrupted copy can
-	# never leave a stamp that vouches for mismatched content.
-	if FileAccess.file_exists(sidecar_path):
-		DirAccess.remove_absolute(sidecar_path)
+	if FileAccess.file_exists(zip_path) and FileAccess.file_exists(sidecar_path) \
+			and FileAccess.get_file_as_string(sidecar_path).strip_edges() == src_stamp:
+		return zip_path
+	# The sidecar goes first so an interrupted copy never leaves a stamp vouching for it.
+	_static_remove_file(sidecar_path)
 	var dst := FileAccess.open(zip_path, FileAccess.WRITE)
 	if dst == null:
-		src.close()
 		return ""
 	var src_len := src.get_length()
 	while src.get_position() < src_len:
 		var chunk := src.get_buffer(65536)
-		# A failed read returns an empty buffer without advancing; break
-		# instead of spinning. The length check below rejects the copy.
+		# A failed read returns an empty buffer without advancing.
 		if chunk.is_empty():
 			break
 		dst.store_buffer(chunk)
 	var copy_ok := dst.get_error() == OK
 	src.close()
 	dst.close()
-	# Verify the copy is complete before writing the stamp that vouches for
-	# it; a disk-full failure mid-copy would otherwise leave a truncated zip
-	# every future launch trusts.
+	# A disk-full copy must not get a stamp every later launch would trust.
+	var written_len := -1
 	var chk := FileAccess.open(zip_path, FileAccess.READ)
-	var written_len := chk.get_length() if chk != null else -1
 	if chk != null:
+		written_len = chk.get_length()
 		chk.close()
 	if not copy_ok or written_len != src_len:
 		DirAccess.remove_absolute(zip_path)
@@ -65,10 +48,8 @@ static func _static_vmz_to_zip(vmz_path: String) -> String:
 	if out != null:
 		out.store_string(src_stamp)
 		out.close()
-	# A failed sidecar write just means the next launch re-copies -- safe.
 	return zip_path
 
-# Prints the static-init log lines and writes them to user://modloader_filescope.log.
 static func _write_filescope_log(lines: PackedStringArray) -> void:
 	for line in lines:
 		print(line)
@@ -78,72 +59,59 @@ static func _write_filescope_log(lines: PackedStringArray) -> void:
 			f.store_line(line)
 		f.close()
 
-# Returns override.cfg lines for sections other than [autoload] /
-# [autoload_prepend], so user/game settings survive autoload rewrites.
+# override.cfg minus [autoload] and [autoload_prepend], so user settings survive a rewrite.
 static func _read_preserved_cfg_sections(cfg_path: String) -> String:
 	if not FileAccess.file_exists(cfg_path):
 		return ""
-	var f := FileAccess.open(cfg_path, FileAccess.READ)
-	if f == null:
-		return ""
-	var text := f.get_as_text()
-	f.close()
 	var result := PackedStringArray()
-	var in_autoload_section := false
-	for line in text.split("\n"):
+	var in_autoload := false
+	for line in FileAccess.get_file_as_string(cfg_path).split("\n"):
 		var stripped := line.strip_edges()
 		if stripped.begins_with("["):
-			var section := stripped.to_lower()
-			in_autoload_section = section == "[autoload]" or section == "[autoload_prepend]"
-			if not in_autoload_section:
+			in_autoload = stripped.to_lower() in ["[autoload]", "[autoload_prepend]"]
+			if not in_autoload:
 				result.append(line)
-			continue
-		if not in_autoload_section and stripped != "":
+		elif not in_autoload and stripped != "":
 			result.append(line)
 	var preserved := "\n".join(result).strip_edges()
-	if preserved.is_empty():
-		return ""
-	return "\n" + preserved + "\n"
+	return "" if preserved.is_empty() else "\n" + preserved + "\n"
 
-# Converts zip-relative paths to res:// paths for tracked file extensions.
-# Returns "" for paths this does not track (hidden files, mod.txt, etc.)
+# A zip entry as a res:// path, or "" for hidden files, mod.txt and untracked types.
 func _normalize_to_res_path(zip_path: String) -> String:
 	var path := zip_path.replace("\\", "/")
-	if path.begins_with("res://"):   return path
-	if path.begins_with("/"):        return "res:/" + path
-	if path.begins_with(".") or path == "mod.txt": return ""
+	if path.begins_with("res://"):
+		return path
+	if path.begins_with("/"):
+		return "res:/" + path
+	if path.begins_with(".") or path == "mod.txt":
+		return ""
 	if path.get_extension().to_lower() in TRACKED_EXTENSIONS:
 		return "res://" + path
 	return ""
 
-# Mount a .pck or .vmz via ProjectSettings.load_resource_pack (with vmz->zip
-# caching). Nothing is loaded here: the engine follows a mounted .remap by
-# itself, and a load() at mount time compiles every script the target pulls
-# in before the hook pack is mounted, which pins them as vanilla.
-func _try_mount_pack(path: String) -> bool:
+# Static so static init mounts through it, hence push_warning. Nothing is loaded: the
+# engine follows a mounted .remap itself, and a load() here would pin scripts as vanilla.
+static func _try_mount_pack(path: String) -> bool:
 	if ProjectSettings.load_resource_pack(path):
 		return true
-	if path.get_extension().to_lower() != "vmz":
+	var ext := path.get_extension().to_lower()
+	if ext == "pck":
+		var why := _pck_v4_warning(path)
+		if why != "":
+			push_warning("[ModLoader][Warning] " + why)
+	if ext != "vmz":
 		return false
 	var zip_path := _static_vmz_to_zip(path)
 	return not zip_path.is_empty() and ProjectSettings.load_resource_pack(zip_path)
 
-# mod.txt parser
-
-## Read an archive's mod.txt. Returns {cfg, status, error, files}:
-##   cfg     the parsed ConfigFile, or null
-##   status  "ok", "none" (no root mod.txt, or the archive does not open),
-##           "parse_error", or "nested:<path>" for a mod.txt below the root
-##   error   the parse diagnostic when status is "parse_error", else ""
-##   files   {res_path: true} for every archive entry when a root mod.txt
-##           exists; the warning builder checks declared autoload paths against it
+## {cfg, status, error, files}: status is ok, none, parse_error or nested:<path>;
+## files holds every archive entry as a res:// path when a root mod.txt exists.
 func read_mod_config(path: String) -> Dictionary:
 	var read := _mod_txt_read("none")
 	var zr := ZIPReader.new()
 	if zr.open(path) != OK:
 		return read
 	if not zr.file_exists("mod.txt"):
-		# Nested mod.txt (e.g. "SubFolder/mod.txt") means bad packaging.
 		for f: String in zr.get_files():
 			if f.get_file() == "mod.txt":
 				read["status"] = "nested:" + f
@@ -151,62 +119,41 @@ func read_mod_config(path: String) -> Dictionary:
 		zr.close()
 		return read
 	var raw := zr.read_file("mod.txt")
-	# The file list is captured while the reader is open.
+	var files := {}
 	for zf: String in zr.get_files():
-		read["files"]["res://" + zf] = true
+		files["res://" + zf] = true
 	zr.close()
 	if raw.size() == 0:
 		read["status"] = "parse_error"
-		return read
-	var parsed := _parse_mod_txt(raw.get_string_from_utf8())
-	read["cfg"] = parsed["cfg"]
-	read["error"] = parsed["error"]
-	read["status"] = "ok" if parsed["cfg"] != null else "parse_error"
+	else:
+		read = _parse_mod_txt(raw.get_string_from_utf8())
+	read["files"] = files
 	return read
 
-## read_mod_config for a developer-mode folder. `files` stays empty.
 func read_mod_config_folder(folder_path: String) -> Dictionary:
-	var read := _mod_txt_read("none")
 	var mod_txt_path := folder_path.path_join("mod.txt")
 	if not FileAccess.file_exists(mod_txt_path):
-		return read
+		return _mod_txt_read("none")
 	var f := FileAccess.open(mod_txt_path, FileAccess.READ)
 	if f == null:
-		return read
-	var text := f.get_as_text()
-	f.close()
-	var parsed := _parse_mod_txt(text)
-	read["cfg"] = parsed["cfg"]
-	read["error"] = parsed["error"]
-	read["status"] = "ok" if parsed["cfg"] != null else "parse_error"
-	return read
+		return _mod_txt_read("none")
+	return _parse_mod_txt(f.get_as_text())
 
-# A read record with no cfg, no diagnostic and no files.
 func _mod_txt_read(status: String) -> Dictionary:
 	return {"cfg": null, "status": status, "error": "", "files": {}}
 
-## Parse mod.txt text. Returns {cfg, error}: cfg is null and error is the
-## diagnostic when the text does not parse.
+# A read_mod_config record with no files; error names the first line that breaks the parse.
 func _parse_mod_txt(text: String) -> Dictionary:
+	var read := _mod_txt_read("parse_error")
 	if text.begins_with("\uFEFF"):
 		text = text.substr(1)
-	# Tolerate the wiki-documented [hooks] forms (`path = _ready, update_tooltip`,
-	# `path = *`): ConfigFile's Variant value parser rejects unquoted
-	# identifier lists, bare `*`, and top-level commas, so authors following
-	# the docs hit parse_error. Quote-wrap those values so they land as
-	# strings; mod_loading.gd's [hooks] reader comma-splits them itself.
 	var preprocessed := _quote_unquoted_hooks_values(text)
 	var cfg := ConfigFile.new()
 	if cfg.parse(preprocessed) != OK:
-		# cfg.parse() doesn't report the offending line; locate it so the
-		# launcher can show the broken line instead of "re-download".
-		return {"cfg": null, "error": _diagnose_parse_failure(preprocessed)}
-	# ConfigFile drops empty sections. A bare [registry] header -- the common
-	# legitimate form, since it's a presence signal -- would vanish, and so
-	# would a bare header this loader does not know, such as a [Registry]
-	# typo, before the unrecognized-section notice could name it. Stash a
-	# sentinel key in those. A known section with no keys stays absent: its
-	# reader would take the sentinel for an entry.
+		read["error"] = _mod_txt_error_line(preprocessed)
+		return read
+	# ConfigFile drops empty sections; a bare [registry] is a presence signal and an
+	# unknown header must reach the unrecognized-section notice, so both get a key.
 	for line in text.split("\n"):
 		var stripped := line.strip_edges()
 		if not (stripped.begins_with("[") and stripped.ends_with("]")):
@@ -216,60 +163,13 @@ func _parse_mod_txt(text: String) -> Dictionary:
 			continue
 		if section == "registry" or not (section in MOD_TXT_KNOWN_SECTIONS):
 			cfg.set_value(section, "_modloader_header_present", true)
-	return {"cfg": cfg, "error": ""}
+	read["cfg"] = cfg
+	read["status"] = "ok"
+	return read
 
-# Wrap unquoted [hooks] values in double quotes so they parse as strings;
-# already-quoted values pass through verbatim. Inline `# / ;` comments are
-# stripped before wrapping: the Variant parser eats them for raw values, but
-# once the value is quoted they would become part of the string.
-func _quote_unquoted_hooks_values(text: String) -> String:
-	var lines := text.split("\n")
-	var out := PackedStringArray()
-	var in_hooks := false
-	for line in lines:
-		var stripped := line.strip_edges()
-		if stripped.begins_with("[") and stripped.ends_with("]"):
-			in_hooks = stripped.to_lower() == "[hooks]"
-			out.append(line)
-			continue
-		if not in_hooks:
-			out.append(line)
-			continue
-		if stripped.is_empty() or stripped.begins_with("#") or stripped.begins_with(";"):
-			out.append(line)
-			continue
-		var eq_pos := line.find("=")
-		if eq_pos < 0:
-			out.append(line)
-			continue
-		var key_part := line.substr(0, eq_pos)
-		var val_part := line.substr(eq_pos + 1)
-		if val_part.strip_edges(true, false).begins_with("\""):
-			out.append(line)
-			continue
-		var comment := ""
-		var comment_pos := -1
-		for j in val_part.length():
-			var ch := val_part[j]
-			if ch == "#" or ch == ";":
-				comment_pos = j
-				break
-		if comment_pos >= 0:
-			comment = val_part.substr(comment_pos)
-			val_part = val_part.substr(0, comment_pos)
-		var val_trim := val_part.strip_edges()
-		var escaped := val_trim.replace("\\", "\\\\").replace("\"", "\\\"")
-		var rebuilt := "%s= \"%s\"" % [key_part, escaped]
-		if not comment.is_empty():
-			rebuilt += "  " + comment
-		out.append(rebuilt)
-	return "\n".join(out)
-
-# Locate the line ConfigFile.parse() rejects: the first line of content after
-# the longest prefix of the file that still parses. Growing a prefix, where a
-# per-line probe would blame a value that legitimately spans several lines.
-# O(N) parses, but it only fires on already-broken mods.
-func _diagnose_parse_failure(text: String) -> String:
+# "line N [section]: text" for the first content line after the last prefix that parses.
+# parse() names no line, and a per-line probe would blame a value spanning several lines.
+func _mod_txt_error_line(text: String) -> String:
 	var lines := text.split("\n")
 	var last_ok := 0
 	var prefix := ""
@@ -277,91 +177,94 @@ func _diagnose_parse_failure(text: String) -> String:
 		prefix += lines[i] + "\n"
 		if ConfigFile.new().parse(prefix) == OK:
 			last_ok = i + 1
-	var current_section := ""
+	var section := ""
 	for i in lines.size():
 		var stripped := lines[i].strip_edges()
 		if stripped.is_empty() or stripped.begins_with("#") or stripped.begins_with(";"):
 			continue
 		if i >= last_ok:
-			var section_label := ("[%s]" % current_section) if current_section != "" else "(no section)"
-			return "line %d %s: %s" % [i + 1, section_label, _truncate_for_log(stripped)]
+			var label := ("[%s]" % section) if section != "" else "(no section)"
+			var shown := stripped if stripped.length() <= 80 else stripped.substr(0, 77) + "..."
+			return "line %d %s: %s" % [i + 1, label, shown]
 		if stripped.begins_with("[") and stripped.ends_with("]"):
-			current_section = stripped.substr(1, stripped.length() - 2)
+			section = stripped.substr(1, stripped.length() - 2)
 	return "could not pin line (every prefix of the file parses, the whole does not)"
 
-func _truncate_for_log(s: String) -> String:
-	if s.length() <= 80:
-		return s
-	return s.substr(0, 77) + "..."
+# ConfigFile rejects the documented unquoted [hooks] lists (`a, b`, `*`), so they are
+# quoted; an inline # or ; comment is cut first or it would land inside the string.
+func _quote_unquoted_hooks_values(text: String) -> String:
+	var out := PackedStringArray()
+	var in_hooks := false
+	for line in text.split("\n"):
+		var stripped := line.strip_edges()
+		if stripped.begins_with("[") and stripped.ends_with("]"):
+			in_hooks = stripped.to_lower() == "[hooks]"
+			out.append(line)
+			continue
+		var eq_pos := line.find("=")
+		if not in_hooks or stripped.is_empty() or stripped.begins_with("#") \
+				or stripped.begins_with(";") or eq_pos < 0 \
+				or line.substr(eq_pos + 1).strip_edges(true, false).begins_with("\""):
+			out.append(line)
+			continue
+		var val_part := line.substr(eq_pos + 1)
+		var comment := ""
+		for j in val_part.length():
+			if val_part[j] == "#" or val_part[j] == ";":
+				comment = val_part.substr(j)
+				val_part = val_part.substr(0, j)
+				break
+		var escaped := val_part.strip_edges().replace("\\", "\\\\").replace("\"", "\\\"")
+		var rebuilt := "%s= \"%s\"" % [line.substr(0, eq_pos), escaped]
+		if not comment.is_empty():
+			rebuilt += "  " + comment
+		out.append(rebuilt)
+	return "\n".join(out)
 
-# Folder mods (developer mode) are zipped into the cache dir so they mount
-# like any other archive. zip_folder_to_temp, _collect_enabled_archive_paths
-# and the re-mount guard in _process_mod_candidate must agree on this path.
+# zip_folder_to_temp, _collect_enabled_archive_paths and the re-mount guard in
+# _process_mod_candidate must agree on this path.
 func _folder_dev_zip_path(folder_path: String) -> String:
-	return ProjectSettings.globalize_path(TMP_DIR).path_join(
-			folder_path.get_file() + "_dev.zip")
+	return ProjectSettings.globalize_path(TMP_DIR).path_join(folder_path.get_file() + "_dev.zip")
 
-# True when the cached temp zip still matches the folder's current content:
-# compares the .src sidecar hash against _stable_path_mtime's hash now
-# (newest mtime + file count + per-file path@mtime set hash, so deletions
-# and timestamp downgrades are caught). Missing zip or sidecar reads stale.
 func _folder_dev_zip_current(tmp_zip_path: String) -> bool:
-	if not FileAccess.file_exists(tmp_zip_path):
+	var sidecar := tmp_zip_path + ".src"
+	if not FileAccess.file_exists(tmp_zip_path) or not FileAccess.file_exists(sidecar):
 		return false
-	var f := FileAccess.open(tmp_zip_path + ".src", FileAccess.READ)
-	if f == null:
-		return false
-	var stored := f.get_as_text().strip_edges()
-	f.close()
+	var stored := FileAccess.get_file_as_string(sidecar).strip_edges()
 	return not stored.is_empty() and stored == _folder_dev_zip_stamp(tmp_zip_path)
 
-# Stamp for the _dev.zip .src sidecar, prefixed with a layout token so a
-# change to the zip's internal layout self-invalidates old caches (a
-# bare-number stamp can never equal "root:<n>"). Bump the token if the
-# on-disk layout changes again.
+# The "root:" layout token invalidates old caches; a zip layout change needs a new token.
 func _folder_dev_zip_stamp(tmp_zip_path: String) -> String:
-	return "root:" + str(_stable_path_mtime(tmp_zip_path))
+	return "root:" + str(_stable_path_stamp(tmp_zip_path))
 
 func zip_folder_to_temp(folder_path: String) -> String:
 	var tmp_zip_path := _folder_dev_zip_path(folder_path)
-	# Capture the folder-state hash before zipping so an editor save landing
-	# mid-zip mismatches on the next launch, instead of vouching for content
-	# the zip never captured.
+	# Stamped before zipping, so an editor save landing mid-zip reads stale next launch.
 	var pre_zip_stamp := _folder_dev_zip_stamp(tmp_zip_path)
-	# Drop the old sidecar first (same guard as _static_vmz_to_zip).
 	var sidecar := tmp_zip_path + ".src"
-	if FileAccess.file_exists(sidecar):
-		DirAccess.remove_absolute(sidecar)
+	_static_remove_file(sidecar)
 	var zp := ZIPPacker.new()
 	if zp.open(tmp_zip_path) != OK:
 		_log_critical("Failed to create temp zip: " + tmp_zip_path)
 		return ""
-	# Zip the folder's contents at the archive root (no <folder>/ wrapper) so
-	# a dev folder mounts exactly like the shipped zip and mod.txt paths are
-	# root-relative either way. A mod authored against the old <folder>/ wrap
-	# must drop the prefix, or add a real subfolder if it wants a namespace.
+	# Contents at the archive root, so a dev folder mounts like the shipped zip.
 	var zip_ok := _zip_folder_recursive(zp, folder_path, "")
 	zip_ok = zp.close() == OK and zip_ok
-	# Never stamp a zip that didn't fully write: _folder_dev_zip_current compares
-	# folder state only, never zip integrity.
+	# _folder_dev_zip_current checks folder state only, never zip integrity.
 	if not zip_ok:
 		DirAccess.remove_absolute(tmp_zip_path)
 		_log_critical("Failed writing temp zip: " + tmp_zip_path)
 		return ""
-	# Same .zip.src sidecar convention as the vmz cache; _clean_stale_cache
-	# removes orphans either way.
 	var sf := FileAccess.open(sidecar, FileAccess.WRITE)
 	if sf != null:
 		sf.store_string(pre_zip_stamp)
 		sf.close()
 	return tmp_zip_path
 
-# Returns false if any entry failed to read or write. The caller must not
-# stamp (or keep) the resulting zip in that case.
+# False when any entry failed to read or write; the caller must not stamp that zip.
 func _zip_folder_recursive(zp: ZIPPacker, disk_path: String, archive_prefix: String) -> bool:
 	var dir := DirAccess.open(disk_path)
 	if dir == null:
-		# Unreadable subfolder: refuse, or the caller would stamp a partial archive.
 		return false
 	var ok := true
 	dir.list_dir_begin()
@@ -377,8 +280,7 @@ func _zip_folder_recursive(zp: ZIPPacker, disk_path: String, archive_prefix: Str
 			ok = _zip_folder_recursive(zp, full, arc_path) and ok
 		else:
 			var data := FileAccess.get_file_as_bytes(full)
-			# get_file_as_bytes returns an empty buffer for an unreadable
-			# file too; distinguish from a truly empty file via the open error.
+			# An unreadable file also reads as empty; only the open error tells them apart.
 			if data.is_empty() and FileAccess.get_open_error() != OK:
 				ok = false
 			ok = zp.start_file(arc_path) == OK and ok

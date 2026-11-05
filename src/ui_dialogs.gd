@@ -1,66 +1,81 @@
-## ----- ui_dialogs.gd -----
-## Dialog plumbing shared by every tab, plus the profile dialogs.
+# Dialog plumbing shared by every tab, plus the profile dialogs.
 
-# Borderless accept dialog with one dismiss button; backs the two helpers below.
 func _show_accept_dialog(title: String, message: String, ok_text := "OK", min_w := 360) -> void:
 	var d := AcceptDialog.new()
 	d.title = title
 	d.dialog_text = message
 	d.ok_button_text = ok_text
 	d.min_size = Vector2i(min_w, 0)
+	_present_dialog(d)
+
+# ESC emits canceled, which only hides an AcceptDialog.
+func _wire_accept_dismiss(d: AcceptDialog) -> void:
+	d.confirmed.connect(func(): d.queue_free())
+	d.close_requested.connect(func(): d.queue_free())
+	d.canceled.connect(func(): d.queue_free())
+
+func _present_dialog(d: AcceptDialog) -> void:
 	_attach_ui_dialog(d)
 	_wire_accept_dismiss(d)
 	d.popup_centered()
 
-# Free an AcceptDialog on both confirmed and close_requested.
-func _wire_accept_dismiss(d: AcceptDialog) -> void:
-	d.confirmed.connect(func(): d.queue_free())
-	d.close_requested.connect(func(): d.queue_free())
+# Hide first: freeing a visible exclusive dialog took the launcher window down. Only
+# for add_button buttons; the stock Cancel and OK hide before they emit.
+func _close_dialog(d: Window) -> void:
+	d.hide()
+	d.queue_free()
 
-# Error dialog so user-facing failures surface in the UI, not just the log.
+const _DETAIL_DIALOG_SIZE := Vector2i(660, 540)
+
+# Returns {d, outer, box}; `outer` holds the scroll so a caller can pin a line under it.
+func _new_scroll_dialog(title: String, desired: Vector2i, separation: int = SP_M) -> Dictionary:
+	var d := AcceptDialog.new()
+	d.title = title
+	d.ok_button_text = "Close"
+	d.min_size = _dialog_fit_size(desired)
+	var outer := VBoxContainer.new()
+	outer.add_theme_constant_override("separation", SP_S)
+	d.add_child(outer)
+	var scroll := _make_scroll(outer)
+	scroll.custom_minimum_size = Vector2(d.min_size - Vector2i(20, 60))
+	return {"d": d, "outer": outer, "box": _make_scroll_column(scroll, separation, SP_S)}
+
 func _show_error_dialog(title: String, message: String) -> void:
 	_show_accept_dialog(title, message, "Close", 400)
 
-
-# Neutral info dialog for benign confirmations ("all mods up to date").
 func _show_info_toast(message: String) -> void:
 	_show_accept_dialog("Mod Loader", message, "Close")
 
-
-# Clamp a dialog's min_size to the live launcher window: dialogs are embedded
-# sub-windows, so a larger min_size gets clipped with no way to resize. Sizes
-# are in content-scaled coordinates, hence the divide.
+# Dialogs are embedded sub-windows, so a min_size larger than the launcher is
+# clipped with no way to resize. Sizes are content-scaled, hence the divide.
 func _dialog_fit_size(desired: Vector2i) -> Vector2i:
-	if not is_instance_valid(_ui_window):
+	if _ui_window == null:
 		return desired
 	var scale: float = maxf(_ui_window.content_scale_factor, 0.001)
 	var avail := Vector2i(Vector2(_ui_window.size) / scale) - Vector2i(24, 24)
 	return Vector2i(mini(desired.x, maxi(avail.x, 200)), mini(desired.y, maxi(avail.y, 150)))
 
-# Every launcher dialog flows through this: borderless dark card, title and
-# dialog_text moved into a header, caller children reparented into one VBox.
-func _attach_ui_dialog(d: Window) -> void:
+# Every launcher dialog goes through here: a borderless dark card with the title and
+# dialog_text moved into a header above the caller's children. wrap = false drops both.
+func _attach_ui_dialog(d: AcceptDialog, wrap := true) -> void:
+	# The harnesses keep the loader out of the tree, where get_tree() is null.
 	var parent: Node = _ui_window if _ui_window != null else get_tree().root
-	if _ui_window != null and _ui_window.theme != null:
+	if _ui_window != null:
 		d.theme = _ui_window.theme
-	d.transparent = false
-	d.transparent_bg = false
 	d.always_on_top = true
 	d.transient = true
 	d.exclusive = true
 	d.borderless = true
 	d.add_theme_stylebox_override("panel", _make_dialog_panel_stylebox())
 
-	# AcceptDialog's dialog_text label is absolutely positioned, so sibling
-	# Labels would overlap it; clear title and dialog_text and re-emit them.
+	# The stock dialog_text label is absolutely positioned and would overlap
+	# sibling Labels, so title and text are cleared and re-emitted.
 	var title_text := d.title
-	var body_text := ""
-	if d is AcceptDialog:
-		body_text = (d as AcceptDialog).dialog_text
-		(d as AcceptDialog).dialog_text = ""
+	var body_text := d.dialog_text
+	d.dialog_text = ""
 	d.title = ""
 
-	if title_text != "" or body_text != "":
+	if wrap and (title_text != "" or body_text != ""):
 		var existing := d.get_children()
 		for c in existing:
 			d.remove_child(c)
@@ -69,16 +84,17 @@ func _attach_ui_dialog(d: Window) -> void:
 		root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		root.size_flags_vertical = Control.SIZE_EXPAND_FILL
 		if title_text != "":
-			var title_lbl := Label.new()
-			title_lbl.text = title_text
-			title_lbl.add_theme_font_size_override("font_size", FS_HEAD)
-			title_lbl.add_theme_color_override("font_color", COL_TEXT_HI)
+			var title_lbl := _make_label(title_text, COL_TEXT_HI, FS_HEAD)
 			title_lbl.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+			# A mod page title can be long; it must not widen the dialog past
+			# the launcher and push the buttons out of reach.
+			title_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			title_lbl.clip_text = true
+			title_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+			title_lbl.tooltip_text = title_text
 			root.add_child(title_lbl)
 		if body_text != "":
-			var body_lbl := Label.new()
-			body_lbl.text = body_text
-			body_lbl.add_theme_font_size_override("font_size", FS_EMPH)
+			var body_lbl := _make_label(body_text, null, FS_EMPH)
 			body_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 			body_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			body_lbl.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
@@ -90,38 +106,39 @@ func _attach_ui_dialog(d: Window) -> void:
 
 	parent.add_child(d)
 
-
-# Set all four border widths of a StyleBoxFlat to `w`.
-func _sb_border(s: StyleBoxFlat, w := 1) -> void:
-	s.border_width_top = w
-	s.border_width_bottom = w
-	s.border_width_left = w
-	s.border_width_right = w
-
-func _make_dialog_panel_stylebox() -> StyleBoxFlat:
-	var s := StyleBoxFlat.new()
-	s.bg_color = COL_SURFACE
-	s.border_color = COL_BORDER
-	_sb_border(s)
-	s.content_margin_left = SP_XL
-	s.content_margin_right = SP_XL
-	s.content_margin_top = SP_L
-	s.content_margin_bottom = SP_L
-	return s
-
-# ConfirmationDialog fires `canceled` on Cancel and `close_requested` on
-# ESC / window-X; callers want both to behave the same.
+# Cancel emits canceled and ESC or the window X emits close_requested; both dismiss.
 func _connect_dialog_exits(d: ConfirmationDialog, on_confirm: Callable, on_dismiss: Callable) -> void:
 	d.confirmed.connect(on_confirm)
 	d.canceled.connect(on_dismiss)
 	d.close_requested.connect(on_dismiss)
 
-# Swap the bottom-bar hint label to `text` while hovered (the launcher's tooltip).
+func _show_danger_confirm(title: String, text: String, ok_text: String, on_confirm: Callable) -> void:
+	var d := ConfirmationDialog.new()
+	d.title = title
+	d.dialog_text = text
+	d.ok_button_text = ok_text
+	_attach_ui_dialog(d)
+	style_dialog_danger_button(d.get_ok_button())
+	_connect_dialog_exits(d,
+		func():
+			d.queue_free()
+			on_confirm.call(),
+		func(): d.queue_free())
+	d.popup_centered()
+
+# The dropdown is a sub-Window: on top so the launcher cannot strand it, and
+# themed by hand because theme lookup does not cross Window boundaries.
+func _style_option_popup(opt: OptionButton) -> void:
+	var popup := opt.get_popup()
+	popup.always_on_top = true
+	popup.transient = true
+	if _ui_window != null:
+		popup.theme = _ui_window.theme
+
 func _wire_hint(c: Control, text: String) -> void:
 	if _ui_hint_label == null:
 		return
-	# mouse_entered/exited never fire on MOUSE_FILTER_IGNORE (the Label
-	# default), so establish PASS here rather than at every caller.
+	# mouse_entered never fires on MOUSE_FILTER_IGNORE, the Label default.
 	if c.mouse_filter == Control.MOUSE_FILTER_IGNORE:
 		c.mouse_filter = Control.MOUSE_FILTER_PASS
 	c.mouse_entered.connect(func():
@@ -133,44 +150,32 @@ func _wire_hint(c: Control, text: String) -> void:
 			_ui_hint_label.text = _ui_hint_default
 	)
 
-# Show an attached ConfirmationDialog and await the choice; true on confirm.
-# The Array is the closure-shared state cell.
 func _await_dialog_choice(d: ConfirmationDialog) -> bool:
-	var state := [false, false]  # [done, confirmed]
-	d.confirmed.connect(func():
-		state[0] = true
-		state[1] = true)
-	d.canceled.connect(func(): state[0] = true)
-	d.close_requested.connect(func(): state[0] = true)
+	var answer := []  # a lambda cannot assign a captured local
+	_connect_dialog_exits(d, func(): answer.append(true), func(): answer.append(false))
 	d.popup_centered()
 	d.grab_focus()
-	while not state[0]:
+	while answer.is_empty():
 		await get_tree().process_frame
 	d.queue_free()
-	return state[1]
+	return answer.has(true)
 
-# Yes/no confirm when disabling a mod that registers game content; true =
-# proceed. `count` > 1 switches to batch wording.
 func _confirm_disable_content_mod(mod_name: String, count: int = 1) -> bool:
 	var d := ConfirmationDialog.new()
 	d.title = "Disable content mod?" if count <= 1 else "Disable content mods?"
 	d.ok_button_text = "Disable anyway"
 	d.cancel_button_text = "Keep enabled"
-	d.dialog_autowrap = true
 	d.min_size = Vector2(520, 120)
 	if count > 1:
 		d.dialog_text = "%d of these mods (including \"%s\") add game content (items, recipes, and similar). Saves that use their content may not load while the mods are disabled. Your saves are not deleted -- re-enable the mods to get them back.\n\nDisable anyway?" % [count, mod_name]
 	else:
 		d.dialog_text = "\"%s\" adds game content (items, recipes, and similar). A save that uses this content may not load while the mod is disabled. Your save is not deleted -- re-enable the mod to get it back.\n\nDisable anyway?" % mod_name
 	_attach_ui_dialog(d)
-	d.exclusive = true
-	d.always_on_top = true
 	style_dialog_danger_button(d.get_ok_button())
 	return await _await_dialog_choice(d)
 
-# Validate a candidate profile name (New and Rename). Returns the user-facing
-# error, or "" when acceptable. `current` lets Rename accept its own name.
-func _validate_profile_name(name: String, existing: Array, current := "") -> String:
+# `current` lets Rename keep its own name, including a case-only change.
+func _validate_profile_name(name: String, existing: Array[String], current := "") -> String:
 	if name == "":
 		return "Name cannot be empty or all invalid characters."
 	if name.to_lower() == "vanilla" or name == VANILLA_PROFILE \
@@ -178,68 +183,65 @@ func _validate_profile_name(name: String, existing: Array, current := "") -> Str
 		return "That name is reserved."
 	if name == current:
 		return ""
-	# Case-insensitive: MCM snapshot dirs are keyed by profile name on a
-	# case-insensitive filesystem, so case-only twins would share a dir.
-	var lowered := name.to_lower()
-	for other_v in existing:
-		# A case-only rename (Main -> MAIN) is not a duplicate of itself.
-		if current != "" and str(other_v) == current:
-			continue
-		if str(other_v).to_lower() == lowered:
-			return "Profile \"" + str(other_v) + "\" already exists."
+	# MCM snapshot dirs are keyed by profile name on a case-insensitive
+	# filesystem, so case-only twins would share a dir.
+	for other in existing:
+		if other != current and other.to_lower() == name.to_lower():
+			return "Profile \"" + other + "\" already exists."
 	return ""
 
-# New Profile dialog: name plus initial state. Initial state defaults to
-# Empty; a fresh profile starts blank.
-func _show_new_profile_dialog(tabs: TabContainer) -> void:
+func _profile_name_dialog(title: String, ok_text: String, prompt_text: String, initial: String) -> Dictionary:
 	var d := ConfirmationDialog.new()
-	d.title = "New profile"
-	d.ok_button_text = "Create profile"
-	d.dialog_hide_on_ok = false  # keep open until we validate the name
+	d.title = title
+	d.ok_button_text = ok_text
+	d.dialog_hide_on_ok = false  # stays open until the name validates
 
 	var form := VBoxContainer.new()
 	form.custom_minimum_size = Vector2(320, 0)
 	form.add_theme_constant_override("separation", SP_M)
 	d.add_child(form)
-
-	var prompt := Label.new()
-	prompt.text = "Profile name (letters, digits, spaces, _-):"
-	form.add_child(prompt)
+	form.add_child(_make_label(prompt_text))
 
 	var name_edit := LineEdit.new()
 	name_edit.custom_minimum_size.x = 280
 	name_edit.custom_minimum_size.y = CTRL_H
+	name_edit.text = initial
 	form.add_child(name_edit)
 
-	var state_lbl := Label.new()
-	state_lbl.text = "Initial state:"
-	form.add_child(state_lbl)
-
-	# CheckBox + ButtonGroup = radio buttons; set button_group before button_pressed.
-	var state_group := ButtonGroup.new()
-
-	var state_empty := CheckBox.new()
-	state_empty.text = "Empty (no mods enabled)"
-	state_empty.button_group = state_group
-	state_empty.button_pressed = true
-	form.add_child(state_empty)
-
-	var state_all := CheckBox.new()
-	state_all.text = "All enabled"
-	state_all.button_group = state_group
-	form.add_child(state_all)
-
-	var state_copy := CheckBox.new()
-	state_copy.text = "Copy current selection"
-	state_copy.button_group = state_group
-	form.add_child(state_copy)
-
-	var err_lbl := Label.new()
-	err_lbl.add_theme_color_override("font_color", COL_ERR)
-	err_lbl.add_theme_font_size_override("font_size", FS_BODY)
+	var err_lbl := _make_label("", COL_ERR, FS_BODY)
 	form.add_child(err_lbl)
+	return {"d": d, "form": form, "name_edit": name_edit, "err_lbl": err_lbl}
 
+func _profile_name_dialog_open(parts: Dictionary, try_submit: Callable) -> void:
+	var d: ConfirmationDialog = parts["d"]
+	var name_edit: LineEdit = parts["name_edit"]
 	_attach_ui_dialog(d)
+	name_edit.text_submitted.connect(func(_t): try_submit.call())
+	_connect_dialog_exits(d, try_submit, func(): d.queue_free())
+	d.popup_centered()
+	name_edit.select_all()
+	name_edit.grab_focus()
+
+func _show_new_profile_dialog(tabs: TabContainer) -> void:
+	var parts := _profile_name_dialog("New profile", "Create profile",
+			"Profile name (letters, digits, spaces, _-):", "")
+	var d: ConfirmationDialog = parts["d"]
+	var form: VBoxContainer = parts["form"]
+	var name_edit: LineEdit = parts["name_edit"]
+	var err_lbl: Label = parts["err_lbl"]
+
+	form.add_child(_make_label("Initial state:"))
+	# CheckBox + ButtonGroup = radio buttons; button_group goes before button_pressed.
+	var state_group := ButtonGroup.new()
+	var states: Array[CheckBox] = []
+	for state_text: String in ["Empty (no mods enabled)", "All enabled", "Copy current selection"]:
+		var state_box := CheckBox.new()
+		state_box.text = state_text
+		state_box.button_group = state_group
+		form.add_child(state_box)
+		states.append(state_box)
+	states[0].button_pressed = true
+	form.move_child(err_lbl, -1)
 
 	var existing := _list_profiles()
 	var try_create := func():
@@ -247,53 +249,26 @@ func _show_new_profile_dialog(tabs: TabContainer) -> void:
 		var err := _validate_profile_name(name, existing)
 		if err != "":
 			err_lbl.text = err
-		else:
-			d.queue_free()
-			# Mutate in-memory entries to the chosen initial state, then _create_profile
-			# snapshots them. Priorities are left untouched.
-			if state_all.button_pressed:
-				for entry in _ui_mod_entries:
-					entry["enabled"] = true
-			elif state_empty.button_pressed:
-				for entry in _ui_mod_entries:
-					entry["enabled"] = false
-			_create_profile(name, state_copy.button_pressed)
-			_rebuild_mods_tab(tabs)
+			return
+		d.queue_free()
+		# _create_profile snapshots the in-memory entries; priorities stay.
+		if states[1].button_pressed:
+			for entry in _ui_mod_entries:
+				entry["enabled"] = true
+		elif states[0].button_pressed:
+			for entry in _ui_mod_entries:
+				entry["enabled"] = false
+		_create_profile(name)
+		_rebuild_mods_tab(tabs)
+	_profile_name_dialog_open(parts, try_create)
 
-	name_edit.text_submitted.connect(func(_t): try_create.call())
-	_connect_dialog_exits(d, try_create, func(): d.queue_free())
-	d.popup_centered()
-	name_edit.grab_focus()
-
-# Rename dialog. Same validation as New; renaming to the same name is a no-op.
 func _show_rename_profile_dialog(tabs: TabContainer) -> void:
 	var current := _active_profile
-	var d := ConfirmationDialog.new()
-	d.title = "Rename profile"
-	d.ok_button_text = "Rename profile"
-	d.dialog_hide_on_ok = false
-
-	var form := VBoxContainer.new()
-	form.custom_minimum_size = Vector2(320, 0)
-	form.add_theme_constant_override("separation", SP_M)
-	d.add_child(form)
-
-	var prompt := Label.new()
-	prompt.text = "New name for \"" + current + "\":"
-	form.add_child(prompt)
-
-	var name_edit := LineEdit.new()
-	name_edit.custom_minimum_size.x = 280
-	name_edit.custom_minimum_size.y = CTRL_H
-	name_edit.text = current
-	form.add_child(name_edit)
-
-	var err_lbl := Label.new()
-	err_lbl.add_theme_color_override("font_color", COL_ERR)
-	err_lbl.add_theme_font_size_override("font_size", FS_BODY)
-	form.add_child(err_lbl)
-
-	_attach_ui_dialog(d)
+	var parts := _profile_name_dialog("Rename profile", "Rename profile",
+			"New name for \"" + current + "\":", current)
+	var d: ConfirmationDialog = parts["d"]
+	var name_edit: LineEdit = parts["name_edit"]
+	var err_lbl: Label = parts["err_lbl"]
 
 	var existing := _list_profiles()
 	var try_rename := func():
@@ -301,32 +276,9 @@ func _show_rename_profile_dialog(tabs: TabContainer) -> void:
 		var err := _validate_profile_name(name, existing, current)
 		if err != "":
 			err_lbl.text = err
-		elif name == current:
-			d.queue_free()  # no-op
-		else:
-			d.queue_free()
+			return
+		d.queue_free()
+		if name != current:
 			_rename_profile(name)
 			_rebuild_mods_tab(tabs)
-
-	name_edit.text_submitted.connect(func(_t): try_rename.call())
-	_connect_dialog_exits(d, try_rename, func(): d.queue_free())
-	d.popup_centered()
-	name_edit.select_all()
-	name_edit.grab_focus()
-
-# Delete-profile confirmation; the trash button is disabled when deletion is impossible.
-func _show_delete_confirm(tabs: TabContainer) -> void:
-	var target := _active_profile
-	var d := ConfirmationDialog.new()
-	d.title = "Delete profile"
-	d.dialog_text = "Delete profile \"" + target + "\"?\n\nThe mod selection stored in this profile will be discarded. Your other profiles are not affected."
-	d.ok_button_text = "Delete profile"
-	_attach_ui_dialog(d)
-	style_dialog_danger_button(d.get_ok_button())
-	_connect_dialog_exits(d,
-		func():
-			d.queue_free()
-			_delete_active_profile()
-			_rebuild_mods_tab(tabs),
-		func(): d.queue_free())
-	d.popup_centered()
+	_profile_name_dialog_open(parts, try_rename)
