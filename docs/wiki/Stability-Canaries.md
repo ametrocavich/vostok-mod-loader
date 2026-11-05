@@ -1,234 +1,75 @@
 # Stability Canaries
 
-Boot-time probes that log one loud line when something the loader depends on stops working. Silent breakage is the worst case: mods fail in ways nobody can trace. One actionable `[STABILITY]` line beats a stream of downstream symptom warnings.
+Checks around hook-pack generation and activation that log one `[STABILITY]` line when something the loader depends on stops working. A silent failure is the worst case: hooks register, nothing fires, and nobody can trace why. All of them run for every player, in developer mode or not. The sentinel files that turn the loader off are in [Config-Files](Config-Files#sentinel-files-escape-hatches).
+
+## The lines
+
+Each line opens with the text below; the rest names the scripts or counts.
+
+| Check | Level | Line | Meaning |
+|---|---|---|---|
+| A | critical | `ALL N rewrites failed to take effect` | No rewrite is live; hook mods do nothing this session |
+| A | critical | `Hook rewrites missing on critical scripts:` | Hooks on the listed core scripts do not fire |
+| A | info | `COMPILE-PROOF summary: N/M rewrites active` | Healthy; counts of failed and deferred scripts follow |
+| B | critical | `Unsupported GDSC tokenizer vN on Godot <version>` | No hook pack this launch |
+| B | info | `Detokenizer compatible: GDSC vN` | Healthy |
+| C | critical | `Detokenized vanilla source failed the indentation sanity check` | No hook pack this launch |
+| Probe | critical | `<file>: registry code does not compile against this game build` | The script ships with hooks only |
+| Probe | critical | `<file>: the rewrite does not compile against this game build` | The script runs vanilla |
+| Probe | info | `Probe-compiled N rewrite(s) in M ms before packing` | Counts shipped in full, without registry code, left vanilla |
+| Probe | warning | `Repeating the last probe's verdicts:` | A later generation reuses the Pass 1 verdicts |
+| VFS | critical | `VFS canary FAILED` | Pack mounted but not served; vanilla runs |
+| VFS | info | `VFS canary OK` | Healthy |
+| Watchdog | critical | `DEFER-VERIFY (60s): N deferred script(s) lazy-compiled WITHOUT the rewrite` | Hooks on those scripts do not fire |
+
+Every failure also writes `user://modloader_hook_status.json`, and the next launcher turns it into a red banner on the Mods tab with a button to the loader's release page. A record from another loader version, game executable or game `.pck` is ignored, so a game update alone shows nothing until the next activation says whether hooks still work.
 
 ## Canary A: COMPILE-PROOF
 
-Location: [hook_pack.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd), the summary block in `_activate_rewritten_scripts`. It runs for every player; the developer-mode probes in `debug.gd` follow it.
+After activation, `_compile_proof` in [hook_pack.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hook_pack.gd) reads `get_script_method_list()` of each rewritten script that was not deferred; a `_rtv_vanilla_*` method proves the rewrite compiled into the cached script. `_canary_a_verdict` raises the alarm when none passed, or when one of `_CANARY_A_CRITICAL_SCRIPTS` (`Controller.gd`, `Camera.gd`, `WeaponRig.gd`, `Door.gd`, `Trader.gd`, `Hitbox.gd`, `LootContainer.gd`, `Pickup.gd`) failed.
 
-The compile-proof check and this alarm run for every player, in developer mode or not (the end-to-end hook probes and the autoload inspection stay developer-only). Its outcome is also written to `user://modloader_hook_status.json`, and the launcher reads that record on the next start: if none of the rewrites took effect, or a critical script lost its rewrite, the Mods tab shows a red banner saying hooks did not work last session, with a button to the loader's release page. Canary B and canary C write the same record when they stop generation, so an unsupported script format after a game update is reported in the launcher as well as the log. A record written by another loader version, or before the game executable or PCK changed, is ignored. A game update on its own shows nothing: static init wipes the hook cache when the executable's mtime or the PCK's stamp changes, and the next activation records whether hooks still work.
-
-Probe: after activation, inspect `get_script_method_list()` of each rewritten vanilla script that was not deferred. Any `_rtv_vanilla_*` method name proves the rewrite compiled into the cached GDScript.
-
-Alarm levels:
-
-- Zero of N rewrites active, critical:
-  ```
-  [STABILITY] ALL N rewrites failed to take effect -- VFS mount, hook pack, or cache eviction is broken.
-  Mods will NOT work this session. Click 'Launch vanilla' in the launcher
-  or create modloader_disabled in the game folder.
-  ```
-  (The button is described under the escape hatches below.)
-- A critical script failed, critical. The set is `Controller.gd, Camera.gd, WeaponRig.gd, Door.gd, Trader.gd, Hitbox.gd, LootContainer.gd, Pickup.gd`:
-  ```
-  [STABILITY] Hook rewrites missing on critical scripts: <list>.
-  Hooks on these scripts will NOT fire this session
-  (likely cache-pinning fallback failure).
-  ```
-- Everything fine, info:
-  ```
-  [STABILITY] COMPILE-PROOF summary: N/M rewrites active (K pinned-fallback), X deferred to lazy-compile
-  ```
-
-Why: activation has a fallback (`CACHE_MODE_IGNORE + take_over_path`) for scripts the PCK pre-compiled. If the fallback fails, this is the only signal that hooks on those scripts will not fire. `hook()` still succeeds and the dispatch machinery still runs; it just never intercepts anything.
+Activation has a fallback for scripts the engine compiled from bytecode ([Hook-Pack](Hook-Pack#activation)). When that fails too, `hook()` still succeeds and the dispatch machinery still runs, but nothing intercepts anything; this check is the only signal.
 
 ## Canary B: GDSC tokenizer version
 
-Location: `_hook_pack_preflight` in hook_pack.gd, the first step of `_generate_hook_pack`, using `_probe_gdsc_version` in [gdsc_detokenizer.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/gdsc_detokenizer.gd).
+`_pack_preflight`, the first step of `_generate_hook_pack`, calls `_probe_gdsc_version` in [gdsc_detokenizer.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/gdsc_detokenizer.gd). It reads the first of `Camera`, `Controller`, `Audio` and `AI` (`.gd`, then `.gdc`) that has the `GDSC` magic and returns the version at offset 4, or -1 when none is readable.
 
-Probe: read the header of the first readable script among `Camera`, `Controller`, `Audio`, `AI` (`.gd`, then `.gdc`), confirm the `GDSC` magic in the first four bytes, return the u32 version at offset 4. Returns -1 when none of the four is readable.
-
-Alarm levels:
-
-- Not 100 or 101, and not -1, critical:
-  ```
-  [STABILITY] Unsupported GDSC tokenizer vN on Godot <version>.
-  This ModLoader supports v100 (Godot 4.3-4.4) and v101 (Godot 4.5-4.6).
-  Hook pack generation disabled -- script hooks will not fire.
-  See README for supported Godot versions.
-  ```
-- Supported, info: `[STABILITY] Detokenizer compatible: GDSC vN on Godot <version>`.
-- -1: no line, generation proceeds without this check.
-
-Why: a future Godot with a v102 tokenizer would otherwise produce an "Empty detokenized source" warning for every hookable script and fall back to vanilla one script at a time. Canary B stops generation with one message before any rewrite work.
+Anything but 100, 101 or -1 stops generation. Without the check, a new tokenizer would fail every script one at a time with an empty-source warning each. On -1 there is no line, and generation proceeds without canaries B and C.
 
 ## Canary C: detokenizer round-trip
 
-Location: `_canary_detokenizer_roundtrip_ok` in hook_pack.gd, called from `_hook_pack_preflight` right after the no-mods short-circuit.
+With mods loaded and canary B passed, `_canary_detokenizer_roundtrip_ok` detokenizes the same probe scripts through `_detokenize_script` (not `_read_vanilla_source`, so a cache from an earlier session cannot mask a broken detokenizer). It passes on the first reconstruction that has a colon-terminated `func` line followed by a tab-indented body line, and fails only when some probe produced source and none passed, so one odd script cannot disable hooks.
 
-Probe: with mods loaded and canary B passed, detokenize the probe scripts that carry GDSC bytes (same four as canary B) through `_detokenize_script` directly, not `_read_vanilla_source`, so a pristine on-disk cache from an earlier session cannot mask a detokenizer that is broken against the current build. The canary passes on the first probe whose reconstruction has a colon-terminated `func` line followed by a tab-indented body line, and fails only when some probe produced source and none passed, so one unusual script cannot disable hooks for the session.
-
-Alarm levels:
-
-- Inconclusive (no probe detokenizable, or the version probe returned -1): proceed, same as canary B.
-- The indentation check fails, critical:
-  ```
-  [STABILITY] Detokenized vanilla source failed the indentation sanity check on Godot <version>
-  (GDSC version is still <N>). Two known causes: the .gdc column format changed, or the game's
-  scripts are no longer indented with 4 spaces per level -- _indent_from_column's `col / 4`
-  depends on that. See the note above _indent_from_column in gdsc_detokenizer.gd.
-  Hook pack generation disabled -- script hooks will not fire.
-  Update the ModLoader to a version that supports this game build.
-  ```
-
-Why: the engine can keep the version at 101 while changing what the column map means, and a game update that reindents the scripts breaks `col / 4` without touching the version. Canary B only reads the integer. On failure `_hook_pack_preflight` returns no pack path, `_generate_hook_pack` returns empty and vanilla runs.
-
-`check_detok.sh` covers the reader against synthetic buffers; canary C is still the only check against a real `.gdc` from the shipped PCK.
+The engine can keep version 101 while changing what the column map means, and a game update that reindents its scripts breaks `_indent_from_column`'s `col / 4` without touching the version ([GDSC-Detokenizer](GDSC-Detokenizer#reconstruction)). Canary B only reads the integer. `check_detok.sh` covers the reader on synthetic buffers; this canary is the only check against the shipped `.gdc` files.
 
 ## Pre-ship compile probe
 
-Location: `_hook_pack_vet_rewrite` and `_rtv_probe_compiles` in hook_pack.gd, called from `_hook_pack_write_zip` for each rewritten script before its zip entries are written. `_hook_pack_begin_vetting` decides whether the generation probes.
+The pack serves its `.gd` over the game's bytecode and shadows the `.gdc`, so a rewrite that does not compile would take the vanilla script down with it. The likeliest cause is a game update renaming a member the registry code names ([Limitations](Limitations#a-game-update-can-outdate-the-registry-code)).
 
-Probe: compile the rewrite as a script bound to no path (`GDScript.new()`, `source_code`, `reload()`), with the `class_name` line left out of the copy, because a second script declaring a registered global class does not compile. It passes when `reload()` returns OK and the method list carries a `_rtv_vanilla_*` name. On failure the wrap-only form is tried (hooks, no registry code), then the script is left out of the pack. A demotion only counts when the plain vanilla text compiles in the same probe; otherwise the probe cannot judge this script and the full rewrite ships, with a debug line. The ladder is described in [Hooks](Hooks#compile-probe-before-packing).
+`_hook_pack_vet_rewrite` compiles each rewrite before `_hook_pack_write_zip` packs it, through `_rtv_probe_compiles`: a `GDScript.new()` bound to no path, given the source minus its `class_name` line, then `reload()`. It passes when `reload()` returns OK and the method list has a `_rtv_vanilla_*` name. A failure tries the wrap-only form (hooks, no registry code), then leaves the script out of the pack. A demotion counts only when the plain vanilla text compiles in the same probe; otherwise the probe cannot judge the script and the full rewrite ships, with a debug line. Two engine facts shape this: a script that fails to compile still loads non-null with its source (only `can_instantiate()` is false and the method list is empty), and `ResourceLoader.load(path, "", CACHE_MODE_IGNORE)` at a live script's path recompiles that live script in place.
 
-When: on the Pass 1 generation (`defer_activation`), whose process exits right after. A probe compiles the script, which pulls in the scenes and scripts behind its module-scope preloads; in any later process that would get ahead of mod overrides. The verdicts go to pass state as `hook_pack_demotions` (`res://` path to `wrap_only` or `excluded`). Pass 2 and the unchanged-mod-set launch read them and repeat them without probing. A generation that finds no verdicts in pass state (the crash-breaker single pass, which deletes pass state) probes live, except the scripts deferred to lazy compile. A mod-set change, a loader rebuild and a game update all force the Pass 1 path, so every change of input is probed. One gap remains: a script that first enters the wrap surface in Pass 2 (through `add_hook()` in a `!` early autoload that was not running in the Pass 1 process) was never probed and ships unvetted.
+When: `_hook_pack_begin_vetting` probes on the Pass 1 generation, whose process exits right after, because compiling a script also compiles what its module-scope preloads pull in, which anywhere else would get ahead of mod overrides. The verdicts go to pass state as `hook_pack_demotions` (`res://` path to `wrap_only` or `excluded`), and later generations repeat them without probing. A generation with no pass state (the crash-breaker single pass) probes live, except scripts deferred to lazy compile. A mod-set change, a loader rebuild and a game update all force Pass 1, so every new input is probed. The gap: a script that first enters the surface in Pass 2, through `add_hook()` in a `!` early autoload that did not run in the Pass 1 process, ships unvetted.
 
-Alarm levels:
-
-- The registry code does not compile, the wrap-only form does, critical:
-  ```
-  [STABILITY] <file>: the registry code does not compile against this game build
-  (the parse error above names the cause), so the script ships with hooks only.
-  Mod content registered against it will NOT appear. The game itself is unaffected.
-  Update the ModLoader.
-  ```
-- No rewritten form compiles, critical:
-  ```
-  [STABILITY] <file>: the rewritten script does not compile against this game build
-  (the parse error above names the cause), so it is left unmodified.
-  Hooks on it will NOT fire. The game itself is unaffected. Update the ModLoader.
-  ```
-  In both cases the engine's own `Parse Error` line sits just above and names the identifier.
-- A generation that probed, info: `[STABILITY] Probe-compiled N rewrite(s) in M ms before packing: X shipped in full, Y without registry code, Z left vanilla`. N counts scripts; M is the time spent in every compile they needed, so a demoted script costs more than one.
-- A generation that repeats non-empty verdicts, warning: `[STABILITY] Repeating the last probe's verdicts: <dict>`.
-
-Reconciliation marks a script left vanilla `LOST` and a wrap-only one `PARTIAL`, missing `registry code`. The activating generation writes a `demoted` hook status record with the script paths, unless canary A has a worse state to report, and the next launcher shows an error banner naming the scripts: the loader's changes to them do not fit this version of the game, the game runs normally, mods that hook or register against them do nothing. When every rewrite was excluded nothing is packed, so no activation runs; the generation then persists the verdicts and writes the `demoted` record itself. `register`/`override` on `ai_types`, `ai_loadouts` and `fish_species`, and `register` on `shelters` and `maps` (target `Compiler.gd`), return `false` when their target was demoted (see [Registry](Registry#opting-in)).
-
-Build 2 (Nomads, 2026-09-30) was the first game update to trip this probe. Under 3.4.0 the `AI.gd` appendix named `boss`, which the update removed, so `AI.gd` shipped wrap-only, `ai_loadouts` calls returned `false`, and the launcher named the script; vanilla and hooks were untouched. 3.4.1 emits the resolver for whichever `AI.gd` shape the source has.
-
-Why: the pack serves its `.gd` over the game's bytecode and shadows the `.gdc`, so a rewrite that fails to compile used to take the vanilla script down with it, with no fallback. The likeliest trigger is a game update renaming a member the registry code names. Two engine facts, measured on Godot 4.6.1, shape the probe. A script that fails to compile still loads non-null with its source; only `can_instantiate()` is false and the method list is empty. And `ResourceLoader.load(path, "", CACHE_MODE_IGNORE)` at the path of a live script recompiles that live script in place, so a load at the real path cannot serve as a probe.
-
-`check_codegen.sh` pins the ladder against the real vanilla scripts and `check_boot_state.sh` T27 pins the persistence; see [Build](Build).
+The boot report marks a script left vanilla `LOST` and a wrap-only one `PARTIAL`, missing `registry code`. The status record is `demoted` with the script paths unless canary A has something worse; when every rewrite was excluded, nothing is packed and generation writes the record itself. The registry verbs that depend on a demoted target return `false` ([Registry](Registry#opting-in)).
 
 ## VFS-precedence canary
 
-Location: a file `_hook_pack_write_zip` writes just before the pack zip closes, read back by `_hook_pack_mount_and_activate` right after `load_resource_pack`.
+`_hook_pack_write_zip` adds `__modloader_canary__.txt` containing `MODLOADER-VFS-CANARY-<pack file name>`; the name is unique per generation, so a stale mount cannot satisfy it. `_hook_pack_mount_and_activate` reads it back through `res://` right after `load_resource_pack` and requires an exact match.
 
-Probe: the pack carries `__modloader_canary__.txt` with the content `MODLOADER-VFS-CANARY-<pack zip filename>`. The filename is the per-call ticks-stamped one, so a stale previous-session mount cannot satisfy the readback. After mounting, `FileAccess.get_file_as_string("res://__modloader_canary__.txt")` must match exactly.
-
-Alarm levels:
-
-- Missing or wrong content, critical:
-  ```
-  [STABILITY] VFS canary FAILED (got '<prefix>', expected '<canary content>')
-  -- hook pack mounted but files aren't served. Skipping activation: script hooks will not fire
-  this session, vanilla scripts run. Pack state not persisted; next launch regenerates.
-  ```
-- Readable, info: `[STABILITY] VFS canary OK: hook pack mount precedence verified (<content>)`.
-
-Why: `ProjectSettings.load_resource_pack` can return true while the mount serves nothing (stale handles, format mismatch). Activating anyway would leave a half-modded state: cached scripts rewritten through direct source mutation, lazy VFS loads falling back to vanilla. So the loader skips `_activate_rewritten_scripts` and does not persist the pack path; a transient failure heals on the next launch instead of static init remounting a broken pack.
-
-The mount and write steps fail the same way:
-
-- `load_resource_pack` returns false: critical `[RTVCodegen] Failed to mount hook pack at <path> -- script hooks will not fire this session, vanilla scripts run. Next launch regenerates the pack.`
-- Writing the zip fails (disk full, I/O error): the partial zip is deleted, critical `[RTVCodegen] Hook pack write failed (disk full / I/O error?) at <path> -- pack discarded, hooks disabled this session, running vanilla`
-
-In all three cases nothing is persisted, so the next launch starts from scratch, and a `pack_failed` hook status record is written so the Mods tab shows its banner on the next start.
+`load_resource_pack` can return true while the mount serves nothing. Activating then would leave cached scripts rewritten and lazy loads vanilla, so the loader skips `_activate_rewritten_scripts` and does not persist the pack path; the next launch regenerates it instead of remounting a broken pack. A failed mount and a failed zip write (disk full, I/O error) are handled the same way with `[RTVCodegen]` criticals, and all three write a `pack_failed` status record.
 
 ## DEFER-VERIFY watchdog
 
-Location: `_activate_rewritten_scripts`, a one-shot 60-second timer armed when any rewritten script was deferred from eager compile because of a module-scope scene `preload()` (see [Limitations](Limitations#scene-preload-deferred-compile)).
-
-Probe: for each deferred script that game code has loaded by then (`ResourceLoader.has_cached`; nothing is force-loaded, since that would recreate the ordering bug the deferral avoids), walk the script and its base chain for a `_rtv_vanilla_*` method, so a mod override sitting on top of the rewrite does not false-alarm.
-
-Alarm levels:
-
-- Any loaded deferred script lacks the rewrite, critical:
-  ```
-  [STABILITY] DEFER-VERIFY (60s): N deferred script(s) lazy-compiled WITHOUT the rewrite
-  -- VFS did not serve the hook pack for: <list>. Hooks on these will not fire this session.
-  ```
-- Otherwise a debug line with the live count and the scripts not loaded yet.
-
-Why: deferred scripts skip COMPILE-PROOF, so without this a VFS precedence regression on exactly those scripts would be invisible.
-
-## Escape hatches
-
-### modloader_disabled sentinel
-
-Path: `<exe_dir>/modloader_disabled`, in the game folder, not `user://`.
-
-Effect: static init sees the file and does nothing this session: no mounts, no launcher, no autoloads. The game runs as if the loader were not installed. It also resets the persistent state (override.cfg autoload sections, pass state, hook pack) for the next launch.
-
-Check: `_is_modloader_disabled` in [boot.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/boot.gd), first thing in `_mount_previous_session`.
-
-Use it when the loader itself is broken and the launcher cannot come up. Create the file by hand, remove it to re-enable.
-
-### modloader_safe_mode sentinel
-
-Path: `<exe_dir>/modloader_safe_mode`.
-
-Effect: on the next boot, wipe pass state, reset `override.cfg` to the clean baseline, delete the heartbeat, remove the sentinel. Then Pass 1 continues and the launcher appears.
-
-Check: `_check_safe_mode` in boot.gd, from Pass 1.
-
-Use it when mods are broken but the loader works. Remove the bad mod in the launcher on the next launch.
-
-### Launch vanilla button
-
-Location: the bottom bar of the launcher, next to Launch. Button text "Launch vanilla"; hint "Launch without mods for this session. Restarts the game."
-
-Effect: writes `modloader_disabled_once` in the game folder (same effect as `modloader_disabled`, but the loader deletes it after that one launch), runs `_static_force_vanilla_state` (the same cleanup as the disabled sentinel), strips `--modloader-restart` from the command line, and restarts. One shot: the following launch is vanilla, the one after that is modded again, profiles and selections untouched.
-
-Source: `_launch_vanilla_once` in [ui.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui.gd).
-
-Use it when mods loaded but the game crashes or misbehaves and you want one guaranteed vanilla launch without losing your setup. The `modloader_disabled_once` file can also be created by hand.
+`_activate_rewritten_scripts` arms a one-shot 60-second timer when any rewritten script was deferred to lazy compile ([Limitations](Limitations#scene-preload-deferred-compile)). `_verify_deferred_scripts` then checks each deferred script game code has loaded (`ResourceLoader.has_cached`; nothing is force-loaded, which would recreate the ordering bug the deferral avoids) by walking the script and its base chain for a `_rtv_vanilla_*` method, so a mod override on top of the rewrite does not false-alarm. Otherwise it logs a debug line with the live count and the scripts not loaded yet. Deferred scripts skip canary A, so without this a VFS regression on exactly those scripts would be invisible.
 
 ## Crash recovery
 
-### Heartbeat
-
-File: `user://modloader_heartbeat.txt`.
-
-Written just before the Pass 1 to Pass 2 restart (`_write_heartbeat`, boot.gd); deleted by every finish path (`_delete_heartbeat`).
-
-Detection: `_check_crash_recovery` at the next Pass 1. A surviving heartbeat means the previous launch did not finish; the loader warns and clears it. If pass state also shows `restart_count >= MAX_RESTART_COUNT` (2), it logs `Restart loop (N crashes) -- resetting to clean state`, restores a clean `override.cfg`, deletes pass state and the heartbeat.
+The heartbeat, the Pass 2 dirty marker and safe mode are in [Architecture](Architecture); the files are listed in [Config-Files](Config-Files).
 
 ### Restart counter
 
-Two counters, because the obvious one cannot work on its own.
+There are two counters, because the obvious one cannot work alone. `[state] restart_count` in `user://mod_pass_state.cfg` is bumped by `_write_pass_state` and read by `_check_crash_recovery`, which resets to a clean state at `MAX_RESTART_COUNT` (2). But a Pass 2 crash leaves the dirty marker behind, the next static init calls `_static_force_vanilla_state`, and that deletes pass state with the counter in it.
 
-`[state] restart_count` in `user://mod_pass_state.cfg` is bumped by `_write_pass_state` and read by `_check_crash_recovery` above. But a Pass 2 crash leaves the dirty marker behind, the next static init calls `_static_force_vanilla_state`, and that deletes pass state, the file the counter lives in. A counter kept only there could never trip.
+So the streak also lives in `user://modloader_crash_streak` (`CRASH_STREAK_PATH`), a bare integer bumped by `_write_pass_state` and never touched by the wipe. When `_crash_breaker_tripped` sees it reach `MAX_RESTART_COUNT`, Pass 1 logs `Restart loop detected (N consecutive crashed restarts) -- staying single-pass this launch.`, resets the streak, restores a clean `override.cfg`, deletes pass state and finishes in a single pass, so the launcher stays reachable and the offending mod can be turned off. It leaves `user://modloader_crash_notice` for the next launcher's banner.
 
-So the streak lives in its own file, `user://modloader_crash_streak` (`CRASH_STREAK_PATH`): a bare integer, bumped by `_write_pass_state`, never touched by the wipe. `_crash_breaker_tripped` returns true when it reaches `MAX_RESTART_COUNT`. Pass 1 checks it before arming a two-pass restart and, when tripped, logs
-
-```
-Restart loop detected (N consecutive crashed restarts) -- staying single-pass this launch.
-Disable recently added mods if the game is unstable.
-```
-
-resets the streak, restores a clean `override.cfg`, deletes pass state and finishes single-pass. The launcher stays reachable, so you can turn the offending mod off.
-
-Reset to zero: every boot path ends in `_finish_boot`, which calls `_clear_restart_counter` after the autoloads are instantiated; that zeroes both counters. Pass 2 clears at its end, not at entry: `load_all_mods` and autoload instantiation are the crash window, and clearing before them would record a streak of zero for a crashed launch.
-
-`check_boot_state.sh` pins all of this: the streak survives the wipe, one crash does not trip, two do, a clean finish resets to zero, and the Pass 2 clear stays after the crash window.
-
-### Pass 2 dirty marker
-
-File: `user://modloader_pass2_dirty`.
-
-Written first thing in `_run_pass_2` ([lifecycle.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/lifecycle.gd)) with the current timestamp; deleted in the cleanup block at the end of the same function.
-
-Detection: static init checks for it in `_mount_previous_session`. A survivor means Pass 2 was interrupted (force quit, crash, power loss); the hook pack may be half-written and pass state plus `override.cfg` describe a state that never finished. Full wipe through `_static_force_vanilla_state("pass 2 crashed mid-run", ...)`.
-
-## Combined recovery flow
-
-When something goes wrong mid-run, the defenses fire in this order:
-
-1. Crash during Pass 2: `modloader_pass2_dirty` survives, static init wipes on the next boot, you get a clean Pass 1. The streak file survives the wipe.
-2. Crash during Pass 1 before the restart: no heartbeat was written, the next boot is a normal Pass 1.
-3. Two crashed restarts in a row: the streak reaches 2, `_crash_breaker_tripped` makes Pass 1 refuse the restart and stay single-pass with the launcher available.
-4. You created `modloader_safe_mode`: Pass 1's `_check_safe_mode` wipes state and continues to the launcher.
-5. You created `modloader_disabled`: static init skips everything and the loader idles until the file is removed.
-
-Nothing asks Godot to try again without resetting state. Compounding retries across a persistent fault is how a game ends up not booting without a reinstall.
+Every boot path ends in `_finish_boot`, which calls `_clear_restart_counter` after the autoloads are up and the scene reload has run, zeroing both counters. Pass 2 clears at its end, not its start: `load_all_mods`, autoload instantiation and the reload are the crash window. `check_boot_state.sh` pins all of this.

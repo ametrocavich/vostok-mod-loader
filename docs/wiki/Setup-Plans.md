@@ -1,327 +1,74 @@
 # Setup plans
 
-`lib.setup(plan)` runs an ordered list of `[verb, ...args]` entries that map onto the existing registry and hook APIs. It is for mods whose `_ready` is mostly administrative: one line per hook, one per registration. With `setup`, the whole installation phase is one literal.
+`lib.setup(plan)` runs an ordered list of `[verb, ...args]` entries, each passed to an existing [Registry](Registry) or [Hooks](Hooks) call. It suits a mod whose `_ready()` is all registrations and hooks: the whole installation becomes one literal.
 
 ```gdscript
 func _ready() -> void:
     var lib = Engine.get_meta("RTVModLib")
     await lib.frameworks_ready
     lib.setup([
-        ["register", lib.Registry.ITEMS,   {...}],
-        ["patch",    lib.Registry.ITEMS,   {...}],
-        ["append",   lib.Registry.ITEMS, "compatible", {...}],
-        ["hooks",    {...}],
+        ["register", lib.Registry.ITEMS, {"mymod_potion": potion}],
+        ["patch",    lib.Registry.ITEMS, {"AKM": {"weight": 3.2}}],
+        ["append",   lib.Registry.ITEMS, "compatible", {"AKM": [mag_a]}],
+        ["hooks",    {"interface-getmagazine": _on_get_magazine}],
         ["when", func(): return _hardcore_mode, [
-            ["patch", lib.Registry.ITEMS, {...}],
+            ["patch", lib.Registry.ITEMS, {"Sticks": {"value": 200}}],
+            ["when", func(): return _has_economy_mod, [
+                ["patch", lib.Registry.ITEMS, {"Potato": {"value": 50}}],
+            ]],
         ]],
     ])
 ```
 
-A plan can also live at module scope as a `const`, but a `const` initializer resolves at script-parse time, before the loader object exists. Use the plain string registry names there (`"items"` instead of `lib.Registry.ITEMS`) and Callable predicates in `when` entries (see [Predicates](#predicates-for-when)).
-
-`setup` adds no behavior of its own. It dispatches each entry to the existing public verbs. Anything you can do with `register` / `override` / `patch` / `append` / `prepend` / `remove_from` / `revert` / `remove` / `hook_many` you can do here, plus the meta verb `when` for conditional sub-plans. Source: `src/setup.gd`.
+`setup` adds no behavior of its own (source: `src/setup.gd`). A plan can also be a module-scope `const`, but a `const` initializer runs at script-parse time, before the loader object exists: write the registry names as strings (`"items"`, not `lib.Registry.ITEMS`) and use Callable predicates.
 
 ## Verb shapes
 
-| Entry | Maps to |
+| Entry | Calls |
 |---|---|
 | `["register", reg, {id: data, ...}]` | `register_many` |
 | `["override", reg, {id: data, ...}]` | `override_many` |
 | `["patch", reg, {id: fields, ...}]` | `patch_many` |
-| `["append", reg, field, {id: values, ...}]` | `append_many` (de-dup default) |
-| `["append", reg, field, {id: values, ...}, true]` | `append_many(allow_duplicates=true)` |
-| `["prepend", reg, field, {id: values, ...}]` | `prepend_many` |
-| `["prepend", reg, field, {id: values, ...}, true]` | `prepend_many(allow_duplicates=true)` |
+| `["append", reg, field, {id: values, ...}]` | `append_many`; a fifth element `true` allows duplicates |
+| `["prepend", reg, field, {id: values, ...}]` | `prepend_many`; same fifth element |
 | `["remove_from", reg, field, {id: values, ...}]` | `remove_from_many` |
-| `["revert", reg, {id: fields_array, ...}]` | `revert_many` (empty array = full revert of that id) |
-| `["remove", reg, [id, id, ...]]` | `remove_many` |
-| `["hooks", {hook_name: callback, ...}]` | `hook_many` (priority 100) |
-| `["register_item", {id: data, ...}]` | `register_item` (aggregator) |
-| `["register_weapon", {id: data, ...}]` | `register_weapon` (aggregator) |
-| `["register_magazine", {id: data, ...}]` | `register_magazine` (aggregator) |
-| `["register_attachment", {id: data, ...}]` | `register_attachment` (aggregator) |
-| `["register_furniture", {id: data, ...}]` | `register_furniture` (aggregator) |
-| `["register_ai_loadout", {id: data, ...}]` | `register_ai_loadout` (aggregator) |
-| `["when", predicate, sub_plan]` | Recurse into `sub_plan` if `predicate` is truthy |
+| `["revert", reg, {id: fields_array, ...}]` | `revert_many`; `[]` reverts the whole id |
+| `["remove", reg, [id, ...]]` | `remove_many` |
+| `["hooks", {hook_name: callback, ...}]` | `hook_many` at priority 100 |
+| `["register_item", {id: data, ...}]` | `register_item`; likewise `register_weapon`, `register_magazine`, `register_attachment`, `register_furniture` and `register_ai_loadout` ([Registry-Aggregators](Registry-Aggregators)) |
+| `["when", predicate, sub_plan]` | Runs `sub_plan` as a nested plan when `predicate` is true |
 
 ## Predicates for `when`
 
-A predicate is a bool or a Callable that returns one:
+A predicate is a bool, an int or float (read with `bool()`), `null` (false), or a Callable whose return value is read by the same rules. A Callable runs when `setup` reaches the entry, so it sees runtime state. A plain value in a `const` plan is fixed at parse time, which suits constants and nothing else.
 
-```gdscript
-["when", _hardcore_mode, [...]]                     # plain bool (member var)
-["when", _has_global_economy, [...]]                # named Callable
-["when", func(): return OS.has_feature("debug"), [...]]  # lambda
-```
+Anything else, such as a String or a Dictionary, warns `when-predicate has unexpected type <n>; treating as false` and skips the sub-plan, since running it on a typo would be worse. A Callable whose object is gone warns `when-predicate Callable is no longer valid; treating as false`.
 
-An int or float is coerced with `bool()`. `null` reads as false. A Callable's return value is read by the same rules. Anything else (a String, a Dictionary) warns `when-predicate has unexpected type ...; treating as false` and skips the sub-plan; running it on a typo would be worse.
+A skipped `when` reports `ok = true`: nothing ran, so nothing failed. Nested `when` entries run only when every predicate on the way is true. There is no `else`; write a second `when` with the negated predicate.
 
-Predicates are evaluated when `setup` traverses the entry, so a plan built in `_ready` can use runtime state freely. A `const PLAN = [...]` with non-Callable predicates evaluates them at script-parse time, which is fine for compile-time constants but wrong for runtime state. Prefer Callable predicates in `const` plans.
+## Order and failure isolation
 
-A skipped `when` (predicate false) returns `ok=true`. It succeeded by not running anything.
+Entries run in the order written, so register an item before the entry that patches it, and an item before the recipe that uses it. A `remove` or `revert` later in the same plan undoes what an earlier entry did.
 
-Nested `when` works as you would expect: the inner sub-plan only runs when both predicates are truthy. There is no `unless` or `else` verb; compose two `when` entries with negated predicates if you need branching.
+A bad entry (wrong shape, unknown verb, a verb that fails) reports `ok = false` and the next entry still runs. An unknown verb also warns `setup: unknown verb '<verb>' -- entry skipped`, since most mods never read the result.
 
-## Order matters
+## Hook names in a plan
 
-Entries run in the order written. If you `register` an item and then `patch` it, write `register` first; the patch sees the just-registered entry. If you reverse the order the patch fails (no such id yet), and the register lands afterward unaffected.
-
-The same applies across registries. If a recipe references an item, register the item first. `revert` and `remove` entries placed after the registers and patches undo them cleanly.
-
-## Failure isolation
-
-A bad entry (malformed shape, unknown verb, validation failure inside a verb) produces an `ok=false` result for that entry but does not stop the next entry from running. This matches the singular-verb and `_many` behavior. An unknown verb also gets a `push_warning` (`setup: unknown verb 'x' -- entry skipped`), since most mods never inspect the return value. Mods that want fail-fast can inspect the result list themselves.
+The names in a `hooks` entry are Dictionary keys, not literal `.hook("...")` calls, so the source scan that builds the wrap surface does not see them. Wrap each target some other way: a literal `.hook()` call elsewhere in your mod, or a `[hooks]` line in `mod.txt` ([Hooks](Hooks#wrap-surface----why-hook-alone-is-not-enough)).
 
 ## Return shape
 
-```gdscript
-{
-    "ok": bool,                # true only if every executed entry succeeded
-    "results": Array,          # one entry per top-level plan entry, in order
-}
-```
+`setup` returns `{ok, results}`. `ok` is true only when every top-level entry succeeded; `results` has one dict per top-level entry, in order:
 
-Each item in `results` is a per-entry dict matching the verb:
-
-- Data verbs: `{verb, ok, results: {id: bool}}`
-- Aggregators: `{verb, ok, results: {id: per_id_dict}}`
-- `hooks`: `{verb, ok, results: {hook_name: hook_id_or_-1}}`
-- `when`: `{verb, ok, evaluated, results?}`; `results` is present only when `evaluated=true`
-- Malformed: `{verb, ok: false, error: "..."}`
-
-Top-level `ok` is `true` only when every executed entry succeeded. A skipped `when` does not break this; nothing failed because nothing ran.
+- data verbs: `{verb, ok, results: {id: bool}}`
+- aggregators: `{verb, ok, results: {id: per_id}}`, with the per-id dicts from [Registry-Aggregators](Registry-Aggregators)
+- `hooks`: `{verb, ok, results: {hook_name: hook_id or -1}}`
+- `when`: `{verb, evaluated, ok}`, plus `results` when the sub-plan ran
+- a malformed entry: `{verb, ok: false, error}`; `verb` is `<malformed>` or `<empty>` when the first element is not a usable verb
 
 ```gdscript
 var result: Dictionary = lib.setup(plan)
-if not result.ok:
-    for i in result.results.size():
-        var r: Dictionary = result.results[i]
-        if not bool(r.get("ok", false)):
-            push_warning("[mymod] entry %d (%s) failed: %s" \
-                    % [i, r.get("verb", "?"), r.get("error", "see log")])
+for r in result.results:
+    if not r.ok:
+        push_warning("[mymod] setup entry %s failed: %s" % [r.verb, r.get("error", "see log")])
 ```
-
-## Full example
-
-A plan exercising every verb shape and predicate variant:
-
-```gdscript
-extends Node
-
-const _PotionScript := preload("res://Scripts/ItemData.gd")
-const _RecipeScript := preload("res://Scripts/RecipeData.gd")
-
-var _hardcore_mode: bool = false
-var _lib
-
-func _ready() -> void:
-    _lib = Engine.get_meta("RTVModLib")
-    await _lib.frameworks_ready
-
-    var my_potion: ItemData = _build_potion()
-    var my_grenade: ItemData = _build_grenade()
-    var my_recipe: RecipeData = _build_recipe(my_potion)
-    var ak12_mag: Resource = load("res://Items/Weapons/AK-12/AK-12_Magazine.tres")
-    var aks74u_mag: Resource = load("res://Items/Weapons/AKS-74U/AKS-74U_Magazine.tres")
-
-    var plan: Array = [
-        # --- register: add brand-new entries ------------------------------
-        # Order across entries matters: the recipe references my_potion, so
-        # register the potion first.
-        ["register", _lib.Registry.ITEMS, {
-            "my_mod_potion":  my_potion,
-            "my_mod_grenade": my_grenade,
-        }],
-        ["register", _lib.Registry.RECIPES, {
-            "my_mod_potion_recipe": {"recipe": my_recipe, "category": "consumables"},
-        }],
-
-        # --- register_weapon: aggregator that fans out to items+scene+rig
-        # Aggregator verbs always take {id: data, ...}. The data dict per
-        # entry follows the aggregator's own schema (see Registry doc's
-        # "Aggregator helpers" section).
-        ["register_weapon", {
-            "MyRifle": {
-                "item_path":  "res://my_mod/MyRifle.tres",
-                "scene_path": "res://my_mod/MyRifle.tscn",
-                "rig_path":   "res://my_mod/MyRifle_Rig.tscn",
-                "magazines":  ["AK_12_Magazine"],   # ref existing mag
-            },
-        }],
-
-        # --- register_magazine: standalone mag registration ---------------
-        # `fits_weapons` patches each target's `compatible` array.
-        ["register_magazine", {
-            "MyExtendedMag": {
-                "item_path":    "res://my_mod/MyExtendedMag.tres",
-                "scene_path":   "res://my_mod/MyExtendedMag.tscn",
-                "fits_weapons": ["AK_12", "AKM"],
-                "loot_tables":  ["LT_Master"],
-            },
-        }],
-
-        # --- register_item: generic ItemData bundle -----------------------
-        # For consumables, keys, tools, ammo. Multiple ids in one call.
-        ["register_item", {
-            "MyMedkit": {
-                "item_path":    "res://my_mod/MyMedkit.tres",
-                "scene_path":   "res://my_mod/MyMedkit.tscn",
-                "trader_pools": ["Doctor"],
-            },
-            "MyKey": {
-                "item_path":  "res://my_mod/MyKey.tres",
-                "scene_path": "res://my_mod/MyKey.tscn",
-            },
-        }],
-
-        # --- register_furniture: ItemData(type=Furniture) + scene + recipe
-        ["register_furniture", {
-            "MyBed": {
-                "item_path":    "res://my_mod/MyBed_F.tres",
-                "scene_path":   "res://my_mod/MyBed_F.tscn",
-                "trader_pools": ["Generalist"],
-                "recipe": {
-                    "name":  "My Bed",
-                    "input": [],   # ItemData refs
-                    "time":  10.0,
-                },
-            },
-        }],
-
-        # --- override: replace a vanilla entry wholesale ------------------
-        ["override", _lib.Registry.SCENES, {
-            "Potato": preload("res://my_mod/scenes/golden_potato.tscn"),
-        }],
-
-        # --- patch: scalar field updates, multi-id, multi-registry --------
-        # ITEMS ids are ItemData.file strings ("AKM"), not .tres paths;
-        # RESOURCES ids are res:// paths.
-        ["patch", _lib.Registry.ITEMS, {
-            "AKM":     {"value": 4500, "weight": 3.2},
-            "AKS_74U": {"value": 4000},
-        }],
-        ["patch", _lib.Registry.RESOURCES, {
-            "res://Resources/GameData.tres": {"difficulty": 2},
-        }],
-
-        # --- append: add to an Array field, dedup default -----------------
-        # Single value or Array on the right side; both forms work.
-        ["append", _lib.Registry.ITEMS, "compatible", {
-            "AKM":   [ak12_mag, aks74u_mag],
-            "AK_12": aks74u_mag,
-        }],
-
-        # --- append with allow_duplicates=true ----------------------------
-        # Rare: when you genuinely want repeats (weighted lists, etc.).
-        ["append", _lib.Registry.ITEMS, "compatible", {
-            "AK_12": ak12_mag,
-        }, true],
-
-        # --- prepend: insert at the front ---------------------------------
-        # SOUNDS ids are AudioLibrary field names; audioClips is the Array field.
-        ["prepend", _lib.Registry.SOUNDS, "audioClips", {
-            "knifeHitFleshSlash": preload("res://my_mod/sounds/squelch.ogg"),
-        }],
-
-        # --- remove_from: drop matching entries ---------------------------
-        # Removes ALL occurrences. Idempotent if nothing matches.
-        ["remove_from", _lib.Registry.ITEMS, "compatible", {
-            "AKM": ak12_mag,
-        }],
-
-        # --- hooks: batched hook registration -----------------------------
-        # The source scan that builds the wrap surface only sees literal
-        # .hook("...") calls. Names given as dictionary keys are not seen, so
-        # these four scripts also need a [hooks] line in mod.txt.
-        ["hooks", {
-            "interface-getmagazine":     _replace_get_mag,
-            "ai-_physics_process-pre":   _on_phys_pre,
-            "interface-close-post":      _on_close_post,
-            "loader-loadscene-callback": _on_scene_loaded,
-        }],
-
-        # --- when: plain bool predicate -----------------------------------
-        ["when", _hardcore_mode, [
-            ["patch", _lib.Registry.ITEMS, {
-                "AKM": {"value": 3000},
-            }],
-        ]],
-
-        # --- when: named Callable predicate -------------------------------
-        ["when", _has_global_economy, [
-            ["patch", _lib.Registry.RESOURCES, {
-                "res://my_mod/Configs/scarcity.tres": {"enabled": true},
-            }],
-        ]],
-
-        # --- when: lambda predicate ---------------------------------------
-        ["when", func(): return OS.has_feature("debug"), [
-            ["hooks", {
-                "loader-loadscene-pre": _debug_logger,
-            }],
-        ]],
-
-        # --- nested when --------------------------------------------------
-        # Outer + inner predicates AND together.
-        ["when", _has_global_economy, [
-            ["when", _hardcore_mode, [
-                ["patch", _lib.Registry.ITEMS, {
-                    "Sticks": {"value": 500},
-                }],
-            ]],
-        ]],
-
-        # --- revert: undo a previous patch (per-field or full) ------------
-        ["revert", _lib.Registry.ITEMS, {
-            "AKS_74U": ["value"],   # one field only
-            "AKM":     [],          # full revert
-        }],
-
-        # --- remove: undo a previous register() ---------------------------
-        # Vanilla ids need revert; this only removes mod-registered entries.
-        ["remove", _lib.Registry.RECIPES, ["my_mod_potion_recipe"]],
-    ]
-
-    var result: Dictionary = _lib.setup(plan)
-
-    # Per-entry diagnostics if something failed.
-    if not result.ok:
-        for i in result.results.size():
-            var r: Dictionary = result.results[i]
-            if not bool(r.get("ok", false)):
-                push_warning("[mymod] plan entry %d (%s) failed: %s" \
-                        % [i, r.get("verb", "?"), r.get("error", "see log")])
-
-
-# Predicate helpers used in `when` entries.
-func _has_global_economy() -> bool:
-    return _lib.has_mod("global-economy")
-
-
-# Hook bodies referenced in the `hooks` entry.
-func _replace_get_mag(_weaponData, _weaponSlot, _swapMag) -> bool:
-    return false
-
-func _on_phys_pre(_delta: float) -> void: pass
-func _on_close_post() -> void: pass
-func _on_scene_loaded(_scene_name) -> void: pass
-func _debug_logger(_scene_name) -> void: print("[mymod] loading scene")
-```
-
-The `remove` entry at the end removes the recipe registered at the top of the same plan. That works because entries run in sequence; the recipe exists by the time the remove runs. Failure isolation means each entry stands alone, but order decides which ones land.
-
-## When not to use setup
-
-`setup` is for installation-phase work that runs once. Mods doing any of these still want imperative code in `_ready`:
-
-- Connecting to signals, scheduling timers, spawning UI nodes
-- File I/O or network requests
-- Long-running async work
-- Anything that reacts to runtime events after the initial setup
-
-Use `setup` for the static, declarative slice and write whatever else you need around it.
-
-## See also
-
-- [Registry](Registry): the underlying verbs `setup` dispatches to
-- [Hooks](Hooks): hook registration; the `["hooks", {...}]` entry maps to `hook_many`

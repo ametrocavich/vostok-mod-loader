@@ -1,105 +1,75 @@
 # Browse
 
-The **Browse** tab installs mods from a mod site without leaving the launcher. It is the second tab in the pre-launch window, after **Mods**.
+The **Browse** tab installs mods from a mod site, and gets modpacks from Vostok Mods, without leaving the launcher. It is the second tab in the pre-launch window, after **Mods**.
 
 ## What it talks to
 
-Browse opens on [Vostok Mods](https://vostokmods.net), the Road to Vostok community's own mod site. The **source** menu at the left of the toolbar switches to [ModWorkshop](https://modworkshop.net), and the launcher remembers whichever you used last. Both sites expose a public catalog of Road to Vostok mods; the launcher reads that catalog and downloads the file you pick. Nothing about your PC or your installed mods is sent.
+Browse opens on [Vostok Mods](https://vostokmods.net), the Road to Vostok community's own mod site. The **source** menu in the toolbar switches to [ModWorkshop](https://modworkshop.net), and the launcher remembers whichever you used last. The launcher reads each site's public catalog and downloads the file you pick; nothing about your PC or your installed mods is sent.
 
-Vostok Mods scans every upload before serving it. Browse only offers versions the site has cleared, so a mod whose newest file is still being scanned shows **No file yet** instead of a **Download** button until the scan finishes.
+Vostok Mods scans every upload before serving it. Browse only offers versions the site has cleared, so a mod whose newest file is still being scanned shows **No file yet** until the scan finishes.
 
-The loader does not fetch its own updates from either site. The version link in the launcher header checks the loader's GitHub releases.
+The **Mods** / **Modpacks** switch at the left of the toolbar picks what Browse lists; packs are covered under [Modpacks](#modpacks) below. The launcher remembers the choice.
 
-Both sites list the mod loader itself, so players can find it there. Browse never shows that listing, on the landing, in search results or under a category: it is not a mod, and **Download** would put the loader's zip into `mods/`. The row is dropped from each page as it arrives, so a page can come back one row short and the loaded count in the status line can stay one below the site's total. Install or update the loader from its [release page](https://github.com/ametrocavich/vostok-mod-loader/releases/latest); see [Setup](Setup).
+Both sites list the mod loader itself; Browse never shows that listing, because **Download** would put the loader into `mods/`. A page can come back one row short for that reason. Install or update the loader from its [release page](https://github.com/ametrocavich/vostok-mod-loader/releases/latest); see [Setup](Setup).
 
 ## Layout
 
-A toolbar across the top, a status line, then a scrolling list of mod rows with a **Load more** button at the bottom.
+A toolbar across the top, a status line, then a scrolling list of rows with a **Load more** button at the bottom; the switch decides whether the rows are mods or packs. The toolbar, left to right:
 
-The toolbar, left to right:
-
-- Source menu: `Vostok Mods` or `ModWorkshop`. Everything to its right applies to the selected site. Each site keeps its own search text, sort and category, so switching back and forth does not lose your place.
+- **Mods** / **Modpacks** switch. Each keeps its own list and place, so switching back does not reload.
+- Source menu: `Vostok Mods` or `ModWorkshop`. Each site keeps its own search text, sort and category, so switching back and forth does not lose your place.
 - Search box (`Search Vostok Mods...` / `Search ModWorkshop...`).
-- Sort menu: `Featured` first, then the site's own sorts. Vostok Mods: `Newest release`, `Recently updated`, `Most downloaded`, `Most viewed`, `Most followed`, `Newest mod`. ModWorkshop: `Recently updated`, `Most downloaded`, `Most liked`, `Most viewed`, `Newest`.
+- Sort menu: `Featured` first, then the site's own sorts. Vostok Mods: `Recently updated` (newest downloadable file first; editing a mod's page does not move it), `Most downloaded`, `Most viewed`, `Most followed`, `Newest mod`. ModWorkshop: `Recently updated`, `Most downloaded`, `Most liked`, `Most viewed`, `Newest`.
 - Category menu: `All categories` plus the site's categories.
 
-Browse has two modes. With `Featured` selected and no search or category, it shows the site's landing: **Popular** and **New releases** on Vostok Mods, **Popular this week** and **Latest** on ModWorkshop. Typing a query, picking a sort, or picking a category switches to a single filtered list. **Load more** fetches the next page and appends it; the status line counts what is loaded against the total, for example `24 of 130 mods`.
+With `Featured` selected and no search or category, Browse shows the site's landing: **Popular** and **New releases** on Vostok Mods, **Popular this week** and **Latest** on ModWorkshop. A query, a sort or a category switches to a single filtered list. **Load more** appends the next page; the status line counts what is loaded against the total, for example `24 of 130 mods`.
 
-ModWorkshop ignores the sort while a search query is set, so Browse re-sorts search results itself by the chosen sort across every loaded page. Clicking sort and category quickly is safe; the list always matches the menus.
+ModWorkshop ignores the sort while a search query is set, so Browse re-sorts search results itself across every loaded page. Clicking sort and category quickly is safe; the list always matches the menus.
 
 ## A mod row
 
-Each row shows a thumbnail (the first frame of an animated cover), name, author, version where the site reports one, quick stats (downloads and views, plus likes on ModWorkshop), category and last-updated date, and an action on the right:
+Each row shows a thumbnail (the first frame of an animated cover), name, author, version where the site reports one, downloads and views (plus likes on ModWorkshop), category and last-updated date (on Vostok Mods, the upload date of the newest downloadable file), and an action on the right:
 
 - **Download**: the mod is not installed. Click to fetch it into your `mods/` folder.
 - **Enabled in <profile>**: the mod is already on disk. The checkbox toggles it in your active profile without a trip to the Mods tab.
-- **No file yet**: the site has nothing to serve for this mod right now, usually because its upload is still being scanned. Check back later or open its page in the browser.
+- **No file yet**: the site has nothing to serve for this mod right now, usually because its upload is still being scanned.
 
-Browse recognizes an installed mod by an explicit `[updates] source="vostokmods:<id>"` or `source="modworkshop:<id>"` in its `mod.txt`. Without one, the launcher's own record of where it downloaded the file counts, and only then the older `modworkshop=<id>` line. A Vostok Mods mod is addressed by its slug or its UUID: every site route resolves either. The site writes `source="vostokmods:<uuid>"` into every file it serves, while its listing rows carry the slug, so the launcher keeps the id the site answered a detail with beside the installed mod and matches a Browse row under either id. A mod you installed from the Vostok Mods tab stays a Vostok Mods mod.
+Browse knows a mod is installed from the `[updates] source=` line in its `mod.txt`, or else from the launcher's own record of where it downloaded the file. A Vostok Mods mod matches by its slug or its UUID. [Mod-Format](Mod-Format#updates-section) has the `source=` format.
 
-Clicking the row name opens a detail dialog: banner image, full description, a **Files** list (every downloadable version with size and date, the current one marked `(primary)`), an **Open mod page in browser** button, and a **Download** or **Installed** button matching the row. A mod with nothing to download shows `No downloadable files yet.` where the list would be.
-
-Neither site's dependency data appears in the detail dialog. Dependencies surface after install, see below.
+Clicking the row name opens a detail dialog: banner image, full description, a **Files** list (every downloadable version with size and date, the current one marked `(primary)`), an **Open mod page in browser** button, and a **Download** or **Installed** button matching the row. Neither site's dependency data appears there.
 
 ## Installing a mod
 
-1. Find the mod (landing, search, or category filter).
-2. Click **Download** on the row or in the detail dialog.
-3. The button changes to **Downloading...** and the status line reports progress. On success the status line reads `Installed <file name>`. When the download queue finishes, the row gains its **Enabled in <profile>** checkbox in place and the Mods tab is rebuilt so the new mod appears there. The detail dialog keeps its **Installed** button. It is enabled if your active profile is **Default**; any other profile lists it unticked until you turn it on.
+Click **Download** on the row or in the detail dialog. The button changes to **Downloading...** and the status line reports progress, then `Installed <file name>`. When the queue finishes, the row gains its **Enabled in <profile>** checkbox and the Mods tab is rebuilt. The new mod is enabled if your active profile is **Default**; any other profile lists it unticked until you turn it on. The launcher records which site the file came from, so the update check finds it even if the author's `mod.txt` says nothing.
 
-The file is saved into your `mods/` folder, and the launcher records which site it came from in `mod_config.cfg` so the update check can find it later even if the author's `mod.txt` says nothing.
+A Browse download never overwrites an existing file. If `mods/` already holds a file of the same name that is not the same mod at the same or a newer version, the download fails with `Already have a file named <name>`. When it is the same mod (one you dropped in by hand), nothing is downloaded: the row flips to **Installed** and the site is recorded as its source.
 
-A Browse download never overwrites an existing file. If `mods/` already holds a file of the same name, the download fails with `Already have a file named <name>`. Modpack apply takes a different path and renames on collision; see [Modpacks](Modpacks).
+When you already have a mod from the same mod page, a download whose `mod.txt` names the `id` of a mod you installed from elsewhere is refused, and the error says the page may be serving the wrong file. A file whose `id` matches nothing you have is treated as the author renaming the mod and installs beside the old file; delete the old one from the Mods tab. Modpack apply and the missing-mod **Download** button make the same check.
 
-If you download a mod after the game has already booted (from the main menu's Mods button), closing the launcher restarts the game so the new mod set loads.
+Browse installs exactly the mod you click, not the mods it requires. A missing requirement shows on the Mods tab after install; see [Mods](Mods#dependencies).
+
+A download made after the game booted (from the main menu's Mods button) restarts the game on close only when the new mod is enabled in your active profile.
 
 ## The download queue
 
-Downloads run one at a time. While one is in flight, clicking **Download** on other rows queues them:
+Downloads run one at a time. Clicking **Download** on other rows meanwhile queues them: the button shows **Queued**, the status line reports the queue depth, and the next item starts on its own, in click order. Clicking the same mod twice does nothing. If the site rate-limits the launcher mid-queue, the next download waits out the cooldown with a countdown instead of failing.
 
-- The queued row's button shows **Queued** and the status line reports the queue depth.
-- When the current download finishes, the next queued item starts on its own, in click order.
-- Clicking the same mod twice does nothing (`Already downloading this mod` / `Already queued`).
+A download is written to the mods folder only once all of it has arrived, so closing the launcher never leaves a half-installed mod. If Launch restarts the game before a download finishes, that download is dropped; start it again next time. If the window closes without a restart, the download keeps running and the mod is listed the next time you open the window.
 
-If the site rate-limits the launcher mid-queue, the next download waits out the cooldown with a countdown (`Rate limited by <Site> -- resuming in <N>s`) instead of failing.
+## Caching and offline
 
-Closing the launcher (Launch or the X) mid-download never leaves a half-installed mod: a download is written to the mods folder only once all of it has arrived. If Launch restarts the game to apply your mod changes before a download finishes, that download is dropped and nothing of it is kept; start it again next time.
+Search results and mod details are cached in memory for minutes; ModWorkshop images and each site's landing view are also saved to disk ([Config-Files](Config-Files#generated-files-safe-to-delete) lists the files, all safe to delete).
 
-## How dependencies surface
+If Browse cannot reach the selected site when it opens, it shows the last landing it loaded from that site under `Showing cached results.`, with how old the results are and a **Retry** button. With no saved results, or when a search, a detail file list or a download fails, Browse shows the site's error with a **Retry** button. A failed **Load more** keeps what is already on screen; click it again to retry.
 
-Browse installs exactly the mod you click. It does not install other mods that mod requires. Dependency checks happen in the **Mods** tab after install:
+Vostok Mods tells the launcher how many requests it has left. When they run out, or the site refuses a request as too frequent, the launcher pauses its requests to that site for the seconds the site names, and a rate-limited request says when to try again.
 
-- If an installed mod requires another mod that is missing or disabled, its Mods-tab row shows an orange line: `won't load -- needs <dep>`.
-- Inline fix buttons appear beside it: **Enable dependency** (turns on a requirement that is installed but disabled) and **Load anyway** (a per-profile override that skips the check for that mod). **Re-check** undoes Load anyway.
-- If a required dependency is missing entirely, install it from Browse the same way.
+## Modpacks
 
-See [Mod-Format](Mod-Format#dependencies-section) for how mod authors declare dependencies, and [Config-Files](Config-Files) for where the **Load anyway** override is stored.
+With **Modpacks** selected, Browse lists the packs published on Vostok Mods; the source menu is hidden, since packs come from that site only. The list loads the first time you switch to it. The toolbar holds a search box (`Search Vostok Mods packs...`), a sort menu (`Recently updated`, `Newest`, `Most downloaded`, `Most viewed`) and a box for a pack link with its own **Get** button. The search runs as you type, or at once on Enter. The status line counts what is loaded, for example `20 of 45 packs`, and **Load more** appends the next page.
 
-## Caching
+Each row shows the pack's cover, name, author, mod count, downloads, views and last-updated date. **Get** saves the pack to the [Modpacks](Modpacks) tab without applying it; the button then reads **Added**. Pasting a pack link (the page address, the site's "Copy loader link", or the bare slug) and clicking that **Get** does the same. The status line reads `Getting "<name>"...` for a row's **Get** and `Getting the pack...` for a pasted link, then `Added "<name>" to Your packs; Apply it on the Modpacks tab.` One pack is fetched at a time: while one is in flight, every other **Get** is disabled. Clicking a row's name opens the pack's details ([Modpacks](Modpacks#pack-details)).
 
-- ModWorkshop thumbnails and banners are saved to `user://mws_cache/thumbs/` (its image names never change once uploaded). Vostok Mods images are kept in memory for the session only.
-- Search results and mod details are cached in memory: Vostok Mods listings for five minutes, details for thirty, categories for an hour. Each site's landing view is also saved to disk as `user://mws_cache/landing_<site>.json` so Browse can show your last results when you are offline.
+The pack is saved in your mods folder as `vostokmods-<slug>.zip`. The launcher fetches packs and their mods only from `vostokmods.net` over https, and a link that answers with a different pack than it names is refused. A link with a port number (`vostokmods.net:443/...`) counts as another site: `That is not a Vostok Mods modpack link.`
 
-Both are safe to delete; see [Config-Files: Generated files](Config-Files#generated-files-safe-to-delete).
-
-## Offline / failure behavior
-
-If Browse cannot reach the selected site when it opens, it shows the last landing it loaded from that site behind a notice, `Showing cached results. Vostok Mods is unreachable.`, with how old the results are (`Last refreshed ...`) and a **Retry** button. If there are no saved results, or a search fails, you get a failure message with a **Retry** button instead. A failed **Load more** keeps what is already on screen; click **Load more** again to retry.
-
-| Where | Message |
-|---|---|
-| Landing (no saved results) | `<Site>: could not load mods. Check your connection and try again.` |
-| Search / filter results | `Could not reach <Site>. Check your connection.` (or the site's own error) |
-| Detail dialog file list | the same site error, in place of the list |
-| A failed download | `Could not download <mod name>. <reason>` |
-| An empty catalog | `No mods on <Site> yet. Pick <other site> in the source menu to browse there.` |
-
-If only some of the landing sections load, the ones that did are shown under a `Part of this page could not be loaded.` banner with a **Retry** button.
-
-When a site rate-limits the launcher, these messages read `<Site> rate limit reached. Try again in <N>s.` instead.
-
-## Related
-
-- [Modpacks](Modpacks): apply a shared list of mods in one go.
-- [Mod-Format](Mod-Format): for mod authors, how a mod declares its source (which Browse uses to recognize installed mods) and its dependencies.
-- [Config-Files](Config-Files): where the active profile, the **Load anyway** overrides, and the Browse cache live.
+When the site cannot be reached, the list shows the last first page it loaded for the chosen sort under `Showing cached results.`, with how old it is and a **Retry** button. A search, or a sort with no saved page, shows `Could not load packs.` with the reason in the banner above it.
