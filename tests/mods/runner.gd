@@ -23,7 +23,9 @@ class ManifestStub extends "res://stub_loader.gd":
 		return super(id, ttl_ms)
 
 func _init() -> void:
-	super("mods", "T13..T94")
+	super("mods", "T13..T101")
+	# T101 waits on a loopback HTTP transfer.
+	max_frames = 600
 
 func _tests(ml: Object) -> void:
 	# Mod scans and id matching read the regexes _ready compiles.
@@ -49,6 +51,10 @@ func _tests(ml: Object) -> void:
 		["T81", _t81_dev_folders_stay_hidden_keys], ["T82", _t82_nameless_mods_sort_by_file_name],
 		["T83", _t83_percent_in_a_server_file_name], ["T84", _t84_update_check_asks_fresh],
 		["T93", _t93_an_id_with_an_at_keeps_its_state], ["T94", _t94_a_required_cycle_releases_no_optional_edge],
+		["T95", _t95_a_changed_dev_folder_is_rezipped], ["T96", _t96_priority_is_clamped_for_every_kind],
+		["T97", _t97_tied_overrides_apply_in_load_order], ["T98", _t98_claims_are_kept_per_archive],
+		["T99", _t99_a_pck_sharing_a_loaded_id_mounts], ["T100", _t100_a_hashless_pack_counts_as_changed],
+		["T101", _t101_download_checks_the_listed_checksum],
 	]:
 		begin(t[0])
 		await t[1].call(ml)
@@ -1217,3 +1223,147 @@ func _t94_a_required_cycle_releases_no_optional_edge(ml: Object) -> void:
 	check_eq(ids, PackedStringArray(["a", "b", "c"]), "load order beside a required cycle")
 	check_eq(r["adjusted"], false, "order adjusted")
 	check_eq(r["cycle_keys"].size(), 2, "cycle keys")
+
+func _zip_files(path: String) -> PackedStringArray:
+	var zr := ZIPReader.new()
+	if zr.open(path) != OK:
+		return PackedStringArray()
+	var files := zr.get_files()
+	zr.close()
+	return files
+
+# A dev folder already mounted at file scope is re-zipped only once it changed.
+func _t95_a_changed_dev_folder_is_rezipped(ml: Object) -> void:
+	var dir := "user://t95_mods"
+	var previous := _use_mods_dir(ml, dir, true)
+	var folder := ProjectSettings.globalize_path(dir + "/T95Dev")
+	H.write_text(folder + "/mod.txt", _mod_txt("t95dev", "1.0"))
+	var dev_zip := str(ml.zip_folder_to_temp(folder))
+	var mounted: Dictionary = ml.get("_filescope_mounted")
+	mounted[dev_zip] = true
+	H.write_zip(dev_zip, {"t95_sentinel.txt": "x"}, _report)
+	var c := {"file_name": "T95Dev", "full_path": folder, "ext": "folder"}
+	check_eq(str(ml._mount_candidate(c)), dev_zip, "mount path of an unchanged folder")
+	_assert(_zip_files(dev_zip).has("t95_sentinel.txt"), "an unchanged folder is not re-zipped")
+	H.write_text(folder + "/Scripts/T95New.gd", "extends Node\n")
+	check_eq(str(ml._mount_candidate(c)), dev_zip, "mount path of a changed folder")
+	var files := _zip_files(dev_zip)
+	_assert(files.has("Scripts/T95New.gd") and not files.has("t95_sentinel.txt"), "a changed folder is re-zipped: %s" % str(files))
+	mounted.erase(dev_zip)
+	_drop_mods_dir(ml, dir, previous)
+
+func _t96_priority_is_clamped_for_every_kind(ml: Object) -> void:
+	for ext in ["zip", "folder"]:
+		for c in [["5000", 999], ["-5000", -999]]:
+			var read := {"cfg": H.cfg_from_text("[mod]\npriority=%s\n" % c[0], _report), "status": "ok", "error": ""}
+			var e: Dictionary = ml._entry_from_config(read, "Mod", "/nonexistent/Mod", ext)
+			check_eq([e["priority"], e["priority_default"]], [c[1], c[1]], "%s priority %s" % [ext, c[0]])
+
+# Equal priorities apply in the order the mods loaded, so the later one wins.
+func _t97_tied_overrides_apply_in_load_order(ml: Object) -> void:
+	var vanilla := "res://Scripts/T97Vanilla.gd"
+	var pending: Array[Dictionary] = []
+	for c in [["b", 0, 1], ["a", 0, 0], ["low", -1, 2]]:
+		var path := "user://t97/%s.gd" % c[0]
+		H.write_text(path, "extends Node\nfunc who() -> String:\n\treturn \"%s\"\n" % c[0])
+		pending.append({"vanilla_path": vanilla, "mod_script_path": path, "mod_name": c[0], "priority": c[1], "seq": c[2]})
+	ml.set("_pending_script_overrides", pending)
+	ml._apply_script_overrides()
+	var taken := load(vanilla) as GDScript
+	check_eq(str(taken.new().call("who")) if taken != null else "", "b", "tied override serving the path")
+	var none: Array[Dictionary] = []
+	ml.set("_pending_script_overrides", none)
+
+func _t98_claims_are_kept_per_archive(ml: Object) -> void:
+	var path := "res://T98/x.gd"
+	var registry: Dictionary = ml.get("_override_registry")
+	for archive in ["a.zip", "b.zip", "a.zip"]:
+		ml._register_claim(path, "Same", archive, 0)
+	check_eq(registry[path].size(), 2, "claims of one name in two archives")
+	registry.erase(path)
+
+# Foo.vmz and Foo.pck may share a stem: the .pck still mounts.
+func _t99_a_pck_sharing_a_loaded_id_mounts(ml: Object) -> void:
+	var src := ProjectSettings.globalize_path("user://t99/marker.txt")
+	H.write_text(src, "t99")
+	var pck := ProjectSettings.globalize_path("user://t99/foo.pck")
+	var packer := PCKPacker.new()
+	_assert(packer.pck_start(pck) == OK and packer.add_file("res://T99Pck/marker.txt", src) == OK and packer.flush() == OK,
+			"the fixture .pck is written")
+	var loaded: Dictionary = ml.get("_loaded_mod_ids")
+	loaded["foo"] = {"mod_id": "foo"}
+	var report: Array = ml.get("_report_lines")
+	report.clear()
+	ml._process_mod_candidate({"file_name": "foo.pck", "mod_name": "foo", "mod_id": "foo", "ext": "pck", "full_path": pck}, 1)
+	_assert(FileAccess.file_exists("res://T99Pck/marker.txt") and not _has_line(report, "Duplicate mod id"),
+			"the .pck mounts, no duplicate: %s" % str(report))
+	ml._process_mod_candidate({"file_name": "foo.zip", "mod_name": "foo", "mod_id": "foo", "ext": "zip", "full_path": pck}, 2)
+	_assert(_has_line(report, "Duplicate mod id 'foo'"), "a second archive of the id is skipped")
+	loaded.erase("foo")
+
+# With no hash on either side a pack cannot be compared, so it changed.
+func _t100_a_hashless_pack_counts_as_changed(_ml: Object) -> void:
+	var stub := ManifestStub.new()
+	stub._compile_regex()
+	H.pack_cleanup(stub)
+	var dir := "user://t100_mods"
+	stub._remove_tree(dir, false)
+	stub.set("_mods_dir", dir)
+	DirAccess.make_dir_recursive_absolute(dir)
+	var manifest := {"format": 2, "slug": "t100-bare", "name": "Bare Pack", "hash": "", "mods": []}
+	_assert(stub._hosted_import_manifest(manifest)["ok"], "the hashless pack imported")
+	stub.served[str(stub._vmp_modpack_manifest_url("t100-bare"))] = manifest.duplicate()
+	_seed(stub, [["settings", "active_profile", "Default"], ["settings", "active_modpack", stub._sanitize_profile_name("Bare Pack")]])
+	var s: Dictionary = await stub._run_updates_check_for_mods()
+	check_eq([s["packs_checked"], s["packs_changed"], s["active_pack_changed"]], [1, 1, "Bare Pack"], "a pack hashless on both sides")
+	stub._remove_tree(dir, false)
+	H.pack_cleanup(stub)
+	stub.free()
+
+## Answers `count` HTTP requests on server with body, then stops it.
+func _serve(server: TCPServer, body: PackedByteArray, count: int) -> void:
+	for i in count:
+		var frames := 0
+		while not server.is_connection_available() and frames < 300:
+			frames += 1
+			await process_frame
+		if not server.is_connection_available():
+			break
+		var peer := server.take_connection()
+		var request := ""
+		while not request.contains("\r\n\r\n") and frames < 300:
+			peer.poll()
+			var n := peer.get_available_bytes()
+			if n > 0:
+				request += peer.get_utf8_string(n)
+			else:
+				frames += 1
+				await process_frame
+		var head := "HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n" % body.size()
+		peer.put_data(head.to_utf8_buffer() + body)
+		for f in 5:
+			await process_frame
+		peer.disconnect_from_host()
+	server.stop()
+
+# A modpack member must match its listed SHA-256 in either case; none listed passes.
+func _t101_download_checks_the_listed_checksum(ml: Object) -> void:
+	if not ml.is_inside_tree():
+		root.add_child(ml)
+	var body := "t101 archive bytes".to_utf8_buffer()
+	var ctx := HashingContext.new()
+	ctx.start(HashingContext.HASH_SHA256)
+	ctx.update(body)
+	var sha := ctx.finish().hex_encode()
+	var server := TCPServer.new()
+	if not _assert(server.listen(0, "127.0.0.1") == OK, "a loopback server listens"):
+		return
+	var url := "http://127.0.0.1:%d/t101.zip" % server.get_local_port()
+	var temp := ProjectSettings.globalize_path("user://t101.download")
+	var cases := [[sha, true], [sha.to_upper(), true], ["", true], ["0".repeat(64), false]]
+	_serve(server, body, cases.size())
+	for c in cases:
+		var r: Dictionary = await ml._http_download_to_temp("vostokmods", url, PackedStringArray(), temp, c[0])
+		_assert(bool(r["ok"]) == c[1] and (c[1] or str(r["error"]).contains("checksum")),
+				"sha %s gives ok=%s: %s" % [str(c[0]).left(8), c[1], str(r)])
+	H.remove_user_file("user://t101.download")

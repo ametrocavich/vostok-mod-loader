@@ -97,6 +97,11 @@ const VM_MANIFEST_LIVE_JSON := """
 const STUB_NET_SRC := """extends "res://modloader_neutered.gd"
 var replies := {}
 var asked: Array = []
+var shown: Array = []
+func _show_modloader_update_dialog(latest: String) -> void:
+	shown.append(latest)
+func _get_ui_cfg_value(section: String, key: String, default: Variant) -> Variant:
+	return default
 func _hnet_get_json(provider: String, url: String, ttl_ms: int = 0,
 		allow_rate_wait: bool = true, allow_transport_retry: bool = true) -> Dictionary:
 	asked.append([url, ttl_ms])
@@ -104,7 +109,7 @@ func _hnet_get_json(provider: String, url: String, ttl_ms: int = 0,
 """
 
 func _init() -> void:
-	super("host", "T1..T45")
+	super("host", "T1..T48")
 
 func _tests(ml: Object) -> void:
 	# The detail normalizer's markdown pass reads regexes _ready compiles.
@@ -132,11 +137,14 @@ func _tests(ml: Object) -> void:
 	_t40_vm_banner(ml)
 	_t41_vm_pack_summary(ml)
 	_t45_vm_site_url_predicate(ml)
+	_t48_pack_sha_pins(ml)
 	var net := _stub_net()
 	await _t38_vm_categories_for_mods(net)
 	await _t42_vm_pack_listing(net)
 	await _t43_vm_pack_detail(net)
 	await _t44_vm_manifest_slug_guard(net)
+	await _t46_mws_primary_file_first(net)
+	await _t47_loader_update_prompt(net)
 	net.free()
 
 # Each key of want against rec; "a.b" reads a nested key, and an int stays an int.
@@ -958,3 +966,52 @@ func _t45_vm_site_url_predicate(ml: Object) -> void:
 		check_eq(ml._vmp_is_site_url(c[0]), c[1], "site url: " + c[0])
 		if str(c[0]).contains("://"):
 			check_eq(ml._vmp_site_url(c[0]), c[0] if c[1] else "", "fetch url: " + c[0])
+
+# The author's primary file wins over the semver-latest one.
+func _t46_mws_primary_file_first(net: Object) -> void:
+	begin("T46")
+	var ref: Dictionary = net.host_ref(net.HOST_MODWORKSHOP, "55623")
+	var base := str(net._mwsp_mod_url(ref)) + "/files"
+	var replies: Dictionary = net.get("replies")
+	for c in [
+		[{"/primary": net.host_ok({"id": 2, "version": "2.0", "download_url": "https://x/2.zip"}),
+			"/latest": net.host_ok({"id": 1, "version": "1.0", "download_url": "https://x/1.zip"})},
+			true, "2.0", ["/primary"], "primary beats latest"],
+		[{"/latest": net.host_ok({"id": 1, "version": "1.0", "download_url": "https://x/1.zip"})},
+			true, "1.0", ["/primary", "/latest"], "no primary, latest"],
+		[{"/primary": net.host_err(net.HOST_ERR_SERVER, 500, "down"),
+			"/latest": net.host_ok({"id": 1, "version": "1.0", "download_url": "https://x/1.zip"})},
+			false, "", ["/primary"], "a 500 stops the walk"],
+	]:
+		(net.get("asked") as Array).clear()
+		replies.clear()
+		for tail: String in c[0]:
+			replies[base + tail] = c[0][tail]
+		var res: Dictionary = await net._mwsp_resolve_file(ref, "")
+		var urls := []
+		for a: Array in net.get("asked"):
+			urls.append(str(a[0]).trim_prefix(base))
+		check_eq([res["ok"], str(res.get("data", {}).get("version", "")) if res["ok"] else "", urls],
+				[c[1], c[2], c[3]], c[4])
+
+# The installed version itself is never an update.
+func _t47_loader_update_prompt(net: Object) -> void:
+	begin("T47")
+	var url := str(net.MODLOADER_RELEASES_API_URL) % str(net.MODLOADER_GITHUB_REPO)
+	var mine := str(net.MODLOADER_VERSION)
+	for c in [[mine, false], ["v" + mine, false], [mine + "-beta.1", false], ["0.0.1", false],
+			["99.0.0", true], ["v99.0.0", true]]:
+		(net.get("shown") as Array).clear()
+		_serve(net, url, {"tag_name": c[0], "html_url": "https://github.com/x/y/releases/tag/1"})
+		await net._check_modloader_update_async()
+		check_eq((net.get("shown") as Array).size() == 1, c[1], "update prompt for " + c[0])
+
+# Only a 64-hex sha256 is pinned, lower-cased.
+func _t48_pack_sha_pins(ml: Object) -> void:
+	begin("T48")
+	var good := "AB".repeat(32)
+	var mods := []
+	for sha in ["abc", good + "0", good, "", null]:
+		mods.append({"slug": "m%d" % mods.size(), "available": true, "version": "1", "sha256": sha})
+	var conv: Dictionary = ml._hosted_manifest_to_profile({"slug": "p", "mods": mods})
+	check_eq(conv["profile"].get("checksums", {}), {str(ml.HOSTED_KEY_PREFIX) + "m2": good.to_lower()}, "only the 64-char sha pinned")

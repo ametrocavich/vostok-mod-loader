@@ -25,7 +25,7 @@ var _exe_cfg := ""
 var _built: PackedStringArray = []
 
 func _init() -> void:
-	super("boot-state", "T1..T43")
+	super("boot-state", "T1..T50")
 
 func _run() -> void:
 	_ml = boot_loader()
@@ -54,7 +54,9 @@ func _run() -> void:
 				_t31_update_keeps_mounts, _t32_restart_dirty_at_init, _t33_streak_after_reload,
 				_t34_force_vanilla_early, _t35_crash_notice, _t36_hook_pack_sweeps,
 				_t37_dynamic_override_targets, _t38_rewrite_detection, _t39_pack_records_scripts,
-				_t40_deferred_watchdog, _t41_compile_proof, _t42_pck_v4_warning, _t43_lost_target_causes]:
+				_t40_deferred_watchdog, _t41_compile_proof, _t42_pck_v4_warning, _t43_lost_target_causes,
+				_t44_trip_at_max, _t45_pack_path_sane, _t46_deleted_folder_mod, _t47_stale_cache_sweep,
+				_t48_deferred_probe, _t49_banner_more, _t50_menu_hook_seed]:
 			begin(str(t.get_method()).get_slice("_", 1).to_upper())
 			t.call()
 	_finish()
@@ -1235,6 +1237,101 @@ func _t43_lost_target_causes() -> void:
 			"partial names the methods")
 	_ml._log_hook_reconciliation({})
 	H.remove_user_file(str(_ml.HOOK_STATUS_PATH))
+
+# The legacy count wipes pass state at MAX crashes, not one later.
+func _t44_trip_at_max() -> void:
+	for c in [[_max, false], [_max - 1, true]]:
+		H.wipe_user()
+		var cfg := ConfigFile.new()
+		cfg.set_value("state", "restart_count", c[0])
+		cfg.save(_state_path)
+		_ml._write_heartbeat()
+		_ml._check_crash_recovery()
+		check_eq(FileAccess.file_exists(_state_path), c[1], "pass state present at count %d" % c[0])
+		_assert(not FileAccess.file_exists(_heartbeat_path), "recovery deletes the heartbeat")
+	H.wipe_user()
+
+func _t45_pack_path_sane() -> void:
+	var dir := str(_ml.HOOK_PACK_DIR)
+	var prefix := str(_ml.HOOK_PACK_PREFIX)
+	for c in [[dir + "/" + prefix + "_12.zip", true], [dir + "/" + prefix + "_12.ZIP", true],
+			[dir + "/sub/" + prefix + "_12.zip", false], [dir + "/../" + prefix + "_12.zip", false],
+			[dir + "/other_12.zip", false], [dir + "/" + prefix + "_12.txt", false],
+			["user://elsewhere/" + prefix + "_12.zip", false]]:
+		check_eq(bool(_ml._pack_path_sane(c[0])), c[1], "sane pack path %s" % c[0])
+
+# A deleted folder mod's cache zip outlives it; either path form must notice.
+func _t46_deleted_folder_mod() -> void:
+	H.wipe_user()
+	var tmp := str(_ml.TMP_DIR)
+	var dev := tmp.path_join("t46_no_such_folder_dev.zip")
+	var plain := tmp.path_join("t46_plain.zip")
+	_write_file(dev, "x")
+	_write_file(plain, "x")
+	for path in [dev, ProjectSettings.globalize_path(dev)]:
+		_assert(bool(_ml._any_archive_missing(PackedStringArray([path]), PackedStringArray())),
+				"deleted folder mod missing: %s" % path)
+	_assert(not bool(_ml._any_archive_missing(PackedStringArray([plain]), PackedStringArray())),
+			"a present archive is not missing")
+	H.wipe_user()
+
+func _t47_stale_cache_sweep() -> void:
+	H.wipe_user()
+	var mods := ProjectSettings.globalize_path("user://t47_mods")
+	DirAccess.make_dir_recursive_absolute(mods.path_join("kept"))
+	var saved_mods_dir: String = _ml.get("_mods_dir")
+	_ml.set("_mods_dir", mods)
+	var tmp := str(_ml.TMP_DIR)
+	for f in ["gone_dev.zip", "gone_dev.zip.src", "kept_dev.zip", "orphan.zip"]:
+		_write_file(tmp.path_join(f), "x")
+	_ml._clean_stale_cache()
+	_ml.set("_mods_dir", saved_mods_dir)
+	for c in [["gone_dev.zip", false], ["gone_dev.zip.src", false], ["kept_dev.zip", true], ["orphan.zip", false]]:
+		check_eq(FileAccess.file_exists(tmp.path_join(c[0])), c[1], "%s kept by the sweep" % c[0])
+	H.wipe_user()
+
+# Only Pass 1 probes a deferred script; a later generation ships it unprobed.
+func _t48_deferred_probe() -> void:
+	var source := "extends Node
+func Open():
+	pass
+"
+	var parsed: Dictionary = _ml._rtv_parse_script("T48.gd", source)
+	for c in [[false, true, 0], [true, true, 1], [false, false, 1]]:
+		_ml.set("_hook_pack_vetting", true)
+		_ml.set("_hook_pack_pre_restart", c[0])
+		_ml.set("_probe_count", 0)
+		var got: Dictionary = _ml._hook_pack_vet_rewrite("res://Scripts/T48.gd", source, parsed, {"open": true}, c[1])
+		check_eq(int(_ml.get("_probe_count")), c[2], "probes, pre_restart %s deferred %s" % [c[0], c[1]])
+		check_eq(str(got["mode"]), "full", "a compiling rewrite stays full")
+	_ml.set("_hook_pack_vetting", false)
+	_ml.set("_hook_pack_pre_restart", false)
+	_ml.set("_probe_count", 0)
+	(_ml.get("_hook_pack_demotions") as Dictionary).clear()
+
+func _t49_banner_more() -> void:
+	for c in [[3, false], [4, true]]:
+		var lost := []
+		for i in c[0]:
+			lost.append("T49_%d.gd" % i)
+		_ml._hook_status_write({"state": "ok", "lost": lost})
+		var text := str(_ml._hook_status_problem().get("text", ""))
+		check_eq(text.contains("(and 1 more)"), c[1], "%d lost says and 1 more" % c[0])
+	H.remove_user_file(str(_ml.HOOK_STATUS_PATH))
+
+# The Mods button's Menu.gd wrap must not narrow a mod's wildcard.
+func _t50_menu_hook_seed() -> void:
+	var menu := "res://Scripts/Menu.gd"
+	var hooked: Dictionary = _ml.get("_hooked_methods")
+	var saved := hooked.duplicate(true)
+	for c in [[null, {"_ready": true}], [{}, {}], [{"open": true}, {"open": true, "_ready": true}]]:
+		hooked.erase(menu)
+		if c[0] != null:
+			hooked[menu] = (c[0] as Dictionary).duplicate()
+		_ml._seed_core_hooks()
+		check_eq(hooked.get(menu), c[1], "Menu.gd mask after seeding %s" % str(c[0]))
+	hooked.clear()
+	hooked.merge(saved)
 
 # One crashed launch in production order: boot (static-init wipe, then
 # _check_crash_recovery), Pass 1 arms the restart (heartbeat, then pass

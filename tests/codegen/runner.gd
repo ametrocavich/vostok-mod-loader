@@ -225,6 +225,67 @@ func _check_parser_edges(ml: Object) -> void:
 		"Hook on Edges.gd::two will NEVER fire: its declaration spans several lines, which the rewriter does not read.",
 	], "mask warnings")
 	lines.clear()
+	_check_rewriter_units(ml)
+
+# Rewriter helpers called directly on lines no fixture holds.
+func _check_rewriter_units(ml: Object) -> void:
+	_report.begin("BareSuper")
+	for c in [["\tsuper (1)", "\tsuper.Foo(1)"], ["\tvar a = helper_super(1)", "\tvar a = helper_super(1)"],
+			["\t_super(2)", "\t_super(2)"], ["\tx.super(1)", "\tx.super(1)"],
+			["\tsuper(1) # super(2)", "\tsuper.Foo(1) # super(2)"]]:
+		_report.check_eq(str(ml._rewrite_bare_super(c[0], "Foo")), c[1], "bare super of '%s'" % c[0])
+
+	var lines: Array = ml.get("_report_lines")
+	_report.begin("LineEnds.gd")
+	var lf := "extends Node\nfunc Foo():\n\treturn 1\n"
+	var cr_out: String = ml._rtv_rewrite_vanilla_source(lf.replace("\n", "\r"),
+			ml._rtv_parse_script("LineEnds.gd", lf), {})
+	_report.check(not ("\r" in cr_out) and "func _rtv_vanilla_Foo(" in cr_out, "CR-only source not normalized")
+	lines.clear()
+
+	_report.begin("SpaceIndent.gd")
+	var sp := "extends Node\nfunc Foo():\n  # odd comment\n    return 1\n"
+	var sp_out: String = ml._rtv_rewrite_vanilla_source(sp, ml._rtv_parse_script("SpaceIndent.gd", sp), {})
+	_report.check(WRAPPER_MARKER in sp_out, "space-indented wrapper emitted")
+	var widths := []
+	for l in sp_out.substr(sp_out.find(WRAPPER_MARKER)).split("\n"):
+		if l.begins_with(" ") and (l.length() - l.lstrip(" ").length()) % 4 != 0:
+			widths.append(l)
+	_report.check(widths.is_empty(), "wrapper indent not 4 spaces: %s" % str(widths.slice(0, 1)))
+
+	_report.begin("ColZero.gd")
+	var cz := "extends Node\nfunc A():\n\tpass\nvar x = 1\n\tawait foo()\nfunc B():\n\tpass\n"
+	var cz_funcs: Array = ml._rtv_parse_script("ColZero.gd", cz)["functions"]
+	_report.check_eq(cz_funcs.size(), 2, "ColZero functions parsed")
+	for fe in cz_funcs:
+		_report.check(not fe["is_coroutine"], "%s coroutine past a column-0 line" % fe["name"])
+
+	_report.begin("EnemyRoute")
+	var routed: String = ml._route_enemy_assignments(
+			"\tenemy = null\n\tenemy = true\n\tagent = false\n\tenemy = Bandit")
+	_report.check_eq(routed, "\tenemy = null\n\tenemy = true\n\tagent = false\n" \
+			+ "\tenemy = _rtv_resolve_ai_type(zone, Bandit)", "only the named enemy routed")
+
+	_report.begin("Prelude")
+	var pre: Array[String] = ["\tPRE"]
+	var spawn := PackedStringArray(["func _rtv_vanilla_Spawn():", "\tvar a = 1", "\tvar b = 2",
+			"\tif a:", "\t\tvar c = 3", "\tpass"])
+	var spliced: PackedStringArray = ml._insert_prelude(spawn, "Compiler.gd", "Spawn", pre, "\t", true)
+	_report.check_eq(spliced.find("\tPRE"), 3, "prelude after the opening vars")
+	lines.clear()
+
+	_report.begin("LoadSceneTail")
+	for c in [["\tx", "\t", true], ["\t\tx", "\t", false], ["  x", "  ", true], ["    x", "  ", false]]:
+		_report.check_eq(bool(ml._is_body_level(c[0], c[1])), c[2], "body level of '%s'" % c[0].c_escape())
+	var head := "func _rtv_vanilla_LoadScene(scene):"
+	var tail := "get_tree().change_scene_to_file(scenePath)"
+	var nested := PackedStringArray([head, "\tif x:", "\t\t" + tail])
+	_report.check_eq(ml._loadscene_reapply(nested, "\t"), nested, "nested tail left unchanged")
+	_report.check(lines.size() == 1 and "lacks its tail" in str(lines[0]), "nested-only tail not critical")
+	lines.clear()
+	var awaited: PackedStringArray = ml._loadscene_reapply(
+			PackedStringArray([head, "\tif x:", "\t\tawait foo", "\t" + tail]), "\t")
+	_report.check(awaited[3].begins_with("\t# --- Metro mod loader"), "re-apply not after nested await")
 
 func _vet(ml: Object, path: String, source: String, parsed: Dictionary) -> Dictionary:
 	ml.set("_hook_pack_vetting", true)

@@ -34,7 +34,7 @@ class ManifestStub extends "res://stub_loader.gd":
 		return host_ok(served[url])
 
 func _init() -> void:
-	super("profiles", "T10..T92")
+	super("profiles", "T10..T100")
 
 func _tests(ml: Object) -> void:
 	# Mod scans and id matching read the regexes _ready compiles.
@@ -76,6 +76,14 @@ func _tests(ml: Object) -> void:
 		["T89", _t89_capture_from_a_slotless_profile_takes_the_live_mcm],
 		["T90", _t90_in_place_update_needs_a_restart], ["T91", _t91_row_counts_hash_no_file],
 		["T92", _t92_pack_scan_opens_each_zip_once],
+		["T93", _t93_unlisted_active_lands_on_the_first_profile],
+		["T94", _t94_id_prefix_takes_no_other_mods_keys],
+		["T95", _t95_profile_names_keep_every_digit],
+		["T96", _t96_resnapshot_drops_deleted_mcm_files],
+		["T97", _t97_mcm_copy_skips_dot_entries],
+		["T98", _t98_hashless_pack_reimports_its_changes],
+		["T99", _t99_slotless_active_pack_refuses_a_replace],
+		["T100", _t100_newest_same_named_pack_wins],
 	]:
 		begin(t[0])
 		await t[1].call(ml)
@@ -1684,4 +1692,101 @@ func _t92_pack_scan_opens_each_zip_once(ml: Object) -> void:
 	pack.call("Read Again")
 	check_eq(str(ml.collect_modpack_metadata()[0]["raw_name"]), "Read Again", "pack name from a changed zip")
 	_drop_mods_dir(ml, "user://t92_mods", previous)
+	H.pack_cleanup(ml)
+
+func _t93_unlisted_active_lands_on_the_first_profile(ml: Object) -> void:
+	H.pack_cleanup(ml)
+	_seed(ml, [["settings", "active_profile", "Ghost"], ["profile.Zed.enabled", "a@1.0", true],
+			["profile.Alpha.enabled", "a@1.0", true]])
+	ml._load_ui_config()
+	check_eq(str(ml.get("_active_profile")), "Alpha", "profile after an unlisted active")
+	ml.set("_active_profile", "Default")
+	H.pack_cleanup(ml)
+
+# foo must not adopt foobar@1.0's rows after a version change.
+func _t94_id_prefix_takes_no_other_mods_keys(ml: Object) -> void:
+	for c in [["foo@1.0", true], ["FOO@1.0", true], ["foobar@1.0", false], ["foo", false]]:
+		check_eq(ml._key_names_id(c[0], "foo"), c[1], "%s names foo" % c[0])
+	H.pack_cleanup(ml)
+	var foo := H.mod_entry("foo@2.0", "foo", "2.0")
+	_install(ml, [foo])
+	var cfg := ConfigFile.new()
+	cfg.set_value("profile.Test.enabled", "foobar@1.0", true)
+	cfg.set_value("profile.Test.priority", "foobar@1.0", 9)
+	ml._apply_profile_to_entries(cfg, "Test")
+	check_eq([foo["enabled"], foo["priority"], foo.has("profile_version_mismatch")], [false, 0, false],
+			"foo keeps its defaults")
+	H.pack_cleanup(ml)
+
+func _t95_profile_names_keep_every_digit(ml: Object) -> void:
+	for c in [["Run 0123456789", "Run 0123456789"], ["A9", "A9"], ["a/b:c.d", "abcd"]]:
+		check_eq(str(ml._sanitize_profile_name(c[0])), c[1], "sanitized '%s'" % c[0])
+
+func _t96_resnapshot_drops_deleted_mcm_files(ml: Object) -> void:
+	H.pack_cleanup(ml)
+	H.write_text(LIVE_MCM, "a")
+	H.write_text(LIVE_M, "b")
+	ml._snapshot_mcm_to("T96")
+	DirAccess.remove_absolute(LIVE_M)
+	ml._snapshot_mcm_to("T96")
+	var slot := str(ml._mcm_snapshot_dir("T96"))
+	_assert(FileAccess.file_exists(slot.path_join("some-mod/config.ini")), "the kept file is in the slot")
+	_assert(not FileAccess.file_exists(slot.path_join("m/config.ini")), "the deleted file left the slot")
+	_assert(ml._restore_mcm_from("T96") and not FileAccess.file_exists(LIVE_M), "restore brings no deleted file")
+	H.pack_cleanup(ml)
+
+func _t97_mcm_copy_skips_dot_entries(ml: Object) -> void:
+	for d in ["user://t97_src", "user://t97_dst"]:
+		ml._remove_tree(d, false)
+	H.write_text("user://t97_src/keep.cfg", "k")
+	H.write_text("user://t97_src/.hidden", "h")
+	H.write_text("user://t97_src/.hiddendir/x.cfg", "x")
+	ml._copy_dir_recursive("user://t97_src", "user://t97_dst")
+	check_eq([FileAccess.file_exists("user://t97_dst/keep.cfg"), FileAccess.file_exists("user://t97_dst/.hidden"),
+			DirAccess.dir_exists_absolute("user://t97_dst/.hiddendir")], [true, false, false], "copied keep, hidden, hiddendir")
+	for d in ["user://t97_src", "user://t97_dst"]:
+		ml._remove_tree(d, false)
+
+func _t98_hashless_pack_reimports_its_changes(ml: Object) -> void:
+	_pack_setup(ml)
+	ml._remove_tree("user://t98_mods", false)
+	var previous := _use_mods_dir(ml, "user://t98_mods")
+	for v in ["2.0", "2.1"]:
+		var m := _site_manifest("t98-pack", {}, {"hash": null})
+		m["mods"][0]["version"] = v
+		var r: Dictionary = ml._hosted_import_manifest(m)
+		_assert(r["ok"] and r["changed"], "hashless %s import changes: %s" % [v, str(r)])
+		var pd: Variant = ml._modpack_read_profile(str(ml._hosted_pack_file_path("t98-pack")))
+		_assert(pd != null and JSON.stringify(pd).contains(v), "the pack holds foo " + v)
+	_drop_mods_dir(ml, "user://t98_mods", previous)
+	H.pack_cleanup(ml)
+
+# No zip on disk yet, but the active pack has the incoming name.
+func _t99_slotless_active_pack_refuses_a_replace(ml: Object) -> void:
+	_pack_setup(ml)
+	ml._remove_tree("user://t99_mods", false)
+	var previous := _use_mods_dir(ml, "user://t99_mods")
+	var cfg := _read(ml)
+	cfg.set_value("settings", "active_modpack", "T99 Pack")
+	_save(ml, cfg, "seeded the active pack")
+	var r: Dictionary = ml._hosted_import_manifest(_site_manifest("t99-pack", {}, {"name": "T99 Pack"}))
+	_assert(not r["ok"] and str(r["error"]).begins_with("Unload"), "import refused: %s" % str(r))
+	_assert(not FileAccess.file_exists(str(ml._hosted_pack_file_path("t99-pack"))), "no pack written")
+	_drop_mods_dir(ml, "user://t99_mods", previous)
+	H.pack_cleanup(ml)
+
+func _t100_newest_same_named_pack_wins(ml: Object) -> void:
+	H.pack_cleanup(ml)
+	ml._remove_tree("user://t100_mods", false)
+	var previous := _use_mods_dir(ml, "user://t100_mods")
+	(ml.get("_modpack_zip_memo") as Dictionary).clear()
+	var profile := JSON.stringify({"metroprofile": 1, "name": "Same", "enabled": {}})
+	H.write_zip("user://t100_mods/b_old.zip", {"profile.json": profile}, _report)
+	# Modified times count whole seconds.
+	OS.delay_msec(1100)
+	H.write_zip("user://t100_mods/a_new.zip", {"profile.json": profile}, _report)
+	var packs: Array = ml.collect_modpack_metadata()
+	_assert(packs.size() == 1 and str(packs[0]["file_name"]) == "a_new.zip", "the newer zip is listed")
+	check_eq(str(packs[0].get("duplicates_hidden", [{}])[0].get("file_name", "")), "b_old.zip", "the older zip is hidden")
+	_drop_mods_dir(ml, "user://t100_mods", previous)
 	H.pack_cleanup(ml)

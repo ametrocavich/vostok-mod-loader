@@ -36,14 +36,15 @@ const KEYWORDS := ["if", "elif", "else", "for", "while", "break", "continue", "p
 		"preload", "self", "signal", "static", "super", "trait", "var", "void", "yield"]
 
 func _init() -> void:
-	super("detok", "T1..T17")
+	super("detok", "T1..T22")
 
 func _tests(ml: Object) -> void:
 	for t in [_t1_v101_baseline, _t2_v100_matches_v101, _t3_no_placeholders, _t4_tk_empty_skipped,
 			_t5_shifted_indices, _t6_vfs_read_not_cached, _t7_pck_wins_over_vfs, _t8_old_cache_dropped,
 			_t9_gdc_fallback_read, _t10_canary_any_probe, _t11_changed_pck_drops_cache, _t12_await_space,
 			_t13_string_escapes, _t14_script_enumeration, _t15_canary_b_version, _t16_keyword_spacing,
-			_t17_pck_readers_agree]:
+			_t17_pck_readers_agree, _t18_vmz_copy_cache, _t19_tracked_extensions, _t20_hooks_backslash,
+			_t21_tiny_class_cache, _t22_empty_gdc_beside_gd]:
 		begin(str(t.get_method()).get_slice("_", 1).to_upper())
 		t.call(ml)
 
@@ -393,6 +394,60 @@ func _t17_pck_readers_agree(ml: Object) -> void:
 	_reset_cache(ml)
 	ml.set("_game_pck_path_override", "")
 	DirAccess.remove_absolute(pck_abs)
+
+# An updated .vmz must replace the cached copy, not mount the old one.
+func _t18_vmz_copy_cache(ml: Object) -> void:
+	var vmz := ProjectSettings.globalize_path("user://t18/Mod.vmz")
+	var zip := ""
+	for body in ["first build", "second build, a longer one"]:
+		_assert(H.write_text(vmz, body), "wrote the vmz")
+		zip = str(ml._static_vmz_to_zip(vmz))
+		check_eq(FileAccess.get_file_as_string(zip), body, "the cached copy")
+		check_eq(FileAccess.get_file_as_string(zip + ".src"),
+				"%d:%d" % [FileAccess.get_modified_time(vmz), body.length()], "the copy's stamp")
+	# A marker in the copy shows an unchanged vmz is not copied again.
+	_assert(H.write_text(zip, "marker"), "marked the cached copy")
+	check_eq(FileAccess.get_file_as_string(str(ml._static_vmz_to_zip(vmz))), "marker", "an unchanged vmz's copy")
+	for p in [zip, zip + ".src", vmz]:
+		DirAccess.remove_absolute(p)
+
+func _t19_tracked_extensions(ml: Object) -> void:
+	for r in [["Scripts/Foo.GD", "res://Scripts/Foo.GD"], ["Items/Item.TRES", "res://Items/Item.TRES"],
+			["a.tscn", "res://a.tscn"], [".hidden.gd", ""], ["mod.txt", ""], ["readme.md", ""]]:
+		check_eq(str(ml._normalize_to_res_path(r[0])), r[1], r[0])
+
+func _t20_hooks_backslash(ml: Object) -> void:
+	var text := str(ml._quote_unquoted_hooks_values("[hooks]\nx = a\\b, c\n"))
+	var cfg := ConfigFile.new()
+	if _assert(cfg.parse(text) == OK, "the quoted text parses (got: %s)" % H.oneline(text)):
+		check_eq(str(cfg.get_value("hooks", "x", "")), "a\\b, c", "the hooks value")
+
+# A mod can shadow the class cache with a handful of entries.
+func _t21_tiny_class_cache(ml: Object) -> void:
+	var cfg_path := "res://.godot/global_script_class_cache.cfg"
+	var full := (ml._get_hardcoded_class_map() as Dictionary).size()
+	for r in [[5, full], [9, full], [10, 10]]:
+		var list: Array = []
+		for i in r[0]:
+			list.append({"class": "C%d" % i, "path": "res://Scripts/C%d.gd" % i})
+		var cfg := ConfigFile.new()
+		cfg.set_value("", "list", list)
+		_assert(H.write_text(cfg_path, cfg.encode_to_text()), "wrote the class cache")
+		ml._build_class_name_lookup()
+		check_eq((ml.get("_class_name_to_path") as Dictionary).size(), r[1], "map size for %d entries" % r[0])
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(cfg_path))
+
+func _t22_empty_gdc_beside_gd(ml: Object) -> void:
+	_reset_cache(ml)
+	var pck := "user://t22.pck"
+	var text := "extends Node\nvar dual = true\n"
+	_assert(_write_pck(pck, {"res://Scripts/Dual.gdc": "", "res://Scripts/Dual.gd": text}), "wrote the pack")
+	ml.set("_game_pck_path_override", ProjectSettings.globalize_path(pck))
+	check_eq((ml._vanilla_bytes_from_pck("res://Scripts/Dual.gd") as PackedByteArray).get_string_from_utf8(),
+			text, "the .gd beside an empty .gdc")
+	_reset_cache(ml)
+	ml.set("_game_pck_path_override", "")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(pck))
 
 func _reset_cache(ml: Object) -> void:
 	H.reset_pck_state(ml)

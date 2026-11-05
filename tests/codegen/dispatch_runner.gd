@@ -32,7 +32,7 @@ var _fake_db: Node
 var _fake_loader: Node
 
 func _init() -> void:
-	super("dispatch", "T1..T46")
+	super("dispatch", "T1..T50")
 	# A coroutine that never resumes hangs the run; a clean one needs under 20 frames.
 	max_frames = 2000
 
@@ -51,7 +51,8 @@ func _run() -> void:
 			_t35_events_are_array_entries, _t36_trader_task_entries, _t37_loot_is_an_array_entry,
 			_t38_batch_verbs_report_per_id, _t39_unsupported_verbs_refuse, _t40_bundles_report_each_step,
 			_t41_setup_runs_every_verb, _t42_trader_pool_flags, _t43_revert_order, _t44_one_resource_instance,
-			_t45_vanilla_enumeration, _t46_registry_parity,
+			_t45_vanilla_enumeration, _t46_registry_parity, _t47_caller_across_coroutines,
+			_t48_last_unhook_drops_base, _t49_item_fields, _t50_locked_tabs_unlock,
 		]
 		for t in tests:
 			begin("T" + String(t.get_method()).get_slice("_", 1).substr(1))
@@ -1900,3 +1901,70 @@ func _p46_ai_loadouts() -> void:
 		["z1 remove", func(): return _lib.remove("ai_loadouts", "rtv46_l1"), true, {"e1": null, "meta": [e2]}],
 		["z2 remove", func(): return _lib.remove("ai_loadouts", "rtv46_l2"), true, "vanilla"],
 	])
+
+# A resumes before B, while B's wrapper still holds _caller.
+func _t47_caller_across_coroutines() -> void:
+	var id: int = _lib.hook("fixturedispatch-corovalue-post", func(x, res):
+		_log.append("post:%d:%s" % [x, str(_lib._caller.name) if _lib._caller != null else "null"])
+		return res)
+	var run := func(): await _node_a.CoroValue(1)
+	run.call()
+	await _node_b.CoroValue(2)
+	await process_frame
+	check_eq(_log.filter(func(e): return e.begins_with("post:")), ["post:1:A", "post:2:B"], "each post hook sees its caller")
+	_lib._caller = null
+	_unhook_all([id])
+
+func _t48_last_unhook_drops_base() -> void:
+	var ida: int = _lib.hook("fixturedispatch-note-pre", func(_m): pass)
+	var idb: int = _lib.hook("fixturedispatch-note-post", func(_m): pass)
+	_lib.unhook(ida)
+	check_eq(_lib._hooked_bases.get("fixturedispatch-note"), 1, "one hook left on the base")
+	_lib.unhook(idb)
+	_assert(not _lib._hooked_bases.has("fixturedispatch-note"), "the last unhook drops the base")
+
+func _t49_item_fields() -> void:
+	var saved = _ml.get("_vanilla_items")
+	_ml.set("_vanilla_items", {})
+	var id := "rtv49_item"
+	var item: Resource = _script("extends Resource\nvar file := \"wrong\"\nvar tags: Array = [\"c\"]\n" \
+			+ "var flags: Array[bool] = []\n").new()
+	_assert(_lib.register("items", id, item), "register a misfiled item")
+	check_eq(item.get("file"), id, "register sets file to the id")
+	_assert(_lib.prepend("items", id, "tags", ["a", "b"]), "prepend two values")
+	check_eq(item.get("tags"), ["a", "b", "c"], "prepend keeps the given order")
+	_assert(_lib.append("items", id, "flags", [1.0]), "a float appends to Array[bool]")
+	check_eq(_plain(item.get("flags")), [true], "the float lands as true")
+	_assert(not _lib.append("items", id, "flags", ["x"]), "a String does not")
+	var theirs := _stub("item", {"file": ""})
+	_assert(_lib.override("items", id, theirs), "override the item")
+	check_eq(theirs.get("file"), id, "override sets file to the id")
+	_lib.revert("items", id)
+	_lib.remove("items", id)
+	_ml.set("_vanilla_items", saved)
+
+# Equipment and Misc ship disabled; a recipe there must enable the tab button.
+func _t50_locked_tabs_unlock() -> void:
+	_registry_tree()
+	var book := _stub("recipes")
+	_ml._registry_resource_cache[RECIPES_PATH] = book
+	var scene := "res://UI/Interface.tscn"
+	var buttons := "Tools/Crafting/Types/Margin/Buttons/"
+	# The harness has no Interface.tscn; the validator's cache stands in for it.
+	var cache_keys: Array = []
+	for tab in ["Equipment", "Misc"]:
+		cache_keys.append("%s#%s%s|disabled,modulate" % [scene, buttons, tab])
+		_ml._validated_patches[cache_keys[-1]] = true
+	for category in ["consumables", "equipment", "misc"]:
+		_assert(_lib.register("recipes", "rtv50_" + category, {"recipe": _stub("recipe"), "category": category}),
+				"register into " + category)
+	var patches: Dictionary = _ml._scene_node_patches.get(scene, {})
+	check_eq(patches.size(), 2, "only the locked tabs are patched")
+	for tab in ["Equipment", "Misc"]:
+		check_eq(patches.get(buttons + tab), {"disabled": false, "modulate": Color(1, 1, 1, 1)}, tab + " button enabled")
+	for category in ["consumables", "equipment", "misc"]:
+		_lib.remove("recipes", "rtv50_" + category)
+	_ml._scene_node_patches.erase(scene)
+	for k in cache_keys:
+		_ml._validated_patches.erase(k)
+	_ml._registry_resource_cache.erase(RECIPES_PATH)

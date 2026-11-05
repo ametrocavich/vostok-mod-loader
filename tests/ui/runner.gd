@@ -1,4 +1,4 @@
-## Launcher UI harness: T1..T5, T7, T8 and T10..T30 assert helpers, seams, Browse kinds, the Modpacks tab, covers and the launch label; T9 dumps every surface for check_ui.sh.
+## Launcher UI harness: T1..T5, T7, T8 and T10..T35 assert helpers, seams, Browse kinds, the Modpacks tab, covers and the launch label; T9 dumps every surface for check_ui.sh.
 ## A dump records properties, not pixels; host requests fail as offline (the loader stays out of the tree).
 extends "res://runner_base.gd"
 
@@ -87,12 +87,35 @@ class MetaStub extends "res://stub_loader.gd":
 		mod["ref"] = ref
 		return host_ok(mod)
 
+## The loader with the content-mod confirm answered from a field and no cfg save.
+class ToggleStub extends "res://stub_loader.gd":
+	var answer := true
+	var confirms: Array = []
+	var install := {}
+
+	func _confirm_disable_content_mod(mod_name: String, _count: int = 1) -> bool:
+		confirms.append(mod_name)
+		return answer
+
+	func _browse_install_map() -> Dictionary:
+		return install
+
+	func _save_ui_config() -> void:
+		pass
+
+## The loader with every queued metadata fetch kept, not sent.
+class FetchStub extends "res://stub_loader.gd":
+	var fetched: Array = []
+
+	func _fetch_meta_queued(ref: Dictionary) -> void:
+		fetched.append(host_ref_key(ref))
+
 var _out: PackedStringArray = []
 var _user_abs := ""
 var _version := ""
 
 func _init() -> void:
-	super("ui", "T1..T5, T7, T8 and T10..T30")
+	super("ui", "T1..T5, T7, T8 and T10..T35")
 	max_frames = 600
 
 func _run() -> void:
@@ -129,6 +152,11 @@ func _run() -> void:
 	await _t14_to_t18_packs(win)
 	await _t19_force_unload_confirm(win)
 	await _t20_launch_saves_the_meta_sidecar()
+	_t31_scale_setting_clamp(ml)
+	_t32_scale_fits_area()
+	_t33_meta_refresh_window()
+	await _t34_content_mod_confirm()
+	_t35_menu_button_order(ml)
 	ml.set("_ui_window", null)
 	root.remove_child(win)
 	win.free()
@@ -137,7 +165,7 @@ func _run() -> void:
 	await _dump_all(ml)
 	H.write_text(DUMP_PATH, "\n".join(_out) + "\n")
 	ml.free()
-	_report.scope = "T1..T5, T7, T8 and T10..T30, dump of %d line(s) written for T9" % _out.size()
+	_report.scope = "T1..T5, T7, T8 and T10..T35, dump of %d line(s) written for T9" % _out.size()
 	_finish()
 
 func _t1_browse_meta_and_gate(ml: Object) -> void:
@@ -983,6 +1011,92 @@ func _t20_launch_saves_the_meta_sidecar() -> void:
 	root.remove_child(ms)
 	H.remove_user_file(sidecar)
 	ms.free()
+
+func _t31_scale_setting_clamp(ml: Object) -> void:
+	begin("T31")
+	var path := str(ml.UI_CONFIG_PATH)
+	for c in [[5.0, 2.0], [0.2, 1.0], [1.5, 1.5]]:
+		var cfg := ConfigFile.new()
+		cfg.set_value("settings", "ui_scale", c[0])
+		cfg.save(path)
+		check_num(ml._ui_scale_setting(), c[1], "ui_scale %s clamped" % c[0])
+	H.remove_user_file(path)
+	H.remove_user_file(path + ".bak")
+
+# _window_area reads the tree, so the loader joins it; headless, the root is 64x64.
+func _t32_scale_fits_area() -> void:
+	begin("T32")
+	var sl: Object = load("res://stub_loader.gd").new()
+	sl.set("_has_loaded", true)
+	root.add_child(sl)
+	var root_size := root.size
+	root.size = Vector2i(1280, 720)
+	var win := Window.new()
+	sl._apply_ui_scale(win, 2.0)
+	check_eq([Vector2i(root.get_visible_rect().size), win.size], [Vector2i(1280, 720), Vector2i(1240, 680)],
+			"scale 2 fits the area")
+	root.size = root_size
+	win.free()
+	root.remove_child(sl)
+	sl.free()
+
+# A record under a day old is kept; an older one refetches.
+func _t33_meta_refresh_window() -> void:
+	begin("T33")
+	var fs: Object = FetchStub.new()
+	fs.set("_mods_meta_sidecar_loaded", true)
+	var now := int(Time.get_unix_time_from_system())
+	for c in [["fresh", 10, 0], ["stale", 2 * 86400, 1]]:
+		var ref: Dictionary = fs.host_ref("vostokmods", c[0])
+		var key: String = fs.host_ref_key(ref)
+		fs._mods_meta_by_key[key] = {}
+		fs._mods_meta_saved_at[key] = now - c[1]
+		fs.fetched.clear()
+		fs._load_host_meta(ref)
+		check_eq(fs.fetched.size(), c[2], "%s record fetches" % c[0])
+	check_eq([fs._arm_meta_retry("k"), fs._arm_meta_retry("k")], [true, false], "a second arm waits")
+	fs.free()
+
+# Only disabling a content mod asks; Keep enabled leaves it on.
+func _t34_content_mod_confirm() -> void:
+	begin("T34")
+	var ts: Object = ToggleStub.new()
+	var check := CheckBox.new()
+	var state := {"tabs": null, "list": null}
+	# [enabled, has_registry, answer, confirms, enabled after]
+	for c in [[false, true, false, 1, true], [false, true, true, 1, false],
+			[true, true, false, 0, true], [false, false, false, 0, false]]:
+		var entry := H.mod_entry("zip:c.zip", "c", "1", {"enabled": not c[0], "has_registry": c[1]})
+		var ents: Array[Dictionary] = [entry]
+		ts.set("_ui_mod_entries", ents)
+		ts.install = {"k": entry}
+		ts.answer = c[2]
+		ts.confirms.clear()
+		check.set_pressed_no_signal(c[0])
+		await ts._on_toggle("k", c[0], check, state)
+		check_eq([ts.confirms.size(), entry["enabled"], check.button_pressed], [c[3], c[4], c[4]],
+				"toggle %s registry %s answer %s" % c.slice(0, 3))
+	check.free()
+	ts.free()
+
+func _t35_menu_button_order(ml: Object) -> void:
+	begin("T35")
+	for c in [[["Start", "Quit"], ["Start", "MetroMods", "Quit"]], [["Start"], ["Start", "MetroMods"]]]:
+		var menu := Node.new()
+		var main := Node.new()
+		main.name = "Main"
+		menu.add_child(main)
+		var buttons := VBoxContainer.new()
+		buttons.name = "Buttons"
+		main.add_child(buttons)
+		for n: String in c[0]:
+			var b := Button.new()
+			b.name = n
+			buttons.add_child(b)
+		ml._inject_mods_button(menu)
+		ml._inject_mods_button(menu)
+		check_eq(buttons.get_children().map(func(n: Node): return str(n.name)), c[1], "Mods sits before Quit")
+		menu.free()
 
 func _sorted_buttons(win: Window) -> Array:
 	var texts := Array(_dialog_button_texts(_last_child(win)))
