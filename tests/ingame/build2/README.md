@@ -8,6 +8,8 @@ removed. Every check prints one `[B2TEST] PASS|FAIL` line to the game log
 and `evaluate.py` grades the log. One launch to the main menu is enough; no
 map has to load.
 
+For the 3.5.0 LTS loader also run [tests/ingame/lts](../lts/README.md) (mod API, launcher, profiles, modpacks, downloads; any game build).
+
 The mods never ship. They register content under `b2test_*` ids and remove
 what they can before the menu; the rest lives only in memory.
 

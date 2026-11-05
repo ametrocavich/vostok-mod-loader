@@ -1,0 +1,61 @@
+run start
+16:14:41 step L0
+16:14:42 PASS L0 lib: RTVModLib present, loader 3.5.0
+16:14:43 step D1
+16:14:44 PASS D1 dependency order: lts_dep ready at 1840 ms, lts_core at 1846 ms
+16:14:45 step D2
+16:14:46 PASS D2 has_mod: lts_dep true, 1.0.0 true, 9.9.9 false, lts_nobody false
+16:14:47 step D3
+16:14:48 PASS D3 mod_info and loaded_mods: lts_core 1.0.0 LTSTestCore.zip requires [lts_dep]; loaded [lts_dep, lts_core]
+16:14:49 step D4
+16:14:50 PASS D4 required beats optional: required_dependencies=["lts_dep"]
+16:14:51 step A1
+16:14:52 PASS A1 active_profile: LTSTest
+16:14:53 step G1
+16:14:54 PASS G1 recipes revert order: override gone, original back with its field value, has false
+16:14:55 step G2
+16:14:56 PASS G2 trader_pools two handles: driver true after lts_tp_a removed, false after lts_tp_b
+16:14:57 step G3
+16:14:58 PASS G3 resources cache: same instance both times, both fields reverted
+16:14:59 step G4
+16:15:00 PASS G4 enumeration: scenes 214 keys, recipes 96 keys
+16:15:01 step G5
+16:15:02 PASS G5 refusals and shapes: patch scenes false, revert weapons false, register_many ok+results, remove_many keys exact
+16:15:03 step G6
+16:15:04 PASS G6 setup plan: ok true; malformed step ok false with an error string
+16:15:05 step H1
+16:15:06 PASS H1 menu hook registered: id 3
+16:15:07 SUMMARY boot 13 pass 0 fail
+16:15:08 menu hook fired
+16:15:09 step H1
+16:15:10 PASS H1 menu hook fired: scene=res://Scenes/Menu.tscn
+16:15:11 step U1
+16:15:12 PASS U1 launcher opens: tabs Mods, Browse, Modpacks
+16:15:13 step U2
+16:15:14 PASS U2 tabs render: Mods 3, Browse 2, Modpacks 2 children
+16:15:15 step U3
+16:15:16 PASS U3 dialog opens and closes: ConfirmationDialog gone after cancel
+16:15:17 step U4
+16:15:18 PASS U4 Mods tab rebuild keeps the tab: current tab Mods
+16:15:19 step U5
+16:15:20 PASS U5 close without restart: restart needed false, window freed
+16:15:21 step P1
+16:15:22 PASS P1 create profile post-boot: profile.LTSTemp sections present, switch pending true
+16:15:23 step P2
+16:15:24 PASS P2 switch back: swap to "", pending false, restart false
+16:15:25 step P3
+16:15:26 PASS P3 delete: LTSTemp sections and snapshot slot gone, active LTSTest
+16:15:27 step K1
+16:15:28 PASS K1 apply a local pack: ok, downloaded 0, active_modpack LTS Test Pack, MCM swap pending
+16:15:29 step K2
+16:15:30 PASS K2 unload: ok, active_modpack empty, LTSTest active
+16:15:31 step N0
+16:15:32 PASS N0 network: vostokmods page 1: 24 rows
+16:15:33 step N1
+16:15:34 PASS N1 detail: smallest downloadable row has a name
+16:15:35 step N2
+16:15:36 PASS N2 download end to end: downloaded, then deleted; no longer listed
+16:15:37 step N3
+16:15:38 PASS N3 cover image: texture after 1.4 s
+16:15:39 SUMMARY menu 14 pass 0 fail
+16:15:40 menu tests done
