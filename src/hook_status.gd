@@ -68,7 +68,7 @@ func _hook_status_problem() -> Dictionary:
 	var parts: Array = []
 	for c in [["lost", "Last time the game ran, %d hook target(s) a mod asked for were not found in the game's scripts, so those hooks did nothing: %s%s. This usually follows a game update; check for an update of that mod."],
 			["skipped", "Last time the game ran, the loader skipped %d hook target(s) a mod asked for, so those hooks did nothing: %s%s."],
-			["partial", "Last time the game ran, %d hooked script(s) wrapped only some of the methods a mod asked for, so hooks on the rest did nothing: %s%s."]]:
+			["partial", "Last time the game ran, %d hooked script(s) wrapped only part of what a mod asked for; what is listed did not take effect: %s%s."]]:
 		var lines_v: Variant = rec.get(c[0], [])
 		var lines: Array = lines_v if lines_v is Array else []
 		if lines.is_empty():

@@ -56,7 +56,8 @@ func _run() -> void:
 				_t37_dynamic_override_targets, _t38_rewrite_detection, _t39_pack_records_scripts,
 				_t40_deferred_watchdog, _t41_compile_proof, _t42_pck_v4_warning, _t43_lost_target_causes,
 				_t44_trip_at_max, _t45_pack_path_sane, _t46_deleted_folder_mod, _t47_stale_cache_sweep,
-				_t48_deferred_probe, _t49_banner_more, _t50_menu_hook_seed]:
+				_t48_deferred_probe, _t49_banner_more, _t50_menu_hook_seed, _t51_streak_banner_launch,
+				_t52_partial_registry_banner]:
 			begin(str(t.get_method()).get_slice("_", 1).to_upper())
 			t.call()
 	_finish()
@@ -780,7 +781,8 @@ func _t30_skip_ui_flag() -> void:
 # run whatever it decides: an update must still mount their archives.
 func _t31_update_keeps_mounts() -> void:
 	var stale := ProjectSettings.globalize_path(str(_ml.HOOK_PACK_DIR)).path_join(str(_ml.HOOK_PACK_PREFIX) + "stale.zip")
-	for c in [["loader version change", "0.0.0-harness", "a"], ["game update", str(_ml.MODLOADER_VERSION), "b"]]:
+	for c in [["loader version change", "0.0.0-harness", "a", "Version mismatch: saved=0.0.0-harness"],
+			["game update", str(_ml.MODLOADER_VERSION), "b", "Game build changed -- dropping"]]:
 		begin("T31 %s" % c[0])
 		H.wipe_user()
 		var zip := H.write_zip("user://t31_mod_%s.zip" % c[2], {"t31_marker_%s/hello.txt" % c[2]: c[2]}, _report)
@@ -799,6 +801,9 @@ func _t31_update_keeps_mounts() -> void:
 		_assert(not FileAccess.file_exists(_state_path), "pass state is discarded for a rebuild")
 		if c[2] == "a":
 			_assert(not FileAccess.file_exists(stale), "the stale hook pack is wiped")
+		var fs_log := FileAccess.get_file_as_string("user://modloader_filescope.log")
+		_assert(fs_log.contains(c[3]), "the log names the drop cause")
+		_assert(fs_log.contains("hook pack skipped (stale)"), "the log says the pack was skipped")
 	H.wipe_user()
 
 # A mod that crashes an autoload never reaches _run_pass_2; without the
@@ -1332,6 +1337,26 @@ func _t50_menu_hook_seed() -> void:
 		check_eq(hooked.get(menu), c[1], "Menu.gd mask after seeding %s" % str(c[0]))
 	hooked.clear()
 	hooked.merge(saved)
+
+# At the breaker's count the launch about to start already skips the restart.
+func _t51_streak_banner_launch() -> void:
+	for c in [[_max - 1, "if the next one fails too"], [_max, "so this launch skips the restart"],
+			[_max + 1, "so this launch skips the restart"]]:
+		H.wipe_user()
+		_ml._static_write_crash_streak(c[0])
+		var text := str(_ml._crash_notice_problem(false).get("text", ""))
+		_assert(text.contains(c[1]), "streak %d says '%s'" % [c[0], c[1]])
+	H.wipe_user()
+
+# A missing registry marker is a partial entry; the hooks still fire.
+func _t52_partial_registry_banner() -> void:
+	for entry in ["Loader.gd (declared by a mod) did not wrap: registry transform (marker 'x' absent -- registry features on this script will not work)",
+			"T52.gd (declared by a mod) did not wrap: sync (an @rpc)"]:
+		_ml._hook_status_write({"state": "ok", "partial": [entry]})
+		var text := str(_ml._hook_status_problem().get("text", ""))
+		_assert(text.contains(entry), "the banner names the entry")
+		_assert(not text.contains("hooks on the rest did nothing"), "no claim that hooks did nothing")
+	H.remove_user_file(str(_ml.HOOK_STATUS_PATH))
 
 # One crashed launch in production order: boot (static-init wipe, then
 # _check_crash_recovery), Pass 1 arms the restart (heartbeat, then pass

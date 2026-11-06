@@ -28,7 +28,7 @@ A banner names the problem the last session recorded. Mods still load. A red hoo
 | Banner starts with | Color | Meaning and what to do |
 |---|---|---|
 | `The game crashed N time(s) in a row while starting with mods` | red | Two launches crashed in a row, so the last launch skipped the restart and loaded mods in a single pass. Use **Launch vanilla** to check whether a mod is the cause, then disable the one you added or updated last. Shown once. |
-| `The last N launch(es) with mods did not reach the game` | orange | A crash streak is building; one more failure makes the next launch skip the restart and load mods in a single pass. |
+| `The last N launch(es) with mods did not reach the game` | orange | A crash streak is building. At 1, one more failure makes the next launch skip the restart and load mods in a single pass; at 2, the launch you start now already does. |
 | `Last time the game ran, hooks did not work on <scripts>` | red | Mods that change those scripts did nothing, usually after a game update. Update the loader. |
 | `Last time the game ran, none of the loader's N script rewrites took effect` | red | No hook-based mod did anything. Update the loader. |
 | `Last time the game ran, the loader could not build or mount its hook pack` | red | Check the free disk space; if it repeats, update the loader. |
@@ -37,7 +37,7 @@ A banner names the problem the last session recorded. Mods still load. A red hoo
 | `This version of Road to Vostok stores its scripts in a format` | red | Same as above: the game's script format is newer than the loader. |
 | `Last time the game ran, N hook target(s) a mod asked for were not found` | orange | A game update renamed a method the named mod hooks. The mod's other hooks still work; update that mod. |
 | `Last time the game ran, the loader skipped N hook target(s)` | orange | The loader does not rewrite those scripts (skip list, empty script, a rewrite that does not compile, or a disk write failure); each entry names the reason. The mod's other hooks still work. |
-| `Last time the game ran, N hooked script(s) wrapped only some of the methods` | orange | The named methods did not wrap; hooks on the script's other methods still work. |
+| `Last time the game ran, N hooked script(s) wrapped only part of what a mod asked for` | orange | Each entry names what did not wrap: methods, whose hooks did nothing, or the registry transform, so that script's registry features do not work. Hooks on the script's other methods still work. |
 
 ## The launcher does not appear
 

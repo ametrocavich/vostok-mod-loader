@@ -38,6 +38,9 @@ func _crash_notice_problem(consume: bool) -> Dictionary:
 		return {"severity": "error", "text":
 				"The game crashed %d time(s) in a row while starting with mods, so the last launch skipped the restart and loaded mods in a single pass; use Launch vanilla to check whether a mod is the cause." % count}
 	var streak := _static_read_crash_streak()
+	if streak >= MAX_RESTART_COUNT:
+		return {"severity": "warning", "text":
+				"The last %d launch(es) with mods did not reach the game, so this launch skips the restart and loads mods in a single pass." % streak}
 	if streak > 0:
 		return {"severity": "warning", "text":
 				"The last %d launch(es) with mods did not reach the game; if the next one fails too, the loader skips the restart and loads mods in a single pass." % streak}
