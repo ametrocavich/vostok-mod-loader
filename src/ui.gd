@@ -1,105 +1,80 @@
-## Launcher window, tab composition, scaling and launch controls.
-## Closing the window follows the same path as Launch.
-## Profile persistence is in profiles.gd; tab behavior is in ui_<tab>.gd.
+# Launcher window, tab composition, scaling and launch controls. Closing the
+# window takes the same path as Launch.
 
-# Bottom-bar hint for each tab; _wire_hint swaps it out while a control is hovered.
-const UI_HINT_MODS := "Higher number loads later and wins when mods share files.\n" \
-		+ "Required dependencies must be enabled or the mod won't load."
-const UI_HINT_BROWSE := "Download saves a mod into your mods folder. Tick its box to enable it in the active profile.\n" \
-		+ "Use the source menu to switch between Vostok Mods and ModWorkshop."
-const UI_HINT_MODPACKS := "Apply switches you to the pack's mods and settings and downloads what is missing.\n" \
-		+ "Unload brings your previous setup back."
+const UI_TAB_HINTS := {
+	UI_TAB_MODS: "Higher number loads later and wins when mods share files.\n"
+			+ "Required dependencies must be enabled or the mod won't load.",
+	UI_TAB_BROWSE: "Download saves a mod into your mods folder; Get saves a pack to the Modpacks tab.\n"
+			+ "Switch between Mods and Modpacks at the left; the source menu picks the mod site.",
+	UI_TAB_MODPACKS: "Apply switches you to the pack's mods and settings; Unload brings your previous setup back.\n"
+			+ "Find more packs under Browse > Modpacks.",
+}
 
+# Named for ModWorkshop, its first user; players' caches already live here.
+const UI_CACHE_DIR := "user://mws_cache"
 
-# Launcher zoom, read from config each call so the reopen path sees changes.
+# Read from config on every call so a reopened launcher sees a change.
 func _ui_scale_setting() -> float:
 	var cfg := ConfigFile.new()
 	if _ui_cfg_load(cfg) != OK:
 		return 1.0
 	return clampf(float(cfg.get_value("settings", "ui_scale", 1.0)), 1.0, 2.0)
 
-# Apply a launcher zoom: content scale plus matching window size. min_size
-# is dropped first so shrinking is not clamped back up by the old minimum.
 func _apply_ui_scale(win: Window, ui_scale: float) -> void:
-	if not is_instance_valid(win):
-		return
 	win.content_scale_factor = ui_scale
 	var want := Vector2i(roundi(960.0 * ui_scale), roundi(640.0 * ui_scale))
 	var want_min := Vector2i(roundi(640.0 * ui_scale), roundi(420.0 * ui_scale))
-	# Clamp to the area the window lives in so the Launch bar stays on-screen;
-	# keep min_size <= size or Godot rejects the pair.
-	var area := _ui_window_area(win).size
+	# Clamped to the area so the Launch bar stays on screen; min_size must not
+	# exceed size or Godot rejects the pair.
+	var area := _window_area(win).size
 	if area.x > 0 and area.y > 0:
 		want.x = mini(want.x, maxi(320, area.x - 40))
 		want.y = mini(want.y, maxi(240, area.y - 40))
 	want_min.x = mini(want_min.x, want.x)
 	want_min.y = mini(want_min.y, want.y)
+	# min_size goes first, or the old minimum clamps a shrink back up.
 	win.min_size = Vector2i.ZERO
 	win.size = want
 	win.min_size = want_min
-	# A zoom changed in session grows the window from its top-left corner;
-	# centre it again so the Launch bar does not end up off-screen.
+	# A resize grows from the top-left corner and can push the Launch bar off screen.
 	if win.is_inside_tree():
 		win.move_to_center()
 
-# The rect the launcher window lives in, in the units of its position and
-# size. Embedded in the game's root viewport that is the viewport's own
-# coordinates, which RTV's canvas_items stretch keeps at a 1920x1080 base
-# whatever the screen resolution; as a separate OS window, the usable
-# screen area.
-func _ui_window_area(win: Window) -> Rect2i:
+# In the units of win.position: embedded, the root viewport (RTV's canvas_items
+# stretch keeps it at a 1920x1080 base); as an OS window, the usable screen.
+func _window_area(win: Window) -> Rect2i:
 	if get_tree().root.gui_embed_subwindows:
 		return Rect2i(Vector2i.ZERO, Vector2i(get_tree().root.get_visible_rect().size))
 	return DisplayServer.screen_get_usable_rect(win.current_screen)
 
-# The mouse in the same units. DisplayServer reports screen pixels, which
-# for an embedded window on a 4K screen are twice the viewport's units: a
-# header drag moved the launcher twice as far as the mouse and could throw
-# it out of view, leaving the loader waiting on a window nobody can reach.
-func _ui_pointer(win: Window) -> Vector2:
+# The mouse in the same units: DisplayServer reports screen pixels, twice the
+# viewport's units for an embedded window on a 4K screen.
+func _pointer_pos(win: Window) -> Vector2:
 	if get_tree().root.gui_embed_subwindows:
 		return get_tree().root.get_mouse_position()
 	return Vector2(DisplayServer.mouse_get_position())
 
-# A window position that keeps the header on screen: enough of it to grab
-# horizontally, and all of its height vertically. Both margins are content
-# pixels, so they grow with the launcher's UI scale.
-func _ui_keep_on_screen(win: Window, pos: Vector2i) -> Vector2i:
-	var area := _ui_window_area(win)
-	var scale: float = maxf(win.content_scale_factor, 1.0)
-	var grab_margin := mini(int(120 * scale), win.size.x)
-	var header_height := mini(int(48 * scale), win.size.y)
-	pos.x = clampi(pos.x, area.position.x - win.size.x + grab_margin, area.end.x - grab_margin)
-	pos.y = clampi(pos.y, area.position.y, area.end.y - header_height)
-	return pos
-
-# One-shot vanilla boot: writes DISABLED_ONCE_FILE so the next launch skips
-# the loader; _ready clears the sentinel. No _save_ui_config here, which
-# would rewrite the active profile's sections from in-memory state.
-
+# The sentinel makes the next launch skip the loader and _ready clears it. No
+# _save_ui_config here: it would rewrite the active profile from memory.
 func _launch_vanilla_once(win: Window) -> void:
 	_log_info("[LaunchVanilla] User triggered one-shot vanilla launch")
-	var exe_dir := OS.get_executable_path().get_base_dir()
-	var sentinel := exe_dir.path_join(DISABLED_ONCE_FILE)
+	var sentinel := _static_exe_dir().path_join(DISABLED_ONCE_FILE)
 	var f := FileAccess.open(sentinel, FileAccess.WRITE)
-	if f != null:
-		f.store_string("Launch Vanilla -- this file is auto-cleared on next launch")
-		f.close()
-	else:
+	if f == null:
 		_log_warning("[LaunchVanilla] Could not write sentinel at %s -- aborting" % sentinel)
 		_show_error_dialog("Could not launch vanilla",
 			"Could not write " + sentinel + "\n\nCheck the game folder's permissions and try again.")
 		return
+	f.store_string("Launch Vanilla -- this file is auto-cleared on next launch")
+	f.close()
 	var log_lines := PackedStringArray()
 	_static_force_vanilla_state("UI Launch Vanilla button", log_lines)
 	for line in log_lines:
 		_log_info(line)
-	if is_instance_valid(win):
-		win.queue_free()
-	# Strip --modloader-restart so the relaunch is a clean Pass 1.
-	_modloader_restart(true)
+	_mods_meta_sidecar_save()
+	win.queue_free()
+	_restart_into_pass_1()
 
-# The standard 8/8/6/6 outer margin shared by all top-level tab builders.
 func _make_tab_margin() -> MarginContainer:
 	var m := MarginContainer.new()
 	m.add_theme_constant_override("margin_left", 8)
@@ -108,9 +83,8 @@ func _make_tab_margin() -> MarginContainer:
 	m.add_theme_constant_override("margin_bottom", 6)
 	return m
 
-
-
 func show_mod_ui() -> void:
+	_crash_notice_cached = false
 	var win := _ui_create_window()
 	var root := _ui_window_root(win)
 	var close_btn := _ui_build_header(root, win)
@@ -122,19 +96,22 @@ func show_mod_ui() -> void:
 	root.add_child(HSeparator.new())
 	var launch_btn := _ui_build_bottom_bar(root, win)
 
-	# Closing the window with X should behave the same as clicking Launch.
 	win.close_requested.connect(func(): launch_btn.pressed.emit())
 	close_btn.pressed.connect(func(): launch_btn.pressed.emit())
-	# _wire_hint needs _ui_hint_label, which the bottom bar set above.
+	# After the bottom bar: _wire_hint needs _ui_hint_label.
 	_wire_hint(close_btn, "Close the launcher and launch the game (same as Launch).")
 
-	# Fire-and-forget self-update check; guards on is_instance_valid after the await.
 	_check_modloader_update_async()
 
 	_ui_add_tabs(tabs)
 	refresh_launch_button_label()
 
 	await launch_btn.pressed
+	_mods_meta_sidecar_save()
+	_ui_reset()
+	win.queue_free()
+
+func _ui_reset() -> void:
 	_ui_window = null
 	_ui_hint_label = null
 	_ui_hint_default = ""
@@ -142,34 +119,22 @@ func show_mod_ui() -> void:
 	_ui_update_alert_btn = null
 	_ui_mods_scroll = null
 	_ui_modpacks_scroll = null
-	# Drop the host API response cache (session-only). Disk-cached thumbnails
-	# stay: immutable storage keys are valid indefinitely.
+	# The response cache is per session; disk thumbnails have immutable keys and stay.
 	_host_cache.clear()
-	# Row nodes die with the window; a meta fetch resolving after close paints nothing.
 	_mods_meta_nodes.clear()
-	win.queue_free()
 
-
-# The borderless, always-on-top launcher Window, its theme, and a clear
-# click shield over the game behind it.
 func _ui_create_window() -> Window:
 	var win := Window.new()
 	win.title = "Road to Vostok -- Mod Loader"
-	# Borderless: the header plate carries the title, close X and drag. Title kept for alt-tab.
 	win.borderless = true
-	# Embed sub-windows; separate OS windows strand behind the always_on_top launcher.
+	# Separate OS windows would strand behind the always_on_top launcher.
 	win.gui_embed_subwindows = true
-	# UI scale is never derived from screen DPI: RTV's stretch/mode=canvas_items
-	# against a 1920x1080 base already scales the launcher with window size, and
-	# a DPI factor on top is unusably large on 4K.
+	# Not scaled by screen DPI: RTV's canvas_items stretch already scales the
+	# launcher, and a DPI factor on top is unusably large on 4K.
 	_apply_ui_scale(win, _ui_scale_setting())
-	win.wrap_controls = false
 	win.always_on_top = true
-	# A click beside the launcher used to reach the game's main menu, which
-	# could start the game while the loader still waited for Launch: no mods
-	# loaded and no Mods button afterwards. The shield takes those clicks;
-	# embedded windows get input before any canvas layer, so the launcher
-	# and its dialogs are unaffected.
+	# Clicks beside the launcher could start the game from the main menu while the
+	# loader waits; embedded windows get input before any canvas layer.
 	var shield_layer := CanvasLayer.new()
 	shield_layer.layer = 128
 	var shield := Control.new()
@@ -177,39 +142,29 @@ func _ui_create_window() -> Window:
 	shield.mouse_filter = Control.MOUSE_FILTER_STOP
 	shield_layer.add_child(shield)
 	get_tree().root.add_child(shield_layer)
+	# At shutdown the root can free the layer first.
 	win.tree_exiting.connect(func():
 		if is_instance_valid(shield_layer):
 			shield_layer.queue_free()
 	)
 	get_tree().root.add_child(win)
 	win.popup_centered()
-	# Stash for dialogs triggered by profile-bar controls. Cleared on close.
 	_ui_window = win
 
-	var win_style := StyleBoxFlat.new()
-	win_style.bg_color = COL_BG
+	var win_style := _make_box(COL_BG)
 	win.add_theme_stylebox_override("panel",                    win_style)
 	win.add_theme_stylebox_override("embedded_border",          win_style.duplicate())
 	win.add_theme_stylebox_override("embedded_unfocused_border", win_style.duplicate())
 
-	# Black floor under the panels, fully opaque: the game showing through only
-	# made the text harder to read.
 	var bg := Panel.new()
 	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	var bg_s := StyleBoxFlat.new()
-	bg_s.bg_color = Color(0.0, 0.0, 0.0, 1.0)
-	bg_s.border_color = COL_BORDER
-	_sb_border(bg_s)
-	bg.add_theme_stylebox_override("panel", bg_s)
+	bg.add_theme_stylebox_override("panel", _make_box(Color(0.0, 0.0, 0.0, 1.0), COL_BORDER))
 	win.add_child(bg)
 
-	# Theme on the Window itself so child Windows (popups, dialogs) inherit it.
-	var dark_theme := make_dark_theme()
-	win.theme = dark_theme
+	# On the Window itself so child Windows (popups, dialogs) inherit it.
+	win.theme = make_dark_theme()
 	return win
 
-
-# The padded root VBox every launcher section hangs off.
 func _ui_window_root(win: Window) -> VBoxContainer:
 	var margin := MarginContainer.new()
 	margin.add_theme_constant_override("margin_left", SP_L)
@@ -225,33 +180,10 @@ func _ui_window_root(win: Window) -> VBoxContainer:
 	margin.add_child(root)
 	return root
 
-
-# Header plate: title, version link, close button and window drag. Returns
-# the close button so the caller can wire it to Launch.
 func _ui_build_header(root: VBoxContainer, win: Window) -> Button:
-	# Equipment plate header; the one FS_TITLE use in the UI.
-	var header := PanelContainer.new()
-	var header_s := StyleBoxFlat.new()
-	header_s.bg_color = COL_SURFACE
-	header_s.border_color = COL_ACCENT_DIM
-	header_s.border_width_bottom = 1
-	header_s.content_margin_left = SP_L
-	header_s.content_margin_right = SP_L
-	header_s.content_margin_top = SP_M
-	header_s.content_margin_bottom = SP_M
-	header.add_theme_stylebox_override("panel", header_s)
-	root.add_child(header)
-	var header_row := HBoxContainer.new()
-	header_row.add_theme_constant_override("separation", SP_M)
-	header.add_child(header_row)
-	var plate_title := Label.new()
-	plate_title.text = "ROAD TO VOSTOK -- MOD LOADER"
-	plate_title.add_theme_font_size_override("font_size", FS_TITLE)
-	plate_title.add_theme_color_override("font_color", COL_TEXT_HI)
-	header_row.add_child(plate_title)
+	var header_row := _make_header_plate(root, "ROAD TO VOSTOK -- MOD LOADER", FS_TITLE)
+	var header := header_row.get_parent() as PanelContainer
 
-	# Version / self-update alert; _check_modloader_update_async flips it to the
-	# accent color when a newer release exists. Click opens the release page.
 	var alert := LinkButton.new()
 	alert.text = "v" + MODLOADER_VERSION
 	alert.underline = LinkButton.UNDERLINE_MODE_ON_HOVER
@@ -259,62 +191,55 @@ func _ui_build_header(root: VBoxContainer, win: Window) -> Button:
 	alert.add_theme_font_size_override("font_size", FS_META)
 	alert.add_theme_color_override("font_color", COL_TEXT_DIM)
 	alert.add_theme_color_override("font_hover_color", COL_TEXT)
-	alert.pressed.connect(func():
-		OS.shell_open(_modloader_release_page_url())
-	)
+	alert.pressed.connect(func(): OS.shell_open(_modloader_release_page_url()))
 	header_row.add_child(alert)
 	_ui_update_alert_btn = alert
 
 	var header_spacer := Control.new()
 	header_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	# Must not swallow mouse events or it kills header drag.
+	# A spacer that took mouse events would kill the header drag.
 	header_spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	header_row.add_child(header_spacer)
 
-	# In-plate close (X); wired below to the Launch path (X == Launch).
 	var close_btn := Button.new()
 	close_btn.flat = true
 	close_btn.icon = _make_close_icon(COL_TEXT_DIM)
-	close_btn.custom_minimum_size = Vector2(28, 28)
+	close_btn.custom_minimum_size = Vector2(ICON_BTN_W, ICON_BTN_W)
 	close_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	header_row.add_child(close_btn)
 
-	# Header plate drags the window. Track the absolute mouse position, in the
-	# units of win.position (_ui_pointer): ev.relative would self-cancel as the
-	# window moves and trail the cursor at half speed.
+	# Absolute pointer positions: ev.relative self-cancels while the window moves.
 	var drag := {"on": false, "grab": Vector2.ZERO}
 	header.gui_input.connect(func(ev: InputEvent):
 		if ev is InputEventMouseButton and ev.button_index == MOUSE_BUTTON_LEFT:
 			drag["on"] = ev.pressed
 			if ev.pressed:
-				drag["grab"] = _ui_pointer(win) - Vector2(win.position)
+				drag["grab"] = _pointer_pos(win) - Vector2(win.position)
 		elif ev is InputEventMouseMotion and drag["on"]:
-			win.position = _ui_keep_on_screen(win, Vector2i(_ui_pointer(win) - drag["grab"]))
+			var pos := Vector2i(_pointer_pos(win) - drag["grab"])
+			var area := _window_area(win)
+			var scale: float = maxf(win.content_scale_factor, 1.0)
+			var grab_margin := mini(int(120 * scale), win.size.x)
+			var header_height := mini(int(48 * scale), win.size.y)
+			pos.x = clampi(pos.x, area.position.x - win.size.x + grab_margin, area.end.x - grab_margin)
+			pos.y = clampi(pos.y, area.position.y, area.end.y - header_height)
+			win.position = pos
 	)
 	return close_btn
 
-
-# Hint line, Launch vanilla and Launch. Returns the Launch button, which the
-# caller awaits.
 func _ui_build_bottom_bar(root: VBoxContainer, win: Window) -> Button:
 	var bottom := HBoxContainer.new()
 	bottom.add_theme_constant_override("separation", SP_M)
 	root.add_child(bottom)
 
-	var hint := Label.new()
-	hint.text = UI_HINT_MODS
+	_ui_hint_default = UI_TAB_HINTS[UI_TAB_MODS]
+	var hint := _make_label(_ui_hint_default, COL_TEXT_DIM, FS_BODY)
 	hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	hint.add_theme_font_size_override("font_size", FS_BODY)
-	hint.add_theme_color_override("font_color", COL_TEXT_DIM)
 	bottom.add_child(hint)
-	# Exposed for _wire_hint's hover-hint mechanic.
 	_ui_hint_label = hint
-	_ui_hint_default = UI_HINT_MODS
 
 	var launch_btn := Button.new()
-	# Text set by refresh_launch_button_label after the tabs build; empty avoids a flash.
-	launch_btn.text = ""
 	launch_btn.custom_minimum_size = Vector2(160, 36)
 	style_primary_button(launch_btn)
 
@@ -322,76 +247,99 @@ func _ui_build_bottom_bar(root: VBoxContainer, win: Window) -> Button:
 	bar_gap.custom_minimum_size.x = SP_XL
 	bottom.add_child(bar_gap)
 
-	# Vanilla: one-shot bypass via sentinel and restart; smaller than Launch.
 	var vanilla_btn := Button.new()
 	vanilla_btn.text = "Launch vanilla"
 	vanilla_btn.custom_minimum_size = Vector2(90, 36)
-	var win_for_vanilla := win
-	vanilla_btn.pressed.connect(func(): _launch_vanilla_once(win_for_vanilla))
+	vanilla_btn.pressed.connect(func(): _launch_vanilla_once(win))
 	bottom.add_child(vanilla_btn)
 	_wire_hint(vanilla_btn, "Launch without mods for this session. Restarts the game.")
 
 	bottom.add_child(launch_btn)
 	_ui_launch_btn = launch_btn
-	_wire_hint(launch_btn, "Launch the game with the active profile's mods. Restarts the game.")
+	if _boot_complete:
+		_wire_hint(launch_btn, "Back to the game. It restarts only when what loads has changed.")
+	else:
+		_wire_hint(launch_btn, "Launch the game with the active profile's mods. Restarts the game.")
 	return launch_btn
 
-
-	# --- Tab contract ---
-	# Each tab is built by a build_*_tab(tabs) -> Control function and added
-	# under a stable node name (UI_TAB_*). TabContainer shows the name as the
-	# tab title, the in-place rebuild helpers find the tab through
-	# get_node_or_null(name), and the tab_changed listener below matches on
-	# it. To add a tab: build_x_tab(tabs) + a UI_TAB_X const (constants.gd),
-	# add and name it below, and add a rebuild or on-show refresh if other
-	# surfaces can change its state. A name mismatch fails silently: the
-	# rebuild helpers skip and the tab goes stale.
+# Each tab is found by its node name (UI_TAB_*): the in-place rebuilds and the
+# tab_changed listener match on it, and a mismatch leaves the tab stale silently.
 func _ui_add_tabs(tabs: TabContainer) -> void:
 	var mods_tab := build_mods_tab(tabs)
 	mods_tab.name = UI_TAB_MODS
 	tabs.add_child(mods_tab)
 
-	var browse_tab := build_browse_tab(tabs)
-	browse_tab.name = UI_TAB_BROWSE
-	tabs.add_child(browse_tab)
-
+	# Built first so a remembered Modpacks kind in Browse reuses its scan of mods/.
 	var modpacks_tab := build_modpacks_tab(tabs)
 	modpacks_tab.name = UI_TAB_MODPACKS
+	_packs_scan_fresh = true
+	var browse_tab := build_browse_tab(tabs)
+	_packs_scan_fresh = false
+	browse_tab.name = UI_TAB_BROWSE
+	tabs.add_child(browse_tab)
 	tabs.add_child(modpacks_tab)
 
-	# Refresh tabs on show: state can change behind a tab's back.
 	tabs.tab_changed.connect(func(idx: int):
-		# Re-entrant tab_changed fired mid-rebuild; another rebuild here corrupts the tree.
+		# A re-entrant tab_changed mid-rebuild would corrupt the tree.
 		if _rebuilding_tab_in_place:
 			return
 		var ctrl := tabs.get_tab_control(idx)
 		if ctrl == null:
 			return
-		# The bottom-bar hint describes the tab on screen.
-		_ui_hint_default = UI_HINT_MODS
-		if ctrl.name == UI_TAB_BROWSE:
-			_ui_hint_default = UI_HINT_BROWSE
-		elif ctrl.name == UI_TAB_MODPACKS:
-			_ui_hint_default = UI_HINT_MODPACKS
+		_ui_hint_default = UI_TAB_HINTS[str(ctrl.name)]
 		if is_instance_valid(_ui_hint_label):
 			_ui_hint_label.text = _ui_hint_default
 		if ctrl.name == UI_TAB_MODPACKS:
 			_rebuild_modpacks_tab(tabs)
-		# Browse rows bake profile state at render time and never rebuild; sync in place.
 		elif ctrl.name == UI_TAB_BROWSE:
-			_refresh_browse_installed_rows(ctrl)
+			_on_browse_selected(ctrl)
 	)
 
-# Launch button label reflects whether anything will load.
+func _rebuild_tab_in_place(tabs: TabContainer, tab_name: String, builder: Callable, scroll_of: Callable) -> bool:
+	var old := tabs.get_node_or_null(tab_name)
+	if old == null:
+		return false
+	_rebuilding_tab_in_place = true
+	var saved_scroll := 0
+	var old_scroll: Variant = scroll_of.call()
+	if is_instance_valid(old_scroll):
+		saved_scroll = (old_scroll as ScrollContainer).scroll_vertical
+	var idx := old.get_index()
+	var current_tab_name := str(tabs.get_tab_control(tabs.current_tab).name)
+	tabs.remove_child(old)
+	old.queue_free()
+	var new_tab: Control = builder.call(tabs)
+	new_tab.name = tab_name
+	tabs.add_child(new_tab)
+	tabs.move_child(new_tab, idx)
+	for i in range(tabs.get_tab_count()):
+		if tabs.get_tab_control(i).name == current_tab_name:
+			tabs.current_tab = i
+			break
+	_rebuilding_tab_in_place = false
+	if saved_scroll > 0:
+		_restore_scroll_next_frame(scroll_of, saved_scroll)
+	return true
+
+# One frame later: scroll_vertical set before layout clamps to zero.
+func _restore_scroll_next_frame(scroll_of: Callable, saved_scroll: int) -> void:
+	await get_tree().process_frame
+	var scroll: Variant = scroll_of.call()
+	if is_instance_valid(scroll):
+		(scroll as ScrollContainer).scroll_vertical = saved_scroll
+
 func refresh_launch_button_label() -> void:
 	if not is_instance_valid(_ui_launch_btn):
 		return
-	# Count what will actually load, not what's checked: with everything
-	# dependency-blocked, "Launch modded" would deliver vanilla.
+	# Counts what will load, not what is checked: with everything blocked,
+	# "Launch modded" would deliver vanilla.
 	var pick := _loadable_enabled_entries()
 	var loadable_count: int = (pick["loadable"] as Array).size()
 	var enabled_count := int(pick["enabled_count"])
-	if loadable_count > 0:
+	if _boot_complete:
+		# Reopened from the main menu: the game restarts only when what loads changed.
+		_ui_launch_btn.text = "Apply and restart" if _post_boot_restart_needed() else "Back to game"
+	elif loadable_count > 0:
 		_ui_launch_btn.text = "Launch modded"
 	elif enabled_count > 0:
 		_ui_launch_btn.text = "Launch unmodded (%d blocked)" % enabled_count

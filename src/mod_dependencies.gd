@@ -1,33 +1,41 @@
-## Dependency declarations, dependency readiness and effective load order.
-## Uses entry dictionaries from mod_discovery.gd and the active profile.
+## Dependency declarations, dependency readiness and the effective load order.
 
-# Dependency ids satisfied by the mod loader itself; always count as present.
+# Dependency ids the loader itself satisfies.
 const LOADER_ID_ALIASES: Array[String] = [
 	"metro_mod_loader", "metromodloader", "vostok_mod_loader",
 	"mod_loader", "modloader", "mml", "rtvmodlib",
 ]
 
 func _parse_dependency_list(cfg: ConfigFile, key: String) -> Array[String]:
-	var deps: Array[String] = []
 	if cfg == null or not cfg.has_section_key("dependencies", key):
-		return deps
-	var raw: Variant = cfg.get_value("dependencies", key)
+		return []
+	return _parse_id_list(cfg.get_value("dependencies", key))
+
+# An id list is an array or a "foo, bar" / "[foo, bar]" string. A non-empty strict_for
+# (provides=, the mod's file name) drops values that are not strings, with a log line.
+func _parse_id_list(raw: Variant, strict_for: String = "") -> Array[String]:
+	var ids: Array[String] = []
 	if raw is Array:
 		for item in (raw as Array):
-			_append_dependency_id(deps, str(item))
-		return deps
+			if strict_for != "" and not (item is String or item is StringName):
+				_log_warning(strict_for + ": ignoring non-string provides entry " + str(item))
+				continue
+			_append_dependency_id(ids, str(item))
+		return ids
 	if typeof(raw) == TYPE_PACKED_STRING_ARRAY:
 		for item in (raw as PackedStringArray):
-			_append_dependency_id(deps, str(item))
-		return deps
-
-	# Whole-value strings like "foo, bar" for older author tools.
+			_append_dependency_id(ids, item)
+		return ids
+	if strict_for != "" and not (raw is String or raw is StringName):
+		_log_warning(strict_for + ": ignoring provides= -- expected a string array, got "
+				+ type_string(typeof(raw)))
+		return ids
 	var text := str(raw).strip_edges()
 	if text.begins_with("[") and text.ends_with("]") and text.length() >= 2:
 		text = text.substr(1, text.length() - 2)
 	for part in text.split(","):
-		_append_dependency_id(deps, part)
-	return deps
+		_append_dependency_id(ids, part)
+	return ids
 
 func _append_dependency_id(deps: Array[String], raw_id: String) -> void:
 	var dep_id := raw_id.strip_edges()
@@ -38,45 +46,19 @@ func _append_dependency_id(deps: Array[String], raw_id: String) -> void:
 			dep_id = dep_id.substr(1, dep_id.length() - 2).strip_edges()
 	if dep_id == "":
 		return
-	var dep_key := dep_id.to_lower()
 	for existing in deps:
-		if existing.to_lower() == dep_key:
+		if existing.to_lower() == dep_id.to_lower():
 			return
 	deps.append(dep_id)
 
-# [mod] provides=["old_id", ...]: rename aliases. A requirement naming an
-# alias is satisfied by this mod; a real installed mod with that id always
-# wins. Junk shapes degrade to no aliases with a log line.
+# [mod] provides=: old ids this mod answers to, minus its own; a real installed
+# mod with that id always wins over the alias.
 func _parse_provides_list(cfg: ConfigFile, mod_id: String, file_name: String) -> Array[String]:
-	var ids: Array[String] = []
-	if cfg == null or not cfg.has_section_key("mod", "provides"):
-		return ids
-	var raw: Variant = cfg.get_value("mod", "provides")
-	if raw is Array:
-		for item in (raw as Array):
-			if item is String or item is StringName:
-				_append_dependency_id(ids, str(item))
-			else:
-				_log_warning(file_name + ": ignoring non-string provides entry "
-						+ str(item))
-	elif typeof(raw) == TYPE_PACKED_STRING_ARRAY:
-		for item in (raw as PackedStringArray):
-			_append_dependency_id(ids, str(item))
-	elif raw is String or raw is StringName:
-		# Whole-value strings like "foo, bar" (mirrors _parse_dependency_list).
-		var text := str(raw).strip_edges()
-		if text.begins_with("[") and text.ends_with("]") and text.length() >= 2:
-			text = text.substr(1, text.length() - 2)
-		for part in text.split(","):
-			_append_dependency_id(ids, part)
-	else:
-		_log_warning(file_name + ": ignoring provides= -- expected a string array, got "
-				+ type_string(typeof(raw)))
-		return ids
-	# Drop self-aliases so the alias passes never see one.
+	if not cfg.has_section_key("mod", "provides"):
+		return []
 	var self_key := mod_id.strip_edges().to_lower()
 	var cleaned: Array[String] = []
-	for alias in ids:
+	for alias in _parse_id_list(cfg.get_value("mod", "provides"), file_name):
 		if alias.to_lower() != self_key:
 			cleaned.append(alias)
 	return cleaned
@@ -84,44 +66,58 @@ func _parse_provides_list(cfg: ConfigFile, mod_id: String, file_name: String) ->
 func _compare_load_order(a: Dictionary, b: Dictionary) -> bool:
 	if a["priority"] != b["priority"]:
 		return a["priority"] < b["priority"]
-	var a_name := (a["mod_name"] as String).to_lower()
-	var b_name := (b["mod_name"] as String).to_lower()
+	var a_name := _load_order_name(a)
+	var b_name := _load_order_name(b)
 	if a_name != b_name:
 		return a_name < b_name
-	return (a["file_name"] as String).to_lower() < (b["file_name"] as String).to_lower()
+	return a["file_name"].to_lower() < b["file_name"].to_lower()
+
+# A mod with no name= sorts by its file name with the extension, as on 3.4.2,
+# where that was its name; "Foo-Addon.zip" loads before "Foo.zip".
+func _load_order_name(e: Dictionary) -> String:
+	if e["mod_name"] == e["file_name"].get_basename():
+		var cfg: ConfigFile = e["cfg"]
+		if cfg == null or not cfg.has_section_key("mod", "name"):
+			return e["file_name"].to_lower()
+	return e["mod_name"].to_lower()
 
 func _entry_mod_key(entry: Dictionary) -> String:
-	return str(entry.get("mod_id", "")).strip_edges().to_lower()
+	return entry["mod_id"].strip_edges().to_lower()
+
+# Id -> index of the first entry with that id; provides= aliases are added after
+# every real id, so an alias never shadows a real one.
+func _mod_id_index(entries: Array) -> Dictionary:
+	var by_id: Dictionary = {}
+	for i in entries.size():
+		var key := _entry_mod_key(entries[i])
+		if key != "" and not by_id.has(key):
+			by_id[key] = i
+	for i in entries.size():
+		for alias: String in entries[i].get("provides", []):
+			var alias_key := alias.strip_edges().to_lower()
+			if alias_key != "" and not by_id.has(alias_key):
+				by_id[alias_key] = i
+	return by_id
 
 func _entries_by_mod_id(entries: Array) -> Dictionary:
+	var index := _mod_id_index(entries)
 	var by_id: Dictionary = {}
-	for entry in entries:
-		var key := _entry_mod_key(entry)
-		if key == "":
-			continue
-		if not by_id.has(key):
-			by_id[key] = entry
-	# Second pass: aliases resolve to their providing mod, after the real-id
-	# pass so an alias never shadows a real id; ties go to the first entry.
-	for entry in entries:
-		for raw_alias in (entry as Dictionary).get("provides", []):
-			var alias_key := str(raw_alias).strip_edges().to_lower()
-			if alias_key == "" or by_id.has(alias_key):
-				continue
-			by_id[alias_key] = entry
+	for key in index:
+		by_id[key] = entries[index[key]]
 	return by_id
 
 func _dependency_display(entry: Dictionary) -> String:
-	var name := str(entry.get("mod_name", "")).strip_edges()
-	var mod_id := str(entry.get("mod_id", "")).strip_edges()
+	var name: String = entry["mod_name"].strip_edges()
+	var mod_id: String = entry["mod_id"].strip_edges()
 	if name != "" and mod_id != "" and name != mod_id:
 		return name + " (" + mod_id + ")"
 	if mod_id != "":
 		return mod_id
 	return name
 
-func _filter_dependency_ready_candidates(candidates: Array,
-		log_skips: bool = false) -> Array[Dictionary]:
+# The candidates whose required dependencies all load, repeated until none drop
+# out, since a blocked mod blocks its dependents too.
+func _drop_blocked(candidates: Array, log_skips: bool) -> Array[Dictionary]:
 	var active_by_id := _entries_by_mod_id(candidates)
 	var installed_by_id := _entries_by_mod_id(_ui_mod_entries)
 	var blocked: Dictionary = {}
@@ -130,55 +126,51 @@ func _filter_dependency_ready_candidates(candidates: Array,
 		changed = false
 		for entry in candidates:
 			var entry_key := _entry_mod_key(entry)
-			if entry_key == "" or blocked.has(entry_key):
+			# "Load anyway" loads the mod and keeps it active for its dependents.
+			if entry_key == "" or blocked.has(entry_key) or entry.get("dependency_ignored", false):
 				continue
-			# "Load anyway": loads regardless and stays active for dependents.
-			if bool(entry.get("dependency_ignored", false)):
-				continue
-			for raw_dep in entry.get("required_dependencies", []):
-				var dep_id := str(raw_dep).strip_edges()
-				if dep_id == "":
-					continue
+			for raw: String in entry["required_dependencies"]:
+				var dep_id := raw.strip_edges()
 				var dep_key := dep_id.to_lower()
-				# Self-dependency is a typo; warned elsewhere, never blocked.
-				if dep_key == entry_key:
+				# A self-dependency is a typo the row warns about; it never blocks.
+				if dep_id == "" or dep_key == entry_key or LOADER_ID_ALIASES.has(dep_key):
 					continue
-				# "Requires Metro Mod Loader": the loader itself satisfies it.
-				if LOADER_ID_ALIASES.has(dep_key):
-					continue
-				# Canonicalize an alias to the provider's real id: `blocked` is keyed by
-				# real ids, so a raw alias would read a blocked provider as satisfied.
-				if active_by_id.has(dep_key):
-					dep_key = _entry_mod_key(active_by_id[dep_key])
-				elif installed_by_id.has(dep_key):
-					dep_key = _entry_mod_key(installed_by_id[dep_key])
+				# `blocked` is keyed by real ids, so an alias resolves to its provider first.
+				dep_key = _dep_owner_key(dep_key, active_by_id, installed_by_id)
 				if active_by_id.has(dep_key) and not blocked.has(dep_key):
 					continue
-				var status := "not_installed"
-				if active_by_id.has(dep_key) and blocked.has(dep_key):
-					status = "not_loaded"
-				elif installed_by_id.has(dep_key):
-					var installed: Dictionary = installed_by_id[dep_key]
-					status = "disabled" if not bool(installed.get("enabled", false)) else "not_loaded"
-				elif _dep_is_hidden_folder(dep_key):
-					status = "hidden_folder"
+				var status := "not_loaded" if active_by_id.has(dep_key) else _dep_status(dep_key, installed_by_id)
 				blocked[entry_key] = {"dependency": dep_id, "status": status}
 				changed = true
 				break
-
 	var ready: Array[Dictionary] = []
 	for entry in candidates:
 		var entry_key := _entry_mod_key(entry)
-		if entry_key != "" and blocked.has(entry_key):
-			if log_skips:
-				var info: Dictionary = blocked[entry_key]
-				_log_critical("Skipping %s -- required dependency %s is %s" \
-						% [_dependency_display(entry), info["dependency"],
-						   _dependency_status_label(str(info["status"]))])
-			continue
-		ready.append(entry)
+		if not blocked.has(entry_key):
+			ready.append(entry)
+		elif log_skips:
+			_log_critical("Skipping %s -- required dependency %s is %s" % [_dependency_display(entry),
+					blocked[entry_key]["dependency"], _dependency_status_label(blocked[entry_key]["status"])])
 	return ready
 
+func _dep_status(dep_key: String, installed_by_id: Dictionary) -> String:
+	if installed_by_id.has(dep_key):
+		return "not_loaded" if installed_by_id[dep_key]["enabled"] else "disabled"
+	for hidden_id: String in _hidden_folder_ids:
+		if hidden_id.strip_edges().to_lower() == dep_key:
+			return "hidden_folder"
+	return "not_installed"
+
+# The real id of the mod that answers to a dependency id: an enabled mod first,
+# else an installed one, else the id itself. The load filter and the rows share it.
+func _dep_owner_key(dep_key: String, enabled_by_id: Dictionary, installed_by_id: Dictionary) -> String:
+	if enabled_by_id.has(dep_key):
+		return _entry_mod_key(enabled_by_id[dep_key])
+	if installed_by_id.has(dep_key):
+		return _entry_mod_key(installed_by_id[dep_key])
+	return dep_key
+
+# "not_loaded" covers an enabled mod that did not load and an active one blocked down its chain.
 func _dependency_status_label(status: String) -> String:
 	match status:
 		"disabled":
@@ -190,86 +182,42 @@ func _dependency_status_label(status: String) -> String:
 		_:
 			return "not installed"
 
-# A required dep that exists only as a dev folder while Developer Mode is
-# off gets its own status so the row can name the fix.
-func _dep_is_hidden_folder(dep_key: String) -> bool:
-	for hid in _hidden_folder_ids.keys():
-		if str(hid).strip_edges().to_lower() == dep_key:
-			return true
-	return false
-
-# Stable topological pass over priority-sorted candidates: a required dep is
-# hoisted above its dependent only when priority order violates the edge
-# (Kahn walk, lowest original index first). Cycles are reported, not force-ordered.
+# Stable topological pass over priority-sorted candidates: a dependency is hoisted
+# only when priority order breaks an edge. Cycles are reported, not force-ordered.
 func _apply_dependency_ordering(candidates: Array) -> Dictionary:
 	var n := candidates.size()
-	var key_to_index: Dictionary = {}
-	for i in n:
-		var k := _entry_mod_key(candidates[i])
-		if k != "" and not key_to_index.has(k):
-			key_to_index[k] = i
-	# Alias edges point at the providing mod; second pass so an alias never steals a real id.
-	for i in n:
-		for raw_alias in (candidates[i] as Dictionary).get("provides", []):
-			var ak := str(raw_alias).strip_edges().to_lower()
-			if ak != "" and not key_to_index.has(ak):
-				key_to_index[ak] = i
-	var indegree := PackedInt32Array()
-	indegree.resize(n)
-	var dependents: Dictionary = {}
-	var has_edges := false
-	for i in n:
-		var entry: Dictionary = candidates[i]
-		var entry_key := _entry_mod_key(entry)
-		# Required deps are hard edges; optional deps are soft edges applied only
-		# when the dep is present. Optional deps never block, they only order.
-		var dep_lists := [entry.get("required_dependencies", []), entry.get("optional_dependencies", [])]
-		for dep_list in dep_lists:
-			for raw_dep in dep_list:
-				var dep_key := str(raw_dep).strip_edges().to_lower()
-				if dep_key == "" or dep_key == entry_key or not key_to_index.has(dep_key):
-					continue
-				var di: int = key_to_index[dep_key]
-				if di == i:
-					continue
-				if (dependents.get(di, []) as Array).has(i):
-					continue  # required+optional both name it -- one edge only
-				if not dependents.has(di):
-					dependents[di] = []
-				(dependents[di] as Array).append(i)
-				indegree[i] += 1
-				has_edges = true
+	var edges := _build_dependency_edges(candidates)
+	var dependents: Dictionary = edges["dependents"]
+	var indegree: Array[int] = edges["indegree"]
 	var ordered: Array[Dictionary] = []
-	if not has_edges:
-		for c in candidates:
-			ordered.append(c)
+	if dependents.is_empty():
+		ordered.assign(candidates)
 		return {"ordered": ordered, "adjusted": false, "cycle_keys": []}
+	# Each round emits the first candidate with no unmet edge, else releases one optional edge.
 	var emitted: Dictionary = {}
-	var remaining := n
-	var progress := true
-	while remaining > 0 and progress:
-		progress = false
+	while emitted.size() < n:
+		var next := -1
 		for i in n:
-			if emitted.has(i) or indegree[i] > 0:
-				continue
-			emitted[i] = true
-			ordered.append(candidates[i])
-			remaining -= 1
-			for j in dependents.get(i, []):
+			if not emitted.has(i) and indegree[i] <= 0:
+				next = i
+				break
+		if next >= 0:
+			emitted[next] = true
+			ordered.append(candidates[next])
+			for j in dependents.get(next, []):
 				indegree[j] -= 1
-			progress = true
+		elif not _release_optional_edge(edges, emitted):
 			break
-	# Leftovers are in a cycle or downstream of one. Emit them at the end in
-	# original order, but report only nodes that are in a cycle.
+	# Leftovers load last in their original order; only those in a cycle are reported.
 	var cycle_keys: Array[String] = []
-	if remaining > 0:
+	if emitted.size() < n:
 		var leftover: Array[int] = []
 		for i in n:
 			if not emitted.has(i):
 				leftover.append(i)
 				ordered.append(candidates[i])
 		for i in leftover:
-			if _node_reaches_self(i, dependents, emitted):
+			if _node_reaches(i, i, dependents, emitted):
 				var ck := _entry_mod_key(candidates[i])
 				if ck != "":
 					cycle_keys.append(ck)
@@ -280,9 +228,49 @@ func _apply_dependency_ordering(candidates: Array) -> Dictionary:
 			break
 	return {"ordered": ordered, "adjusted": adjusted, "cycle_keys": cycle_keys}
 
-# True iff `start` can reach itself within the still-unemitted subgraph.
-# `dependents[x]` lists nodes that depend on x.
-func _node_reaches_self(start: int, dependents: Dictionary, emitted: Dictionary) -> bool:
+# Edges by candidate index: dependents[dep] loads before each listed index, indegree[i]
+# counts i's unmet edges, and optional holds the optional edges as {dep, dependent}.
+func _build_dependency_edges(candidates: Array) -> Dictionary:
+	var key_to_index := _mod_id_index(candidates)
+	var indegree: Array[int] = []
+	indegree.resize(candidates.size())
+	indegree.fill(0)
+	var dependents: Dictionary = {}
+	var optional: Array[Dictionary] = []
+	for i in candidates.size():
+		var entry_key := _entry_mod_key(candidates[i])
+		for is_optional in [false, true]:
+			for raw: String in candidates[i]["optional_dependencies" if is_optional else "required_dependencies"]:
+				var dep_key := raw.strip_edges().to_lower()
+				if dep_key == "" or dep_key == entry_key or not key_to_index.has(dep_key):
+					continue
+				var dep: int = key_to_index[dep_key]
+				# An id in both lists is one (required) edge.
+				if dep == i or (dependents.get(dep, []) as Array).has(i):
+					continue
+				(dependents.get_or_add(dep, []) as Array).append(i)
+				indegree[i] += 1
+				if is_optional:
+					optional.append({"dep": dep, "dependent": i})
+	return {"dependents": dependents, "indegree": indegree, "optional": optional}
+
+# Drops the first optional edge that closes a cycle, false when none does: two mods
+# that optionally name each other are not a cycle, and a required chain wins.
+func _release_optional_edge(edges: Dictionary, emitted: Dictionary) -> bool:
+	var optional: Array[Dictionary] = edges["optional"]
+	for k in optional.size():
+		var edge := optional[k]
+		if emitted.has(edge["dependent"]) or emitted.has(edge["dep"]) \
+				or not _node_reaches(edge["dependent"], edge["dep"], edges["dependents"], emitted):
+			continue
+		(edges["dependents"][edge["dep"]] as Array).erase(edge["dependent"])
+		var indegree: Array[int] = edges["indegree"]
+		indegree[edge["dependent"]] -= 1
+		optional.remove_at(k)
+		return true
+	return false
+
+func _node_reaches(start: int, target: int, dependents: Dictionary, emitted: Dictionary) -> bool:
 	var seen: Dictionary = {}
 	# Plain Array: an untyped Array cannot be assigned to an Array[int] var.
 	var stack: Array = (dependents.get(start, []) as Array).duplicate()
@@ -290,7 +278,7 @@ func _node_reaches_self(start: int, dependents: Dictionary, emitted: Dictionary)
 		var x: int = stack.pop_back()
 		if emitted.has(x):
 			continue
-		if x == start:
+		if x == target:
 			return true
 		if seen.has(x):
 			continue
@@ -300,124 +288,85 @@ func _node_reaches_self(start: int, dependents: Dictionary, emitted: Dictionary)
 				stack.append(y)
 	return false
 
-# The one definition of what loads, in what order: load_all_mods, boot's
-# archive collection, the order panel and the launch button all read this.
-# duplicate_entries=true hands back copies; the UI passes false to observe live dicts.
-func _loadable_enabled_entries(log_skips := false, duplicate_entries := false) -> Dictionary:
+# What loads and in what order: loading, boot, the order panel and the launch
+# button all read this. It returns the live entry dicts.
+func _loadable_enabled_entries(log_skips := false) -> Dictionary:
 	var enabled: Array[Dictionary] = []
 	for entry in _ui_mod_entries:
-		if bool(entry.get("enabled", false)):
-			enabled.append(entry.duplicate() if duplicate_entries else entry)
+		if entry["enabled"]:
+			enabled.append(entry)
 	enabled.sort_custom(_compare_load_order)
 	var ordering := _apply_dependency_ordering(enabled)
-	var loadable := _filter_dependency_ready_candidates(ordering["ordered"], log_skips)
 	return {
-		"loadable": loadable,
+		"loadable": _drop_blocked(ordering["ordered"], log_skips),
 		"enabled_count": enabled.size(),
 		"adjusted": ordering["adjusted"],
 		"cycle_keys": ordering["cycle_keys"],
 	}
 
-# Enable every required dependency (transitively) that is installed but off.
-func _enable_required_deps(entry: Dictionary) -> Dictionary:
+func _enable_required_deps(entry: Dictionary) -> void:
 	var installed_by_id := _entries_by_mod_id(_ui_mod_entries)
-	var enabled_names: Array[String] = []
-	var unfixed: Array[String] = []
-	var queue: Array[String] = []
+	var queue: Array = entry["required_dependencies"].duplicate()
 	var seen: Dictionary = {}
-	for raw_dep in entry.get("required_dependencies", []):
-		queue.append(str(raw_dep).strip_edges().to_lower())
 	while not queue.is_empty():
-		var dep_key: String = queue.pop_front()
+		var dep_key: String = queue.pop_front().strip_edges().to_lower()
 		if dep_key == "" or seen.has(dep_key) or LOADER_ID_ALIASES.has(dep_key):
 			continue
 		seen[dep_key] = true
-		if not installed_by_id.has(dep_key):
-			unfixed.append(dep_key)
-			continue
-		var dep_entry: Dictionary = installed_by_id[dep_key]
-		if not bool(dep_entry.get("enabled", false)):
-			dep_entry["enabled"] = true
-			enabled_names.append(str(dep_entry.get("mod_name", dep_key)))
-		for raw in dep_entry.get("required_dependencies", []):
-			queue.append(str(raw).strip_edges().to_lower())
-	return {"enabled_names": enabled_names, "unfixed": unfixed}
+		if installed_by_id.has(dep_key):
+			installed_by_id[dep_key]["enabled"] = true
+			queue.append_array(installed_by_id[dep_key]["required_dependencies"])
 
-# Display name for a dependency id; loop callers should pass a prebuilt map.
-func _dependency_display_for_id(dep_id: String, installed_by_id: Variant = null) -> String:
+func _dependency_display_for_id(dep_id: String, installed_by_id: Dictionary) -> String:
 	var dep_key := dep_id.strip_edges().to_lower()
-	var by_id: Dictionary = installed_by_id if installed_by_id is Dictionary \
-			else _entries_by_mod_id(_ui_mod_entries)
-	if by_id.has(dep_key):
-		return str((by_id[dep_key] as Dictionary).get("mod_name", dep_id))
+	if installed_by_id.has(dep_key):
+		return installed_by_id[dep_key]["mod_name"]
 	return dep_id
 
-# Returns the _loadable_enabled_entries pick computed mid-pass so hot callers reuse it.
 func _refresh_dependency_status() -> Dictionary:
 	var installed_by_id := _entries_by_mod_id(_ui_mod_entries)
-	var enabled_by_id := _entries_by_mod_id(_ui_mod_entries.filter(
-			func(e): return bool((e as Dictionary).get("enabled", false))))
+	var enabled_by_id := _entries_by_mod_id(_ui_mod_entries.filter(func(e): return e["enabled"]))
 	for entry in _ui_mod_entries:
 		entry["dependency_warnings"] = []
 		entry["dependency_blockers"] = []
 		entry["dependency_blockers_info"] = []
-		entry["dependencies_satisfied"] = true
-
 	var pick := _loadable_enabled_entries()
 	var loadable_by_id := _entries_by_mod_id(pick["loadable"])
-	var cycle_keys: Array = pick["cycle_keys"]
-
 	for entry in _ui_mod_entries:
-		if not bool(entry.get("enabled", false)):
+		if not entry["enabled"]:
 			continue
+		var entry_key := _entry_mod_key(entry)
 		var warnings: Array[String] = []
 		var blockers: Array[String] = []
 		var info: Array[Dictionary] = []
-		var entry_key := _entry_mod_key(entry)
-		if cycle_keys.has(entry_key):
+		if pick["cycle_keys"].has(entry_key):
 			warnings.append("load order could not be fully resolved (dependency cycle in chain)")
-		for raw_dep in entry.get("required_dependencies", []):
-			var dep_id := str(raw_dep).strip_edges()
+		for raw: String in entry["required_dependencies"]:
+			var dep_id := raw.strip_edges()
+			var dep_key := dep_id.to_lower()
 			if dep_id == "":
 				continue
-			var dep_key := dep_id.to_lower()
 			if dep_key == entry_key:
 				warnings.append("lists itself as a dependency (ignored)")
 				continue
 			if LOADER_ID_ALIASES.has(dep_key):
 				continue
-			# Resolve the dep the way the load filter does: bind the id to whichever
-			# enabled mod owns it (real id beats alias), else installed, then satisfied
-			# only if that owner is loadable. A raw-id test would let a blocked id escape to an alias.
-			var owner_key := dep_key
-			if enabled_by_id.has(dep_key):
-				owner_key = _entry_mod_key(enabled_by_id[dep_key])
-			elif installed_by_id.has(dep_key):
-				owner_key = _entry_mod_key(installed_by_id[dep_key])
+			# Satisfied only if the owner the load filter binds to loads; a raw-id test
+			# would let a blocked id escape to an alias.
+			var owner_key := _dep_owner_key(dep_key, enabled_by_id, installed_by_id)
 			if loadable_by_id.has(owner_key) and _entry_mod_key(loadable_by_id[owner_key]) == owner_key:
 				continue
-			var status := "not_installed"
+			var status := _dep_status(dep_key, installed_by_id)
 			var display := dep_id
-			var fixable := false
 			if installed_by_id.has(dep_key):
-				var dep_entry: Dictionary = installed_by_id[dep_key]
-				display = _dependency_display(dep_entry)
-				if not bool(dep_entry.get("enabled", false)):
-					status = "disabled"
-					fixable = true
-				else:
-					status = "not_loaded"
-			elif _dep_is_hidden_folder(dep_key):
-				status = "hidden_folder"
+				display = _dependency_display(installed_by_id[dep_key])
 			blockers.append(dep_id)
-			info.append({"id": dep_id, "status": status, "display": display, "fixable": fixable})
+			info.append({"id": dep_id, "status": status, "display": display, "fixable": status == "disabled"})
 		entry["dependency_warnings"] = warnings
 		entry["dependency_blockers_info"] = info
-		if bool(entry.get("dependency_ignored", false)):
-			# "Load anyway": nothing blocks the mod, but keep the info for the row.
+		# "Load anyway": nothing blocks the mod, but the row keeps the reasons.
+		if entry.get("dependency_ignored", false):
 			entry["dependency_blockers"] = []
-			entry["dependencies_satisfied"] = true
 		else:
 			entry["dependency_blockers"] = blockers
-			entry["dependencies_satisfied"] = blockers.is_empty()
 	return pick

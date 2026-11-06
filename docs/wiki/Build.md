@@ -6,8 +6,8 @@ is the first-build guide; [Development](Development) maps changes to source.
 
 ## Prerequisites and commands
 
-Use Bash (Git Bash on Windows), Godot 4.6.1 and Python 3.9 or newer. Python
-uses its standard library; there are no packages to install. From the repo root:
+Use Bash (Git Bash on Windows), Godot 4.6.1 and Python 3.9 or newer (standard
+library only). From the repo root:
 
 ```bash
 ./build.sh
@@ -16,166 +16,126 @@ GODOT=/path/to/godot ./check.sh
 
 | Variable | Purpose |
 |---|---|
-| `GODOT` | Engine executable. If unset, scripts try `godot` on PATH, then a maintainer-specific Windows path. On Windows use the console executable, with a Git Bash path such as `/c/Tools/Godot/godot_console.exe`. |
-| `PYTHON` | Interpreter for documentation checks. If unset, `check.sh` tries `python` and `python3`, requiring version 3.9 or newer. |
-| `VANILLA_SRC` | Decompiled Road to Vostok project for the ten vanilla codegen fixtures. The codegen script's maintainer-specific default is the Build 2 (Nomads) corpus; point it at the decompile of the build before Build 2 to run the pre-Build 2 `AI.gd` and `AISpawner.gd` paths. Missing source leaves these fixtures out. The two synthetic fixtures always run. |
+| `GODOT` | Engine executable; else `godot` on PATH, else `.check.env`. On Windows use the console executable, as a Git Bash path such as `/c/Tools/Godot/godot_console.exe`. |
+| `PYTHON` | Interpreter for the documentation check; else `python` or `python3`, whichever is 3.9 or newer. |
+| `VANILLA_SRC` | A decompiled Road to Vostok project for the ten vanilla codegen fixtures; else `.check.env`. Without it those fixtures are skipped and the three synthetic ones still run. |
 
-Use a dedicated Godot test directory. The boot-state harness creates and
-removes `override.cfg` beside the engine executable and refuses to run if
-that file already exists. Harnesses also write their own `user://` test
-state. They do not open windows, run the game or use its save directory.
+`.check.env` in the repo root (ignored by Git) holds personal paths such as
+`GODOT=...` and `VANILLA_SRC=...`; a variable already set in the environment
+wins. Use a dedicated Godot directory: the boot-state harness creates and
+removes `override.cfg` beside the engine executable and refuses to run if one
+exists. Harnesses write only their own `user://` state; they open no window
+and never run the game.
 
 ## Assembly and source navigation
 
-Source: [build.sh](https://github.com/ametrocavich/vostok-mod-loader/blob/development/build.sh).
-The `FILES` array is the authoritative assembly order. Print it with:
-
-```bash
-./build.sh --list
-```
-
-Each fragment is preceded by a `# source: src/...` marker. To translate a
-line from a built-file error, use the matching build:
+The `FILES` array in [build.sh](https://github.com/ametrocavich/vostok-mod-loader/blob/development/build.sh)
+is the assembly order; `./build.sh --list` prints it. Each fragment is preceded
+by a `# source: src/...` marker, which lets a line of a built-file error be
+translated back, given the same build:
 
 ```bash
 python tools/dev.py locate 12345
 python tools/dev.py find _save_ui_config
 ```
 
-Every fragment shares one class. Constants used by other constant
-initializers must come first; function bodies can call functions later in
-the file. The build checks that every listed file exists, that the result
-has exactly one top-level `extends`, and that it has at most one top-level
-`class_name`. It writes a temporary file and replaces the artifact only on
-success. Carriage returns are dropped from every fragment, so a Windows
-checkout with CRLF sources builds the same bytes as the release job, which
-runs on Linux from LF blobs. Parsing and behavior checks are the next step.
+`find` matches definition names, partial names included. `locate` prints
+`path:line` and warns when the current source line differs from the build.
 
-## The eight checks
+The build fails unless every listed file exists and the result has exactly one
+top-level `extends` and at most one `class_name`. It writes a temporary file
+and replaces the artifact only on success, and drops carriage returns, so a
+CRLF checkout builds the same bytes as the Linux release job.
 
-Source: [check.sh](https://github.com/ametrocavich/vostok-mod-loader/blob/development/check.sh).
-Run it after every build. `check.sh` does not run `build.sh`: it tests the
-`modloader.gd` already on disk, however old, and only a missing file makes it
-ask for a build. After a source edit always run `./build.sh` first, or the
-checks pass against a stale artifact. Success prints eight lines starting with `OK:`:
+## The checks
 
-| Check | Runner | Coverage |
+[check.sh](https://github.com/ametrocavich/vostok-mod-loader/blob/development/check.sh)
+tests the `modloader.gd` on disk and never builds it: after a source edit run
+`./build.sh` first, or the checks pass against a stale artifact. Success is
+eleven lines starting with `OK:`. Two come from `check.sh` itself:
+
+- Parse: headless `--check-only` over the built loader in a throwaway project.
+- Invariants and docs: no CR byte in the build, no `await` in a string literal
+  of `src/rewriter*.gd` outside the `is_coro`-gated `aw` line, no wrong await
+  contract in [Hooks](Hooks), [Hook Surface](Hook-Surface) or
+  [Hook Pack](Hook-Pack), and
+  `python tools/dev.py check-docs` (links, heading anchors, `src/` paths, a
+  function named in a link label defined in the linked file, every source file
+  in [Modules](Modules), plain ASCII in the docs, sources, tests, tools and
+  shell scripts, identical listing bodies). It does not
+  check prose or external sites.
+
+Then it runs the nine harness scripts in turn; each one is a short script over
+the helpers in `tests/lib.sh`:
+
+| Script | Runner | Covers |
 |---|---|---|
-| Parse | Inline in `check.sh` | Headless `--check-only` parses and type-checks the assembled loader in a throwaway project. Catches duplicate definitions, unresolved names and incompatible types. |
-| Static invariants and docs | Inline greps and `tools/dev.py check-docs` | The built file holds no CR byte (a local build must match the LF release build). Wrapper templates emit `await` only through the coroutine-gated variable; Hooks.md must describe that contract. Checks local/repository Markdown targets, source paths, linked definition ownership and module-index coverage. It does not verify prose, URL fragments or external sites. |
-| Code generation | `tests/codegen/runner.gd` | Two synthetic and, when available, ten vanilla fixtures. Compiles original source, rewritten source and caller stubs; checks signatures, coroutine behavior and masked rewrites. For each registry target it asserts that the script's `REGISTRY_EXPECTED_MARKERS` marker is in the full rewrite, so a vanilla anchor that no longer matches the corpus (Build 2's `agent =` to `enemy =` rename) fails the fixture instead of shipping as a silent no-op. `_check_registry_runtime` then instantiates the rewritten registry targets and executes the injected code (AI categories and loadout injection including `replace`, the AISpawner resolver, `Database._get` precedence, the Loader shelter and map shim), on both the Build 2 corpus and the one before it. `_check_vetting` runs the pre-ship compile probe on every fixture: each real rewrite must vet as `full`; five vanilla scripts with a renamed member (`GAME_RENAMES`) must ship wrap-only, compile, carry no registry code and record the demotion; a `Database.gd` with no const preloads must still ship hooked, without the scenes appendix; a rewrite that compiles in no form is excluded; persisted verdicts are repeated unprobed. |
-| Dispatch | `tests/codegen/dispatch_runner.gd` | T1 to T23: hook ordering, replacement, post hooks, deferred calls, re-entrancy, defaults and coroutines; registry/setup operations; coroutine detection that ignores `await` inside strings and comments. |
-| Detokenizer | `tests/detok/runner.gd` | T1 to T11: v100/v101 reconstruction, empty tokens, VFS/PCK precedence, cache stamps, `.gdc` fallback and the engine canary. |
-| Identity | `tests/identity/runner.gd` | T1 to T12: filename stems, duplicate winners, metadata read records, profile defaults, key migration, missing active profiles and profile rename/create behavior. |
-| Host and packs | `tests/host/runner.gd` | T1 to T33: complete host records, dispatch coverage, source migration, pack conversion/apply/unload, preserved original files, refreshed imports, pack names with no usable characters, refused-manifest copy, exact-version pins, download names, cooldowns, update outcomes, dependency ordering, and that a listing page never carries the loader's own entry on either host (matched per host, paging fields untouched, error results passed through), nor does a saved landing read back from disk; the Vostok Mods listing shape (`entries` rows, `ownerDisplayName`, `taxonomies` with a group object) and that Browse finds an installed mod under both the UUID its `mod.txt` carries and the slug the site answered with. |
-| Boot state | `tests/boot_state/runner.gd` | T1 to T27: crash streak, state hash, game-update detection, hook health and early hooks, config recovery, failed writes, linked-root deletion guards, unmodded cleanup retry, which rewritten scripts wait for lazy compile, that mounting an archive with a scene `.remap` loads nothing, that the hook pack carries no mod scripts, and that the compile probe's verdicts persist through pass state: the following generation does not probe, Pass 1 probes afresh, registry verbs on a demoted target return `false`, and the launcher notice names the script. |
+| `check_codegen.sh` | `tests/codegen/runner.gd` | Rewritten vanilla and synthetic scripts compile, callers too; registry markers, injected code and the compile probe. |
+| `check_dispatch.sh` | `tests/codegen/dispatch_runner.gd` | Hook order, replace, post, deferred and coroutine dispatch; registry and `setup()` verbs. |
+| `check_detok.sh` | `tests/detok/runner.gd` | Bytecode v100 and v101 reconstruction, the PCK reader, canaries B and C. |
+| `check_identity.sh` | `tests/identity/runner.gd` | Filename stems, duplicate winners, profile defaults and key migration. |
+| `check_host.sh` | `tests/host/runner.gd` | Host records and dispatch, source precedence, cooldowns, listing shapes. |
+| `check_profiles.sh` | `tests/profiles/runner.gd` | Packs, hosted pack slots, profiles, MCM snapshots, the reopened launcher. |
+| `check_mods.sh` | `tests/mods/runner.gd` | Scan to load on real archives, dependency order, downloads, updates, deletes. |
+| `check_boot_state.sh` | `tests/boot_state/runner.gd` | Crash streak, state hash, game-update detection, hook pack build, activation and canary A. |
+| `check_ui.sh` | `tests/ui/runner.gd` | The launcher built headless; its structural dump must equal `tests/ui/baseline.txt`. |
 
-The six harness scripts are `check_codegen.sh`, `check_dispatch.sh`,
-`check_detok.sh`, `check_identity.sh`, `check_host.sh` and `check_boot_state.sh`.
-Each builds a throwaway project, replaces the loader's boot initializer with
-`{}` in the test copy, and calls loader functions explicitly. The five runtime
-harnesses fail on any `SCRIPT ERROR`. Codegen compares baseline and generated
-compilation because the decompiled game scripts can log errors outside the
-game. Assertion counts come from the runners' success output.
+Each harness builds a throwaway project, replaces the loader's boot initializer
+with `{}` in the test copy and calls loader functions directly. The runtime
+harnesses fail on any `SCRIPT ERROR`; codegen compares baseline and rewritten
+compilation instead, because decompiled game scripts log errors outside the
+game. `./check_ui.sh --update-baseline` rewrites the UI baseline and prints the
+diff to review.
 
-A green run does not test the rendered launcher, live hosts, installers or a
-complete game restart. See [the release checklist](https://github.com/ametrocavich/vostok-mod-loader/blob/development/docs/RELEASE_CHECKLIST.md)
-for manual acceptance. For the Build 2 registry and hook changes there is a
-self-checking in-game kit under `tests/ingame/build2/`: two throwaway test
-mods print `[B2TEST] PASS|FAIL` lines at the main menu and `evaluate.py`
-grades the game log; its README has the three commands.
+A green run does not cover pixels, live hosts, the installers or a full game
+restart; the [release checklist](https://github.com/ametrocavich/vostok-mod-loader/blob/development/docs/RELEASE_CHECKLIST.md)
+holds the manual acceptance. Three in-game tools sit under `tests/ingame/`,
+each with its commands in its README or header: the `build2` and `lts` kits
+(test mods that print PASS and FAIL lines, graded from the game log by
+`evaluate.py`), and `rehearse_build.sh`, which checks a new game build against
+the rewriter and the fallback class map without launching the game.
 
 ## Diagnose and extend a check
 
-Run the failing harness directly to shorten the feedback loop:
+Run the failing harness alone; `--prove` mutates the temporary loader copy and
+requires the named failure:
 
 ```bash
 ./check_host.sh
 ./check_host.sh --prove
 ```
 
-`--prove` makes a targeted mutation in the temporary copy and requires the
-named failure. Only `check_boot_state.sh` runs the clean harness first; the
-others go straight to the mutated run, so `--prove` on a baseline that already
-fails can still print `PROVE-OK`. Run the plain harness (or `./check.sh`)
-before trusting it. It leaves repository source unchanged, and it tests the
-gate's failure detection, not every possible bug in its subject.
-Each check script defines its temporary `WORK` directory; inspect the runner
-output and that directory's generated files when a fixture fails.
+Only `check_boot_state.sh` runs the clean harness before the mutation, so run
+the plain harness first: a baseline that already fails can still print
+`PROVE-OK`. `--prove` tests the gate's failure detection, not every bug in its
+subject. Each script names its temporary `WORK` directory; the runner log and
+generated files are there.
 
-Add cases to the closest existing runner. When adding a T number, update its
-call list, `_finish` range and this page's coverage row. Dispatch also lists
-the case IDs at the top of its runner and check script. For codegen, add a
-fixture to `FIXTURES` in its runner; the script header explains masks and
-intentional body changes. Keep the eight top-level checks.
+Add a case to the closest runner ([Development](Development#testing-a-change)
+describes the scaffolding) and keep the runner's call list and id range in
+step; a codegen fixture is a `tests/codegen/Fixture*.gd` file listed in `FIXTURES`.
+Keep the eleven top-level checks.
 
 ## Continuous integration
 
-Source: [.github/workflows/ci.yml](https://github.com/ametrocavich/vostok-mod-loader/blob/development/.github/workflows/ci.yml).
-CI runs on every PR and pushes to `master` and `refactor/**`. It downloads
-Godot, builds and runs the same checks. CI has no decompiled game corpus;
-synthetic codegen fixtures still run. Python is supplied by the Ubuntu runner.
-
-Godot's current default is 4.6.1-stable. When changing it, update `check.sh`,
-all six `check_*.sh` scripts and both CI/release workflow pins together.
+[ci.yml](https://github.com/ametrocavich/vostok-mod-loader/blob/development/.github/workflows/ci.yml)
+runs on every PR and on pushes to `master` and `development`: it downloads
+Godot, builds and runs the same checks, without a decompiled corpus. The
+`GODOT_VERSION` pins in the CI and release workflows change together.
+[wiki-sync.yml](https://github.com/ametrocavich/vostok-mod-loader/blob/development/.github/workflows/wiki-sync.yml)
+publishes `docs/wiki/` to the GitHub wiki on a push that touches it, deleting
+pages that are gone, so renaming a page changes its URL.
 
 ## release-please
 
-Source: [.github/workflows/release-please.yml](https://github.com/ametrocavich/vostok-mod-loader/blob/development/.github/workflows/release-please.yml).
-
-Automates the version bump and the changelog from [Conventional Commits](https://www.conventionalcommits.org/).
-
-### Flow
-
-1. A PR merges to `master`.
-2. `release-please-action@v4` parses the Conventional Commits since the last tag (`release-please-config.json`, `.release-please-manifest.json`).
-3. It opens a release PR ("chore(master): release <version>") that bumps `MODLOADER_VERSION` in `src/constants.gd`, updates `CHANGELOG.md` and records the version in `.release-please-manifest.json`. `src/constants.gd` is the only source file it edits.
-4. Merging the release PR creates the tag and a draft GitHub Release.
-5. The same workflow then runs `./build.sh`, downloads Godot and runs `./check.sh` against the exact bytes about to ship (release-please rewrote `constants.gd` on the way in, so no PR compiled this file), uploads `modloader.gd`, `override.cfg`, `windows-installer.bat` and `linux-installer.sh` as release assets, and only then flips the release from draft to published.
-
-The draft step matters. From the moment a release is published, `/releases/latest/download/modloader.gd` resolves to it, and both installers fetch that URL. A build or upload failure on a published release left every new install failing on a 404.
-
-Within this workflow, building and uploading assets only run when a release is created. The separate CI workflow still builds and checks normal pushes to `master`. The workflow also has a `workflow_dispatch` trigger (`gh workflow run release-please.yml`) for recomputing the release PR by hand; the release checklist says when.
-
-### Version-bump mapping
-
-`feat:` bumps the minor version, `fix:` the patch, and a `!` after the type the major. The full table, with the types that do not bump, is in [CONTRIBUTING.md](https://github.com/ametrocavich/vostok-mod-loader/blob/development/CONTRIBUTING.md#pr-titles).
-
-### Where the version lives
-
-One line in `src/constants.gd`:
-
-```gdscript
-# x-release-please-start-version
-const MODLOADER_VERSION := "<version>"
-# x-release-please-end
-```
-
-Mods read it at runtime:
-
-```gdscript
-var lib = Engine.get_meta("RTVModLib")
-if lib.major_version() >= 3:
-    use_new_api()
-```
-
-The accessors are static functions at the top of [hooks_api.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hooks_api.gd): `version() -> String`, `major_version() -> int`, `minor_version() -> int`, `patch_version() -> int`.
-
-## Branch model
-
-From [CONTRIBUTING.md](https://github.com/ametrocavich/vostok-mod-loader/blob/development/CONTRIBUTING.md):
-
-- `development` is the target for contributor PRs. Feature branches squash-merge into it, so each PR is one conventional commit.
-- `master` is the release branch. Only maintainer PRs from `development` land there, by rebase-merge, so release-please sees every commit.
-
-Contributor workflow: branch off `development`, PR against `development`, title the PR `<type>: <description>`. On merge it becomes one squashed commit.
-
-When it is time to release, the maintainer opens a `development -> master` PR. After the rebase-merge the SHAs on `master` differ from the ones on `development`, so `development` is reset to `origin/master`; otherwise the two drift apart silently.
-
-## Wiki sync
-
-The wiki is generated from [docs/wiki/*.md](https://github.com/ametrocavich/vostok-mod-loader/tree/development/docs/wiki) by [.github/workflows/wiki-sync.yml](https://github.com/ametrocavich/vostok-mod-loader/blob/development/.github/workflows/wiki-sync.yml).
-
-The workflow runs on a push to `development` or `master` that touches `docs/wiki/**` (and on manual dispatch). It clones `<repo>.wiki.git` with the default `GITHUB_TOKEN` (`contents: write`), rsyncs `docs/wiki/` into the clone with `--delete`, and pushes one commit named after the source SHA. The wiki repository counts as repo content, so no PAT is needed.
-
-To change a page, PR the edit to `docs/wiki/*.md` on `development`. The wiki updates on merge.
+[release-please.yml](https://github.com/ametrocavich/vostok-mod-loader/blob/development/.github/workflows/release-please.yml)
+turns the [Conventional Commits](https://www.conventionalcommits.org/) merged to
+`master` into a release PR that bumps `MODLOADER_VERSION` in `src/constants.gd`
+(between the `x-release-please-start-version` and `x-release-please-end`
+markers) and updates `CHANGELOG.md`. Merging that PR tags a draft release; the
+workflow then builds, checks and uploads the assets before publishing it. The
+[release checklist](https://github.com/ametrocavich/vostok-mod-loader/blob/development/docs/RELEASE_CHECKLIST.md)
+owns the release steps, and CONTRIBUTING owns the
+[PR titles](https://github.com/ametrocavich/vostok-mod-loader/blob/development/CONTRIBUTING.md#pr-titles)
+that decide the bump and the
+[branch model](https://github.com/ametrocavich/vostok-mod-loader/blob/development/CONTRIBUTING.md#branches-and-pr-titles).

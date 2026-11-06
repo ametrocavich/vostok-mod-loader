@@ -1,134 +1,37 @@
 # Developer Mode
 
-Dev mode is a per-user setting. It turns on folder-mod loading, debug logging and a set of boot-time probes. Off by default.
+A per-user setting, off by default, for people writing mods. It changes what loads in one way only, unpacked folder mods load; everything else it adds is logging and boot-time probes.
 
 ## How to enable
 
-Tick the **Developer mode** checkbox in the toolbar of the Mods tab ([ui_mods.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/ui_mods.gd)). Its tooltip reads "Enables verbose logging, conflict report, and loose folder loading", and the bottom-bar hint says the same. The toggle persists as `[settings] developer_mode` in `user://mod_config.cfg`; toggling it rescans the mods folder and keeps the active profile.
+Tick **Developer mode** in the Mods-tab toolbar. The choice is saved as `[settings] developer_mode` in `user://mod_config.cfg`; toggling it rescans the mods folder and keeps the active profile. [`_load_developer_mode_setting`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/profiles.gd) reads it at the start of both passes, falling back to `mod_config.cfg.bak` when the live file is unreadable, so a recoverable config error does not strand your folder mods. When on, the log says `[Config] Developer mode: ON`.
 
-[`_load_developer_mode_setting`](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/profiles.gd) reads the saved value at the start of both Pass 1 and Pass 2 (lifecycle.gd). If the live config is missing or corrupt it reads `developer_mode` from the rolling `.bak` instead, so a recoverable config error does not silently turn dev mode off and strand your folder mods for the session. When on, the log says `Developer mode: ON`.
+## Folder mods
 
-## What it unlocks
+Each subfolder of `<game>/mods/` (except hidden ones starting with `.`) counts as a mod. Its contents are zipped to `user://vmz_mount_cache/<name>_dev.zip` and mounted, so it behaves exactly like the zip you will ship ([Mod-Format](Mod-Format#packaging-layout) has the layout). The zip is rebuilt only when the folder changed: a stamp of its files' paths, times and count is kept in a `.src` sidecar and compared at every launch.
 
-### 1. Unpacked folder mods
+- The row carries a red `[dev folder]` label. A `mod.txt` that does not parse shows the same row warning an archive gets; the archive-shape warnings do not apply.
+- A folder never gets update downloads: the download would land beside it as a duplicate. Your working copy is what loads.
+- With developer mode off, folders are not loaded but are still tracked, so a dependent mod reports the `hidden_folder` status ([Dependencies](Dependencies#skip-when-unmet-required-only)) instead of "not installed".
 
-Subdirectories of `<exe>/mods/` count as mods and are zipped to `user://vmz_mount_cache/<name>_dev.zip` on the fly. With dev mode off, subdirectories are ignored; `_record_hidden_folder` in [mod_discovery.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd) still tracks them so the orphan scan and dependency checks treat them as present.
+## What it adds
 
-The temp zip is rebuilt only when the folder's contents changed. A folder-state stamp (newest mtime, file count, a per-file `path@mtime` hash) is stored in a `.zip.src` sidecar at zip time and compared on every launch (`_folder_dev_zip_current`, fs_archive.gd). An unchanged folder reuses the cached zip; an edit, a deletion or a timestamp change forces a rebuild on the next launch.
+| Feature | When | Output |
+|---|---|---|
+| Debug logging | throughout | `_log_debug` lines, a full no-op when off: rewriter skips, per-script rewrite counts (`[RTVCodegen] Rewrote <path> (N hooks)`), the per-target `reconcile` table, stale-cache removal, rejected replace hooks, missing-autoload details |
+| Author notes | Mods-tab rows | notes for the mod's author on a sourced or id-less archive ([Mod-Format](Mod-Format#modtxt-validity-and-row-warnings)); real breakage shows to everyone regardless |
+| Conflict summary and report | end of boot | `--- Conflicted Paths (last loader wins) ---` with `<-- wins` on the winner, then `user://modloader_conflicts.txt`: every log line since mod loading began, capped at 5000 lines, written after `frameworks_ready` |
+| Override timing | end of boot | `<mod> uses overrideScript() on: <scripts> -- applies after scene reload` for mods that call `take_over_path` |
+| OverrideVerify | at `frameworks_ready` | `[OverrideVerify] <mod> \| <path> \| resource_path=... src_head=[...]` for each such target already in the cache, else `not loaded yet`; nothing is loaded to check |
+| Pre-activate summary | before hook-pack activation | `[RTVCodegen] PRE-ACTIVATE preempted=N ...`: how many wrapped scripts static init already replaced |
+| COMPILE-PROOF detail | after activation | one `[RTVCodegen] COMPILE-PROOF <path>` line per script; the `[STABILITY]` summary prints in every mode |
+| Hook probe | after activation | a `menu-_ready-pre` hook on Menu.gd's `_ready`, which every hook pack wraps. 30 s later: `[RTVCodegen] HOOK-API menu_ready: count=N`, then `HOOK-API-LIVE` (info) or `HOOK-API-DEAD: 0 callback fires` (critical) |
+| AUTOLOAD-CHECK | after activation | `[RTVCodegen] AUTOLOAD-CHECK <name>: script=<path> script_has_rename=<bool> instance_has_rename=<bool>` for `Loader`, `Database` and `Simulation`. `true` then `false` means the live node still runs the old bytecode |
+| Registry probe | after activation | `[RegistryProbe]` lines checking that `Database` holds its extracted scenes and that `get()` returns a `PackedScene` |
+| Dispatch counts | 30 s after activation | generated wrappers count calls only in developer mode. `[RTVCodegen] DISPATCH-COUNT top 20 / N tracked methods`, and a critical `LIFECYCLE-RUNAWAY` when a `_ready`, `_enter_tree` or `_init` fired more than 10 times: those run once per node, so a mod is calling them in a loop |
 
-Folder entries show a red `[dev folder]` label in the Mods tab. A folder whose `mod.txt` does not parse carries the same `mod.txt parse error at ...` row warning an archive gets; the archive-shape warnings do not apply to folders.
+The code is in [debug.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/debug.gd), [conflict_report.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/conflict_report.gd) and [logging.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/logging.gd).
 
-Dev folders never get update downloads. The update check skips them, since a downloaded archive would land as a duplicate beside your folder. Your working copy on disk is always what loads.
+## What stays the same
 
-This is for mods you have not packaged yet.
-
-### 2. Debug logging (`_log_debug`)
-
-`_log_debug` ([logging.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/logging.gd)) is gated on `_developer_mode`. When off it is a full no-op: nothing printed, nothing appended to the report buffer.
-
-Debug-level lines include:
-
-- Skip-list rejections from the rewriter (`[RTVCodegen] Skipped <file> (runtime-sensitive)`)
-- Per-script rewrite summaries (`[RTVCodegen] Rewrote res://Scripts/<file> (N hooks)`)
-- The per-target reconciliation table (`[RTVCodegen] reconcile <path> :: <methods> [<declared>] -> <status>`)
-- Stale cache cleanup (`Removed stale cache: <name>`)
-- Replace-hook rejections (`[RTVModLib] replace hook '<name>' already owned (id=N), registration rejected`)
-- The override timing and OverrideVerify lines from sections 5 and 6
-- FileAccess / ResourceLoader existence checks for autoloads that failed to load
-
-### 3. Conflict report
-
-`_print_conflict_summary` and `_write_conflict_report` ([conflict_report.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/conflict_report.gd)) run from every finish path in lifecycle.gd, only when dev mode is on.
-
-The report is `user://modloader_conflicts.txt`, every buffered log line from the session (capped at 5000 lines by `_report_append`).
-
-The console summary lists the loaded mod count, each conflicted resource path with its claimants (`<-- wins` on the last one), and hook registrations per name.
-
-### 4. Source scanner
-
-`_scan_gd_source` in [mod_loading.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_loading.gd) runs per mod with `.gd` files, in every mode; only the reporting is dev-gated. It fills `_mod_script_analysis[mod_name]` with:
-
-- `take_over_literal_paths`: literal `take_over_path("res://...")` calls
-- `extends_paths`: the `extends "res://..."` path of each script that has one
-- `uses_dynamic_override`: any `take_over_path(` call at all
-- `total_gd_files`: the number of `.gd` entries in the archive (counted by the caller, `scan_and_register_archive_claims`)
-- `hook_calls`: literal `.hook("...")` calls as `{prefix, method}`, which `_merge_hook_calls_into_wrap_mask` folds into the wrap surface
-- `calls_bloader_api`: the source calls `Loader.add_shelter(` or `Loader.add_map(`
-
-### 5. Override timing warnings
-
-`_log_override_timing_warnings` in conflict_report.gd logs, at debug level, which mods use `overrideScript()`. Those overrides only apply after a scene reload:
-
-```
-<ModName> uses overrideScript() on: Controller.gd, Camera.gd -- applies after scene reload
-```
-
-### 6. OverrideVerify
-
-`_verify_script_overrides` in conflict_report.gd runs once from `_emit_frameworks_ready`, in developer mode only. For each mod that uses `overrideScript()`, it looks at each declared target that is already cached (it never loads one itself, which would compile the script early) after the autoloads have run and logs the `resource_path` plus the head of the source, at debug level:
-
-```
-[OverrideVerify] MyMod | res://Scripts/Controller.gd | resource_path=res://Scripts/Controller.gd src_head=[extends "res://ModBase.gd" | ...]
-```
-
-A target that is not cached yet logs `not loaded yet` instead. Mod source is never rewritten, so there is no marker in a mod's own script to classify cache state against; the probe reports the head and leaves the judgement to you.
-
-### 7. Live-probe hooks
-
-`_dev_hook_probes` in [debug.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/debug.gd), called from `_activate_rewritten_scripts` in dev mode, registers real hooks through the public `hook()` API on eight methods:
-
-| Hook | Fires |
-|---|---|
-| `loader-_physics_process-pre` | Every tick from game start |
-| `simulation-_process-pre` | Every tick |
-| `profiler-_process-pre` | Every tick |
-| `menu-_ready-pre` | Menu UI init |
-| `settings-loadpreferences-pre` | Preferences load |
-| `controller-_physics_process-pre` | Every tick in the world |
-| `character-_physics_process-pre` | Every tick in the world |
-| `camera-_physics_process-pre` | Every tick in the world |
-
-Counters live in `Engine.get_meta("_rtv_probe_counts")`. A 30-second timer then logs one `[RTVCodegen] HOOK-API <key>: count=N first_arg=...` line per probe, followed by a verdict: `HOOK-API-LIVE: N callback fires total across probes -- full chain verified` (info) or `HOOK-API-DEAD: 0 callback fires -- dispatch runs but _hooks lookup/callback is broken` (critical).
-
-When dispatch counts are non-zero the same timer prints `DISPATCH-COUNT top 20 / N tracked methods`, the hottest wrapped methods in the window, and a critical `LIFECYCLE-RUNAWAY` line if any `_ready`, `_enter_tree` or `_init` fired more than 10 times. Those fire once per node; a high count usually means a mod calls them from a loop, which is where connect-already-connected error spam comes from.
-
-### 8. AUTOLOAD-CHECK
-
-Also in `_dev_hook_probes`. For each of nine autoloads (`Database`, `GameData`, `Settings`, `Menu`, `Loader`, `Inputs`, `Mode`, `Profiler`, `Simulation`) it logs:
-
-```
-[RTVCodegen] AUTOLOAD-CHECK <name>: script=<path> script_has_rename=<bool> instance_has_rename=<bool>
-```
-
-`script_has_rename=true` with `instance_has_rename=false` means the autoload node still holds the old bytecode through `get_script()`: the rewrite is not reaching the live instance.
-
-### 9. Registry smoke probe
-
-Also in `_dev_hook_probes`. Logs under `[RegistryProbe]`: checks that `Database._rtv_vanilla_scenes` exists and is populated and that `db.get(first_key)` returns a PackedScene, warning on each failure.
-
-### 10. Dispatch counters
-
-Per-hook-base counts accumulate in `_dispatch_counts` (constants.gd). The generated wrappers increment it only when dev mode is on; `_rtv_dispatch_inline_src` in rewriter_rewrite.gd emits the increment inside an `if _lib._developer_mode:` block. The dict is cleared when the 30-second window starts and printed as the DISPATCH-COUNT breakdown from section 7.
-
-### 11. Mod author notes
-
-Mods-tab rows show notes meant for the mod's author only while dev mode is on: an unquoted `[mod] version`, a missing `id=`, a stale export bake beside the sources, an unrecognized `[updates] source=`. Real breakage (an invalid zip, a `mod.txt` that fails to parse or sits in a subfolder, an autoload path that resolves nowhere) shows to everyone regardless. `_build_entry_author_notes` in mod_discovery.gd builds the list.
-
-## Where the gate sits
-
-- `_log_debug` (logging.gd): full no-op when off.
-- `_activate_rewritten_scripts` (hook_pack.gd) calls `_dev_preactivate_summary` and `_dev_hook_probes` (debug.gd) only when dev mode is on; between them COMPILE-PROOF (canary A) runs for everyone.
-- The conflict summary and report calls in lifecycle.gd.
-- The `_dispatch_counts` increment inside each generated wrapper.
-
-Dev mode changes what loads in exactly one way: folder mods are discovered and loaded only while it is on.
-
-## What dev mode does not change
-
-- The Pass 1 / Pass 2 restart logic.
-- Hook pack generation, mount and activation.
-- The `RTVModLib` API.
-- `override.cfg` writing.
-- Canaries A, B and C, the VFS-precedence canary and the DEFER-VERIFY watchdog all fire at their critical levels in every mode. Only canary A's per-script `[COMPILE-PROOF]` detail lines and the end-to-end hook probes are dev-only.
-
-Apart from folder mods, dev mode only adds logging and probes.
+The two-pass restart, hook-pack generation and activation, the `RTVModLib` API and `override.cfg` behave the same in every mode. The stability canaries, the VFS-precedence canary and the DEFER-VERIFY watchdog report at their usual levels whether developer mode is on or off ([Stability-Canaries](Stability-Canaries)).

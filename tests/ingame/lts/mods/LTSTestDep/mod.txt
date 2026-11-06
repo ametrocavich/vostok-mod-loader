@@ -1,0 +1,12 @@
+[mod]
+name="LTS Test: Dependency"
+id="lts_dep"
+version="1.0.0"
+author="Metro Mod Loader tests"
+priority=5
+
+[dependencies]
+optional=["lts_core"]
+
+[autoload]
+LTSTestDep="res://LTSTestDep/Main.gd"

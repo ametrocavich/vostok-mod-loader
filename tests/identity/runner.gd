@@ -1,52 +1,30 @@
-## runner.gd -- mod-identity harness. NOT part of the shipped loader.
-## Executed by check_identity.sh inside a THROWAWAY Godot project assembled
-## under the system temp dir; never run it against this repo or against the
-## Road to Vostok install.
-##
-## WHY THIS EXISTS: a mod whose mod.txt declares no id= is identified by its
-## filename. Re-packaging it under a different extension or version suffix
-## used to produce a second, separate identity, which meant two copies of the
-## same mod both mounted and load order decided which body of code actually
-## ran. The reported symptom was "I edited my mod and it keeps running the old
-## code, but renaming it back fixes it".
-##
-## The fix is a normalized filename stem, which is a heuristic: too greedy and
-## it merges two genuinely different mods, too strict and the original bug
-## comes back. Both directions are asserted below.
-extends SceneTree
+## Mod-identity harness, run by check_identity.sh: filename stems, duplicates, profile state.
+## Does not prove the scan of a real mods folder (check_mods.sh does).
+extends "res://runner_base.gd"
 
-const MODLOADER_PATH := "res://modloader_neutered.gd"
-
-# file name -> expected normalized stem
-const STEM_CASES: Array = [
-	# The reported case: same mod, different container extension.
+const STEM_CASES := [
 	["CoolMod.zip", "coolmod"],
 	["CoolMod.vmz", "coolmod"],
 	["CoolMod.pck", "coolmod"],
-	# Version suffixes an author bumps between releases.
 	["CoolMod_v1.0.zip", "coolmod"],
+	["100-CoolMod.vmz", "coolmod"],
 	["CoolMod_v1.1.zip", "coolmod"],
 	["CoolMod-1.2.3.zip", "coolmod"],
 	["CoolMod v2.vmz", "coolmod"],
 	["CoolModv2.zip", "coolmod"],
 	["CoolMod.1.0.zip", "coolmod"],
-	# Case folding.
 	["COOLMOD.ZIP", "coolmod"],
-	# A digit with no separator reads as part of the name. Collapsing it would
-	# merge two different mods, so it must survive.
 	["CoolMod2.zip", "coolmod2"],
 	["Mod4Fun.zip", "mod4fun"],
-	# Nothing left over after stripping: keep the stem rather than return "".
+	# A bare number after "_" is a part number: both archives load.
+	["WeaponPack_1.zip", "weaponpack_1"],
+	["WeaponPack_2.zip", "weaponpack_2"],
+	["WeaponPack_v1.zip", "weaponpack"],
 	["1.2.zip", "1.2"],
 	["v2.zip", "v2"],
-	# Names that carry no version token at all.
 	["A Mod With Spaces.zip", "a mod with spaces"],
 	["under_score.zip", "under_score"],
-	# A trailing integer after a SPACE stays part of the name: "Ammo Pack 1" and
-	# "Ammo Pack 2" are different mods. An explicit v, or a dotted version, still
-	# strips. These pin the STEM, not just the collapse -- a same-stem assertion
-	# alone cannot tell "ammo pack" from "ammo pack 1", since both spellings
-	# collapse the pair either way.
+	# A number after a space is part of the name; "v" or a dotted version strips.
 	["Ammo Pack 1.zip", "ammo pack 1"],
 	["Ammo Pack 2.zip", "ammo pack 2"],
 	["Ammo Pack v2.zip", "ammo pack"],
@@ -54,214 +32,94 @@ const STEM_CASES: Array = [
 	["Ammo Pack 10.zip", "ammo pack 10"],
 ]
 
-var _failures: PackedStringArray = []
-var _assertions := 0
-
 func _init() -> void:
-	print("[identity] harness start")
+	super("identity", "T1..T14")
 
-func _process(_delta: float) -> bool:
-	_run()
-	return true
-
-func _run() -> void:
-	var ml_script := load(MODLOADER_PATH) as GDScript
-	if ml_script == null:
-		_fail("could not load " + MODLOADER_PATH)
-		_finish()
-		return
-	var ml: Object = ml_script.new()
-	var mounted: Variant = ml.get("_filescope_mounted")
-	if typeof(mounted) != TYPE_DICTIONARY or not (mounted as Dictionary).is_empty():
-		_fail("modloader boot static-init was NOT neutralized -- refusing to run")
-		_finish()
-		return
-	# The stem normalizer reads regexes _ready compiles once per launch.
+func _tests(ml: Object) -> void:
 	ml._compile_regex()
-
-	_t1_stem_table(ml)
-	_t2_extension_change_collapses(ml)
-	_t3_version_bump_collapses_and_newest_wins(ml)
-	_t4_distinct_mods_stay_distinct(ml)
-	_t5_declared_id_still_wins(ml)
-	_t6_pck_never_collapses(ml)
-	_t7_mod_txt_read_record(ml)
-	_t8_priority_does_not_leak_between_profiles(ml)
-	_t9_repackaged_mod_drops_its_old_key(ml)
-	_t10_missing_profile_falls_back_to_a_user_profile(ml)
-	_t11_profile_bookkeeping_is_not_a_mod_change(ml)
-	_t12_active_profile_label(ml)
-
-	_finish()
-
-# --- Tests -------------------------------------------------------------------
+	for t in [_t1_stem_table, _t2_extension_change, _t3_version_bump, _t4_distinct_mods, _t5_declared_id_wins,
+			_t6_pck_never_collapses, _t7_mod_txt_record, _t8_priority_per_profile, _t9_repackaged_mod_key,
+			_t10_missing_profile, _t11_profile_bookkeeping, _t12_active_profile_label, _t13_newer_archive_beats_folder,
+			_t14_skip_lines_name_the_fix]:
+		begin(str(t.get_method()).get_slice("_", 1).to_upper())
+		t.call(ml)
 
 func _t1_stem_table(ml: Object) -> void:
-	for case in STEM_CASES:
-		var got: String = str(ml._normalized_mod_stem(str(case[0])))
-		_assert(got == str(case[1]),
-				"T1: stem(%s) = '%s', expected '%s'" % [case[0], got, case[1]])
+	for c in STEM_CASES:
+		check_eq(str(ml._normalized_mod_stem(c[0])), c[1], "stem(%s)" % c[0])
 
-# The exact bug: CoolMod.vmz replaced by CoolMod.zip must be ONE mod.
-func _t2_extension_change_collapses(ml: Object) -> void:
-	var out: Array = ml._dedupe_by_mod_id(_entries([
-		{"file": "CoolMod.vmz", "ver": ""},
-		{"file": "CoolMod.zip", "ver": ""},
-	]))
-	_assert(out.size() == 1, "T2: .vmz + .zip of one mod must collapse to 1 entry, got %d" % out.size())
-	if out.size() == 1:
-		var hidden: Array = (out[0] as Dictionary).get("duplicates_hidden", [])
-		_assert(hidden.size() == 1, "T2: the losing copy must be recorded as hidden, got %d" % hidden.size())
+func _t2_extension_change(ml: Object) -> void:
+	var out: Array = ml._dedupe_by_mod_id(_entries(["CoolMod.vmz", "CoolMod.zip"]))
+	if check_eq(out.size(), 1, ".vmz and .zip of one mod"):
+		check_eq((out[0].get("duplicates_hidden", []) as Array).size(), 1, "losing copies hidden")
 
-func _t3_version_bump_collapses_and_newest_wins(ml: Object) -> void:
-	var out: Array = ml._dedupe_by_mod_id(_entries([
-		{"file": "CoolMod_v1.0.zip", "ver": "1.0"},
-		{"file": "CoolMod_v1.1.zip", "ver": "1.1"},
-	]))
-	_assert(out.size() == 1, "T3: two versions must collapse to 1 entry, got %d" % out.size())
-	if out.size() == 1:
-		_assert(str((out[0] as Dictionary)["file_name"]) == "CoolMod_v1.1.zip",
-				"T3: the higher version must win, got %s" % (out[0] as Dictionary)["file_name"])
+func _t3_version_bump(ml: Object) -> void:
+	var pair: Array[Dictionary] = [_entry("CoolMod_v1.0.zip", "1.0"), _entry("CoolMod_v1.1.zip", "1.1")]
+	var out: Array = ml._dedupe_by_mod_id(pair)
+	if check_eq(out.size(), 1, "two versions of one mod"):
+		check_eq(str(out[0]["file_name"]), "CoolMod_v1.1.zip", "the higher version wins")
 
-# The guard against over-merging. These are different mods and must both live.
-func _t4_distinct_mods_stay_distinct(ml: Object) -> void:
-	var out: Array = ml._dedupe_by_mod_id(_entries([
-		{"file": "CoolMod.zip", "ver": ""},
-		{"file": "CoolMod2.zip", "ver": ""},
-		{"file": "OtherMod.zip", "ver": ""},
-	]))
-	_assert(out.size() == 3, "T4: three distinct mods must stay three entries, got %d" % out.size())
+func _t4_distinct_mods(ml: Object) -> void:
+	for c in [[["CoolMod.zip", "CoolMod2.zip", "OtherMod.zip"], 3], [["Ammo Pack 1.zip", "Ammo Pack 2.zip"], 2],
+			[["Ammo Pack v1.zip", "Ammo Pack v2.zip"], 1], [["Ammo Pack 1.2.zip", "Ammo Pack 1.3.zip"], 1]]:
+		check_eq((ml._dedupe_by_mod_id(_entries(c[0])) as Array).size(), c[1], "entries left of %s" % str(c[0]))
 
-	# A trailing number after a SPACE reads as part of the name, not a version.
-	# "Ammo Pack 1" and "Ammo Pack 2" are two different mods; collapsing them
-	# DELETES one from the list, and which one survives is decided by mtime, so
-	# it can flip between sessions. An underscore or hyphen is a packaging
-	# convention and still means a version; a space is prose.
-	var named: Array = ml._dedupe_by_mod_id(_entries([
-		{"file": "Ammo Pack 1.zip", "ver": ""},
-		{"file": "Ammo Pack 2.zip", "ver": ""},
-	]))
-	_assert(named.size() == 2,
-			"T4: 'Ammo Pack 1' and 'Ammo Pack 2' are distinct mods, got %d entries" % named.size())
-	# ... while an explicit version marker after a space still collapses.
-	var versioned: Array = ml._dedupe_by_mod_id(_entries([
-		{"file": "Ammo Pack v1.zip", "ver": ""},
-		{"file": "Ammo Pack v2.zip", "ver": ""},
-	]))
-	_assert(versioned.size() == 1,
-			"T4: 'Ammo Pack v1/v2' is one mod at two versions, got %d entries" % versioned.size())
-	var dotted: Array = ml._dedupe_by_mod_id(_entries([
-		{"file": "Ammo Pack 1.2.zip", "ver": ""},
-		{"file": "Ammo Pack 1.3.zip", "ver": ""},
-	]))
-	_assert(dotted.size() == 1,
-			"T4: 'Ammo Pack 1.2/1.3' is one mod at two versions, got %d entries" % dotted.size())
+func _t5_declared_id_wins(ml: Object) -> void:
+	var pair: Array[Dictionary] = [
+		_entry("Totally.zip", "1.0", {"mod_id": "shared.id", "profile_key": "shared.id@1.0"}),
+		_entry("Different.zip", "1.1", {"mod_id": "shared.id", "profile_key": "shared.id@1.1"}),
+	]
+	check_eq((ml._dedupe_by_mod_id(pair) as Array).size(), 1, "one declared id, two filenames")
 
-# A declared id still takes precedence over any filename resemblance.
-func _t5_declared_id_still_wins(ml: Object) -> void:
-	var a := _entry("Totally.zip", "")
-	var b := _entry("Different.zip", "")
-	a["mod_id"] = "shared.id"
-	b["mod_id"] = "shared.id"
-	a["profile_key"] = "shared.id@1.0"
-	b["profile_key"] = "shared.id@1.1"
-	a["version"] = "1.0"
-	b["version"] = "1.1"
-	var out: Array = ml._dedupe_by_mod_id([a, b] as Array[Dictionary])
-	_assert(out.size() == 1, "T5: same declared id must collapse regardless of filename, got %d" % out.size())
-
-# .pck carries no mod.txt, so a name resemblance is too weak to act on.
 func _t6_pck_never_collapses(ml: Object) -> void:
-	var a := _entry("Same.pck", "")
-	var b := _entry("Same.zip", "")
-	a["ext"] = "pck"
-	var out: Array = ml._dedupe_by_mod_id([a, b] as Array[Dictionary])
-	_assert(out.size() == 2, "T6: a .pck must never be collapsed into another entry, got %d" % out.size())
+	check_eq((ml._dedupe_by_mod_id(_entries(["Same.pck", "Same.zip"])) as Array).size(), 2, "a .pck beside its .zip")
 
-# read_mod_config returns everything the scanner needs from one archive's
-# mod.txt as one record, {cfg, status, error, files}, so nothing from one read
-# can leak into the next mod's warnings. The fixture zips are written into the
-# throwaway project's user://.
-func _t7_mod_txt_read_record(ml: Object) -> void:
-	var ok_zip := _write_zip("user://identity_ok.zip",
-			{"mod.txt": "[mod]\nname=\"Ok\"\nid=\"ok\"\n", "Ok/Main.gd": "extends Node\n"})
-	var nested_zip := _write_zip("user://identity_nested.zip", {"Sub/mod.txt": "[mod]\nname=\"Nested\"\n"})
-	var broken_zip := _write_zip("user://identity_broken.zip", {"mod.txt": "[mod\nname=\n"})
-	var bare_zip := _write_zip("user://identity_bare.zip", {"Plain/thing.txt": "x"})
-	var want_keys := ["cfg", "error", "files", "status"]
+func _t7_mod_txt_record(ml: Object) -> void:
+	var ok_zip := H.write_zip("user://identity_ok.zip",
+			{"mod.txt": "[mod]\nname=\"Ok\"\nid=\"ok\"\n", "Ok/Main.gd": "extends Node\n"}, _report)
+	var nested_zip := H.write_zip("user://identity_nested.zip", {"Sub/mod.txt": "[mod]\nname=\"Nested\"\n"}, _report)
+	var broken_zip := H.write_zip("user://identity_broken.zip", {"mod.txt": "[mod\nname=\n"}, _report)
+	var bare_zip := H.write_zip("user://identity_bare.zip", {"Plain/thing.txt": "x"}, _report)
 
 	var r: Variant = ml.read_mod_config(ok_zip)
-	_assert(r is Dictionary, "T7: read_mod_config returns a record, not a bare ConfigFile")
-	if not (r is Dictionary):
+	if not _assert(r is Dictionary, "a record, not a bare ConfigFile"):
 		return
-	var keys: Array = (r as Dictionary).keys()
+	var keys: Array = r.keys()
 	keys.sort()
-	_assert(keys == want_keys, "T7: the record has exactly cfg/error/files/status (got %s)" % str(keys))
-	_assert(str(r["status"]) == "ok" and r["cfg"] is ConfigFile and str((r["cfg"] as ConfigFile).get_value("mod", "id", "")) == "ok",
-			"T7: a root mod.txt reads as ok with its ConfigFile (got status %s)" % str(r["status"]))
+	check_eq(keys, ["cfg", "error", "files", "status"], "record keys")
+	_assert(str(r["status"]) == "ok" and r["cfg"] is ConfigFile and str(r["cfg"].get_value("mod", "id", "")) == "ok",
+			"root mod.txt reads as ok (got %s)" % r["status"])
 	var files: Dictionary = r["files"]
-	_assert(files.has("res://mod.txt") and files.has("res://Ok/Main.gd"),
-			"T7: the archive's entries are captured as res:// paths (got %s)" % str(files.keys()))
+	_assert(files.has("res://mod.txt") and files.has("res://Ok/Main.gd"), "entries as res:// paths (got %s)" % str(files.keys()))
 
-	var nested: Dictionary = ml.read_mod_config(nested_zip)
-	_assert(str(nested["status"]) == "nested:Sub/mod.txt" and nested["cfg"] == null,
-			"T7: a mod.txt below the root reads as nested:<path> (got %s)" % str(nested["status"]))
-
-	var broken: Dictionary = ml.read_mod_config(broken_zip)
-	_assert(str(broken["status"]) == "parse_error" and broken["cfg"] == null and str(broken["error"]) != "",
-			"T7: unparseable mod.txt reads as parse_error with a diagnostic (got %s / '%s')" % [str(broken["status"]), str(broken["error"])])
-
-	var bare: Dictionary = ml.read_mod_config(bare_zip)
-	_assert(str(bare["status"]) == "none" and bare["cfg"] == null and str(bare["error"]) == "",
-			"T7: no mod.txt reads as none with no diagnostic left over (got %s / '%s')" % [str(bare["status"]), str(bare["error"])])
-
-	var missing: Dictionary = ml.read_mod_config(ProjectSettings.globalize_path("user://identity_missing.zip"))
-	_assert(str(missing["status"]) == "none" and missing["cfg"] == null,
-			"T7: a missing archive reads as none")
+	# error: "set" must be non-empty, "empty" must be empty, "any" is not checked.
+	var missing := ProjectSettings.globalize_path("user://identity_missing.zip")
+	for c in [["nested", nested_zip, "nested:Sub/mod.txt", "any"], ["unparseable", broken_zip, "parse_error", "set"],
+			["no mod.txt", bare_zip, "none", "empty"], ["missing archive", missing, "none", "any"]]:
+		var rec: Dictionary = ml.read_mod_config(c[1])
+		var err := str(rec["error"])
+		var err_ok: bool = c[3] == "any" or (err != "") == (c[3] == "set")
+		_assert(str(rec["status"]) == c[2] and rec["cfg"] == null and err_ok,
+				"%s reads as %s (got %s / '%s')" % [c[0], c[2], rec["status"], err])
 
 	var folder := ProjectSettings.globalize_path("user://identity_folder")
-	DirAccess.make_dir_recursive_absolute(folder)
-	var f := FileAccess.open(folder.path_join("mod.txt"), FileAccess.WRITE)
-	if f != null:
-		f.store_string("[mod]\nname=\"Folder\"\nid=\"folder\"\n")
-		f.close()
+	H.write_text(folder.path_join("mod.txt"), "[mod]\nname=\"Folder\"\nid=\"folder\"\n")
 	var fr: Dictionary = ml.read_mod_config_folder(folder)
 	_assert(str(fr["status"]) == "ok" and fr["cfg"] is ConfigFile and (fr["files"] as Dictionary).is_empty(),
-			"T7: a folder mod reads as ok with no captured file list (got %s)" % str(fr["status"]))
+			"folder mod is ok, no file list (got %s)" % fr["status"])
 
-	for p in [ok_zip, nested_zip, broken_zip, bare_zip]:
+	for p in [ok_zip, nested_zip, broken_zip, bare_zip, folder.path_join("mod.txt"), folder]:
 		DirAccess.remove_absolute(p)
-	DirAccess.remove_absolute(folder.path_join("mod.txt"))
-	DirAccess.remove_absolute(folder)
 
-# --- Fixture helpers ---------------------------------------------------------
-
-# Write a zip of {entry_name: text} and return its absolute path.
-func _write_zip(user_path: String, entries: Dictionary) -> String:
-	var abs_path := ProjectSettings.globalize_path(user_path)
-	var zp := ZIPPacker.new()
-	if zp.open(abs_path, ZIPPacker.APPEND_CREATE) != OK:
-		_fail("harness could not create " + abs_path)
-		return abs_path
-	for name in entries.keys():
-		zp.start_file(str(name))
-		zp.write_file(str(entries[name]).to_utf8_buffer())
-		zp.close_file()
-	zp.close()
-	return abs_path
-
-# Profile state follows the mod, not the profile that was applied before. A
-# profile that stores no priority for a mod applies the mod's own default
-# (mod.txt or the filename prefix), never the value the previous profile left
-# in memory, which the next save would otherwise write into the new profile.
-func _t8_priority_does_not_leak_between_profiles(ml: Object) -> void:
+# A profile with no stored priority applies the mod's own default, never
+# the previous profile's value, which the next save would write into it.
+func _t8_priority_per_profile(ml: Object) -> void:
 	var mod_txt := ConfigFile.new()
 	_assert(mod_txt.parse("[mod]\nname=\"Leaky\"\nid=\"leaky\"\nversion=\"1.0\"\npriority=7\n") == OK,
-			"T8: fixture mod.txt parses")
+			"fixture mod.txt parses")
 	var read := {"cfg": mod_txt, "status": "ok", "error": "", "files": {}}
 	var entry: Dictionary = ml._entry_from_config(read, "Leaky.zip", "/nonexistent/Leaky.zip", "zip")
-	_assert(int(entry.get("priority_default", -1)) == 7,
-			"T8: the entry records its mod.txt priority as priority_default (got %s)" % str(entry.get("priority_default")))
+	check_eq(int(entry["priority_default"]), 7, "priority_default from mod.txt")
 	var entries: Array[Dictionary] = [entry]
 	ml.set("_ui_mod_entries", entries)
 	var cfg := ConfigFile.new()
@@ -269,175 +127,170 @@ func _t8_priority_does_not_leak_between_profiles(ml: Object) -> void:
 	cfg.set_value("profile.A.priority", "leaky@1.0", 50)
 	cfg.set_value("profile.B.enabled", "other@1.0", true)
 	ml._apply_profile_to_entries(cfg, "A")
-	_assert(int(entry["priority"]) == 50, "T8: profile A's stored priority applies (got %d)" % int(entry["priority"]))
+	check_eq(int(entry["priority"]), 50, "profile A's stored priority")
 	ml._apply_profile_to_entries(cfg, "B")
-	_assert(int(entry["priority"]) == 7,
-			"T8: profile B stores none, so the mod's own default applies, not A's 50 (got %d)" % int(entry["priority"]))
-	_assert(not bool(entry["enabled"]), "T8: a mod profile B never listed is off there")
+	check_eq(int(entry["priority"]), 7, "profile B falls back to the default")
+	_assert(not bool(entry["enabled"]), "a mod B never listed is off")
 	var empty: Array[Dictionary] = []
 	ml.set("_ui_mod_entries", empty)
 
-# A mod with no id= is keyed by its filename, and a re-package carries its
-# state over by normalized stem. The old "zip:" key is then stale: it must not
-# be kept on save (two stored keys with one stem stop the next carry-over) and
-# must not show up as a missing mod.
-func _t9_repackaged_mod_drops_its_old_key(ml: Object) -> void:
-	var cfg_path := str(ml.UI_CONFIG_PATH)
-	for p in [cfg_path, cfg_path + ".bak"]:
-		if FileAccess.file_exists(p):
-			DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
+# A re-packaged mod with no id= carries its state over by stem; the old
+# "zip:" key is then stale, neither saved nor reported missing.
+func _t9_repackaged_mod_key(ml: Object) -> void:
+	var cfg_path := _drop_config(ml)
 	var seed := ConfigFile.new()
 	seed.set_value("settings", "active_profile", "Default")
 	seed.set_value("profile.Default.enabled", "zip:CoolMod_v1.0.zip", false)
 	seed.set_value("profile.Default.priority", "zip:CoolMod_v1.0.zip", 12)
 	seed.set_value("profile.Default.enabled", "zip:Gone.zip", true)
-	_assert(seed.save(cfg_path) == OK, "T9: seeded mod_config.cfg in the throwaway user://")
-	var live := _entry("CoolMod_v1.1.zip", "")
+	_assert(seed.save(cfg_path) == OK, "seeded mod_config.cfg")
+	var live := _entry("CoolMod_v1.1.zip")
 	var entries: Array[Dictionary] = [live]
 	ml.set("_ui_mod_entries", entries)
 	ml.set("_active_profile", "Default")
 	ml._apply_profile_to_entries(seed, "Default")
-	_assert(not bool(live["enabled"]) and int(live["priority"]) == 12,
-			"T9: the re-packaged mod picks up the state stored under its old filename")
+	_assert(not bool(live["enabled"]) and int(live["priority"]) == 12, "state carries over from the old filename")
 	var missing: Array = ml._missing_mods_in_active_profile()
-	_assert(not missing.has("zip:CoolMod_v1.0.zip"),
-			"T9: the old filename's key is not reported as a missing mod (got %s)" % str(missing))
-	_assert(missing.has("zip:Gone.zip"), "T9: a mod that really is gone is still reported")
+	_assert(not missing.has("zip:CoolMod_v1.0.zip"), "old key not reported missing (got %s)" % str(missing))
+	_assert(missing.has("zip:Gone.zip"), "a really gone mod is reported")
 	ml._save_ui_config()
 	var saved := ConfigFile.new()
-	_assert(saved.load(cfg_path) == OK, "T9: the saved config loads")
+	_assert(saved.load(cfg_path) == OK, "the saved config loads")
 	_assert(saved.has_section_key("profile.Default.enabled", "zip:CoolMod_v1.1.zip")
 			and not saved.has_section_key("profile.Default.enabled", "zip:CoolMod_v1.0.zip")
 			and not saved.has_section_key("profile.Default.priority", "zip:CoolMod_v1.0.zip"),
-			"T9: the save writes the live key and drops the stale one")
-	_assert(saved.has_section_key("profile.Default.enabled", "zip:Gone.zip"),
-			"T9: a stored key with no live counterpart is kept")
+			"save writes the live key, drops the stale")
+	_assert(saved.has_section_key("profile.Default.enabled", "zip:Gone.zip"), "a key with no live entry is kept")
 	var empty: Array[Dictionary] = []
 	ml.set("_ui_mod_entries", empty)
-	for p in [cfg_path, cfg_path + ".bak"]:
-		if FileAccess.file_exists(p):
-			DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
+	_drop_config(ml)
 
-# The stored active profile can be gone (deleted by hand, a restored backup).
-# With a pack active the fallback is that pack's slot, which keeps the pack
-# and its MCM settings consistent; otherwise it is a profile the player made,
-# never a slot a modpack manages.
-func _t10_missing_profile_falls_back_to_a_user_profile(ml: Object) -> void:
-	var cfg_path := str(ml.UI_CONFIG_PATH)
-	for p in [cfg_path, cfg_path + ".bak"]:
-		if FileAccess.file_exists(p):
-			DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
+# With a pack active, a missing stored profile falls back to the pack's slot;
+# otherwise to a profile the player made, never a pack slot.
+func _t10_missing_profile(ml: Object) -> void:
+	var cfg_path := _drop_config(ml)
 	var seed := ConfigFile.new()
 	seed.set_value("settings", "active_profile", "Gone")
 	seed.set_value("settings", "active_modpack", "Pack")
 	seed.set_value("profile._before_modpack_Pack.enabled", "a@1.0", true)
 	seed.set_value("profile.modpack__Pack.enabled", "a@1.0", true)
 	seed.set_value("profile.zed.enabled", "a@1.0", true)
-	_assert(seed.save(cfg_path) == OK, "T10: seeded mod_config.cfg")
+	_assert(seed.save(cfg_path) == OK, "seeded mod_config.cfg")
 	var none: Array[Dictionary] = []
 	ml.set("_ui_mod_entries", none)
 	ml._load_ui_config()
-	_assert(str(ml.get("_active_profile")) == "modpack__Pack",
-			"T10: with a pack active, a missing stored profile falls back to the pack's slot (got '%s')" % str(ml.get("_active_profile")))
+	check_eq(str(ml.get("_active_profile")), "modpack__Pack", "fallback with a pack active")
 	var after := ConfigFile.new()
 	after.load(cfg_path)
-	_assert(str(after.get_value("settings", "active_modpack", "")) == "Pack", "T10: and the pack stays active")
+	check_eq(str(after.get_value("settings", "active_modpack", "")), "Pack", "the pack stays active")
 	seed.set_value("settings", "active_modpack", "")
 	seed.erase_section("profile.modpack__Pack.enabled")
-	_assert(seed.save(cfg_path) == OK, "T10: seeded mod_config.cfg with no pack active")
+	_assert(seed.save(cfg_path) == OK, "seeded mod_config.cfg without a pack")
 	ml._load_ui_config()
-	_assert(str(ml.get("_active_profile")) == "zed",
-			"T10: with no pack active it falls back to the player's own profile (got '%s')" % str(ml.get("_active_profile")))
-	for p in [cfg_path, cfg_path + ".bak"]:
-		if FileAccess.file_exists(p):
-			DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
+	check_eq(str(ml.get("_active_profile")), "zed", "fallback with no pack active")
+	_drop_config(ml)
 
-# Renaming a profile, or creating one as a copy of the current selection,
-# changes nothing that loads, so a launcher opened in-game must not restart
-# over it. A new profile that starts empty or with everything enabled does
-# change what loads. A new profile starts from the default view settings,
-# which is what its stored state says after the next launch.
-func _t11_profile_bookkeeping_is_not_a_mod_change(ml: Object) -> void:
-	var cfg_path := str(ml.UI_CONFIG_PATH)
-	for p in [cfg_path, cfg_path + ".bak"]:
-		if FileAccess.file_exists(p):
-			DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
+# A rename or a copy of the current selection changes nothing that loads; a
+# new profile with another selection does, and starts from default view settings.
+func _t11_profile_bookkeeping(ml: Object) -> void:
+	var cfg_path := _drop_config(ml)
 	var seed := ConfigFile.new()
 	seed.set_value("settings", "active_profile", "Default")
 	seed.set_value("profile.Default.enabled", "a@1.0", true)
-	_assert(seed.save(cfg_path) == OK, "T11: seeded mod_config.cfg")
-	var none: Array[Dictionary] = []
-	ml.set("_ui_mod_entries", none)
+	_assert(seed.save(cfg_path) == OK, "seeded mod_config.cfg")
+	var installed: Array[Dictionary] = [_entry("a.zip", "1.0")]
+	ml.set("_ui_mod_entries", installed)
 	ml.set("_active_profile", "Default")
 	ml.set("_boot_complete", true)
-	ml.set("_dirty_since_boot", false)
+	var booted := str(ml._loaded_set_signature())
+	ml.set("_booted_set_signature", booted)
 	ml._rename_profile("Renamed")
-	_assert(not bool(ml.get("_dirty_since_boot")), "T11: a rename does not ask for a restart")
-	_assert(str(ml.get("_active_profile")) == "Renamed", "T11: the rename took effect")
+	_assert(not bool(ml._post_boot_restart_needed()), "a rename asks for no restart")
+	check_eq(str(ml.get("_active_profile")), "Renamed", "the rename took effect")
 	ml.set("_mods_hide_disabled", true)
-	ml._create_profile("Fresh", true)
-	_assert(not bool(ml.get("_dirty_since_boot")), "T11: a copy of the current selection does not ask for a restart")
-	_assert(not bool(ml.get("_mods_hide_disabled")), "T11: a new profile starts with Hide disabled off, as its stored state says")
+	ml._create_profile("Fresh")
+	check_eq(str(ml._loaded_set_signature()), booted, "a copy leaves what loads")
+	_assert(bool(ml._mcm_switch_pending()), "a post-boot create records the MCM swap")
+	_assert(not bool(ml.get("_mods_hide_disabled")), "a new profile starts with Hide off")
+	# The New dialog's Empty state, as _show_new_profile_dialog applies it.
+	for entry in ml.get("_ui_mod_entries"):
+		entry["enabled"] = false
 	ml._create_profile("Blank")
-	_assert(bool(ml.get("_dirty_since_boot")), "T11: a new profile with another selection asks for a restart")
-	ml.set("_dirty_since_boot", false)
+	_assert(str(ml._loaded_set_signature()) != booted, "another selection changes what loads")
+	_assert(bool(ml._post_boot_restart_needed()), "another selection asks for a restart")
+	var none: Array[Dictionary] = []
+	ml.set("_ui_mod_entries", none)
+	ml.set("_booted_set_signature", "")
 	ml.set("_boot_complete", false)
 	ml.set("_active_profile", "Default")
-	for p in [cfg_path, cfg_path + ".bak"]:
-		if FileAccess.file_exists(p):
-			DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
-	for d in ["user://.profile_snapshots"]:
-		if DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(d)):
-			ml._remove_tree(d, false)
+	_drop_config(ml)
+	if DirAccess.dir_exists_absolute(ProjectSettings.globalize_path("user://.profile_snapshots")):
+		ml._remove_tree("user://.profile_snapshots", false)
 
-# Text shown to the player names the active profile the way the Profile
-# dropdown does; the internal key of a modpack-managed slot never shows.
 func _t12_active_profile_label(ml: Object) -> void:
-	_assert(ml.has_method("_active_profile_label"), "T12: the loader has _active_profile_label")
-	if not ml.has_method("_active_profile_label"):
+	if not _assert(ml.has_method("_active_profile_label"), "the loader has _active_profile_label"):
 		return
 	ml.set("_active_profile", "Default")
-	_assert(str(ml._active_profile_label()) == "Default", "T12: a user profile is shown by its name")
+	check_eq(str(ml._active_profile_label()), "Default", "a user profile's label")
 	ml.set("_active_profile", str(ml.MODPACK_PROFILE_PREFIX) + "Night Ops")
-	var label := str(ml._active_profile_label())
-	_assert(label == "[Modpack: Night Ops]", "T12: a pack-managed slot reads as the dropdown shows it (got '%s')" % label)
+	check_eq(str(ml._active_profile_label()), "[Modpack: Night Ops]", "a pack slot's label")
 	ml.set("_active_profile", "Default")
 
-func _entry(file_name: String, version: String) -> Dictionary:
-	return {
-		"file_name": file_name,
-		"full_path": "/nonexistent/" + file_name,
-		"ext": file_name.get_extension().to_lower(),
-		"mod_name": file_name.get_basename(),
-		"mod_id": file_name,
-		"version": version,
-		"profile_key": "zip:" + file_name,
-		"enabled": true,
-		"priority": 0,
-	}
+# Developer Mode: a same-version archive newer than its dev folder wins, as on 3.4.2.
+func _t13_newer_archive_beats_folder(ml: Object) -> void:
+	var zip_path := ProjectSettings.globalize_path("user://identity_t13/MyMod.zip")
+	_assert(H.write_text(zip_path, "x"), "fixture archive written")
+	var keys := {"mod_id": "mymod", "profile_key": "mymod@1.0"}
+	var folder := _entry("MyMod", "1.0", keys.merged({"ext": "folder"}))
+	var archive := _entry("MyMod.zip", "1.0", keys.merged({"full_path": zip_path}))
+	var was_dev := bool(ml.get("_developer_mode"))
+	ml.set("_developer_mode", true)
+	var pair: Array[Dictionary] = [folder, archive]
+	var out: Array = ml._dedupe_by_mod_id(pair)
+	if check_eq(out.size(), 1, "one copy of mymod"):
+		check_eq(str(out[0]["file_name"]), "MyMod.zip", "the newer archive wins")
+	ml.set("_developer_mode", was_dev)
+	DirAccess.remove_absolute(zip_path)
+	DirAccess.remove_absolute(zip_path.get_base_dir())
 
-func _entries(specs: Array) -> Array[Dictionary]:
+# A skipped archive's log line names where mod.txt sits, or how to ship it as a mod.
+func _t14_skip_lines_name_the_fix(ml: Object) -> void:
+	var dir := "user://identity_t14"
+	var previous := str(ml.get("_mods_dir"))
+	ml.set("_mods_dir", ProjectSettings.globalize_path(dir))
+	DirAccess.make_dir_recursive_absolute(dir)
+	H.write_zip(dir + "/T14Pack.zip", {"profile.json": "{\"metroprofile\": 1, \"name\": \"T14\"}"}, _report)
+	H.write_zip(dir + "/T14Nested.zip", {"T14Sub/mod.txt": "[mod]\nname=\"T14\"\nid=\"t14\"\n"}, _report)
+	var report: Array = ml.get("_report_lines")
+	report.clear()
+	var entries: Array[Dictionary] = ml.collect_mod_metadata()
+	var note: Array = report.filter(func(l): return str(l).contains("Treating T14Pack.zip as a modpack"))
+	_assert(note.size() == 1 and str(note[0]).contains("remove that file to ship it as a mod"),
+			"the modpack note names the fix")
+	var nested: Array = entries.filter(func(e): return e["file_name"] == "T14Nested.zip")
+	if check_eq(nested.size(), 1, "the nested archive is listed"):
+		ml._process_mod_candidate(nested[0], 0)
+		_assert(report.any(func(l): return str(l).contains("Invalid mod -- mod.txt is at T14Sub/mod.txt")),
+				"the log names the subfolder")
+	report.clear()
+	ml._remove_tree(dir, false)
+	ml.set("_mods_dir", previous)
+
+# Removes mod_config.cfg and its .bak; returns the config path.
+func _drop_config(ml: Object) -> String:
+	var cfg_path := str(ml.UI_CONFIG_PATH)
+	H.remove_user_file(cfg_path)
+	H.remove_user_file(cfg_path + ".bak")
+	return cfg_path
+
+func _entry(file: String, version := "", overrides := {}) -> Dictionary:
+	var o := {"file_name": file, "full_path": "/nonexistent/" + file, "ext": file.get_extension().to_lower(),
+			"mod_name": file.get_basename()}
+	o.merge(overrides, true)
+	return H.mod_entry("zip:" + file, file, version, o)
+
+func _entries(files: Array) -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
-	for s in specs:
-		out.append(_entry(str((s as Dictionary)["file"]), str((s as Dictionary)["ver"])))
+	for f in files:
+		out.append(_entry(f))
 	return out
-
-# --- Reporting ---------------------------------------------------------------
-
-func _assert(cond: bool, msg: String) -> void:
-	_assertions += 1
-	if not cond:
-		_failures.append(msg)
-
-func _fail(msg: String) -> void:
-	_failures.append(msg)
-
-func _finish() -> void:
-	if _failures.is_empty():
-		print("[identity] PASS: %d assertion(s) across T1..T12" % _assertions)
-		quit(0)
-		return
-	for m in _failures:
-		printerr("[identity] FAIL: " + m)
-	printerr("[identity] FAILED: %d of %d assertion(s)" % [_failures.size(), _assertions])
-	quit(1)

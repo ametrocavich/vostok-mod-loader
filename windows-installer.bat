@@ -26,29 +26,61 @@ for %%P in (
     )
 )
 
+:: Steam records every library folder in libraryfolders.vdf, so a library on
+:: a drive or path the list above does not name is found through it. The
+:: Steam install itself is read from the registry (a Steam at D:\Steam keeps
+:: its vdf there), with the two Program Files locations as fallbacks. Each
+:: "path" line is a quoted path with doubled backslashes. A library path
+:: containing "!" is beyond delayed expansion and falls through to the prompt.
+set "STEAM_ROOT="
+for /f "tokens=2,*" %%A in ('reg query "HKCU\Software\Valve\Steam" /v SteamPath 2^>nul ^| findstr /i "SteamPath"') do set "STEAM_ROOT=%%B"
+if defined STEAM_ROOT set "STEAM_ROOT=!STEAM_ROOT:/=\!"
+for %%V in (
+    "!STEAM_ROOT!\steamapps\libraryfolders.vdf"
+    "%ProgramFiles(x86)%\Steam\steamapps\libraryfolders.vdf"
+    "%ProgramFiles%\Steam\steamapps\libraryfolders.vdf"
+) do (
+    if exist "%%~V" (
+        for /f "usebackq tokens=1,*" %%A in (`findstr /i /l /c:"path" "%%~V"`) do (
+            if /i "%%~A"=="path" (
+                set "LIBPATH=%%~B"
+                if defined LIBPATH set "LIBPATH=!LIBPATH:\\=\!"
+                if defined LIBPATH if exist "!LIBPATH!\steamapps\common\Road to Vostok\RTV.exe" (
+                    set "GAME_PATH=!LIBPATH!\steamapps\common\Road to Vostok"
+                    goto :found
+                )
+            )
+        )
+    )
+)
+
 :: Not found - ask user
 echo Could not find Road to Vostok automatically.
 echo Please enter the path to your game folder (containing RTV.exe):
 set /p "GAME_PATH=Game path: "
-:: Explorer's "Copy as path" wraps the path in quotes; drop them, and a
-:: trailing backslash, before the path is used. Delayed expansion: the
-:: percent form is expanded while the line is parsed and is a syntax error
-:: when the answer was empty.
+:: Explorer's "Copy as path" wraps the path in quotes; drop them, a pasted
+:: RTV.exe at the end (the game folder is what is wanted), and a trailing
+:: backslash, before the path is used. Delayed expansion: the percent form is
+:: expanded while the line is parsed and is a syntax error when the answer
+:: was empty.
 if defined GAME_PATH set "GAME_PATH=!GAME_PATH:"=!"
 if defined GAME_PATH if "!GAME_PATH:~-1!"=="\" set "GAME_PATH=!GAME_PATH:~0,-1!"
+if defined GAME_PATH if /i "!GAME_PATH:~-8!"=="\RTV.exe" set "GAME_PATH=!GAME_PATH:~0,-8!"
+if defined GAME_PATH if "!GAME_PATH:~-1!"=="\" set "GAME_PATH=!GAME_PATH:~0,-1!"
 
-if not exist "%GAME_PATH%\RTV.exe" (
-    echo ERROR: RTV.exe not found at "%GAME_PATH%"
+if not exist "!GAME_PATH!\RTV.exe" (
+    echo ERROR: RTV.exe not found at "!GAME_PATH!"
     goto :error
 )
 
 :found
-echo Found game at: %GAME_PATH%
+echo Found game at: !GAME_PATH!
 
 :: --- Set up paths ---
-set "MODLOADER_DEST=%GAME_PATH%\modloader.gd"
-set "OVERRIDE_PATH=%GAME_PATH%\override.cfg"
-set "MODS_PATH=%GAME_PATH%\mods"
+:: Delayed expansion throughout: a path with ! or ^& in it survives.
+set "MODLOADER_DEST=!GAME_PATH!\modloader.gd"
+set "OVERRIDE_PATH=!GAME_PATH!\override.cfg"
+set "MODS_PATH=!GAME_PATH!\mods"
 :: GitHub's latest-release redirect serves whatever the most recent tagged
 :: release uploaded as assets. Non-release commits on master don't ship here.
 set "MODLOADER_URL=https://github.com/ametrocavich/vostok-mod-loader/releases/latest/download/modloader.gd"
@@ -62,26 +94,34 @@ set "OVERRIDE_URL=https://github.com/ametrocavich/vostok-mod-loader/releases/lat
 :: Verify the response succeeded AND the file is non-empty before trusting it.
 :: Download to a temp file first so a failed download doesn't overwrite or
 :: delete a working existing installation.
-set "MODLOADER_TMP=%MODLOADER_DEST%.new"
-if exist "%MODLOADER_TMP%" del "%MODLOADER_TMP%" >nul 2>&1
+set "MODLOADER_TMP=!MODLOADER_DEST!.new"
+if exist "!MODLOADER_TMP!" del "!MODLOADER_TMP!" >nul 2>&1
 echo Downloading mod loader...
 powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; try { $r = Invoke-WebRequest -Uri $env:MODLOADER_URL -OutFile $env:MODLOADER_TMP -UseBasicParsing -PassThru; if ($r.StatusCode -ne 200) { exit 1 } } catch { exit 1 }"
 set "DL_RC=!errorlevel!"
 set "DL_OK=0"
-if !DL_RC! equ 0 if exist "%MODLOADER_TMP%" (
-    for %%F in ("%MODLOADER_TMP%") do if %%~zF gtr 0 set "DL_OK=1"
+if !DL_RC! equ 0 if exist "!MODLOADER_TMP!" (
+    for %%F in ("!MODLOADER_TMP!") do if %%~zF gtr 0 set "DL_OK=1"
 )
 if !DL_OK! equ 1 (
-    move /y "%MODLOADER_TMP%" "%MODLOADER_DEST%" >nul
-    if not exist "%MODLOADER_DEST%" (
+    findstr /l /c:"MODLOADER_VERSION" "!MODLOADER_TMP!" >nul 2>&1
+    if errorlevel 1 (
+        echo ERROR: The download is not the mod loader. A sign-in page, a proxy
+        echo   notice or an error page came back instead. Check your connection
+        echo   and try again, or download modloader.gd from the releases page.
+        del "!MODLOADER_TMP!" >nul 2>&1
+        goto :error
+    )
+    move /y "!MODLOADER_TMP!" "!MODLOADER_DEST!" >nul
+    if not exist "!MODLOADER_DEST!" (
         echo ERROR: Could not move modloader.gd into game folder.
         echo   Likely cause: game is running, missing write permission, or AV quarantine.
         goto :error
     )
     echo Downloaded modloader.gd to game folder
 ) else (
-    if exist "%MODLOADER_TMP%" del "%MODLOADER_TMP%" >nul 2>&1
-    if exist "%MODLOADER_DEST%" (
+    if exist "!MODLOADER_TMP!" del "!MODLOADER_TMP!" >nul 2>&1
+    if exist "!MODLOADER_DEST!" (
         echo WARNING: Download failed -- keeping existing modloader.gd
     ) else (
         echo ERROR: Failed to download modloader.gd
@@ -97,18 +137,25 @@ if !DL_OK! equ 1 (
 :: The repo's override.cfg is the single source of truth for what mod loader
 :: expects in [autoload]. We merge its entries into the user's existing
 :: override.cfg so their other customizations ([display], [input], etc.) stay.
-set "OVERRIDE_TMP=%OVERRIDE_PATH%.template"
-if exist "%OVERRIDE_TMP%" del "%OVERRIDE_TMP%" >nul 2>&1
+set "OVERRIDE_TMP=!OVERRIDE_PATH!.template"
+if exist "!OVERRIDE_TMP!" del "!OVERRIDE_TMP!" >nul 2>&1
 echo Fetching override.cfg template...
 powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; try { $r = Invoke-WebRequest -Uri $env:OVERRIDE_URL -OutFile $env:OVERRIDE_TMP -UseBasicParsing -PassThru; if ($r.StatusCode -ne 200) { exit 1 } } catch { exit 1 }"
 set "OV_RC=!errorlevel!"
 set "OV_OK=0"
-if !OV_RC! equ 0 if exist "%OVERRIDE_TMP%" (
-    for %%F in ("%OVERRIDE_TMP%") do if %%~zF gtr 0 set "OV_OK=1"
+if !OV_RC! equ 0 if exist "!OVERRIDE_TMP!" (
+    for %%F in ("!OVERRIDE_TMP!") do if %%~zF gtr 0 set "OV_OK=1"
 )
 if !OV_OK! neq 1 (
     echo ERROR: Failed to download override.cfg template
-    if exist "%OVERRIDE_TMP%" del "%OVERRIDE_TMP%" >nul 2>&1
+    if exist "!OVERRIDE_TMP!" del "!OVERRIDE_TMP!" >nul 2>&1
+    goto :error
+)
+findstr /l /c:"[autoload_prepend]" "!OVERRIDE_TMP!" >nul 2>&1
+if errorlevel 1 (
+    echo ERROR: The downloaded override.cfg template is not the loader's. A web
+    echo   page or an error page came back instead. Check your connection and retry.
+    del "!OVERRIDE_TMP!" >nul 2>&1
     goto :error
 )
 
@@ -118,25 +165,43 @@ if !OV_OK! neq 1 (
 :: template doesn't specify are left untouched, with one exception: a
 :: ModLoader entry under [autoload] from an older install is dropped, since
 :: the loader now lives under [autoload_prepend] and must not be listed twice.
-if exist "%OVERRIDE_PATH%" (
-    echo Merging override.cfg (preserving user sections, updating template keys)
-    copy "%OVERRIDE_PATH%" "%OVERRIDE_PATH%.bak" >nul
-    powershell -Command "$user = $env:OVERRIDE_PATH; $tmpl = $env:OVERRIDE_TMP; $tmplCfg = @{}; $curSec = $null; foreach ($line in Get-Content -LiteralPath $tmpl) { $t = $line.Trim(); if ($t -match '^\[(.+)\]$') { $curSec = $Matches[1]; if (-not $tmplCfg.ContainsKey($curSec)) { $tmplCfg[$curSec] = [ordered]@{} }; continue } if ($t -eq '' -or $t.StartsWith(';') -or $t.StartsWith('#') -or $curSec -eq $null) { continue } $eq = $t.IndexOf('='); if ($eq -lt 0) { continue } $k = $t.Substring(0, $eq).Trim(); $v = $t.Substring($eq + 1); $tmplCfg[$curSec][$k] = $v } $out = New-Object System.Collections.Generic.List[string]; $seenSec = @{}; $curSec = $null; $sectionLines = New-Object System.Collections.Generic.List[string]; function Flush { param($sec, $lines, $out, $tmplCfg) $tmplKeys = @{}; if ($sec -ne $null -and $tmplCfg.ContainsKey($sec)) { foreach ($k in $tmplCfg[$sec].Keys) { $tmplKeys[$k] = $true } } $existingKeys = @{}; foreach ($ln in $lines) { $tr = $ln.Trim(); if ($tr -match '^\[.+\]$') { $out.Add($ln); continue } if ($tr -eq '' -or $tr.StartsWith(';') -or $tr.StartsWith('#')) { $out.Add($ln); continue } $eq = $tr.IndexOf('='); if ($eq -lt 0) { $out.Add($ln); continue } $k = $tr.Substring(0, $eq).Trim(); if ($sec -eq 'autoload' -and $k -eq 'ModLoader') { continue } if ($tmplKeys.ContainsKey($k)) { $newVal = $tmplCfg[$sec][$k]; $out.Add(\"$k=$newVal\"); $existingKeys[$k] = $true } else { $out.Add($ln) } } if ($sec -ne $null -and $tmplCfg.ContainsKey($sec)) { foreach ($k in $tmplCfg[$sec].Keys) { if (-not $existingKeys.ContainsKey($k)) { $out.Add(\"$k=$($tmplCfg[$sec][$k])\") } } } } foreach ($line in Get-Content -LiteralPath $user) { $t = $line.Trim(); if ($t -match '^\[(.+)\]$') { Flush $curSec $sectionLines $out $tmplCfg; $sectionLines.Clear(); $curSec = $Matches[1]; $seenSec[$curSec] = $true; $sectionLines.Add($line); continue } $sectionLines.Add($line) } Flush $curSec $sectionLines $out $tmplCfg; foreach ($sec in $tmplCfg.Keys) { if (-not $seenSec.ContainsKey($sec)) { $out.Add(''); $out.Add(\"[$sec]\"); foreach ($k in $tmplCfg[$sec].Keys) { $out.Add(\"$k=$($tmplCfg[$sec][$k])\") } } } Set-Content -LiteralPath $user -Value $out"
+if exist "!OVERRIDE_PATH!" (
+    echo Merging override.cfg -- preserving user sections, updating template keys
+    if exist "!OVERRIDE_PATH!.bak" (
+        copy /y "!OVERRIDE_PATH!" "!OVERRIDE_PATH!.bak.previous" >nul
+    ) else (
+        copy "!OVERRIDE_PATH!" "!OVERRIDE_PATH!.bak" >nul
+    )
+    powershell -Command "$user = $env:OVERRIDE_PATH; $tmpl = $env:OVERRIDE_TMP; $tmplCfg = @{}; $curSec = $null; foreach ($line in Get-Content -LiteralPath $tmpl) { $t = $line.Trim(); if ($t -match '^\[(.+)\]$') { $curSec = $Matches[1]; if (-not $tmplCfg.ContainsKey($curSec)) { $tmplCfg[$curSec] = [ordered]@{} }; continue } if ($t -eq '' -or $t.StartsWith(';') -or $t.StartsWith('#') -or $curSec -eq $null) { continue } $eq = $t.IndexOf('='); if ($eq -lt 0) { continue } $k = $t.Substring(0, $eq).Trim(); $v = $t.Substring($eq + 1); $tmplCfg[$curSec][$k] = $v } $out = New-Object System.Collections.Generic.List[string]; $seenSec = @{}; $curSec = $null; $sectionLines = New-Object System.Collections.Generic.List[string]; function Flush { param($sec, $lines, $out, $tmplCfg) $tmplKeys = @{}; if ($sec -ne $null -and $tmplCfg.ContainsKey($sec)) { foreach ($k in $tmplCfg[$sec].Keys) { $tmplKeys[$k] = $true } } $existingKeys = @{}; foreach ($ln in $lines) { $tr = $ln.Trim(); if ($tr -match '^\[.+\]$') { $out.Add($ln); continue } if ($tr -eq '' -or $tr.StartsWith(';') -or $tr.StartsWith('#')) { $out.Add($ln); continue } $eq = $tr.IndexOf('='); if ($eq -lt 0) { $out.Add($ln); continue } $k = $tr.Substring(0, $eq).Trim(); if ($sec -eq 'autoload' -and $k -eq 'ModLoader') { continue } if ($tmplKeys.ContainsKey($k)) { $newVal = $tmplCfg[$sec][$k]; $out.Add($k + '=' + $newVal); $existingKeys[$k] = $true } else { $out.Add($ln) } } if ($sec -ne $null -and $tmplCfg.ContainsKey($sec)) { foreach ($k in $tmplCfg[$sec].Keys) { if (-not $existingKeys.ContainsKey($k)) { $out.Add($k + '=' + $tmplCfg[$sec][$k]) } } } } foreach ($line in Get-Content -LiteralPath $user) { $t = $line.Trim(); if ($t -match '^\[(.+)\]$') { Flush $curSec $sectionLines $out $tmplCfg; $sectionLines.Clear(); $curSec = $Matches[1]; $seenSec[$curSec] = $true; $sectionLines.Add($line); continue } $sectionLines.Add($line) } Flush $curSec $sectionLines $out $tmplCfg; foreach ($sec in $tmplCfg.Keys) { if (-not $seenSec.ContainsKey($sec)) { $out.Add(''); $out.Add('[' + $sec + ']'); foreach ($k in $tmplCfg[$sec].Keys) { $out.Add($k + '=' + $tmplCfg[$sec][$k]) } } } Set-Content -LiteralPath $user -Value $out"
+    if errorlevel 1 (
+        echo ERROR: Merging override.cfg failed. Your original is kept at: "!OVERRIDE_PATH!.bak"
+        goto :error
+    )
+    findstr /l /c:"[autoload_prepend]" "!OVERRIDE_PATH!" >nul 2>&1
+    if errorlevel 1 (
+        echo ERROR: The merged override.cfg has no [autoload_prepend] section, so the loader would not start. Your original is kept at: "!OVERRIDE_PATH!.bak"
+        goto :error
+    )
     echo Updated override.cfg
 ) else (
-    move /y "%OVERRIDE_TMP%" "%OVERRIDE_PATH%" >nul
-    if not exist "%OVERRIDE_PATH%" (
+    move /y "!OVERRIDE_TMP!" "!OVERRIDE_PATH!" >nul
+    if not exist "!OVERRIDE_PATH!" (
         echo ERROR: Could not move override.cfg into game folder.
         echo   Likely cause: missing write permission, or AV quarantine.
         goto :error
     )
     echo Installed override.cfg
 )
-if exist "%OVERRIDE_TMP%" del "%OVERRIDE_TMP%" >nul 2>&1
+if exist "!OVERRIDE_TMP!" del "!OVERRIDE_TMP!" >nul 2>&1
 
 :: --- Create mods directory ---
-if not exist "%MODS_PATH%" (
-    mkdir "%MODS_PATH%"
+if not exist "!MODS_PATH!" (
+    mkdir "!MODS_PATH!"
+    if not exist "!MODS_PATH!" (
+        echo ERROR: Could not create the mods folder at "!MODS_PATH!"
+        echo   Likely cause: missing write permission on the game folder.
+        goto :error
+    )
     echo Created mods directory
 ) else (
     echo Mods directory already exists
@@ -168,10 +233,10 @@ echo The mod loader is now installed. When you launch Road to Vostok,
 echo a mod manager window will appear before the game loads.
 echo.
 echo To install mods:
-echo   - Place .vmz/.zip files in: %MODS_PATH%
+echo   - Place .vmz/.zip files in: !MODS_PATH!
 echo.
-echo Game path:  %GAME_PATH%
-echo Mods path:  %MODS_PATH%
+echo Game path:  !GAME_PATH!
+echo Mods path:  !MODS_PATH!
 echo.
 goto :done
 

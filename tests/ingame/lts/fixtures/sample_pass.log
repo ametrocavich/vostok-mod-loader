@@ -1,0 +1,69 @@
+Godot Engine v4.6.3.stable.official.7d41c59c4 - https://godotengine.org
+D3D12 12_0 - Forward+ - Using Device #0: NVIDIA - NVIDIA GeForce RTX 4090
+
+[FileScope] _mount_previous_session() starting
+[FileScope] Engine: Godot 4.6.3-stable (official), modloader 3.5.0, os Windows
+[FileScope] 2 archive path(s) in pass state
+[FileScope]   EXISTS: C:/Program Files (x86)/Steam/steamapps/common/Road to Vostok/mods/LTSTestDep.zip
+[FileScope]   EXISTS: C:/Program Files (x86)/Steam/steamapps/common/Road to Vostok/mods/LTSTestCore.zip
+[FileScope]   MOUNTED: C:/Program Files (x86)/Steam/steamapps/common/Road to Vostok/mods/LTSTestDep.zip
+[FileScope]   MOUNTED: C:/Program Files (x86)/Steam/steamapps/common/Road to Vostok/mods/LTSTestCore.zip
+[FileScope] HOOK PACK mounted at static init: user://modloader_hooks/framework_pack_9120.zip
+[FileScope] Done -- 2 archive(s) mounted
+[ModLoader][Info] [RTVModLib] modloader registered as Engine.meta('RTVModLib')
+ID valid
+Driver Detected: d3d12
+Method Detected: forward_plus
+[ModLoader][Info] Metro Mod Loader v3.5.0
+[ModLoader][Info] Pass 2 -- 2 archive(s) mounted at file-scope
+ERROR: Compiler bug: unresolved assign.
+   at: write_assign_with_conversion (modules/gdscript/gdscript_byte_codegen.cpp:958)
+[ModLoader][Info] Scanning mods dir: C:/Program Files (x86)/Steam/steamapps/common/Road to Vostok/mods
+[ModLoader][Info] Treating LTSTestPack.zip as a modpack (profile.json at zip root), not a mod. It appears on the Modpacks tab. If this is meant to be a mod, remove profile.json from the archive root.
+[ModLoader][Info] Found 2 mod(s)
+[ModLoader][Info] Load order adjusted: required dependencies load before their dependents.
+[ModLoader][Info] Found 2 mod(s) -- 2 enabled, 2 loading, 0 disabled (profile "LTSTest")
+[ModLoader][Info] === Load Order (Pass 2) ===
+[ModLoader][Info]   [1] LTS Test: Dep | LTSTestDep.zip [priority=5]
+[ModLoader][Info]   [2] LTS Test: Core | LTSTestCore.zip [priority=0]
+[ModLoader][Info] ===========================
+[ModLoader][Info] --- [1] LTS Test: Dep (LTSTestDep.zip)
+[ModLoader][Info] --- [2] LTS Test: Core (LTSTestCore.zip)
+[ModLoader][Info]   Registry declared [LTS Test: Core]
+[ModLoader][Info] [STABILITY] Detokenizer compatible: GDSC v101 on Godot 4.6.3-stable (official)
+[ModLoader][Info] [RTVCodegen] Wrap surface: 7 vanilla script(s) declared (1 via [hooks]/.hook(), 6 more via [registry])
+[ModLoader][Info] [RTVCodegen] Injected registry into Database.gd (401 chars)
+[ModLoader][Info] [RTVCodegen] Injected registry into Loader.gd (2750 chars)
+[ModLoader][Info] [RTVCodegen] Hook reconciliation OK: 7/7 declared script target(s) wrapped (41 method wrapper(s)) -- nothing lost between declaration and pack
+[ModLoader][Info] [STABILITY] Probe-compiled 7 rewrite(s) in 412 ms before packing: 7 shipped in full, 0 without registry code, 0 left vanilla
+[ModLoader][Info] [STABILITY] VFS canary OK: hook pack mount precedence verified (MODLOADER-VFS-CANARY-framework_pack_9120.zip)
+[ModLoader][Info] [RTVCodegen] Activated 5/5 rewritten script(s) (5 already live from static-init preload; 2 deferred to lazy-compile)
+[ModLoader][Info] [STABILITY] COMPILE-PROOF summary: 5/5 rewrites active, 2 deferred to lazy-compile
+[LTSTEST] PASS L0 lib: RTVModLib present, loader 3.5.0
+[LTSTEST] PASS D1 dependency order: lts_dep ready at 1840 ms, lts_core at 1846 ms
+[LTSTEST] PASS D2 has_mod: lts_dep true, 1.0.0 true, 9.9.9 false, lts_nobody false
+[LTSTEST] PASS D3 mod_info and loaded_mods: lts_core 1.0.0 LTSTestCore.zip requires [lts_dep]; loaded [lts_dep, lts_core]
+[LTSTEST] PASS D4 required beats optional: required_dependencies=["lts_dep"]
+[LTSTEST] PASS A1 active_profile: LTSTest
+[LTSTEST] PASS G1 recipes revert order: override gone, original back with its field value, has false
+[LTSTEST] PASS G2 trader_pools two handles: driver true after lts_tp_a removed, false after lts_tp_b
+[LTSTEST] PASS G3 resources cache: same instance both times, both fields reverted
+[LTSTEST] PASS G4 enumeration: scenes 214 keys, recipes 96 keys
+[LTSTEST] PASS G5 refusals and shapes: patch scenes false, revert weapons false, register_many ok+results, remove_many keys exact
+[LTSTEST] PASS G6 setup plan: ok true; malformed step ok false with an error string
+[LTSTEST] PASS H1 menu hook registered: id 3
+[LTSTEST] SUMMARY boot 13 pass 0 fail
+[ModLoader][Info] [RTVModLib] frameworks_ready emitted
+Shelter available (Cabin) -> Load available
+[ModLoader][Info] [Menu] Injected Mods button into main menu
+WARNING: [ModLoader][Warning] [Browse] thumbnail decode failed: unsupported image format
+   at: push_warning (core/variant/variant_utility.cpp:1034)
+[LTSTEST] PASS H1 menu hook fired: scene=res://Scenes/Menu.tscn
+[LTSTEST] PASS U1 launcher opens: tabs Mods, Browse, Modpacks
+[LTSTEST] PASS U2 tabs render: Mods 3, Browse 2, Modpacks 2 children
+[LTSTEST] PASS U3 dialog opens and closes: ConfirmationDialog gone after cancel
+[LTSTEST] PASS U4 Mods tab rebuild keeps the tab: current tab Mods
+[LTSTEST] PASS U5 close without restart: restart needed false, window freed
+[LTSTEST] PASS P1 create profile post-boot: profile.LTSTemp sections present, switch pending true
+[LTSTEST] PASS P2 switch back: swap to "", pending false, restart false
+[LTSTEST] PASS P3 delete: LTSTemp sections and snapshot slot gone, active LTSTest

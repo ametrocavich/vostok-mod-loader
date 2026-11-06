@@ -5,25 +5,26 @@ Start here when changing the loader. For writing a mod, use the
 
 ## First build
 
-Use Bash (Git Bash on Windows), Godot 4.6.1 and Python 3.9 or newer. Python
-uses only its standard library. Run from the repository root:
+Use Bash (Git Bash on Windows), Godot 4.6.1 and Python 3.9 or newer, then run
+from the repository root:
 
 ```bash
 ./build.sh
 GODOT=/path/to/godot ./check.sh
 ```
 
-On Windows, use the console Godot executable and a Git Bash path such as
-`/c/Tools/Godot/godot_console.exe`. `GODOT` is optional if `godot` is on PATH.
-Set `PYTHON=/path/to/python` if automatic Python detection chooses the wrong
-interpreter. Use a dedicated test engine directory: the boot-state harness
-briefly writes `override.cfg` beside that executable and refuses an existing
-file. The checks run headlessly; they do not launch the game or editor.
+A complete run prints eleven `OK:` lines: `check.sh` parse-checks
+`modloader.gd`, checks the source and documentation invariants, then runs the
+nine `check_*.sh` scripts in a loop (codegen, dispatch, detok, identity, host,
+profiles, mods, boot_state, ui). [Build and checks](docs/wiki/Build.md)
+covers `GODOT`, `PYTHON`, `VANILLA_SRC`, the untracked `.check.env` and
+failure diagnosis.
 
-A complete run prints eight `OK:` lines. The two synthetic codegen fixtures
-always run; ten additional fixtures run when decompiled game source is
-available through `VANILLA_SRC`. [Build and checks](docs/wiki/Build.md)
-describes coverage, environment variables and failure diagnosis.
+The check scripts share `tests/lib.sh` (engine and Python lookup, the temp
+project, `--prove` mutations; `run_simple_check` is a whole check script).
+The runners share `tests/common/`: `runner_base.gd` is the base every runner
+extends, `harness.gd` holds the report and assertion helpers, and
+`stub_loader.gd` is the loader with its network calls replaced by fixtures.
 
 ## Find the code to change
 
@@ -40,33 +41,44 @@ python tools/dev.py locate 12345
 `find` prints definitions with their source locations. `locate` translates a
 line from a generated-file error using the current build's source markers;
 use the build that produced the error. `--list` prints assembly order.
-
-- [Development](docs/wiki/Development.md): task-to-code map, state ownership,
-  common edit recipes and debugging workflow.
-- [Modules](docs/wiki/Modules.md): every source fragment and its responsibility.
-- [Architecture](docs/wiki/Architecture.md): boot, restart and persistent state.
+[Development](docs/wiki/Development.md) maps tasks to code,
+[Modules](docs/wiki/Modules.md) lists every source fragment and
+[Architecture](docs/wiki/Architecture.md) explains boot, restart and
+persistent state.
 
 ## Make a change
 
-1. Find the owning function and its callers. Search with `rg` or the editor's
-   workspace search; functions can call across any source fragment.
-2. Add a regression case to the closest existing harness for a behavior fix.
+1. Find the owning function and its callers; functions can call across any
+   source fragment.
+2. Follow [Style](docs/wiki/Style.md) for comments, names, guards and tests.
+3. Add a regression case to the closest existing runner for a behavior fix.
    Keep mechanical moves separate from behavior changes.
-3. Update the matching page in `docs/wiki/` when a contract, flow or label
-   changes. `check.sh` checks local links and linked function ownership;
-   reviewing the meaning of the prose is still part of the change.
-4. Run `./build.sh && ./check.sh`. `check.sh` does not run `build.sh`: on its
-   own it tests the `modloader.gd` left by the previous build, so a stale
-   artifact passes and gets deployed. For harness changes, also run that
-   script with `--prove` to check that its intentional failure is caught.
-5. Record any required in-game smoke test separately. The headless gates do
-   not cover the launcher UI, real downloads or the complete restart flow.
+4. Update the matching page in `docs/wiki/` when a contract, flow or label
+   changes. `python tools/dev.py check-docs` (part of `check.sh`) checks
+   links, anchors, function names linked to their source file, `src/` paths,
+   the module index, plain ASCII and the shared listing body; the meaning of
+   the prose is yours to review.
+5. Run `./build.sh && ./check.sh`. `check.sh` does not build: on its own it
+   tests the `modloader.gd` left by the previous build. For harness changes,
+   also run that script with `--prove` to check that its mutation is caught.
+6. Record any required in-game smoke test separately. The headless gates do
+   not press launcher buttons, download for real or run the restart. The
+   in-game kits are [tests/ingame/lts](tests/ingame/lts/README.md) and
+   [tests/ingame/build2](tests/ingame/build2/README.md).
+
+The wiki is `docs/wiki/`, published to the GitHub Wiki by
+`.github/workflows/wiki-sync.yml` on each push to `development` or `master`
+that touches it. The sync mirrors the folder, so a renamed or deleted page
+disappears from the wiki. Edit pages here, never on the wiki.
 
 ## Branches and PR titles
 
 Contributor PRs target `development` and squash-merge. Maintainer release
 PRs from `development` to `master` rebase-merge so release-please sees each
-commit. CI checks every PR and pushes to `master` and `refactor/**`.
+commit. The rebase gives the commits on `master` new SHAs, so after each
+release merge `development` is reset to `origin/master`; otherwise the two
+drift apart silently. CI checks every PR and pushes to `master` and
+`development`.
 
 ### PR titles
 
@@ -80,6 +92,5 @@ Use an imperative Conventional Commit title, optionally with a scope:
 | `docs`, `refactor`, `test`, `chore`, `build`, `ci`, `style` | No version bump |
 | `!` after the type/scope, or a `BREAKING CHANGE:` footer | Major version |
 
-Update formats and their documentation together. Release preparation and
-manual acceptance are in [the release checklist](docs/RELEASE_CHECKLIST.md);
-[Build](docs/wiki/Build.md#release-please) describes release automation.
+Release preparation, the release workflow and manual acceptance are in
+[the release checklist](docs/RELEASE_CHECKLIST.md).

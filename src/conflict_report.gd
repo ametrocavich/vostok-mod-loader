@@ -1,55 +1,42 @@
-## ----- conflict_report.gd -----
-## Developer-mode diagnostics: report what script overrides left in the
-## cache (from _emit_frameworks_ready) and write the conflict report to user://.
-## Mod scripts are never rewritten, so there is no marker to test against;
-## override effect is judged from resource_path and the extends chain.
+## Developer-mode diagnostics: the override timing and cache checks, the
+## console conflict summary and the report file in user://.
 
-# Log which mods use overrideScript() -- overrides apply after scene reload.
-func _log_override_timing_warnings() -> void:
+# mod_name -> extends targets, for each mod that calls take_over_path.
+func _dynamic_override_targets() -> Dictionary:
+	var out: Dictionary = {}
 	for mod_name: String in _mod_script_analysis:
 		var analysis: Dictionary = _mod_script_analysis[mod_name]
-		if not analysis["uses_dynamic_override"]:
-			continue
-		var targets: Array = analysis["extends_paths"]
-		if targets.is_empty():
-			continue
-		var target_list := ", ".join(targets.map(func(p): return (p as String).get_file()))
+		if analysis["uses_dynamic_override"] and not analysis["extends_paths"].is_empty():
+			out[mod_name] = analysis["extends_paths"]
+	return out
+
+func _log_override_timing_warnings() -> void:
+	var by_mod := _dynamic_override_targets()
+	for mod_name: String in by_mod:
+		var target_list := ", ".join(by_mod[mod_name].map(func(p): return (p as String).get_file()))
 		_log_debug(mod_name + " uses overrideScript() on: " + target_list
 				+ " -- applies after scene reload")
 
-# Post-frameworks_ready report on dynamic overrides, developer mode only:
-# for each target already in the cache, log its resource_path + source head.
-# A target nothing has loaded yet is left alone: a load() here would compile
-# it early and bake the scenes it preloads against the vanilla script, ahead
-# of a mod that overrides after frameworks_ready.
+# Only targets already in the cache are reported: a load() here would compile
+# one early and bake its preloaded scenes against the vanilla script.
 func _verify_script_overrides() -> void:
 	if not _developer_mode:
 		return
-	var printed_header: bool = false
-	for mod_name: String in _mod_script_analysis:
-		var analysis: Dictionary = _mod_script_analysis[mod_name]
-		if not analysis.get("uses_dynamic_override", false):
-			continue
-		var targets: Array = analysis.get("extends_paths", [])
-		if targets.is_empty():
-			continue
-		if not printed_header:
-			_log_debug("[OverrideVerify] === Post-autoload cache check ===")
-			printed_header = true
-		for vanilla_path in targets:
-			var vp: String = String(vanilla_path)
+	var by_mod := _dynamic_override_targets()
+	if by_mod.is_empty():
+		return
+	_log_debug("[OverrideVerify] === Post-autoload cache check ===")
+	for mod_name: String in by_mod:
+		for vp: String in by_mod[mod_name]:
 			if not ResourceLoader.has_cached(vp):
 				_log_debug("[OverrideVerify] %s | %s | not loaded yet" % [mod_name, vp])
 				continue
 			var scr := load(vp) as Script
 			if scr == null:
 				continue
-			var src: String = scr.source_code
-			var src_head: String = src.substr(0, 60).replace("\n", " | ").replace("\t", " ")
+			var src_head := scr.source_code.substr(0, 60).replace("\n", " | ").replace("\t", " ")
 			_log_debug("[OverrideVerify] %s | %s | resource_path=%s src_head=[%s]" \
 					% [mod_name, vp, scr.resource_path, src_head])
-
-# Conflict summary + report output (called from every finish path in lifecycle.gd)
 
 func _print_conflict_summary() -> void:
 	_log_info("")
@@ -57,15 +44,11 @@ func _print_conflict_summary() -> void:
 	_log_info("=== ModLoader Compatibility Summary      ===")
 	_log_info("============================================")
 	_log_info("Mods loaded:  " + str(_loaded_mod_ids.size()))
-
 	var conflicted_paths: Array[String] = []
 	for res_path: String in _override_registry:
-		var claims: Array = _override_registry[res_path]
-		if claims.size() > 1:
+		if _override_registry[res_path].size() > 1:
 			conflicted_paths.append(res_path)
-
 	_log_info("Conflicting resource paths: " + str(conflicted_paths.size()))
-
 	if conflicted_paths.is_empty():
 		_log_info("No resource path conflicts -- all mods appear compatible.")
 	else:
@@ -73,13 +56,12 @@ func _print_conflict_summary() -> void:
 		_log_info("--- Conflicted Paths (last loader wins) ---")
 		for res_path in conflicted_paths:
 			var claims: Array = _override_registry[res_path]
-			var winner: Dictionary = claims[claims.size() - 1]
+			var winner: Dictionary = claims[-1]
 			_log_warning("CONFLICT: " + res_path)
 			for claim in claims:
 				var marker := " <-- wins" if claim == winner else ""
 				_log_info("    [" + str(claim["load_index"] + 1) + "] "
 						+ claim["mod_name"] + " via " + claim["archive"] + marker)
-
 	if not _hooks.is_empty():
 		_log_info("")
 		_log_info("--- Hook Registrations ---")
@@ -87,7 +69,6 @@ func _print_conflict_summary() -> void:
 			var arr: Array = _hooks[hook_name]
 			if arr.size() > 0:
 				_log_info("  %s (%d callback(s))" % [hook_name, arr.size()])
-
 	_log_info("============================================")
 	_log_info("")
 

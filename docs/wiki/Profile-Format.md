@@ -1,88 +1,84 @@
 # Profile Format
 
-The `metroprofile` v1 JSON, which is the `profile.json` at the root of a modpack zip. Locked at the 3.0.1 release. Payloads written against v1 must keep parsing for the life of the 3.x line.
+The `metroprofile` v1 JSON: the `profile.json` at the root of a modpack zip. Every pack already shared depends on this shape, so a breaking change means schema version `2`.
 
-Changing the shape of v1 would break every modpack zip already shared. A breaking change means bumping the schema version to `2`.
+## The pack zip
 
-## Container
+```
+MyPack.zip
+  profile.json        required, at the zip root
+  MCM/                optional, mirrors user://MCM/
+    SomeMod.cfg
+```
 
-The JSON is plain UTF-8 `profile.json` at the root of a modpack zip, next to an optional `MCM/` tree mirroring `user://MCM/`. The writer is `_hosted_write_pack_zip` (hosted_modpacks.gd), fed by `_hosted_manifest_to_profile`. Pre-apply validation is `_validate_modpack` (modpacks.gd), which rejects a zip with a missing, empty or non-object `profile.json`, a wrong `metroprofile` version, or a missing `name` / `enabled`.
+A zip in `<game>/mods/` with `profile.json` at its root is a modpack and goes to the Modpacks tab; one with `mod.txt` at its root is a mod. Anything else in a pack zip is ignored, and apply restores only the `MCM/` tree, within the limits on [Limitations](Limitations#modpacks). **Get** under Browse > Modpacks writes `mods/vostokmods-<slug>.zip`, named from the site slug; the loader never exports packs, but a zip made by hand in this layout applies the same way.
 
 ## JSON schema
 
 ```json
 {
-  "metroprofile":      1,
-  "name":              "My Build",
-  "modloader_version": "3.4.1",
-  "exported_at":       "2026-09-30T23:14:11",
-  "enabled": {
-    "rtvcoop@1.2.3":       true,
-    "immersivexp@0.4.1":   true
+  "metroprofile": 1,
+  "name": "Tarkov-style Economy",
+  "description": "Harder AI + scarce loot",
+  "enabled":  { "harsher_ai@2.1.0": true, "scarce_loot@1.4.0": true },
+  "priority": { "harsher_ai@2.1.0": 100,  "scarce_loot@1.4.0": 50 },
+  "sources": {
+    "harsher_ai@2.1.0":  { "provider": "vostokmods", "id": "harsher-ai", "version": "2.1.0" },
+    "scarce_loot@1.4.0": { "provider": "modworkshop", "id": "67890", "modworkshop_id": 67890 }
   },
-  "priority": {
-    "rtvcoop@1.2.3":       100,
-    "immersivexp@0.4.1":   50
-  }
+  "dep_ignore": { "harsher_ai@2.1.0": true }
 }
 ```
 
 | Key | Required | Type | Meaning |
 |---|---|---|---|
-| `metroprofile` | yes | int | Schema version. Always `1` for v1 payloads. |
-| `name` | yes | String | Modpack display name, the pack's name on the site, whitespace-stripped. The profile slot used on apply is derived with `_sanitize_profile_name` (cased letters such as Latin, Cyrillic and Greek, ASCII digits, space, hyphen, underscore; CJK, Arabic and emoji are dropped). When the site name sanitizes to nothing, the writer stores the pack's slug as `name` instead. The loader does not export modpack zips. A pack added from Vostok Mods is saved as `vostokmods-<slug>.zip`, named from its site slug and not from `name`. |
-| `enabled` | yes | Dictionary | `profile_key -> bool`. The hosted writer includes manifest members with true values. The reader accepts false values for activation, but availability and download planning inspect every declared key and source, including false entries. |
-| `priority` | no | Dictionary | `profile_key -> int`, load-order priority in `[-999, 999]`. A mod with no entry keeps its own default priority (`mod.txt` `priority=` or the filename prefix, else 0). A non-numeric value reads as 0. |
-| `modloader_version` | no | String | The `MODLOADER_VERSION` of the loader that wrote the file. Advisory only. |
-| `exported_at` | no | String | When the pack last changed on the site (the manifest's `updatedAt`). Advisory only. |
-| `description` | no | String | The pack's summary on the site. Omitted when empty. |
-| `author` | no | String | The pack's author on the site. Omitted when empty. |
-| `sources` | no | Dictionary | `profile_key -> {provider: String, id: String, modworkshop_id?: int, version?: String}`, one record per mod the site could serve, pinned to the version the manifest names; lets apply download missing mods. The loader's writer emits `{provider: "vostokmods", id, version?}` only, so an older loader reading the record treats it as source-less instead of downloading an unrelated ModWorkshop mod of the same number. Readers still accept a legacy `{modworkshop_id: N}` record, and never consult `modworkshop_id` when a `provider` key is present. The mirror rule (`modworkshop_id` written if and only if `provider == "modworkshop"`) applies to the `[mod_sources]` records in `mod_config.cfg`. |
-| `dep_ignore` | no | Dictionary | `profile_key -> true`, sparse (true-only entries). The "Load anyway" dependency overrides, re-materialized on apply. |
-| `hosted` | no | Dictionary | Present on a pack the launcher pulled from a mod site: `{provider, slug, url, manifest_url, hash, format}`. `hash` is the site's own change token; **Refresh** re-fetches the manifest and rewrites the zip when it differs. |
-| `unavailable` | no | Dictionary | `profile_key -> reason` for mods the site listed but could not serve when the pack was fetched (`scanning`, `no_files`, `removed`). Apply reports these instead of downloading. |
-| `checksums` | no | Dictionary | `profile_key -> sha256 hex` for mods whose file checksum the site published. The download is refused if the bytes do not match. |
+| `metroprofile` | yes | int | Schema version, `1` |
+| `name` | yes | String | Display name. The profile slot is the name sanitized to cased letters (Latin, Cyrillic, Greek), ASCII digits, space, hyphen and underscore; a site pack whose name sanitizes to nothing stores its slug instead, and an empty result is rejected |
+| `enabled` | yes | Dictionary | `profile_key -> bool`. Activation reads `true` entries; availability and download planning read every key |
+| `priority` | no | Dictionary | `profile_key -> int`, clamped to `[-999, 999]`. A mod with no entry keeps its own default; a non-number reads as 0 |
+| `dep_ignore` | no | Dictionary | `profile_key -> true`: the **Load anyway** overrides |
+| `sources` | no | Dictionary | `profile_key -> source record` (below); lets apply download missing mods |
+| `modloader_version`, `exported_at`, `description`, `author` | no | String | Advisory metadata; `exported_at` is when the pack last changed on the site |
+| `hosted` | no | Dictionary | On a pack from a mod site: `{provider, slug, url, manifest_url, hash, format, thumbnail_url}`. **Refresh** rewrites the zip when the site's `hash` differs; `thumbnail_url` is the pack's cover, kept only when it is https |
+| `unavailable` | no | Dictionary | `profile_key -> reason` (`scanning`, `no_files`, `removed`) for mods the site could not serve; apply reports these instead of downloading |
+| `checksums` | no | Dictionary | `profile_key -> sha256 hex`; a download whose bytes differ is refused |
 
-This JSON has one writer (`_hosted_manifest_to_profile` in hosted_modpacks.gd) and several readers in modpacks.gd, profiles.gd and ui_modpacks.gd. Profile-state fields (`enabled` / `priority` / `dep_ignore`) must be read by the single state consumer `_materialize_modpack_profile` (modpacks.gd) or they silently drop on apply. Metadata fields (`name`, `description`, `author`, `sources`) have their own readers (`_build_modpack_entry`, `_get_missing_mods_for_modpack`, the modpack detail dialog). `_validate_modpack` checks schema, `name` and `enabled` before apply.
+### Source records
+
+| Field | Meaning |
+|---|---|
+| `provider` | Host token: `vostokmods` or `modworkshop` |
+| `id` | The host's mod id. For Vostok Mods the slug, as the site's manifests carry it; a UUID resolves too |
+| `version` | Exact version to fetch; apply fails if the host no longer has it. Absent: the host's current file |
+| `modworkshop_id` | Mirror for loaders that predate `provider`, written only when `provider` is `modworkshop`, so an old loader never fetches an unrelated ModWorkshop mod. Ignored when `provider` is present; a record holding only `modworkshop_id` is still read |
+
+Packs the launcher writes carry `vostokmods` records only, each pinned to the version the site's manifest names. A record with neither `provider` + `id` nor a positive `modworkshop_id` cannot be downloaded and shows as a missing-mod row with a reason.
 
 ## Profile key format
 
-Profile keys identify mods across installs. Supported shapes:
+- `"<mod_id>@<version>"` for a mod whose `mod.txt` declares `[mod] id`. The version may be empty (`"foo@"`). Survives a file rename.
+- `"zip:<file_name>"` for a mod without an id. A re-package that changes only the extension or a trailing version (`CoolMod_v1.0.zip` to `CoolMod_v1.1.vmz`) keeps its state, matched by normalized filename stem, and the old key is dropped at the next save; any other rename orphans the entry. When two stored keys share a stem, the mod is treated as new.
+- `"vostokmods:<slug>"` in a pack from Vostok Mods, whose `mod.txt` ids are not known until the files arrive. Apply rewrites these to the installed mods' own keys.
 
-- `"<mod_id>@<version>"` for mods whose `mod.txt` declares `[mod] id=...`. The version segment may be empty (`"foo@"`). Identity survives a `.vmz` rename. See `_entry_from_config` in [mod_discovery.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/mod_discovery.gd).
-- `"zip:<file_name>"` for mods without a declared `mod_id`. Identity is the archive filename. A re-package that changes only the extension or a trailing version (`CoolMod_v1.0.zip` to `CoolMod_v1.1.vmz`) keeps its state, matched by normalized filename stem, and the old key is dropped at the next save; any other rename orphans the profile entry.
-- `"vostokmods:<slug>"` in a pack pulled from Vostok Mods, where the mod's `mod.txt` id is not known until the file is downloaded. After the downloads land, apply rewrites these keys to the installed mods' own keys by matching each pack entry's source record against the installed mod's source.
+In an ordinary profile, a stored `foo@1.0` with only `foo@2.0` installed carries its enabled state and priority over to `foo@2.0` and the row flags the version mismatch. `zip:` keys do not take part.
 
-## Profile key matching and pack pins
+## How apply matches installed mods
 
-For ordinary profiles, when a stored key `foo@1.0` matches no installed mod exactly but `foo@2.0` is installed, id-prefix matching (the first `@` splits the key) applies the stored enabled / priority state to the installed version. The UI flags the entry as `profile_version_mismatch` so the carry-over is visible.
+A pack entry counts as installed on an exact key match, a case-insensitive `mod_id@version` match, or an installed mod whose recorded source is the entry's site id at the pinned version (any version when none is pinned). With a checksum in the pack, an installed copy with the same bytes counts whatever its `mod.txt` version says; a copy dropped in by hand counts when its `mod.txt` id is the pack's slug. A pack without `sources` matches an older key by id at any installed version.
 
-Mods without a declared `mod_id` (`zip:*` keys) do not take part in id-prefix matching. They match on the exact filename first, then on the normalized filename stem (`_normalized_mod_stem`: lowercased, extension and one trailing version token removed). When two stored keys share a stem the match is refused and the mod is treated as new.
-
-Pack source records can pin exact versions. Apply refuses a newer installed copy that would win discovery over the requested version. Pack-key reconciliation requires the pinned version when matching by source; it leaves unresolved keys for missing-mod rows rather than claiming a different installed version satisfies the pack. See [Modpacks](Modpacks) for the player-facing recovery flow.
+A newer requested version is downloaded beside the copy already there. A newer copy installed than the pack pins stops apply before anything changes, because discovery always picks the newest copy. After the downloads, the pack's `enabled`, `priority` and `dep_ignore` keys are rewritten to the keys the matched mods have on this machine; unmatched keys stay as missing-mod rows.
 
 ## What apply reproduces
 
-First apply, or apply after a changed hosted import invalidates the kept slot, materializes the author's enabled set, priorities and Load-anyway overrides into a dedicated modpack profile slot: `_materialize_modpack_profile` erases the slot's enabled / priority / dep_ignore sections and writes only the pack's entries, so mods not in the pack are absent (treated as disabled). An unchanged pack keeps the user's edits in its managed slot across unload/re-apply. Unload restores the pre-pack enabled/priority state and MCM settings. Files outside the pack's `MCM/` tree are not applied; arbitrary-file restoration from older pack formats is retired.
+The first apply, or one after a changed site import, writes the pack's enabled set, priorities and **Load anyway** overrides into its own profile slot and nothing else, so mods outside the pack are off. An unchanged pack keeps the player's edits in that slot across unload and re-apply. Unload restores the previous profile and its MCM settings. Where these slots live is on [Config-Files](Config-Files#modpack-keys-and-managed-profiles).
 
-## Forward-compatibility rules
+## Forward compatibility
 
-Parsers written against v1 will exist in the wild indefinitely. To keep them parsing:
-
-- v1 parsers ignore unknown top-level JSON keys, so future additions can ship new optional fields without breaking them.
-- v1 parsers tolerate missing optional keys (`priority`, `modloader_version`, `exported_at`, `description`, `author`, `sources`, `dep_ignore`, `hosted`, `unavailable`, `checksums`). A missing required key is rejected with an error.
-- Adding a required key, renaming a key, or changing a key's value type means bumping `metroprofile` to `2`. Old parsers then reject the pack (`_validate_modpack` reports `This modpack was made for a newer version of the mod loader -- update the mod loader and try again`) instead of mis-applying it. A `metroprofile` that is missing or below 1 is reported as a damaged file, not as a newer format.
-- Additive changes to optional fields stay on `metroprofile: 1`.
-
-## Defensive handling on apply
-
-- `_validate_modpack` rejects malformed zips, missing or damaged `profile.json`, a wrong schema version, and a missing `name` / `enabled` before any state is touched.
-- `priority` values are clamped to `[-999, 999]` (`PRIORITY_MIN` / `PRIORITY_MAX`) in `_materialize_modpack_profile`, so a crafted payload cannot break load-order sort stability. The UI spinbox already enforces this range on save.
-- The pack `name` is re-sanitized on the reader side: `_build_modpack_entry` derives the profile slot with `_sanitize_profile_name`, and apply rejects an empty sanitized name with `Invalid modpack name`.
+- v1 parsers ignore unknown top-level keys and tolerate every optional key missing; new optional fields stay on `metroprofile: 1`.
+- Adding a required key, renaming a key or changing a value type means `metroprofile: 2`. A v1 loader rejects such a pack with `This modpack was made for a newer version of the mod loader -- update the mod loader and try again`; a missing `metroprofile`, or one below 1, is reported as a damaged file.
 
 ## See also
 
-- [Mod-Format](Mod-Format): the `mod.txt` schema that generates `profile_key` identities.
-- [Modpacks](Modpacks): the user-facing get / apply flow.
-- `_hosted_manifest_to_profile` + `_hosted_write_pack_zip` (src/hosted_modpacks.gd): the write path.
-- `_validate_modpack` + `_materialize_modpack_profile` (src/modpacks.gd): the read / apply path.
+- [Modpacks](Modpacks): getting, applying and unloading a pack
+- [Mod-Format](Mod-Format): the `mod.txt` fields a profile key is built from
+- [src/hosted_modpacks.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/hosted_modpacks.gd) writes the JSON; [src/modpacks.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/modpacks.gd) validates and applies it

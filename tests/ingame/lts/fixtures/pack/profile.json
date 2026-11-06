@@ -1,0 +1,11 @@
+{
+  "metroprofile": 1,
+  "name": "LTS Test Pack",
+  "description": "Throwaway pack for tests/ingame/lts: enables the two LTS test mods, downloads nothing.",
+  "author": "Metro Mod Loader tests",
+  "enabled": {
+    "lts_dep@1.0.0": true,
+    "lts_core@1.0.0": true
+  },
+  "priority": {}
+}

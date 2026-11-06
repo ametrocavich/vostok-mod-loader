@@ -1,0 +1,18 @@
+[mod]
+name="LTS Test: Core"
+id="lts_core"
+version="1.0.0"
+author="Metro Mod Loader tests"
+priority=0
+
+[dependencies]
+required=["lts_dep"]
+optional=["lts_dep"]
+
+[autoload]
+LTSTestCore="res://LTSTestCore/Main.gd"
+
+[registry]
+
+[hooks]
+res://Scripts/Menu.gd = "_ready"

@@ -4,10 +4,12 @@ on:
   push:
     branches:
       - master
-  # Re-run by hand after publishing a draft release: the run that creates the
-  # draft opens the next release PR before the tag exists, so that PR is
-  # computed from the whole history (this is how a "release 3.0.0" PR appeared
-  # after v3.4.0). A manual run after publishing recomputes it from the tag.
+  # The run that creates the draft also opens the next release PR before the
+  # tag exists, so that PR is computed from the whole history (this is how a
+  # "release 3.0.0" PR appeared after v3.4.0). A manual run after publishing
+  # does NOT close that PR (3.4.1, PR #93): close it by hand, as
+  # docs/RELEASE_CHECKLIST.md says. (last-release-sha would only rename the
+  # stale PR and has to be moved by hand after every release, so it is not set.)
   workflow_dispatch:
 
 permissions:
@@ -15,8 +17,8 @@ permissions:
   pull-requests: write
 
 env:
-  # Pinned to the engine the maintainer builds against locally and to ci.yml.
-  # Move all three together.
+  # Pinned to the engine the maintainer builds against locally.
+  # Move both together (ci.yml has the other).
   GODOT_VERSION: 4.6.1-stable
 
 jobs:

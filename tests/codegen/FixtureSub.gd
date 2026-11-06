@@ -1,10 +1,6 @@
 extends "res://Scripts/FixtureDefaults.gd"
-# Synthetic codegen fixture -- an extends-by-path subclass with bare super()
-# calls, the pattern _rewrite_bare_super must rewrite once the enclosing
-# method is renamed (a bare super() inside _rtv_vanilla_<name> would look for
-# _rtv_vanilla_<name> on the parent, which does not exist -- Gotcha #2 in
-# the GDScript-rewrite gotchas memory). Processed AFTER FixtureDefaults.gd,
-# so this also proves a subclass compiles against the REWRITTEN parent.
+# Bare super() calls, which must reach the parent once the method is renamed. The harness
+# runs it after FixtureDefaults.gd, so it compiles against the rewritten parent.
 
 func PlainVoid() -> void:
 	super()
@@ -12,3 +8,6 @@ func PlainVoid() -> void:
 
 func DefaultsSimple(count: int = 3, label: String = "x") -> int:
 	return super(count, label) + 1
+
+# A bare super() in a one-line body is rewritten like an indented one.
+func ImplicitVoid(): super()

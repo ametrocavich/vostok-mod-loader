@@ -1,21 +1,5 @@
-## FixtureDispatch.gd -- synthetic vanilla-shaped script for the runtime
-## dispatch harness (tests/codegen/dispatch_runner.gd, driven by
-## check_dispatch.sh). NOT part of the shipped loader. check_codegen.sh's
-## Fixture*.gd glob copies this file into its project too, but it is not in
-## runner.gd's FIXTURES table, so the compile-only harness never touches it.
-##
-## Every method body records what actually executed into the Array stored
-## at Engine meta "RTVDispatchLog", so the runner can assert on real
-## execution order after the REAL rewriter wraps these methods.
-##
-## Shape notes (each method exists to exercise one wrapper template path):
-##   Add           sync value return       -> non-void template
-##   Note          void                    -> void template
-##   WithDefaults  defaulted parameter     -> default passthrough
-##   CoroValue     real coroutine (await)  -> is_coro template variant
-##   Outer/Inner   nested wrapped calls    -> _caller save/restore
-## _rec is static ON PURPOSE: static funcs are outside the wrap surface,
-## so the recorder itself can never be renamed or dispatched through.
+# Synthetic vanilla script for dispatch_runner.gd: each body logs to Engine meta "RTVDispatchLog".
+# _rec is static because static funcs are outside the wrap surface: the recorder is never hooked.
 extends Node
 
 static func _rec(tag: String) -> void:
