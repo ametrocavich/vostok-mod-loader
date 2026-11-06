@@ -33,8 +33,33 @@ class ManifestStub extends "res://stub_loader.gd":
 			return host_err(HOST_ERR_NOT_FOUND, 404, "no fixture for " + url)
 		return host_ok(served[url])
 
+## The loader with mod_config.cfg turned into a directory after `block_after` runs, so saves fail.
+class CfgBlockStub extends "res://stub_loader.gd":
+	var block_after := ""
+
+	func _ui_cfg_load(cfg: ConfigFile) -> int:
+		var err := super(cfg)
+		if block_after == "load":
+			_block_cfg()
+		return err
+
+	func _restore_mcm_from(profile_name: String) -> bool:
+		var ok := super(profile_name)
+		if block_after == "restore":
+			_block_cfg()
+		return ok
+
+	func _block_cfg() -> void:
+		block_after = ""
+		DirAccess.rename_absolute(UI_CONFIG_PATH, UI_CONFIG_PATH + ".held")
+		DirAccess.make_dir_absolute(UI_CONFIG_PATH)
+
+	func unblock_cfg() -> void:
+		DirAccess.remove_absolute(UI_CONFIG_PATH)
+		DirAccess.rename_absolute(UI_CONFIG_PATH + ".held", UI_CONFIG_PATH)
+
 func _init() -> void:
-	super("profiles", "T10..T100")
+	super("profiles", "T10..T101")
 
 func _tests(ml: Object) -> void:
 	# Mod scans and id matching read the regexes _ready compiles.
@@ -84,6 +109,7 @@ func _tests(ml: Object) -> void:
 		["T98", _t98_hashless_pack_reimports_its_changes],
 		["T99", _t99_slotless_active_pack_refuses_a_replace],
 		["T100", _t100_newest_same_named_pack_wins],
+		["T101", _t101_failed_cfg_save_stops_the_mcm_switch],
 	]:
 		begin(t[0])
 		await t[1].call(ml)
@@ -1691,6 +1717,12 @@ func _t92_pack_scan_opens_each_zip_once(ml: Object) -> void:
 	check_eq(str(ml.collect_modpack_metadata()[0]["raw_name"]), "Memo", "pack name from an unchanged zip")
 	pack.call("Read Again")
 	check_eq(str(ml.collect_modpack_metadata()[0]["raw_name"]), "Read Again", "pack name from a changed zip")
+	var size := FileAccess.get_size("user://t92_mods/p.zip")
+	# Modified times count whole seconds.
+	OS.delay_msec(1100)
+	pack.call("Read Agian")
+	check_eq(FileAccess.get_size("user://t92_mods/p.zip"), size, "same-size rewrite")
+	check_eq(str(ml.collect_modpack_metadata()[0]["raw_name"]), "Read Agian", "pack name from a newer zip")
 	_drop_mods_dir(ml, "user://t92_mods", previous)
 	H.pack_cleanup(ml)
 
@@ -1790,3 +1822,29 @@ func _t100_newest_same_named_pack_wins(ml: Object) -> void:
 	check_eq(str(packs[0].get("duplicates_hidden", [{}])[0].get("file_name", "")), "b_old.zip", "the older zip is hidden")
 	_drop_mods_dir(ml, "user://t100_mods", previous)
 	H.pack_cleanup(ml)
+
+# A failed cfg save stops the switch with its markers on disk, so the retry loses no MCM.
+func _t101_failed_cfg_save_stops_the_mcm_switch(_ml: Object) -> void:
+	# [save that fails, live MCM after it, markers left on disk]
+	for c in [["load", "A", ["A", "B"]], ["restore", "B", ["", "B"]]]:
+		var stub := CfgBlockStub.new()
+		H.pack_cleanup(stub)
+		H.write_text(LIVE_M, "A")
+		H.write_text(SNAP + "B/MCM/m/config.ini", "B")
+		_seed(stub, [["settings", "active_profile", "B"], ["settings", "mcm_pending_from", "A"],
+				["settings", "mcm_pending_to", "B"]])
+		stub.block_after = c[0]
+		stub._complete_pending_mcm_switch()
+		stub.unblock_cfg()
+		_assert(not stub.get("_mcm_switch_completed"), "%s: not completed" % c[0])
+		check_eq(FileAccess.get_file_as_string(LIVE_M), c[1], "%s: live MCM after the failure" % c[0])
+		var cfg := _read(stub)
+		check_eq([str(cfg.get_value("settings", "mcm_pending_from", "")), str(cfg.get_value("settings", "mcm_pending_to", ""))],
+				c[2], "%s: markers on disk" % c[0])
+		stub._complete_pending_mcm_switch()
+		_assert(stub.get("_mcm_switch_completed"), "%s: the retry completes" % c[0])
+		check_eq(FileAccess.get_file_as_string(LIVE_M), "B", "%s: live MCM after the retry" % c[0])
+		check_eq(FileAccess.get_file_as_string(SNAP + "A/MCM/m/config.ini"), "A", "%s: A's slot after the retry" % c[0])
+		_assert(not stub._mcm_switch_pending(), "%s: the retry clears the markers" % c[0])
+		H.pack_cleanup(stub)
+		stub.free()

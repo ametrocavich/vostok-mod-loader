@@ -559,13 +559,17 @@ func _complete_pending_mcm_switch() -> void:
 	if from != "":
 		_snapshot_mcm_to(from)
 		cfg.erase_section_key("settings", "mcm_pending_from")
-		cfg.save(UI_CONFIG_PATH)
+		if cfg.save(UI_CONFIG_PATH) != OK:
+			_log_warning("[Config] Could not save %s; the profile switch to %s is retried next launch" % [UI_CONFIG_PATH, to])
+			return
 	if _has_mcm_snapshot(to):
 		_restore_mcm_from(to)
 	else:
 		_snapshot_mcm_to(to)
 	cfg.erase_section_key("settings", "mcm_pending_to")
-	cfg.save(UI_CONFIG_PATH)
+	if cfg.save(UI_CONFIG_PATH) != OK:
+		_log_warning("[Config] Could not save %s; the profile switch to %s is retried next launch" % [UI_CONFIG_PATH, to])
+		return
 	_mcm_switch_completed = true
 	_log_info("[Config] Completed the recorded profile switch to " + to)
 
