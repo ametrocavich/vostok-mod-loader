@@ -153,13 +153,12 @@ func _run() -> void:
 	await _t19_force_unload_confirm(win)
 	await _t20_launch_saves_the_meta_sidecar()
 	_t31_scale_setting_clamp(ml)
-	_t32_scale_fits_area()
+	await _t32_scale_fits_area()
 	_t33_meta_refresh_window()
 	await _t34_content_mod_confirm()
 	_t35_menu_button_order(ml)
 	ml.set("_ui_window", null)
-	root.remove_child(win)
-	win.free()
+	win.queue_free()
 	await _settle()
 
 	await _dump_all(ml)
@@ -1057,6 +1056,8 @@ func _t32_scale_fits_area() -> void:
 	win.free()
 	root.remove_child(sl)
 	sl.free()
+	# Headless Linux segfaults when an embedded window is freed in the frame the root was resized.
+	await _settle()
 
 # A record under a day old is kept; an older one refetches.
 func _t33_meta_refresh_window() -> void:
