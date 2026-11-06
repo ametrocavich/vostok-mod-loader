@@ -109,7 +109,7 @@ func _hnet_get_json(provider: String, url: String, ttl_ms: int = 0,
 """
 
 func _init() -> void:
-	super("host", "T1..T48")
+	super("host", "T1..T50")
 
 func _tests(ml: Object) -> void:
 	# The detail normalizer's markdown pass reads regexes _ready compiles.
@@ -138,6 +138,8 @@ func _tests(ml: Object) -> void:
 	_t41_vm_pack_summary(ml)
 	_t45_vm_site_url_predicate(ml)
 	_t48_pack_sha_pins(ml)
+	_t49_pack_rewrite_keeps_the_old_zip(ml)
+	_t50_reader_ttl_bounds_a_cached_entry(ml)
 	var net := _stub_net()
 	await _t38_vm_categories_for_mods(net)
 	await _t42_vm_pack_listing(net)
@@ -1015,3 +1017,49 @@ func _t48_pack_sha_pins(ml: Object) -> void:
 		mods.append({"slug": "m%d" % mods.size(), "available": true, "version": "1", "sha256": sha})
 	var conv: Dictionary = ml._hosted_manifest_to_profile({"slug": "p", "mods": mods})
 	check_eq(conv["profile"].get("checksums", {}), {str(ml.HOSTED_KEY_PREFIX) + "m2": good.to_lower()}, "only the 64-char sha pinned")
+
+# A .part that cannot be renamed (antivirus) leaves the old zip in place.
+func _t49_pack_rewrite_keeps_the_old_zip(ml: Object) -> void:
+	begin("T49")
+	var path := "user://t49_pack.zip"
+	var old := "old pack bytes".to_utf8_buffer()
+	H.write_bytes(path, old)
+	var w: Dictionary = ml._hosted_write_pack_zip({"name": "T49"}, {}, path)
+	_assert(w["ok"] and FileAccess.get_file_as_bytes(path) != old, "an unlocked rewrite lands")
+	for leftover in [path + ".part", path + ".old"]:
+		_assert(not FileAccess.file_exists(leftover), "nothing left: " + leftover.get_extension())
+	# Only Windows refuses to rename a file another handle holds open.
+	if OS.get_name() == "Windows":
+		H.write_bytes(path, old)
+		H.write_bytes(path + ".part", PackedByteArray())
+		var lock := FileAccess.open(path + ".part", FileAccess.READ)
+		w = ml._hosted_write_pack_zip({"name": "T49"}, {}, path)
+		lock.close()
+		_assert(not w["ok"] and str(w["error"]) != "", "a failed rename is reported")
+		check_eq(FileAccess.get_file_as_bytes(path), old, "the old zip is kept")
+		_assert(not FileAccess.file_exists(path + ".old"), "no backup left behind")
+	for f in [path, path + ".part", path + ".old"]:
+		H.remove_user_file(f)
+
+# A cached entry older than the reader's TTL is fetched again; a 70 s cooldown
+# turns that fetch into a rate-limited answer without a request.
+func _t50_reader_ttl_bounds_a_cached_entry(ml: Object) -> void:
+	begin("T50")
+	var url := str(ml.VM_API_BASE) + "/mods/t50"
+	var cache: Dictionary = ml.get("_host_cache")
+	var long_ms := int(ml._VM_TTL_DETAIL_MS)
+	ml.set("_has_loaded", true)
+	root.add_child(ml)
+	ml.host_arm_cooldown(str(ml.HOST_VOSTOKMODS), 70000)
+	for c in [[long_ms, long_ms, true, "long entry, long reader"],
+			[long_ms, 1, false, "long entry, short reader"],
+			[60000, long_ms, true, "short entry, long reader"],
+			[1, long_ms, false, "expired entry, long reader"]]:
+		cache.clear()
+		ml._hnet_cache_put(url, {"id": "t50"}, c[0])
+		OS.delay_msec(5)
+		var res: Dictionary = await ml._hnet_get_json(str(ml.HOST_VOSTOKMODS), url, c[1])
+		check_eq(res["ok"], c[2], c[3])
+	root.remove_child(ml)
+	cache.clear()
+	(ml.get("_host_cooldown_until_ms") as Dictionary).clear()

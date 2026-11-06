@@ -211,11 +211,16 @@ func _hosted_write_pack_zip(profile: Dictionary, mcm: Dictionary, path: String) 
 	if not ok:
 		DirAccess.remove_absolute(tmp)
 		return {"ok": false, "error": "The modpack could not be written completely. Check disk space and try again."}
-	_static_remove_file(path)
+	var bak := path + ".old"
+	var moved := DirAccess.rename_absolute(path, bak) == OK
 	_modpack_zip_memo.erase(path)
 	if DirAccess.rename_absolute(tmp, path) != OK:
 		DirAccess.remove_absolute(tmp)
+		if moved:
+			DirAccess.rename_absolute(bak, path)
 		return {"ok": false, "error": "Could not replace the existing modpack file. Is it open in another program?"}
+	if moved:
+		DirAccess.remove_absolute(bak)
 	return {"ok": true, "error": ""}
 
 func _hosted_import_manifest(manifest: Dictionary) -> Dictionary:

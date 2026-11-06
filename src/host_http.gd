@@ -22,7 +22,7 @@ func _host_user_agent_header() -> String:
 
 
 func _hnet_cache_put(url: String, data: Variant, ttl_ms: int) -> void:
-	_host_cache[url] = {"data": data, "expires_at": Time.get_ticks_msec() + ttl_ms}
+	_host_cache[url] = {"data": data, "expires_at": Time.get_ticks_msec() + ttl_ms, "stored_at": Time.get_ticks_msec()}
 
 
 func _cooldown_ms(provider: String) -> int:
@@ -53,7 +53,7 @@ func _hnet_get_json(provider: String, url: String, ttl_ms: int = 0,
 	if not is_inside_tree():
 		return host_err(HOST_ERR_OFFLINE, 0, "loader is not in the scene tree")
 	if ttl_ms > 0 and _host_cache.has(url):
-		if Time.get_ticks_msec() <= int(_host_cache[url]["expires_at"]):
+		if Time.get_ticks_msec() <= mini(int(_host_cache[url]["expires_at"]), int(_host_cache[url]["stored_at"]) + ttl_ms):
 			return host_ok(_host_cache[url]["data"])
 		_host_cache.erase(url)
 
