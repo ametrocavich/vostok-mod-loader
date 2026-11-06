@@ -11,6 +11,8 @@ DEFINITION = re.compile(r"^(?:static )?(?:func|var|const|signal|class_name)\s+(\
 MARKER = re.compile(r"^# source: (src/[\w/.-]+\.gd)$")
 REPO = "https://github.com/ametrocavich/vostok-mod-loader/"
 LINK = re.compile(r"\[([^\]\n]+)\]\(([^\s)]+)\)")
+HEADING = re.compile(r"^#{1,6}\s+(.+?)(?:\s+#+)?\s*$", re.M)
+LISTINGS = ("MWS_PAGE.md", "VOSTOKMODS_PAGE.md")
 
 
 def source_files():
@@ -49,6 +51,39 @@ def prose(text):
     return re.sub(r"^```[^\n]*\n.*?^```[^\n]*$", "", text, flags=re.M | re.S)
 
 
+def anchors(text):
+    """GitHub heading ids: link text kept, lowercased, punctuation dropped, spaces to hyphens."""
+    seen = {}
+    for heading in HEADING.findall(prose(text)):
+        heading = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", heading)
+        slug = re.sub(r"[^\w\- ]", "", heading.lower()).replace(" ", "-")
+        seen[slug] = seen.get(slug, -1) + 1
+        yield slug if seen[slug] == 0 else f"{slug}-{seen[slug]}"
+
+
+def first_non_ascii(data):
+    return next((index for index, byte in enumerate(data) if byte > 0x7F), None)
+
+
+def listing_body(data):
+    """The pasted part of a listing: everything from its first changelog block or section heading."""
+    lines = data.splitlines(keepends=True)
+    start = next((i for i, line in enumerate(lines) if line.startswith((b"## ", b"<!-- changelog"))), len(lines))
+    return b"".join(lines[start:])
+
+
+def self_test():
+    """A check that cannot fail is not a gate: each one must reject a known-bad sample."""
+    broken = []
+    if list(anchors("## `[updates]` section\n```\n# fenced\n```\n## Updates section\n")) != ["updates-section", "updates-section-1"]:
+        broken.append("heading anchors")
+    if first_non_ascii(b"an \xe2\x80\x94 dash") is None:
+        broken.append("non-ASCII scan")
+    if listing_body(b"<!-- a -->\n<!-- changelog -->\nA\n") == listing_body(b"<!-- b -->\n<!-- changelog -->\nB\n"):
+        broken.append("listing body comparison")
+    return [f"tools/dev.py: self-test failed: {name}" for name in broken]
+
+
 def resolve_link(doc, target):
     parts = urlsplit(target)
     path = unquote(parts.path)
@@ -72,13 +107,16 @@ def document_errors(doc, text, symbols):
     errors = []
     text = prose(text)
     for label, target in LINK.findall(text):
-        path = resolve_link(doc, target)
+        path = doc if target.startswith("#") else resolve_link(doc, target)
         if path is None:
             continue
         path = path.resolve()
         if not path.is_relative_to(ROOT) or not path.exists():
             errors.append(f"missing link target: {target}")
             continue
+        fragment = unquote(urlsplit(target).fragment)
+        if fragment and path.suffix == ".md" and fragment not in anchors(path.read_text(encoding="utf-8")):
+            errors.append(f"missing heading anchor: {target}")
         if path.suffix != ".gd":
             continue
         names = re.findall(r"`([A-Za-z_]\w*)(?:\(\))?`", label)
@@ -101,10 +139,23 @@ def check_docs():
     for name, path, _, _ in definitions():
         symbols.setdefault(name, set()).add(path)
     docs = [ROOT / "README.md", ROOT / "CONTRIBUTING.md", *sorted((ROOT / "docs").rglob("*.md"))]
-    errors = []
+    errors = self_test()
     for doc in docs:
         for problem in document_errors(doc, doc.read_text(encoding="utf-8"), symbols):
             errors.append(f"{doc.relative_to(ROOT).as_posix()}: {problem}")
+    plain = [ROOT / "build.sh", *(ROOT / name for name in source_files()), *docs, *(ROOT / name for name in LISTINGS)]
+    plain += [path for path in sorted((ROOT / "docs").rglob("*")) if path.is_file() and path not in docs]
+    for pattern in ("tests/**/*.gd", "tests/**/*.sh", "tests/**/*.py", "tools/*.py", "check*.sh",
+                    "linux-installer.sh", ".research/tools/*.sh"):
+        plain += sorted(ROOT.glob(pattern))
+    for path in plain:
+        data = path.read_bytes()
+        index = first_non_ascii(data)
+        if index is not None:
+            line = data.count(b"\n", 0, index) + 1
+            errors.append(f"{path.relative_to(ROOT).as_posix()}:{line}: byte above 0x7F")
+    if listing_body((ROOT / LISTINGS[0]).read_bytes()) != listing_body((ROOT / LISTINGS[1]).read_bytes()):
+        errors.append(f"{LISTINGS[0]} and {LISTINGS[1]}: listing bodies differ below their header comments")
     modules = (ROOT / "docs/wiki/Modules.md").read_text(encoding="utf-8")
     for source in source_files():
         if Path(source).name not in modules:
@@ -123,7 +174,7 @@ def main():
     find.add_argument("name", help="full name or part of a name; case-insensitive")
     location = commands.add_parser("locate", help="translate a line from a modloader.gd error")
     location.add_argument("line", type=int)
-    commands.add_parser("check-docs", help="check local links, named definitions and module coverage")
+    commands.add_parser("check-docs", help="check links, anchors, named definitions, module coverage, ASCII and listing bodies")
     args = parser.parse_args()
     if args.command == "find":
         matches = [item for item in definitions() if args.name.lower() in item[0].lower()]

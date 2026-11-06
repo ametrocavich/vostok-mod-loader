@@ -8,27 +8,44 @@ Click **Launch vanilla** in the launcher. The game starts with nothing mounted; 
 
 ## The game crashes or will not launch
 
-- Wait it out. After two crashed launches in a row the loader stops restarting and boots in a single pass: the launcher opens as usual, so you can disable the mod that crashes.
-- Force-disable the loader: create an empty file named `modloader_disabled` (no extension) in the game folder. On the next launch the loader mounts nothing and the game boots vanilla. Delete the file to re-enable. Use this when the loader itself is broken and you cannot reach the launcher.
-- Reset the loader's files once: create an empty file named `modloader_safe_mode` (no extension) in the game folder. On the next launch the loader restores a clean `override.cfg`, deletes its boot state and the crash heartbeat, then deletes the safe-mode file so it runs only once. The launcher still opens, so you can change profiles or disable a bad mod before the next modded boot.
+- Wait it out. After two crashed launches in a row the loader stops restarting and boots in a single pass: the launcher opens as usual, so you can disable the mod that crashes, and a banner says what happened.
+- Force-disable the loader when you cannot reach the launcher: create an empty file named `modloader_disabled` (no extension) in the game folder. The game boots vanilla until you delete it.
+- Reset the loader's files once: create an empty file named `modloader_safe_mode` in the game folder. The launcher still opens, so you can disable a bad mod before the next modded boot.
 
-On Windows: right-click inside the game folder, choose New, then Text Document, and rename the file to `modloader_disabled` with no extension. Or open a command prompt in the game folder and run:
-
-```
-echo. > modloader_disabled
-```
+[Config-Files](Config-Files#sentinel-files-escape-hatches) lists every sentinel file and how to create one on Windows.
 
 ## A mod is enabled but nothing changed in the game
 
 - Look at its row on the [Mods](Mods) tab. An orange `won't load -- needs ...` line means a required mod is missing or off. A red warning means the archive is packaged wrong; [Mod-Format](Mod-Format) has the rules.
-- A red banner at the top of the Mods tab saying hooks did not work means the game was probably updated and the loader needs an update too. Click **Check for loader update**.
-- A red banner that starts `The loader's changes to <scripts> do not fit this version of Road to Vostok` means a game update changed the named scripts, and the loader left its own changes to them out so the game keeps working. The game and your saves are fine, and there is nothing to remove from your mod list. Mods that hook those scripts, or register content through them, may do nothing until the loader is updated; mods that do not touch them work as usual. Click **Check for loader update** and install the new release when there is one. The banner clears after the update, or after a session in which every change fit again.
+- Read the banner at the top of the Mods tab, if there is one (below).
 - A mod that ships only files (no `mod.txt`) still mounts and overrides vanilla files, but runs no code of its own.
-- No banner, but a mod stopped working right after a game update: the game may have renamed something the mod hooks or registers. That is the mod's side, not the loader's; its author can follow [Build-2-Migration](Build-2-Migration) to update it.
+- A mod that stopped working right after a game update with no banner may rely on something it registers rather than hooks. That is the mod's side, not the loader's; its author can follow [Build-2-Migration](Build-2-Migration).
+
+## Banners on the Mods tab
+
+A banner names the problem the last session recorded. Mods still load. A red hook banner has a **Check for loader update** button that opens the release page. A game update on its own shows nothing: the loader rebuilds its script cache, and a banner appears only when that session then records a failure.
+
+| Banner starts with | Color | Meaning and what to do |
+|---|---|---|
+| `The game crashed N time(s) in a row while starting with mods` | red | Two launches crashed in a row, so the last launch skipped the restart and loaded mods in a single pass. Use **Launch vanilla** to check whether a mod is the cause, then disable the one you added or updated last. Shown once. |
+| `The last N launch(es) with mods did not reach the game` | orange | A crash streak is building. At 1, one more failure makes the next launch skip the restart and load mods in a single pass; at 2, the launch you start now already does. |
+| `Last time the game ran, hooks did not work on <scripts>` | red | Mods that change those scripts did nothing, usually after a game update. Update the loader. |
+| `Last time the game ran, none of the loader's N script rewrites took effect` | red | No hook-based mod did anything. Update the loader. |
+| `Last time the game ran, the loader could not build or mount its hook pack` | red | Check the free disk space; if it repeats, update the loader. |
+| `The loader's changes to <scripts> do not fit this version of Road to Vostok` | red | A game update changed those scripts and the loader left its changes out. The game and your saves are fine; mods that hook or register against those scripts do nothing until the loader is updated. The banner clears after a session in which every change fit. |
+| `The loader could not read this version of Road to Vostok's scripts correctly` | red | Hooks and the registry do nothing until the loader is updated. |
+| `This version of Road to Vostok stores its scripts in a format` | red | Same as above: the game's script format is newer than the loader. |
+| `Last time the game ran, N hook target(s) a mod asked for were not found` | orange | A game update renamed a method the named mod hooks. The mod's other hooks still work; update that mod. |
+| `Last time the game ran, the loader skipped N hook target(s)` | orange | The loader does not rewrite those scripts (skip list, empty script, a rewrite that does not compile, or a disk write failure); each entry names the reason. The mod's other hooks still work. |
+| `Last time the game ran, N hooked script(s) wrapped only part of what a mod asked for` | orange | Each entry names what did not wrap: methods, whose hooks did nothing, or the registry transform, so that script's registry features do not work. Hooks on the script's other methods still work. |
 
 ## The launcher does not appear
 
 The loader is registered through `override.cfg` in the game folder. If that file is missing or was overwritten by another tool, copy it from the release again. If the game shows a black screen at start, delete `override.cfg`, launch once, then copy a fresh one back; a damaged file stops Godot from loading its autoloads.
+
+## Could not launch without mods
+
+If you disable all mods and see **Could not launch without mods**, the loader could not remove its old boot state or clean `override.cfg`. The dialog names the failed file. Check its permissions or close the program holding it, then choose **Retry**. **Quit** cancels the launch; the loader never restarts with stale mod state.
 
 ## Everything broke after an update
 
@@ -37,8 +54,4 @@ The loader is registered through `override.cfg` in the game folder. If that file
 3. Delete the `modloader_hooks` folder there to force the hook pack to regenerate.
 4. If the game will not launch at all, create `modloader_disabled` in the game folder, launch vanilla, then remove the file and launch again. The loader rebuilds from scratch.
 
-## Where the loader writes
-
-If you disable all mods and see **Could not launch without mods**, the loader could not remove its old boot state or clean `override.cfg`. The dialog names the failed file. Check its permissions or close the program holding it, then choose **Retry**. **Quit** cancels the launch. The loader does not restart with stale mod state.
-
-The mounts that happen before the launcher opens are logged to `modloader_filescope.log` in the user folder. [Config-Files](Config-Files) lists the files the loader writes, what is safe to delete, and how to back up or reset your profiles. [Stability-Canaries](Stability-Canaries) explains the crash recovery in detail: the heartbeat, the restart counter and the sentinel files.
+The mounts that happen before the launcher opens are logged to `modloader_filescope.log` in the user folder. [Config-Files](Config-Files) lists every file the loader writes and what is safe to delete.

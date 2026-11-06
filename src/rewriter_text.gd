@@ -1,11 +1,6 @@
-## ----- rewriter_text.gd -----
-## Text helpers the rewriter shares: a string- and comment-aware mask of
-## GDScript source, and the identifier-character test.
-
-# Hide literal contents and comments while preserving character positions,
-# newlines and quote delimiters. Only a matching, unescaped quote closes a
-# literal; comment text never opens one.
-func _rtv_code_mask(source: String) -> String:
+# Blank literal contents and comments, keeping positions, newlines and quote
+# delimiters. Only a matching, unescaped quote closes a literal.
+func _code_mask(source: String) -> String:
 	var out := ""
 	var quote := ""
 	var comment := false
@@ -45,15 +40,3 @@ func _rtv_code_mask(source: String) -> String:
 			out += c
 			i += 1
 	return out
-
-# True for ASCII identifier chars; GDScript identifiers are ASCII-only.
-func _rtv_is_ident_char(c: String) -> bool:
-	if c == "_":
-		return true
-	if c >= "a" and c <= "z":
-		return true
-	if c >= "A" and c <= "Z":
-		return true
-	if c >= "0" and c <= "9":
-		return true
-	return false

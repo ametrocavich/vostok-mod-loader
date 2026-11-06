@@ -11,7 +11,11 @@
 
 **Writing a mod**
 - [Hooks](Hooks)
+- [Hook-Surface](Hook-Surface)
 - [Registry](Registry)
+- [Registry-Content](Registry-Content)
+- [Registry-World](Registry-World)
+- [Registry-Aggregators](Registry-Aggregators)
 - [Dependencies](Dependencies)
 - [Mod-Format](Mod-Format)
 - [Setup-Plans](Setup-Plans)
@@ -23,10 +27,12 @@
 - [Architecture](Architecture)
 - [Modules](Modules)
 - [Profile-Format](Profile-Format)
+- [Hook-Pack](Hook-Pack)
 - [GDSC-Detokenizer](GDSC-Detokenizer)
 - [Stability-Canaries](Stability-Canaries)
 - [Build](Build)
 - [Developer-Mode](Developer-Mode)
+- [Style](Style)
 
 **Repo**
 - [README](https://github.com/ametrocavich/vostok-mod-loader/blob/development/README.md)

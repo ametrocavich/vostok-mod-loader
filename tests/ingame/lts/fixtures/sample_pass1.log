@@ -1,0 +1,17 @@
+Godot Engine v4.6.3.stable.official.7d41c59c4 - https://godotengine.org
+D3D12 12_0 - Forward+ - Using Device #0: NVIDIA - NVIDIA GeForce RTX 4090
+
+[FileScope] _mount_previous_session() starting
+[FileScope] Engine: Godot 4.6.3-stable (official), modloader 3.5.0, os Windows
+[FileScope] 0 archive path(s) in pass state
+[ModLoader][Info] [RTVModLib] modloader registered as Engine.meta('RTVModLib')
+[ModLoader][Info] Metro Mod Loader v3.5.0
+[ModLoader][Info] Scanning mods dir: C:/Program Files (x86)/Steam/steamapps/common/Road to Vostok/mods
+[ModLoader][Info] Found 2 mod(s)
+[ModLoader][Info] Load order adjusted: required dependencies load before their dependents.
+[ModLoader][Info] Found 2 mod(s) -- 2 enabled, 2 loading, 0 disabled (profile "LTSTest")
+[ModLoader][Info] === Load Order ===
+[ModLoader][Info]   [1] LTS Test: Dep | LTSTestDep.zip [priority=5]
+[ModLoader][Info]   [2] LTS Test: Core | LTSTestCore.zip [priority=0]
+[ModLoader][Info] ==================
+[ModLoader][Info] Preparing two-pass restart -- 2 archive(s)

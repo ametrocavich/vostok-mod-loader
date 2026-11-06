@@ -17,7 +17,7 @@ on:
   push:
     branches:
       - master
-      - 'refactor/**'
+      - development
 
 permissions:
   contents: read

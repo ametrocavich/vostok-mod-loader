@@ -4,66 +4,69 @@ The **Mods** tab is the first tab in the launcher window and the one you use mos
 
 ## The list
 
-Each row is one mod: a checkbox, the mod's name, and its load-order number. A mod the launcher can match to a site also shows its thumbnail and `by <author>`. Click the name of a mod that came from Vostok Mods or ModWorkshop to see its site details without leaving the launcher. A mod that is off in the current profile shows dimmed.
-
-The **Load order** column on the right previews the order the game will load your enabled mods in. It updates as you edit.
+Each row is one mod: a checkbox, the mod's name, and its load-order number. A mod the launcher can match to a site also shows its thumbnail and `by <author>`; click its name to see the site details without leaving the launcher. A mod that is off in the current profile shows dimmed. The **Load order** column on the right previews the order the game will load your enabled mods in and updates as you edit.
 
 Above the list:
 
-- **Filter mods...** narrows the list by name. **Enable all** and **Disable all** act on the visible rows only, so filter first to toggle a subset.
+- **Filter mods...** narrows the list by name. **Enable all** and **Disable all** act on the rows that match the filter, so filter first to toggle a subset. **Enable all** also turns on the rows **Hide disabled** is hiding.
 - **Hide disabled** hides the rows of mods that are off in this profile.
-- **Check for updates** asks each mod's site for a newer version. Mods that do not say where they came from are skipped, and so are developer-mode folders and mods whose mod.txt has no `version`; the result message counts the last kind. If the site rate-limited the check, the message says so and when to try again. Mods with a newer version appear in an **Updates available** section, each with an **Update** button that downloads the new file and replaces the installed one. Update keeps the installed file and says why when it cannot replace it: an enabled `.zip` or `.pck` is held open by the game until it exits (disable the mod, relaunch, then update), and a download whose `mod.txt` names a different mod id is not installed over yours.
+- **Check for updates** asks each mod's site for a newer version; see [Updates](#updates).
 
 ## Load order
 
-The number beside each mod is its priority. A higher number loads later, and a mod that loads later wins when two mods ship the same file. The default is `0` and the range is -999 to 999. Mods with the same priority load in order of mod name, then filename.
+The number beside each mod is its priority. A higher number loads later, and a mod that loads later wins when two mods ship the same file. The default is `0` and the range is -999 to 999. Mods with the same priority load in order of mod name, then filename. Priorities are saved per profile; a mod's own `mod.txt` can suggest one, and the number you set here overrides it.
 
-Priorities are saved per profile. A mod's own `mod.txt` can suggest a priority; the number you set here overrides it.
+## Updates
+
+- The check asks only the site a mod was installed from, and asks it afresh each time. Mods that do not say where they came from, developer-mode folders and mods whose `mod.txt` has no `version` are skipped; the result message counts the last kind, and says when to retry if the site rate-limited the check.
+- Mods with a newer version appear under **Updates available**, each with an **Update** button that replaces the installed file. Update keeps the installed file and says why when it cannot: the game holds an enabled `.zip` or `.pck` open until it exits (disable the mod, relaunch, then update), and a download whose `mod.txt` names a different mod id is not installed over yours.
+- An update whose new version is already in `mods/` under the name it would use removes the older copy and counts as done. The version a download was served as is the installed version from then on, and a mod with no `id=` keeps its profile settings when the update renames its file.
+- The check also asks Vostok Mods about every pack in Your packs that came from the site. A pack whose list changed adds `N pack(s) changed; Refresh them on the Modpacks tab.` to the result, and an active one is named to unload first ([Modpacks](Modpacks#refresh-and-changed-packs)).
+- Versions compare number by number. A letter after the last number (`1.0.1b`) is a later build of that number; a prerelease word (`1.2rc1`, `1.2beta`) is an earlier one.
+- A mod whose ModWorkshop page stopped getting updates while its Vostok Mods page moved on reads as up to date. Reinstall it from Vostok Mods to move it over.
 
 ## Profiles
 
 A profile is a saved set of on/off choices and load-order numbers. The **Profile** dropdown in the toolbar switches between them, and the three buttons beside it create a profile (**+**), rename the active one (the pencil) and delete it (the trash can). A new profile starts empty unless you pick **All enabled** or **Copy current selection** in its dialog. The first profile is called **Default**. A mod you install lands enabled in Default and stays off in every other profile until you turn it on there.
 
-Each profile also keeps its own copy of your in-game mod settings (the MCM folder), so switching profiles switches those too.
+Each profile also keeps its own copy of your in-game mod settings (the MCM folder), so switching profiles switches those too. A switch made from the main menu while the game runs swaps the settings at the restart, before any mod runs.
 
-While a modpack is active the profile buttons are disabled and a banner reads `Modpack "<name>" is active. Changes here save to the modpack, not your profiles.` with an **Unload** button beside it. See [Modpacks](Modpacks).
+While a modpack is active the profile buttons are disabled and a banner names the pack, with an **Unload** button beside it. [Modpacks](Modpacks#while-a-pack-is-active-profile-editing-is-limited) lists what else is locked until you unload it.
 
 ## Dependencies
 
-A mod that needs another mod shows an orange `won't load -- needs ...` line when the requirement is missing or off, and the loader skips it instead of crashing. The buttons beside the line fix the common cases: **Enable dependency** turns the required mod on, **Load anyway** loads the mod regardless in this profile, and **Re-check** removes that override. [Dependencies](Dependencies) explains the rules, including how a required mod is moved up in the load order for you.
+A mod that needs another mod shows an orange `won't load -- needs ...` line when the requirement is missing or off, and the loader skips it instead of crashing. **Enable dependency** turns the required mod on, **Load anyway** loads the mod regardless in this profile, and **Re-check** removes that override. [Dependencies](Dependencies) explains the rules, including how a required mod is moved up in the load order for you.
 
 ## Missing mods
 
-A profile can name a mod that is no longer in your `mods` folder, for example after you deleted the file or applied a modpack whose download failed. Those rows sit under **Missing from this profile**, each with a **Download** button when the launcher knows which site the mod came from, or **Download unavailable** when it does not, plus **Remove** to forget it. **Remove all** clears the whole section.
+A profile can name a mod that is no longer in your `mods` folder, for example after you deleted the file or applied a modpack whose download failed. Those rows sit under **Missing from this profile** with **Download** when the launcher knows the mod's site (or **Download unavailable** when it does not) and **Remove** to forget it; **Remove all** clears the section. If the exact version the profile remembers is gone from the site, **Download** takes the current file; a modpack's row keeps its pinned version.
 
 ## Removing a mod
 
-The trash-can button at the right of a row (its hint reads `Permanently delete this mod`) deletes the mod's file from your `mods` folder after a confirmation, and its profile entries go with it. Developer-mode folders cannot be removed from here; use **Open mods folder**.
+The trash-can button at the right of a row deletes the mod's file after a confirmation, and its entries go with it from every profile, under every version the mod was installed as. A profile whose only mod this was stays. An active modpack's own setup keeps the entry, and an older copy of the same mod hidden behind this one keeps its settings. Developer-mode folders cannot be removed from here; use **Open mods folder**.
 
 ## Warnings and tags
 
-Some rows carry extra lines:
+- A red warning marks a mod that will not work: a broken or missing `mod.txt`, a `mod.txt` inside a subfolder instead of at the root of the zip, or an autoload path that points nowhere. [Mod-Format](Mod-Format) has the packaging rules.
+- `version changed: 1.0 -> 1.1` means the profile's settings for this mod came from an older version of it.
+- `[dev folder]` marks an unpacked folder mod in developer mode.
 
-- A red warning for a mod that will not work: a broken or missing `mod.txt`, a `mod.txt` inside a subfolder instead of at the root of the zip, or an autoload path that points nowhere. [Mod-Format](Mod-Format) has the packaging rules.
-- `version changed: 1.0 -> 1.1` when the profile's settings for this mod came from an older version of it.
-- A red `suspicious code` tag when the built-in scanner matched patterns seen in malicious mods. Click it to see what matched. The tag never blocks loading.
-- `[dev folder]` on an unpacked folder mod in developer mode.
-
-A banner at the top of the tab appears when the hook system did not work last session, usually after a game update. It starts with `Last time the game ran, ...` (hooks did not work on the named scripts, none of the script rewrites took effect, or the loader could not build or mount its hook pack), `The loader's changes to <scripts> do not fit this version of Road to Vostok ...` (the loader left its changes to the named scripts out; the game itself runs normally), `The loader could not read this version of Road to Vostok's scripts correctly ...` or `This version of Road to Vostok stores its scripts in a format ...`. Mods still load, but mods that change vanilla scripts do nothing until a loader update fixes it; the banner's **Check for loader update** button opens the release page. A game update on its own shows nothing: the loader rebuilds its script cache and the banner appears only when that session then records a failure.
+A banner at the top of the tab reports a crash streak or hooks that failed last session; [Troubleshooting](Troubleshooting#banners-on-the-mods-tab) says what each one means.
 
 ## Developer mode
 
-The **Developer mode** checkbox in the toolbar turns on verbose logging, a conflict report, and loading of unpacked folder mods from the `mods` folder. It is meant for people writing mods; [Developer-Mode](Developer-Mode) lists everything it changes. Toggling it rescans the `mods` folder and keeps your active profile.
+The **Developer mode** checkbox in the toolbar turns on verbose logging, a conflict report, and loading of unpacked folder mods from the `mods` folder. [Developer-Mode](Developer-Mode) lists everything it changes. Toggling it rescans the `mods` folder and keeps your active profile.
 
-## Toolbar and bottom bar
+## Launching and reopening
 
-In the toolbar at the top of the tab, **Open mods folder** opens the `mods` folder in your file manager and **UI scale** resizes the launcher. In the bottom bar, the launch button reads **Launch modded** when at least one enabled mod will load, **Launch unmodded (N blocked)** when every enabled mod is blocked by a missing dependency, and **Launch** when nothing is enabled; closing the window does the same as clicking it. **Launch vanilla** starts the game once with no mods and leaves your profiles alone.
+In the toolbar, **Open mods folder** opens the `mods` folder and **UI scale** resizes the launcher. **Launch vanilla** in the bottom bar starts the game once with no mods and leaves your profiles alone. The launch button beside it reads:
 
-Once the game is running, the **Mods** button on the main menu reopens this window. The loader adds the button by wrapping the menu script, which it only does when at least one mod loaded; launched with nothing enabled, the game has no such button and the window opens again at the next launch. If you change which mods load there, closing it restarts the game into the new mod set. Switching to another profile or deleting one also restarts, even when both profiles enable the same mods. Renaming a profile, or creating one with **Copy current selection**, changes nothing that loads, so it does not restart.
+| Label | When |
+|---|---|
+| **Launch modded** | at least one enabled mod will load |
+| **Launch unmodded (N blocked)** | every enabled mod is blocked by a missing dependency |
+| **Launch** | nothing is enabled |
+| **Back to game** | reopened from the main menu, and nothing that loads changed |
+| **Apply and restart** | reopened from the main menu, and what loads changed |
 
-## Related
-
-- [Setup](Setup): installing the loader and your first mods.
-- [Browse](Browse): installing mods from Vostok Mods or ModWorkshop.
-- [Troubleshooting](Troubleshooting): when the game will not start or a mod does nothing.
-- [Config-Files](Config-Files): where profiles and settings live on disk.
+Closing the window does the same as clicking it. The main menu's **Mods** button reopens the window; it exists only when at least one mod loaded. The reopened window re-reads your `mods` folder, so a file dropped in by hand or a download that finished later is listed. A mod turned off and on again, a priority change on a disabled mod, or renaming a profile does not restart. Creating a profile (with any starting state, **Copy current selection** included), switching to another one or deleting one restarts, because your mod settings are swapped at that restart; switching back to the profile the game started with before closing cancels it.

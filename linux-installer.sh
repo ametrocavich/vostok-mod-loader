@@ -26,18 +26,41 @@ CANDIDATE_PATHS=(
     "/mnt/steam/steamapps/common/Road to Vostok"
 )
 
+is_game_dir() { [[ -f "$1/RTV.x86_64" || -f "$1/RTV.sh" || -f "$1/RTV.exe" ]]; }
+
 for p in "${CANDIDATE_PATHS[@]}"; do
-    if [[ -f "$p/RTV.x86_64" || -f "$p/RTV.sh" || -f "$p/RTV.exe" ]]; then
+    if is_game_dir "$p"; then
         GAME_PATH="$p"
         break
     fi
 done
 
+# Steam records every library folder in libraryfolders.vdf (one "path" line
+# per library), so a library on another drive is found through it.
+if [[ -z "$GAME_PATH" ]]; then
+    for steam_root in "$HOME/.steam/steam" "$HOME/.local/share/Steam" "$HOME/.var/app/com.valvesoftware.Steam/data/Steam"; do
+        vdf="$steam_root/steamapps/libraryfolders.vdf"
+        [[ -f "$vdf" ]] || continue
+        while IFS= read -r lib; do
+            if is_game_dir "$lib/steamapps/common/Road to Vostok"; then
+                GAME_PATH="$lib/steamapps/common/Road to Vostok"
+                break 2
+            fi
+        done < <(sed -n 's/^[[:space:]]*"path"[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' "$vdf")
+    done
+fi
+
 if [[ -z "$GAME_PATH" ]]; then
     echo "Could not find Road to Vostok automatically."
     read -r -p "Enter the path to your game folder (containing RTV.x86_64 or RTV.exe): " GAME_PATH
     GAME_PATH="${GAME_PATH/#\~/$HOME}"
-    if [[ ! -f "$GAME_PATH/RTV.x86_64" && ! -f "$GAME_PATH/RTV.sh" && ! -f "$GAME_PATH/RTV.exe" ]]; then
+    GAME_PATH="${GAME_PATH%/}"
+    # A pasted executable path names the folder that holds it.
+    GAME_PATH="${GAME_PATH%/RTV.x86_64}"
+    GAME_PATH="${GAME_PATH%/RTV.sh}"
+    GAME_PATH="${GAME_PATH%/RTV.exe}"
+    GAME_PATH="${GAME_PATH%/}"
+    if ! is_game_dir "$GAME_PATH"; then
         echo "ERROR: Road to Vostok executable not found at: $GAME_PATH"
         exit 1
     fi
@@ -66,6 +89,14 @@ MODLOADER_TMP="$MODLOADER_DEST.new"
 rm -f "$MODLOADER_TMP"
 echo "Downloading mod loader..."
 if download "$MODLOADER_URL" "$MODLOADER_TMP" && [[ -s "$MODLOADER_TMP" ]]; then
+    # A sign-in page, proxy notice or error page served with 200 is not the loader.
+    if ! grep -q 'MODLOADER_VERSION' "$MODLOADER_TMP"; then
+        rm -f "$MODLOADER_TMP"
+        echo "ERROR: The download is not the mod loader (a web page came back instead)."
+        echo "  Check your connection and try again, or download modloader.gd from:"
+        echo "  $MODLOADER_URL"
+        exit 1
+    fi
     if ! mv -f "$MODLOADER_TMP" "$MODLOADER_DEST" || [[ ! -f "$MODLOADER_DEST" ]]; then
         echo "ERROR: Could not move modloader.gd to $MODLOADER_DEST"
         echo "  Likely cause: missing write permission, destination on a read-only filesystem,"
@@ -96,6 +127,11 @@ if ! download "$OVERRIDE_URL" "$OVERRIDE_TMP" || [[ ! -s "$OVERRIDE_TMP" ]]; the
     rm -f "$OVERRIDE_TMP"
     exit 1
 fi
+if ! grep -q '^\[autoload_prepend\]' "$OVERRIDE_TMP"; then
+    echo "ERROR: The downloaded override.cfg template is not the loader's (a web page came back instead)."
+    rm -f "$OVERRIDE_TMP"
+    exit 1
+fi
 
 # --- Install/merge override.cfg ---
 # For keys the template specifies, force the template's value (overwriting
@@ -117,8 +153,10 @@ merge_override() {
     local out_file="$3"
     awk -v tmpl_file="$tmpl_file" '
     function ltrim(s) { sub(/^[ \t]+/, "", s); return s }
-    function rtrim(s) { sub(/[ \t]+$/, "", s); return s }
+    function rtrim(s) { sub(/[ \t\r]+$/, "", s); return s }
     function trim(s)  { return ltrim(rtrim(s)) }
+    # Lines copied through keep no CR, so a CRLF file comes out with one line ending.
+    function nocr(s)  { sub(/\r$/, "", s); return s }
 
     BEGIN {
         # Pass 1: parse template into tmpl_kv[sec SUBSEP key] = value.
@@ -189,10 +227,10 @@ merge_override() {
         for (i = 1; i <= buf_count; i++) {
             ln = buf[i]
             s2 = trim(ln)
-            if (s2 ~ /^\[.+\]$/) { print ln; continue }
-            if (s2 == "" || s2 ~ /^[;#]/) { print ln; continue }
+            if (s2 ~ /^\[.+\]$/) { print nocr(ln); continue }
+            if (s2 == "" || s2 ~ /^[;#]/) { print nocr(ln); continue }
             eq = index(s2, "=")
-            if (eq == 0) { print ln; continue }
+            if (eq == 0) { print nocr(ln); continue }
             k = trim(substr(s2, 1, eq - 1))
             # An older install listed the loader under [autoload]. It lives
             # under [autoload_prepend] now and must not be listed twice.
@@ -201,7 +239,7 @@ merge_override() {
                 print k "=" tmpl_kv[user_cur_sec SUBSEP k]
                 seen_keys_local[k] = 1
             } else {
-                print ln
+                print nocr(ln)
             }
         }
         if (user_cur_sec != "" && (user_cur_sec in tmpl_sec_seen)) {
@@ -220,8 +258,15 @@ merge_override() {
 
 if [[ -f "$OVERRIDE_PATH" ]]; then
     echo "Merging override.cfg (preserving user sections, updating template keys)"
-    cp -f "$OVERRIDE_PATH" "$OVERRIDE_PATH.bak"
-    if merge_override "$OVERRIDE_PATH" "$OVERRIDE_TMP" "$OVERRIDE_PATH.merged" && [[ -s "$OVERRIDE_PATH.merged" ]]; then
+    # The first .bak is the pre-loader original and is never replaced; a rerun
+    # keeps the state it found in .bak.previous.
+    if [[ -f "$OVERRIDE_PATH.bak" ]]; then
+        cp -f "$OVERRIDE_PATH" "$OVERRIDE_PATH.bak.previous"
+    else
+        cp -f "$OVERRIDE_PATH" "$OVERRIDE_PATH.bak"
+    fi
+    if merge_override "$OVERRIDE_PATH" "$OVERRIDE_TMP" "$OVERRIDE_PATH.merged" && [[ -s "$OVERRIDE_PATH.merged" ]] \
+            && grep -q '^\[autoload_prepend\]' "$OVERRIDE_PATH.merged"; then
         if ! mv -f "$OVERRIDE_PATH.merged" "$OVERRIDE_PATH"; then
             echo "ERROR: Could not move merged override.cfg into place"
             echo "  Your original is preserved at $OVERRIDE_PATH.bak"
@@ -247,7 +292,10 @@ rm -f "$OVERRIDE_TMP"
 
 # --- Create mods directory ---
 if [[ ! -d "$MODS_PATH" ]]; then
-    mkdir -p "$MODS_PATH"
+    if ! mkdir -p "$MODS_PATH"; then
+        echo "ERROR: Could not create $MODS_PATH (missing write permission on the game folder?)"
+        exit 1
+    fi
     echo "Created mods directory"
 else
     echo "Mods directory already exists"

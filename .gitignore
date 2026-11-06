@@ -2,7 +2,6 @@
 # It's attached to GitHub releases as a downloadable asset, not committed.
 # Devs run ./build.sh locally to produce it when testing in-game.
 modloader.gd
-modloader.gd.tmp
 
 # Build script temp files
 *.tmp
@@ -12,14 +11,11 @@ modloader.gd.tmp
 .fable_fixes/
 release/
 
-# Security proof-of-concept mods, used to test that the scanner actually
-# catches what it claims to. These are WORKING malicious mods.
-#
-# Tracked here rather than only in .git/info/exclude, which is per-clone and
-# never shared: without this line the next contributor's clone has no such
-# exclusion, and `git add -A` would publish a working backdoor to a public
-# repository.
+# Local demo mods from the removed scanner work; never committed.
 poc/
+
+# Local check settings (GODOT, VANILLA_SRC); see docs/wiki/Build.md.
+.check.env
 
 # Vendored upstream reference source, not ours to ship.
 godot-mod-loader-src/

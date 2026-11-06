@@ -1,26 +1,22 @@
 # Config Files
 
-Where your mod setup lives on disk. This page answers "what's enabled?", "how do I back up my setup?", "what's safe to delete?", and "how do I recover from a bad state?".
+Where your mod setup lives on disk: what is enabled, how to back it up, what is safe to delete, and how to get out of a bad state.
 
 ## Where to find them
 
-Godot's `user://` paths resolve to a per-user state directory. Road to Vostok uses its own project name for it:
+Godot's `user://` is a per-user folder named after the game:
 
 | Platform | Path |
 |---|---|
-| Windows | `%APPDATA%\Road to Vostok\` |
-| Linux | `~/.local/share/Road to Vostok/` |
+| Windows | `%APPDATA%\Road to Vostok\` (paste it into File Explorer's address bar) |
+| Linux (Steam Proton) | `<Steam library>/steamapps/compatdata/<app id>/pfx/drive_c/users/steamuser/AppData/Roaming/Road to Vostok/`: the game is a Windows build, so its folder is inside the Proton prefix |
 | macOS | `~/Library/Application Support/Road to Vostok/` |
 
-Paste the Windows path into File Explorer's address bar to jump there.
-
-The sentinel files and `override.cfg` live in the game's install directory (next to the `.exe`), not under `user://`. They are covered separately below.
+`override.cfg` and the sentinel files live in the game's install folder, next to the `.exe`, not under `user://`.
 
 ## `mod_config.cfg`. Your profiles and settings
 
-This is the user-facing config. The pre-launch UI reads and writes it. Plain INI, safe to inspect or edit by hand while the game is closed. Every save first copies the previous file to `mod_config.cfg.bak`, and the launcher falls back to that copy if the live file fails to parse, or is empty while the backup is not (what a save cut short by a crash or a full disk leaves). An empty or unreadable live file is never copied over the backup.
-
-### Shape
+The launcher reads and writes this file. It is plain INI, safe to read or edit while the game is closed. Every save first copies the previous file to `mod_config.cfg.bak`; when the live file fails to parse, or is empty while the backup is not, the launcher loads the backup. A file it cannot read is kept as `mod_config.cfg.corrupt` before the backup (or a fresh `Default`) replaces it, so nothing typed by hand is lost.
 
 ```ini
 [settings]
@@ -30,259 +26,117 @@ active_profile="Default"
 
 [profile.Default.enabled]
 
-doinkoink-mcm@2.6.3=true
 rtv-coop@5.0.0=true
-item-spawner-ce@1.2.1=true
 immersive-xp@3.0.2=false
-xp-skills-system@2.5.6=true
 
 [profile.Default.priority]
 
-doinkoink-mcm@2.6.3=-100
 rtv-coop@5.0.0=10
-item-spawner-ce@1.2.1=1
 immersive-xp@3.0.2=0
-xp-skills-system@2.5.6=0
-
-[profile.MyHardcoreBuild.enabled]
-
-rtv-coop@5.0.0=true
-harsher-weather@1.0.0=true
-
-[profile.MyHardcoreBuild.priority]
-
-rtv-coop@5.0.0=10
-harsher-weather@1.0.0=200
 
 [mod_sources]
 
-rtv-coop@5.0.0="{\"provider\":\"modworkshop\",\"id\":\"12345\",\"modworkshop_id\":12345,\"version\":\"5.0.0\"}"
-harsher-weather@1.0.0="{\"provider\":\"vostokmods\",\"id\":\"harsher-weather\",\"version\":\"1.0.0\"}"
+rtv-coop@5.0.0="{\"provider\":\"vostokmods\",\"id\":\"rtv-coop\",\"version\":\"5.0.0\"}"
 ```
 
-Godot's `ConfigFile` writes a blank line after every section header, quotes String values (`active_profile="Default"`), and writes bools and ints unquoted. Don't hand-edit the quotes; the parser is strict about them.
+Godot writes a blank line after each section header, quotes strings and leaves bools and ints bare. Keep the quotes as they are; the parser is strict about them.
 
 ### Sections
 
-| Section | Meaning |
-|---|---|
-| `[settings]` | `active_profile`: the selected profile. `developer_mode`: enables dev-only UI (folder mods, conflict report, extra diagnostics). `ui_scale`: launcher zoom, 1.0 to 2.0. `browse_source`: the site the Browse tab last showed. `active_modpack`, `modpack_backup_profile`, `modpack_backup_valid`: modpack state, see below. |
-| `[profile.<name>.enabled]` | `profile_key -> true\|false`. The list you see checked in the UI under that profile. One section per named profile. |
-| `[profile.<name>.priority]` | `profile_key -> int` in `[-999, 999]`. A higher number loads later and wins file conflicts. |
-| `[profile.<name>.dep_ignore]` | `profile_key -> true`. The "Load anyway" dependency overrides for that profile. Sparse: only mods you told to load past a missing or disabled requirement appear, always as `=true`. |
-| `[profile.<name>.settings]` | Per-profile launcher view settings. Currently `hide_disabled`, the Mods tab's hide-disabled-mods filter. |
-| `[mod_sources]` | `profile_key -> JSON record` of where each mod is hosted: `{provider, id, modworkshop_id?, version?}`. Written by every download made through Browse, an update or a modpack, and filled in from each mod's `mod.txt` at scan time. An explicit `source=` in `mod.txt` replaces the stored record; a legacy `modworkshop=` line does not replace a record that names another host. This is how the update check and the missing-mod rows know a mod's host when its `mod.txt` says nothing, and how a modpack can offer Download for a mod that failed to install. |
-| `[modloader_update]` | `last_seen_version`: the newest loader release the update dialog has already shown you, so it only pops once per release. |
+- `[settings]`: `active_profile` (the selected profile), `developer_mode` ([Developer-Mode](Developer-Mode)), `ui_scale` (launcher zoom, 1.0 to 2.0), `browse_source` (the site Browse last showed), `browse_kind` (`mods` or `modpacks`, which list Browse last showed), the modpack keys below, and `mcm_pending_from` / `mcm_pending_to` (a profile switch made from the main menu whose mod-settings swap the next launch performs, then clears).
+- `[profile.<name>.enabled]`: `profile_key -> true|false`, the mods ticked in that profile.
+- `[profile.<name>.priority]`: `profile_key -> int` in `[-999, 999]`; higher loads later and wins file conflicts.
+- `[profile.<name>.dep_ignore]`: `profile_key -> true` for each **Load anyway** override ([Dependencies](Dependencies)).
+- `[profile.<name>.settings]`: `hide_disabled` (the Mods-tab filter); `listed=true`, which keeps a profile with no mods; and on a modpack slot `pack_sha256`, the hash of the pack zip it was built from (a zip replaced under the same name rebuilds the slot).
+- `[mod_sources]`: `profile_key -> JSON {provider, id, modworkshop_id?, version?}`, where each mod is hosted. Written by every download through Browse, an update or a modpack, and filled from each `mod.txt` at scan time. A `source=` in `mod.txt` replaces the stored record; a legacy `modworkshop=` line does not replace a record naming another host. The update check and the missing-mod rows read it.
+- `[modloader_update]`: `last_seen_version`, the newest loader release the update dialog has shown, so it pops once per release.
 
-### Profile keys
-
-The left-hand identifier for each mod. Two shapes:
-
-- `<mod_id>@<version>`: mods whose `mod.txt` declares `[mod] id=...`. This is the normal case. Stable across `.vmz` renames. The version segment may be empty (`scantest_clean@=false`) if `mod.txt` has an `id` but no `version`.
-- `zip:<file_name>`: fallback for mods without a declared `mod_id`. Identity is the archive filename. A re-package that changes only the extension or a trailing version (`CoolMod_v1.0.zip` to `CoolMod_v1.1.vmz`) keeps its state, matched by normalized filename stem, and the old key is dropped at the next save; any other rename orphans the profile entry.
-
-See [Mod-Format](Mod-Format) for the mod.txt schema and [Profile-Format](Profile-Format) for the JSON format inside a modpack's `profile.json`.
-
-### `active_profile` special values
-
-- `"Default"`: the profile created on first launch. Persistent like every other profile.
-- `"__vanilla__"`: a leftover from older versions' Reset to Vanilla. On load the launcher treats it as missing and switches to your first real profile. To boot the game without mods once, use the **Launch vanilla** button in the launcher; it writes a `modloader_disabled_once` file that is cleared on the next launch.
+A profile key is `<mod_id>@<version>` for a mod that declares `[mod] id`, else `zip:<file_name>`; [Profile-Format](Profile-Format#profile-key-format) has the rules. A mod that needs the profile name calls `active_profile()` ([Hooks](Hooks#api-reference)) instead of reading this file: the file changes as soon as the player picks another profile, while the running mods belong to the old one until the restart.
 
 ### Modpack keys and managed profiles
 
-Applying a modpack (see [Modpacks](Modpacks)) reuses the ordinary profile machinery, so an active modpack shows up in `mod_config.cfg` as a few `[settings]` keys plus profile sections under reserved name prefixes.
+Applying a [modpack](Modpacks) uses the ordinary profile machinery under reserved names.
 
-`[settings]` keys:
-
-| Key | Meaning |
+| Key or section | Meaning |
 |---|---|
-| `active_modpack` | Sanitized name of the modpack currently applied, or empty/absent if none. While set, the launcher locks the active profile to that pack's managed slot. Deleting this line by hand is the escape hatch if unload refuses. |
-| `modpack_backup_profile` | The profile you were on when you applied the pack, where **Unload** restores your pre-pack `enabled`/`priority` to. Empty/absent when no pack is active. |
-| `modpack_backup_valid` | `true` once apply has written the backup slot, even an empty one. Unload trusts this flag; without it, and with no backup sections, unload refuses, so your profile is never wiped. |
+| `[settings] active_modpack` | The applied pack's sanitized name. While set, the active profile is locked to the pack's slot. When Unload cannot restore your previous profile, the launcher offers **Keep as profile** instead |
+| `[settings] modpack_backup_profile` | The profile you were on at apply; Unload restores it |
+| `[settings] modpack_backup_valid` | `true` once apply has written the backup, even an empty one. Without it and without backup sections, Unload refuses, so your profile is never wiped |
+| `[profile.modpack__<name>.*]` | The pack's live state; edits made while it is active save here. Kept on unload, dropped when **Refresh** rewrites the pack |
+| `[profile._before_modpack_<name>.*]` | Your profile as it was at apply. Unload restores from it, then removes it |
+| `user://.profile_snapshots/modpack__<name>/`, `_before_modpack_<name>/` | The pack's MCM settings and your pre-apply MCM settings |
 
-Managed profile sections. The launcher creates these and the Mods-tab profile dropdown hides them:
-
-| Section prefix | Meaning |
-|---|---|
-| `[profile.modpack__<name>.enabled]` / `.priority` / `.dep_ignore` | Live state of the applied modpack `<name>`. Edits you make while it is active save here. Kept on unload so a re-apply resumes your edits, and dropped when **Refresh** rewrites the pack from Vostok Mods. |
-| `[profile._before_modpack_<name>.enabled]` / `.priority` | Backup of your profile taken at apply time. Unload restores from here, then removes it. If these are gone and `modpack_backup_valid` is unset, unload aborts and your real profile survives. |
-
-`<name>` is the modpack's sanitized name (letters, digits, space, hyphen, underscore). Don't name your own profiles `modpack__*` or `_before_modpack_*`; the launcher treats those prefixes as reserved and filters them out of the dropdown.
+`<name>` keeps letters, digits, space, hyphen and underscore. The `modpack__` and `_before_modpack_` prefixes are reserved and hidden from the profile dropdown.
 
 ### Common tasks
 
-**See what's enabled in your current profile**
-```bash
-# Windows (PowerShell)
-notepad "$env:APPDATA\Road to Vostok\mod_config.cfg"
+- **See what is enabled.** Open `mod_config.cfg` and find `[profile.<active_profile>.enabled]`. On Linux, `find ~/.steam/steam/steamapps/compatdata -path '*/Roaming/Road to Vostok/mod_config.cfg'` locates it.
+- **Enable a mod without the launcher.** With the game closed, add `<profile_key>=true` under `[profile.<active>.enabled]` and a priority under `[profile.<active>.priority]`.
+- **Back up your setup.** With the game closed, copy `mod_config.cfg`, `MCM/` and `.profile_snapshots/` from `user://`, plus the mod archives and pack zips in the game's `mods/` folder. Restore them as one set. Mods that keep settings outside MCM document their own files.
+- **Copy your setup to another install.** Restore that backup there, or get and apply the same pack from Vostok Mods (your local edits do not travel).
+- **Start a profile empty.** Use **New profile** with **Empty**, or clear the search filter and click **Disable all**.
+- **Reset profiles and launcher preferences.** Delete `mod_config.cfg` and `mod_config.cfg.bak`. The next launch creates `Default` with every installed mod enabled; MCM files and mods stay.
 
-# Linux
-${EDITOR:-nano} "$HOME/.local/share/Road to Vostok/mod_config.cfg"
-```
-Find the `[profile.<active>.enabled]` section.
+## `mod_pass_state.cfg`
 
-**Back up / restore your setup**
-Close the game and copy `mod_config.cfg`, the live `MCM/` folder and the whole `.profile_snapshots/` directory from `user://`. The config holds profile selections and priorities; MCM files hold the mod settings themselves, including saved settings for inactive profiles and an active pack's pre-apply snapshot. Preserve the installed mod archives and pack zips from the game's `mods/` directory separately. Other mods may keep settings outside MCM; consult their documentation for those files.
+What the loader mounted last session, so static init can mount it again before the game starts. Written by Pass 1 before the restart and when the hook pack is saved; regenerated every session. [Architecture](Architecture#pass-state) explains each key. Safe to delete: the next launch boots cold and rebuilds the hook pack.
 
-Restore these files as a matching set while the game is closed. Boot caches and `mod_pass_state.cfg` are generated, machine-specific state and are not part of this profile backup.
+## `override.cfg`
 
-**Copy your setup to another install**
-Two ways:
-1. Copy the profile backup described above into the other machine's `user://` directory, and install the same mods and pack zips in its game `mods/` directory.
-2. For a published pack's original setup, get and apply the same pack from Vostok Mods. This does not transfer your local edits or unrelated profiles. See [Modpacks](Modpacks).
+In the install folder. Godot reads it at startup, and it is what loads the mod loader. The loader rewrites its `[autoload_prepend]` and `[autoload]` sections ([Architecture](Architecture) has the lifecycle) and keeps every other section. If a hand edit breaks it, the game boots to a black screen: replace its contents with the clean state below, copy it again from the release, or rerun the installer. Deleting it is not a fix; without it the loader never starts.
 
-**Disable installed mods in one profile**
-Select the profile, clear the Mods-tab search filter and click **Disable all**. This disables the visible installed mods while retaining the profile and its settings. To start a separate empty selection, use **New profile** with **Empty**. Deleting a profile's sections removes its stored state; it does not create an empty profile, and a fresh `Default` enables installed mods.
-
-A `mod_config.cfg` the launcher cannot read is kept beside it as `mod_config.cfg.corrupt` before the `.bak` (or a fresh Default) takes its place, so nothing you typed by hand is lost. It is safe to delete once you have what you need from it.
-
-**Reset loader profiles and launcher preferences**
-Delete `mod_config.cfg` (and `mod_config.cfg.bak`, or the launcher recovers from it). Next launch creates a new `Default` profile with every installed mod enabled. This does not reset MCM files or uninstall mods.
-
-## `mod_pass_state.cfg`. Boot state (implementation detail)
-
-Tracks what the loader mounted last session so it can resume at static init next session. Written by Pass 1 and the post-activation hook-pack persist step; read at boot before any archive mount.
-
-You generally shouldn't touch this file. It is regenerated each session. If you want to read it:
-
-```ini
-[state]
-
-restart_count=0
-mods_hash="d90eae97b1868a4e9051f17ced71b7a6"
-archive_paths=PackedStringArray("C:/Program Files (x86)/Steam/steamapps/common/Road to Vostok/mods/RTVCoopVMZ.vmz")
-modloader_version="3.4.1"
-exe_mtime=1790789335
-pck_stamp="1790789335:5916016200"
-timestamp=1790795412.26
-script_overrides=[]
-hook_pack_path="user://modloader_hooks/framework_pack_5758.zip"
-hook_pack_wrapped_paths=PackedStringArray("res://Scripts/Menu.gd")
-hook_pack_demotions={}
-```
-
-| Key | Meaning |
-|---|---|
-| `archive_paths` | The `.vmz`/`.zip`/`.pck` paths mounted last session, in load order. Stored as `PackedStringArray(...)`. |
-| `modloader_version` | The loader version that wrote this state. A mismatch with the current version wipes the state. |
-| `exe_mtime` | Game `.exe` modification time at write. A change (game update) wipes the state, since vanilla scripts may have moved. |
-| `pck_stamp` | The game `.pck`'s modification time and size at write. A change wipes the state the same way: a content patch can replace the `.pck` and leave the `.exe` untouched. |
-| `timestamp` | Unix epoch seconds when Pass 1 wrote the file. Informational. |
-| `restart_count` | Pass-2 restart counter. Max 2; cleared after a clean boot. Stops infinite restart loops. |
-| `mods_hash` | Hash of archive order/content stamps, enabled mod versions, early autoloads, script overrides, loader version and loader-file mtime; see [Architecture](Architecture#pass-state) for the inputs. When Pass 1 computes the same hash and static init already mounted that set, the restart is skipped; the hook pack is still regenerated. |
-| `script_overrides` | The `[script_extend]` / `[script_overrides]` declarations Pass 1 collected, as `{vanilla_path, mod_script_path, mod_name, priority, seq}` records. Pass 2 replays them before hook generation. `[]` on most installs. |
-| `hook_pack_path` | `user://modloader_hooks/framework_pack_<millis>.zip` to mount at static init next boot. A fresh filename per generation sidesteps Godot's `load_resource_pack` path dedup. |
-| `hook_pack_wrapped_paths` | The `res://Scripts/<Name>.gd` paths in the pack that static init force-compiles with `CACHE_MODE_IGNORE`. Scripts with a module-scope scene preload are left off the list and compile lazily from the pack. Often just `["res://Scripts/Menu.gd"]` for loadouts that only use the core hook. |
-| `hook_pack_demotions` | Verdicts of the compile probe the pre-restart generation ran: `res://Scripts/<Name>.gd` to `"wrap_only"` (shipped with hooks, without registry code) or `"excluded"` (left vanilla). `{}` on a healthy install. Later generations repeat these instead of probing; see [Stability-Canaries](Stability-Canaries#pre-ship-compile-probe). |
-
-Safe to delete. Next launch rebuilds it at the cost of a slower cold boot (the hook pack regenerates).
-
-## `override.cfg`. Godot's autoload manifest
-
-This file lives in the game's install directory (next to the `.exe`), not `user://`. Godot reads it at engine startup to override `project.godot` autoload entries.
-
-The loader writes it during Pass 1, before the restart, and leaves it in place: the next launch needs the same entries at engine startup. It goes back to the clean single-entry state when there is nothing left to load, on a loader or game update, on a crashed Pass 2, and through the sentinel files below. Shape during an active mod session:
-
-```ini
-[autoload_prepend]
-SomeModEarly="*res://SomeMod/Early.gd"
-ModLoader="*res://modloader.gd"
-
-[autoload]
-```
-
-Only `!`-prefixed early autoloads are written here. A mod's regular `[autoload]` entries are not: the loader instantiates those itself in Pass 2, and `[autoload]` stays empty.
-
-Clean state (no mods queued):
 ```ini
 [autoload_prepend]
 ModLoader="*res://modloader.gd"
 
 [autoload]
 ```
-
-`[autoload_prepend]` entries load before the game's built-in autoloads. ModLoader is always the last entry in `[autoload_prepend]` because Godot loads that section in reverse order (last listed = first loaded). Sections other than the two autoload ones are preserved across rewrites. See [Architecture](Architecture).
-
-Editing this file by hand is risky. If you corrupt it, the game fails to load autoloads and boots to a black screen. If that happens, replace its contents with the clean state above. Deleting it is not a fix: `override.cfg` is what loads the mod loader, so without it the game runs vanilla and the loader never starts to write a new one. Copy a fresh `override.cfg` from the release, or run the installer again.
 
 ## Sentinel files. Escape hatches
 
-These live in the game's install directory (next to the `.exe`), not `user://`. Create them as empty files to trigger the behavior; delete them to revert.
+Empty files in the install folder, next to the `.exe`. Create one to trigger it.
 
-| File | Effect |
-|---|---|
-| `modloader_disabled` | Full bypass. The loader's static init resets `override.cfg`, pass state and the hook pack, then mounts nothing; the game boots vanilla. Use when the loader itself is broken or you want to confirm a problem is mod-related. |
-| `modloader_skip_ui_once` | The next launch skips the launcher window and loads the active profile, as if **Launch** had been clicked; the loader deletes the file when it does. For external mod managers that start the game through Steam; the `--modloader-skip-ui` command-line flag does the same on every launch it is given. |
-| `modloader_disabled_once` | One-shot version of `modloader_disabled`: the next launch boots vanilla, then the file is deleted so the launch after that is modded again. The launcher's **Launch vanilla** button creates this for you; you can also create it by hand. |
-| `modloader_safe_mode` | One-shot reset. On the next launch the loader restores a clean `override.cfg`, deletes `mod_pass_state.cfg` and the crash heartbeat, then deletes the safe-mode file itself. The launcher still opens, so you can change profiles or disable a bad mod before the next modded boot. The reset runs when the launcher is about to open, after the previous session's archives and `!` early autoloads are already up; a mod that crashes the game before that point needs `modloader_disabled` instead. |
+| File | Effect | Removed by |
+|---|---|---|
+| `modloader_disabled` | Full bypass. Static init resets `override.cfg`, deletes pass state and the Pass 2 marker, wipes the hook pack and early autoloads, and mounts nothing; the game runs vanilla. Use it when the loader itself breaks, or to check a problem is mod-related | you |
+| `modloader_disabled_once` | The same for one launch. **Launch vanilla** writes it | the loader, at that launch |
+| `modloader_safe_mode` | One-shot reset when the launcher is about to open: clean `override.cfg`, no pass state, no heartbeat. The launcher still opens, so you can disable a bad mod. The previous session's archives and `!` early autoloads are already up by then; a mod that crashes before the launcher needs `modloader_disabled` | the loader, after the reset |
+| `modloader_skip_ui_once` | The next launch skips the launcher and loads the active profile, as if **Launch** were clicked. For mod managers that start the game through Steam; the `--modloader-skip-ui` flag does the same on every launch that passes it | the loader, at that launch |
 
-On Windows: right-click the game folder, New, Text Document, rename to `modloader_disabled` (no extension). Or run `echo. > modloader_disabled` in `cmd`.
+On Windows: right-click in the game folder, New, Text Document, and rename it to `modloader_disabled` with no extension.
 
-See [Stability-Canaries](Stability-Canaries) for the full crash-recovery and sentinel system.
+### Crash and state markers
+
+In `user://`. The loader writes and clears these itself; each is safe to delete.
+
+| File | Written | Cleared | A survivor means |
+|---|---|---|---|
+| `modloader_heartbeat.txt` | right before the Pass 1 to Pass 2 restart | by every finish path, and by safe mode | the last launch died between restart and finish; Pass 1 logs it and resets once the restart count reaches 2 |
+| `modloader_pass2_dirty` | at static init of the restarted process, before the first mount | after Pass 2 finishes | Pass 2 was interrupted; the next static init forces vanilla state as `modloader_disabled` does, for one launch |
+| `modloader_crash_streak` | +1 each time Pass 1 writes pass state for a restart | by every clean finish, and when the fallback below trips | at 2, Pass 1 skips the restart and loads in a single pass, so the launcher stays reachable; its own file because the crash wipe deletes pass state |
+| `modloader_crash_notice` | when that single-pass fallback trips | by the next launcher, which shows it once as a banner | |
 
 ## Generated files. Safe to delete
 
-Everything here is regenerated on demand:
+Everything here is regenerated; the cost is a slower first boot while the hook pack rebuilds.
 
-| Path | Contents |
+| Path in `user://` | Contents |
 |---|---|
-| `user://modloader_hooks/framework_pack_<millis>.zip` | The generated hook pack, mounted at static init. Each generation picks a fresh timestamp suffix (Godot's `load_resource_pack` dedups by path and would keep stale mount offsets). Old generations are cleaned up before mount. |
-| `user://modloader_hooks/vanilla/` | Cached vanilla script source, decoded from the game's own `.pck` (never from a mounted mod), wiped on a game update. Two stamp files sit at its root: `format` names the cache layout and `build` names the game `.pck` the text was read from. A mismatch on either rebuilds the cache. Speeds up later hook-pack generation. |
-| `user://vmz_mount_cache/` | `.vmz -> .zip` copies so Godot's `load_resource_pack` can mount them, plus `.zip.src` sidecars naming the source. |
-| `user://modloader_early/` | Extracted copies of `!`-prefixed early-autoload scripts that live inside archives. |
-| `user://modloader_heartbeat.txt` | Crash-detection sentinel. Written right before the Pass 1 to Pass 2 restart and deleted by every finish path. Present on the next launch = the previous launch died in between. |
-| `user://modloader_pass2_dirty` | Pass-2-in-progress marker. Present on the next launch = Pass 2 was interrupted (crash, force-quit). Next launch wipes state and retries. |
-| `user://modloader_crash_streak` | Count of consecutive crashed two-pass restarts. At 2 the loader refuses the two-pass restart and finishes in a single pass instead: mods that can load still load, and the launcher stays reachable so you can disable the one that crashes. Cleared by a clean boot. |
-| `user://modloader_conflicts.txt` | Developer mode only. The conflict report (which mods claim the same `res://` paths). |
-| `user://modloader_filescope.log` | What static init mounted and reset before the launcher opened, rewritten every launch. The first place to look when mods did not mount. |
-| `user://modloader_hook_status.json` | What happened to the hook system last session (whether the script rewrites took effect, why generation stopped, or which scripts the compile probe left out). The launcher reads it on the next start and shows a banner on the Mods tab when hooks did not work. Ignored once the loader, the game executable or the game `.pck` changes. |
-| `user://mws_cache/` | Browse-tab caches. `thumbs/` holds ModWorkshop thumbnail and banner images (Vostok Mods images stay in memory). `landing_<site>.json` holds each site's last successful Browse landing so the offline view survives a relaunch. `mods_meta_v2.json` caches the host detail each installed mod's row shows on the Mods tab. Search and filter responses are cached in memory only. |
+| `modloader_hooks/framework_pack_<millis>.zip` | The hook pack, mounted at static init. A fresh name per generation, because Godot keeps stale offsets for a pack path it has mounted; old ones are removed |
+| `modloader_hooks/vanilla/` | Vanilla script source decoded from the game's own `.pck`. Its `format` and `build` stamp files name the cache layout and the game build; a mismatch rebuilds it |
+| `vmz_mount_cache/` | `.vmz` copies as `.zip`, folder-mod zips, and their `.src` stamps |
+| `modloader_early/` | Copies of `!` early autoload scripts that live inside archives |
+| `modloader_filescope.log` | What static init mounted or reset before the launcher opened; the first place to look when mods did not mount |
+| `modloader_hook_status.json` | Whether last session's hooks worked; the launcher shows a banner from it, until the loader or the game changes |
+| `modloader_conflicts.txt` | Developer mode: the conflict report |
+| `mws_cache/` | Browse and Modpacks caches: `thumbs/` (ModWorkshop images), `landing_<site>.json` (each site's last landing, for offline use), `landing_vostokmods_packs.json` (the last first page of Browse > Modpacks) and `mods_meta_v2.json` (host details shown on Mods-tab rows) |
 
-Deleting anything in that table is safe. Next launch regenerates whatever it needs; the cost is a slower cold boot while the hook pack rebuilds.
+When mod updates do not take effect, delete `framework_pack_*.zip`; after a game update that left boot strange, delete `modloader_hooks/`; for suspected stale state, delete `mod_pass_state.cfg`.
 
-These `user://` directories contain settings that cannot be regenerated:
-
-| Path | Contents |
-|---|---|
-| `user://MCM/` | Live mod settings for the active profile. Back up alongside the profile snapshots. |
-| `user://.profile_snapshots/<profile>/` | Per-profile MCM snapshot (`MCM/` tree), restored when you switch into that profile. Not regenerable: deleting it discards saved per-profile MCM settings. Deleting the profile in the launcher removes the whole slot, including any `overrides/` tree and `overrides_manifest.json` an earlier loader version left beside `MCM/`. |
-
-Two leftovers that nothing reads are removed for you: `user://.modpack_backups/` (restore points written by an earlier loader version) is deleted at the next launch, and a `[settings] preferred_author` key in `mod_config.cfg` is dropped at the next save.
-
-When to delete things:
-- Mod updates aren't taking effect: delete the `framework_pack_*.zip`.
-- Weird boot behavior after a game update: delete the whole `user://modloader_hooks/` directory to force a full regeneration.
-- Suspected cached-state corruption: delete `user://mod_pass_state.cfg`.
-
-## Frequently-asked
-
-**Q: Where is the list of mods I have enabled?**  
-A: `mod_config.cfg`, section `[profile.<active_profile>.enabled]`. The name of your active profile is in `[settings] active_profile`. `true` = enabled, `false` = disabled.
-
-**Q: I edited `mod_config.cfg` by hand but the change didn't apply.**  
-A: The loader reads it at launch and saves it when profile/mod choices change and when launching. Edit while the game is closed.
-
-**Q: I want to enable a mod without launching the UI.**  
-A: Add a line under `[profile.<active>.enabled]`: `<profile_key>=true`. The profile key is `<mod_id>@<version>` from the mod's `mod.txt`, or `zip:<filename>` if no `mod_id` is declared. Add it to `[profile.<active>.priority]` too, with a value (0 if you don't care).
-
-**Q: How do I make the loader stop running entirely?**  
-A: Create a file named `modloader_disabled` (no extension) in the game's install directory.
-
-**Q: Everything broke after an update. How do I reset?**  
-A: 
-1. Delete `mod_config.cfg` and `mod_config.cfg.bak` (resets the UI and profiles to fresh-install state; with only the first gone the launcher restores it from the backup).
-2. Delete `user://mod_pass_state.cfg` (forces a rebuild of boot state).
-3. Delete `user://modloader_hooks/` (forces hook pack regeneration).
-4. If the game won't launch at all, create `modloader_disabled` in the install dir, launch vanilla, then remove the sentinel and relaunch. The loader rebuilds from scratch.
-
-**Q: What's the difference between the `user://` location and the game install dir?**  
-A: `user://` is per-user state (your profiles, generated caches), preserved across game updates. The game install dir contains the `.exe`, `.pck` and installed loader files. Godot reads `override.cfg` there before scripts run; the loader checks sentinels there during boot. Both locations are used during early boot.
+Not regenerable: `user://MCM/` holds the active profile's mod settings, and `user://.profile_snapshots/<profile>/` each other profile's. Deleting a profile in the launcher removes its snapshot. Back both up with `mod_config.cfg`.
 
 ## Related
 
-- [Mod-Format](Mod-Format): `mod.txt` schema (what each mod declares)
-- [Profile-Format](Profile-Format): the JSON format inside a modpack's `profile.json`
-- [Browse](Browse): installing mods from Vostok Mods or ModWorkshop (`user://mws_cache/`)
-- [Modpacks](Modpacks): `active_modpack`, the managed profile slots, and `.profile_snapshots`
-- [Architecture](Architecture): two-pass boot flow, `override.cfg` lifecycle
-- [Stability-Canaries](Stability-Canaries): crash recovery, safe mode, sentinel files
+- [Mod-Format](Mod-Format): what each mod declares in `mod.txt`
+- [Profile-Format](Profile-Format): the `profile.json` inside a modpack
+- [Troubleshooting](Troubleshooting): what to try first when something breaks

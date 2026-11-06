@@ -1,51 +1,21 @@
-## runner.gd -- GDSC detokenizer harness. NOT part of the shipped loader.
-## Executed by check_detok.sh inside a THROWAWAY Godot project assembled
-## under the system temp dir; never run it against this repo or against the
-## Road to Vostok install.
-##
-## WHY THIS EXISTS: the detokenizer had zero test coverage. Its only
-## correctness check was STABILITY canary C, which runs at game launch on the
-## user's machine. That is why the v100 token-index shift (every index from
-## 83 up sits one lower in bytecode v100 than in the v101 table the
-## detokenizer carries) sat undetected: the version gate accepts v100, so a
-## v100 .gdc decoded ":" as "...", NEWLINE as "_", and never terminated on
-## EOF -- and the garbage was then cached as pristine vanilla source.
-##
-## WHAT THIS PROVES, AND WHAT IT DOES NOT:
-##   PROVES  -- token-index normalization across bytecode versions, the
-##              reconstruction pass (line placement, indentation, spacing,
-##              literal rendering), and TK_EMPTY handling.
-##   DOES NOT PROVE -- that our understanding of the CONTAINER layout matches
-##              the real engine. The fixtures below are synthesized against
-##              this repo's own reader, so a shared misreading of the header
-##              would be invisible here. Canary C, which round-trips a real
-##              .gdc from the shipped PCK, remains the only check of that.
-##              Do not delete canary C on the strength of this harness.
-##
-## Unlike check_codegen.sh this needs no decompiled vanilla corpus, so it
-## runs on any machine.
-extends SceneTree
+## GDSC detokenizer harness, run by check_detok.sh on bytecode built here.
+## Does not prove the container layout matches the engine's: canary C does.
+extends "res://runner_base.gd"
 
-const MODLOADER_PATH := "res://modloader_neutered.gd"
-
-# Bytecode versions, mirroring constants.gd.
 const V100 := 100
 const V101 := 101
 
-# Token indices in the v101 table (what the detokenizer carries).
-const T_ANNOTATION := 1
+# v101 token indices; from SHIFT_FROM ("..." at 83) up, v100 sits one lower.
 const T_IDENTIFIER := 2
 const T_LITERAL := 3
 const T_RETURN := 48
+const T_ASSIGN := 28
+const T_AWAIT := 53
 const T_FUNC := 60
 const T_VAR := 70
-const T_BRACKET_OPEN := 73
-const T_BRACKET_CLOSE := 74
 const T_PAREN_OPEN := 77
 const T_PAREN_CLOSE := 78
-const T_COMMA := 79
 const T_PERIOD := 81
-# --- everything from here up is shifted by one in v100 ---
 const T_PERIOD_PERIOD_PERIOD := 83
 const T_COLON := 84
 const T_DOLLAR := 85
@@ -53,298 +23,142 @@ const T_ARROW := 86
 const T_UNDERSCORE := 87
 const T_NEWLINE := 88
 const T_EOF := 99
-
-# The index at and above which v101 gained one slot ("..." at 83).
 const SHIFT_FROM := 83
 
-var _failures: PackedStringArray = []
-var _assertions := 0
+const IDENTS := ["foo", "int"]
+const CONSTS := [1]
+const CACHE_DIR := "user://modloader_hooks/vanilla"
+const SCRIPT_INDEX := "user://modloader_hooks/script_index.txt"
+# Keyword tokens 40..72 in index order.
+const KEYWORDS := ["if", "elif", "else", "for", "while", "break", "continue", "pass",
+		"return", "match", "when", "as", "assert", "await", "breakpoint", "class",
+		"class_name", "const", "enum", "extends", "func", "in", "is", "namespace",
+		"preload", "self", "signal", "static", "super", "trait", "var", "void", "yield"]
 
 func _init() -> void:
-	print("[detok] harness start")
+	super("detok", "T1..T22")
 
-func _process(_delta: float) -> bool:
-	_run()
-	return true
+func _tests(ml: Object) -> void:
+	for t in [_t1_v101_baseline, _t2_v100_matches_v101, _t3_no_placeholders, _t4_tk_empty_skipped,
+			_t5_shifted_indices, _t6_vfs_read_not_cached, _t7_pck_wins_over_vfs, _t8_old_cache_dropped,
+			_t9_gdc_fallback_read, _t10_canary_any_probe, _t11_changed_pck_drops_cache, _t12_await_space,
+			_t13_string_escapes, _t14_script_enumeration, _t15_canary_b_version, _t16_keyword_spacing,
+			_t17_pck_readers_agree, _t18_vmz_copy_cache, _t19_tracked_extensions, _t20_hooks_backslash,
+			_t21_tiny_class_cache, _t22_empty_gdc_beside_gd]:
+		begin(str(t.get_method()).get_slice("_", 1).to_upper())
+		t.call(ml)
 
-func _run() -> void:
-	var ml_script := load(MODLOADER_PATH) as GDScript
-	if ml_script == null:
-		_fail("could not load " + MODLOADER_PATH)
-		_finish()
-		return
-	var ml: Object = ml_script.new()
-	# Same guard the codegen harness uses: prove the boot static-init really
-	# was neutralized before we touch anything on this instance.
-	var mounted: Variant = ml.get("_filescope_mounted")
-	if typeof(mounted) != TYPE_DICTIONARY or not (mounted as Dictionary).is_empty():
-		_fail("modloader boot static-init was NOT neutralized -- refusing to run")
-		_finish()
-		return
-
-	_t1_v101_baseline(ml)
-	_t2_v100_matches_v101(ml)
-	_t3_no_placeholders(ml)
-	_t4_tk_empty_skipped(ml)
-	_t5_shifted_indices_all_render(ml)
-	_t6_vfs_read_is_not_cached(ml)
-	_t7_pck_wins_over_vfs(ml)
-	_t8_old_cache_format_is_dropped(ml)
-	_t9_gdc_fallback_read(ml)
-	_t10_canary_passes_on_any_probe(ml)
-	_t11_changed_pck_drops_the_cache(ml)
-
-	_finish()
-
-# --- Fixture -----------------------------------------------------------------
-
-# One synthetic script, expressed as (token, data index) pairs plus line/column
-# maps. Deliberately dense in indices >= 83 (":", "->", "$", "_", NEWLINE, EOF)
-# because those are exactly the ones the v100 shift moves.
-#
-#   func foo(_a) -> int:
-#       return 1
-#
-# Columns are 1-based and assume 4-space source indentation, which is what
-# _indent_from_column's `col / 4` decodes (see the long note above it).
-func _fixture_tokens() -> Array:
+# func foo(_a) -> int:
+#     return 1
+# [token, data index, line, column]; columns are 1-based over 4-space indents.
+func _fixture() -> Array:
 	return [
-		# [token, data_index, line, column]  (column 0 = no col_map entry)
-		[T_FUNC, 0, 1, 1],
-		[T_IDENTIFIER, 0, 1, 6],       # foo
-		[T_PAREN_OPEN, 0, 1, 9],
-		[T_UNDERSCORE, 0, 1, 10],      # _
-		[T_PAREN_CLOSE, 0, 1, 11],
-		[T_ARROW, 0, 1, 13],           # ->
-		[T_IDENTIFIER, 1, 1, 16],      # int
-		[T_COLON, 0, 1, 19],           # :
+		[T_FUNC, 0, 1, 1], [T_IDENTIFIER, 0, 1, 6], [T_PAREN_OPEN, 0, 1, 9], [T_UNDERSCORE, 0, 1, 10],
+		[T_PAREN_CLOSE, 0, 1, 11], [T_ARROW, 0, 1, 13], [T_IDENTIFIER, 1, 1, 16], [T_COLON, 0, 1, 19],
 		[T_NEWLINE, 0, 1, 20],
-		[T_RETURN, 0, 2, 5],
-		[T_LITERAL, 0, 2, 12],         # 1
-		[T_NEWLINE, 0, 2, 13],
+		[T_RETURN, 0, 2, 5], [T_LITERAL, 0, 2, 12], [T_NEWLINE, 0, 2, 13],
 		[T_EOF, 0, 3, 1],
 	]
 
-func _fixture_identifiers() -> Array:
-	return ["foo", "int"]
-
-func _fixture_constants() -> Array:
-	return [1]
-
-# --- Tests -------------------------------------------------------------------
-
 func _t1_v101_baseline(ml: Object) -> void:
-	var src := _detok(ml, V101, _fixture_tokens(), "synth_v101.gd")
-	_assert(not src.is_empty(), "T1: v101 fixture reconstructed to something")
-	_assert(src.contains("func foo"), "T1: declaration survives (got: %s)" % _oneline(src))
-	_assert(src.contains("->"), "T1: return-arrow token (86) renders")
-	_assert(src.contains(":"), "T1: colon token (84) renders as ':' not '...'")
-	_assert(src.contains("return 1"), "T1: body statement renders")
-	# The body must be indented. col 5 with 4-space source => exactly one tab.
-	var body_ok := false
-	for line in src.split("\n"):
-		if line.begins_with("\t") and line.contains("return"):
-			body_ok = true
-	_assert(body_ok, "T1: body line is tab-indented (col/4 math) -- got: %s" % _oneline(src))
+	var src := _detok(ml, V101, _fixture(), "synth_v101.gd")
+	_assert(not src.is_empty(), "the v101 fixture reconstructs")
+	for want in ["func foo", "->", ":", "return 1"]:
+		_assert(src.contains(want), "renders '%s' (got: %s)" % [want, H.oneline(src)])
+	var indented := Array(src.split("\n")).any(func(l: String) -> bool: return l.begins_with("\t") and l.contains("return"))
+	_assert(indented, "the body line is tab-indented (got: %s)" % H.oneline(src))
 
-# THE F1 REGRESSION LOCK. Same logical token stream, encoded once with v101
-# indices under a v101 header and once with v100 indices under a v100 header.
-# Both must reconstruct to byte-identical source. Before the normalization in
-# _detokenize_script this failed loudly: the v100 stream rendered ":" as "...",
-# NEWLINE as "_", and fell through to "<tk98>" instead of terminating on EOF.
+# Without the v100 normalization ":" renders as "...", NEWLINE as "_", and
+# EOF as "<tk98>".
 func _t2_v100_matches_v101(ml: Object) -> void:
-	var v101_src := _detok(ml, V101, _fixture_tokens(), "synth_a101.gd")
-	var v100_src := _detok(ml, V100, _to_v100_indices(_fixture_tokens()), "synth_a100.gd")
-	_assert(not v100_src.is_empty(), "T2: v100 fixture reconstructed to something")
-	_assert(v100_src == v101_src,
-			"T2: v100 and v101 must reconstruct identically.\n    v101: %s\n    v100: %s"
-					% [_oneline(v101_src), _oneline(v100_src)])
+	var v101_src := _detok(ml, V101, _fixture(), "synth_a101.gd")
+	var v100_src := _detok(ml, V100, _to_v100(_fixture()), "synth_a100.gd")
+	_assert(not v100_src.is_empty(), "the v100 fixture reconstructs")
+	check_eq(v100_src, v101_src, "v100 source")
 
 func _t3_no_placeholders(ml: Object) -> void:
-	for spec in [[V101, _fixture_tokens(), "synth_p101.gd"], [V100, _to_v100_indices(_fixture_tokens()), "synth_p100.gd"]]:
+	for spec in [[V101, _fixture(), "synth_p101.gd"], [V100, _to_v100(_fixture()), "synth_p100.gd"]]:
 		var src := _detok(ml, spec[0], spec[1], spec[2])
-		_assert(not src.contains("<tk"),
-				"T3: v%d output contains an unmapped-token placeholder: %s" % [spec[0], _oneline(src)])
-		_assert(not src.contains("<ident?>"),
-				"T3: v%d output contains an unresolved identifier" % spec[0])
+		_assert(not src.contains("<tk"), "v%d has an unmapped token: %s" % [spec[0], H.oneline(src)])
+		_assert(not src.contains("<ident?>"), "v%d has an unresolved identifier" % spec[0])
 
-# F3: TK_EMPTY (index 0) is the tokenizer's placeholder and is never emitted
-# into a real stream, but upstream skips it explicitly. Without the guard it
-# falls through to "<tk0>".
+# _TK_EMPTY (index 0) never appears in a real stream, but upstream skips it.
 func _t4_tk_empty_skipped(ml: Object) -> void:
-	var toks := _fixture_tokens()
-	toks.insert(2, [0, 0, 1, 9])  # TK_EMPTY spliced mid-line
+	var toks := _fixture()
+	toks.insert(2, [0, 0, 1, 9])
 	var src := _detok(ml, V101, toks, "synth_empty.gd")
-	_assert(not src.contains("<tk0>"), "T4: TK_EMPTY must be skipped, not rendered")
-	_assert(src.contains("func foo"), "T4: TK_EMPTY does not derail the rest of the stream")
+	_assert(not src.contains("<tk0>"), "_TK_EMPTY is skipped, not rendered")
+	_assert(src.contains("func foo"), "the rest of the stream survives")
 
-# Every index the v100 shift touches must render to real text in BOTH
-# encodings. A table entry that only exists on one side shows up here rather
-# than as mystery output on a user's machine.
-func _t5_shifted_indices_all_render(ml: Object) -> void:
-	var shifted := [T_PERIOD_PERIOD_PERIOD, T_COLON, T_DOLLAR, T_ARROW, T_UNDERSCORE]
-	for tk in shifted:
+func _t5_shifted_indices(ml: Object) -> void:
+	for tk in [T_PERIOD_PERIOD_PERIOD, T_COLON, T_DOLLAR, T_ARROW, T_UNDERSCORE]:
 		var toks := [[tk, 0, 1, 1], [T_NEWLINE, 0, 1, 2], [T_EOF, 0, 2, 1]]
 		var a := _detok(ml, V101, toks, "synth_s101_%d.gd" % tk)
-		_assert(not a.contains("<tk"), "T5: v101 index %d has no table entry" % tk)
-		# "..." is the token v101 ADDED, so it has no v100 counterpart and
-		# there is nothing to compare. Every index above it does.
+		_assert(not a.contains("<tk"), "v101 index %d has a table entry" % tk)
+		# "..." is the token v101 added: v100 has nothing to compare.
 		if tk == T_PERIOD_PERIOD_PERIOD:
 			continue
-		var b := _detok(ml, V100, _to_v100_indices(toks), "synth_s100_%d.gd" % tk)
-		_assert(a == b, "T5: index %d renders differently across versions (v101 %s vs v100 %s)"
-				% [tk, _oneline(a), _oneline(b)])
+		var b := _detok(ml, V100, _to_v100(toks), "synth_s100_%d.gd" % tk)
+		check_eq(b, a, "v100 rendering of index %d" % tk)
 
-# --- Encoder -----------------------------------------------------------------
-
-# Map a v101 token stream to the v100 indices that encode the SAME tokens.
-# v100 predates "..." at 83, so everything from 83 up sits one lower.
-# --- Vanilla-cache poisoning (B1) --------------------------------------------
-#
-# Hook-pack generation reads vanilla scripts after mod archives are mounted.
-# A mod shipping a plain-text res://Scripts/X.gd used to be read through the
-# VFS, accepted as vanilla, and cached forever. These three tests pin the
-# fix: a VFS read is never cached, the game's PCK bytes win over whatever the
-# VFS serves, and a cache written by an older loader is dropped.
-
-const CACHE_DIR := "user://modloader_hooks/vanilla"
-
-# A pack-format-2 .pck holding plain-text files, laid out the way
-# _security_pck_list_with_offsets reads it back.
-func _write_fake_pck(path: String, files: Dictionary) -> bool:
-	var f := FileAccess.open(path, FileAccess.WRITE)
-	if f == null:
-		return false
-	f.store_32(0x43504447)  # "GDPC"
-	f.store_32(2)           # PACK_FORMAT_V2
-	f.store_32(4); f.store_32(6); f.store_32(0)
-	f.store_32(0)           # pack flags: not encrypted
-	var file_base_pos := f.get_position()
-	f.store_64(0)           # file_base, patched below
-	for i in 16:
-		f.store_32(0)
-	f.store_32(files.size())
-	var entries := []
-	var data_offset := 0
-	for p in files:
-		var bytes: PackedByteArray = str(files[p]).to_utf8_buffer()
-		entries.append({"path": str(p), "offset": data_offset, "bytes": bytes})
-		data_offset += bytes.size()
-	for e in entries:
-		var pb: PackedByteArray = str(e["path"]).to_utf8_buffer()
-		f.store_32(pb.size())
-		f.store_buffer(pb)
-		f.store_64(int(e["offset"]))
-		f.store_64((e["bytes"] as PackedByteArray).size())
-		f.store_buffer(PackedByteArray([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))
-		f.store_32(0)
-	var file_base := f.get_position()
-	for e in entries:
-		f.store_buffer(e["bytes"])
-	f.seek(file_base_pos)
-	f.store_64(file_base)
-	f.close()
-	return true
-
-func _write_text(path: String, text: String) -> bool:
-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(path.get_base_dir()))
-	var f := FileAccess.open(path, FileAccess.WRITE)
-	if f == null:
-		return false
-	f.store_string(text)
-	f.close()
-	return true
-
-func _reset_detok_state(ml: Object) -> void:
-	ml.set("_game_pck_index", {})
-	ml.set("_game_pck_path", "")
-	ml.set("_game_pck_indexed", false)
-	ml.set("_vanilla_cache_checked", false)
-	var dir := ProjectSettings.globalize_path(CACHE_DIR)
-	if DirAccess.dir_exists_absolute(dir):
-		ml._remove_tree(dir, false)
-
-func _t6_vfs_read_is_not_cached(ml: Object) -> void:
-	_reset_detok_state(ml)
-	# No game PCK anywhere near this harness: the VFS fallback serves the
-	# planted file, exactly what a mounted mod would look like in the game.
+# A mod's plain-text res://Scripts/X.gd is what the VFS serves once mods are
+# mounted; cached, it would pass for vanilla forever.
+func _t6_vfs_read_not_cached(ml: Object) -> void:
+	_reset_cache(ml)
 	ml.set("_game_pck_path_override", "")
-	_assert(_write_text("res://Scripts/Poison.gd", "extends Node\nvar poisoned = true\n"),
-			"T6: planted a plain-text script in the project")
+	_assert(H.write_text("res://Scripts/Poison.gd", "extends Node\nvar poisoned = true\n"), "planted a plain-text script")
 	var src := str(ml._read_vanilla_source("res://Scripts/Poison.gd"))
-	_assert(src.contains("poisoned"), "T6: with no PCK the VFS text is still returned (nothing better exists)")
-	_assert(not bool(ml.get("_last_detokenize_from_pck")), "T6: the read is flagged as not from the PCK")
-	_assert(not FileAccess.file_exists(CACHE_DIR + "/Scripts/Poison.gd"),
-			"T6: a VFS read must never be written to the vanilla cache")
+	_assert(src.contains("poisoned"), "with no PCK the VFS text is returned")
+	_assert(not bool(ml.get("_last_detokenize_from_pck")), "the read is not flagged as PCK")
+	_assert(not FileAccess.file_exists(CACHE_DIR + "/Scripts/Poison.gd"), "a VFS read is never cached")
 
 func _t7_pck_wins_over_vfs(ml: Object) -> void:
-	_reset_detok_state(ml)
+	_reset_cache(ml)
 	var pck := "user://fake_game.pck"
-	_assert(_write_fake_pck(pck, {
+	_assert(_write_pck(pck, {
 		"res://Scripts/Foo.gd": "extends Node\nvar from_pck = true\n",
 		"res://Scripts/Bar.gd": "extends Node\nvar bar_from_pck = true\n",
-	}), "T7: wrote a synthetic game pack")
+	}), "wrote a synthetic game pack")
 	ml.set("_game_pck_path_override", ProjectSettings.globalize_path(pck))
-	# The VFS serves a different file at the same path: a mod's override.
-	_assert(_write_text("res://Scripts/Foo.gd", "extends Node\nvar poisoned = true\n"),
-			"T7: planted a competing plain-text script in the project")
+	_assert(H.write_text("res://Scripts/Foo.gd", "extends Node\nvar poisoned = true\n"), "planted a competing script")
 	var src := str(ml._read_vanilla_source("res://Scripts/Foo.gd"))
-	_assert(src.contains("from_pck") and not src.contains("poisoned"),
-			"T7: the PCK bytes win over the VFS file (got: %s)" % _oneline(src))
-	_assert(bool(ml.get("_last_detokenize_from_pck")), "T7: the read is flagged as from the PCK")
+	_assert(src.contains("from_pck") and not src.contains("poisoned"), "the PCK bytes win (got: %s)" % H.oneline(src))
+	_assert(bool(ml.get("_last_detokenize_from_pck")), "the read is flagged as from the PCK")
 	var cached := FileAccess.get_file_as_string(CACHE_DIR + "/Scripts/Foo.gd")
-	_assert(cached.contains("from_pck") and not cached.contains("poisoned"),
-			"T7: the cache holds the PCK text, never the VFS text")
-	_assert(FileAccess.get_file_as_string(CACHE_DIR + "/format").strip_edges() == "2",
-			"T7: the cache carries its format stamp")
-	# Second read comes from the cache and still says the same thing.
-	var again := str(ml._read_vanilla_source("res://Scripts/Foo.gd"))
-	_assert(again == src, "T7: the cached read matches the first read")
+	_assert(cached.contains("from_pck") and not cached.contains("poisoned"), "the cache holds the PCK text")
+	check_eq(FileAccess.get_file_as_string(CACHE_DIR + "/format").strip_edges(), "2", "the cache format stamp")
+	check_eq(str(ml._read_vanilla_source("res://Scripts/Foo.gd")), src, "the cached read")
 
-func _t8_old_cache_format_is_dropped(ml: Object) -> void:
-	_reset_detok_state(ml)
-	var pck := "user://fake_game.pck"
-	ml.set("_game_pck_path_override", ProjectSettings.globalize_path(pck))
-	# A cache written by an older loader: no stamp, and a poisoned entry.
-	_assert(_write_text(CACHE_DIR + "/Scripts/Bar.gd", "extends Node\nvar poisoned = true\n"),
-			"T8: planted an unstamped, poisoned cache entry")
+func _t8_old_cache_dropped(ml: Object) -> void:
+	_reset_cache(ml)
+	ml.set("_game_pck_path_override", ProjectSettings.globalize_path("user://fake_game.pck"))
+	_assert(H.write_text(CACHE_DIR + "/Scripts/Bar.gd", "extends Node\nvar poisoned = true\n"),
+			"planted an unstamped, poisoned cache entry")
 	var src := str(ml._read_vanilla_source("res://Scripts/Bar.gd"))
 	_assert(src.contains("bar_from_pck") and not src.contains("poisoned"),
-			"T8: an unstamped cache is wiped and the PCK text is used (got: %s)" % _oneline(src))
-	var cached := FileAccess.get_file_as_string(CACHE_DIR + "/Scripts/Bar.gd")
-	_assert(cached.contains("bar_from_pck"), "T8: the rebuilt cache holds the PCK text")
-	# Cleanup so the throwaway project's res:// stays clean for --prove.
-	DirAccess.remove_absolute(ProjectSettings.globalize_path("res://Scripts/Foo.gd"))
-	DirAccess.remove_absolute(ProjectSettings.globalize_path("res://Scripts/Poison.gd"))
+			"an unstamped cache is wiped (got: %s)" % H.oneline(src))
+	_assert(FileAccess.get_file_as_string(CACHE_DIR + "/Scripts/Bar.gd").contains("bar_from_pck"),
+			"the rebuilt cache holds the PCK text")
+	for p in ["res://Scripts/Foo.gd", "res://Scripts/Poison.gd"]:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
 
-# With no game PCK, a vanilla script path is served by the VFS: the .gd path
-# first, then its globalized form, then the .gdc beside it. In the game the
-# .gd path is a remap that FileAccess cannot open, so the .gdc step is the
-# one that serves anything; a null handle on the way there must not abort
-# the read.
+# In the game the .gd path is a remap FileAccess cannot open, so the .gdc
+# beside it is what serves; a null handle on the way must not abort the read.
 func _t9_gdc_fallback_read(ml: Object) -> void:
-	_reset_detok_state(ml)
+	_reset_cache(ml)
 	ml.set("_game_pck_path_override", "")
 	var gdc_path := "res://Scripts/Camera.gdc"
-	_assert(_write_bytes(gdc_path, _encode(V101, _fixture_tokens(), _fixture_identifiers(), _fixture_constants())),
-			"T9: planted a .gdc with no .gd beside it")
+	_assert(H.write_bytes(gdc_path, _encode(V101, _fixture())), "planted a .gdc with no .gd")
 	var src := str(ml._detokenize_script("res://Scripts/Camera.gd"))
-	_assert(src.contains("func foo"),
-			"T9: the .gd path falls through to the planted .gdc (got: %s)" % _oneline(src))
+	_assert(src.contains("func foo"), "the .gd path reads the .gdc (got: %s)" % H.oneline(src))
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(gdc_path))
 
-# Canary C probes a fixed list of vanilla scripts. One probe whose
-# reconstruction has no indented func body must not disable hooks for the
-# session when another probe reconstructs cleanly. The rule: pass when any
-# probe passes, fail only when probes produced source and none passed, and
-# treat no readable probe at all as a pass. The probes are planted under the
-# canary's own paths; with no game PCK the VFS fallback serves them.
-func _t10_canary_passes_on_any_probe(ml: Object) -> void:
-	_reset_detok_state(ml)
+# Canary C passes when any probe passes, fails only when probes produced
+# source and none passed, and passes when no probe is readable.
+func _t10_canary_any_probe(ml: Object) -> void:
+	_reset_cache(ml)
 	ml.set("_game_pck_path_override", "")
-	# The same synthetic script with its body at column 1, so the
-	# reconstruction has no indented body line.
-	var odd := _fixture_tokens()
+	var odd := _fixture()
 	for t in odd:
 		if t[0] == T_RETURN:
 			t[3] = 1
@@ -352,177 +166,392 @@ func _t10_canary_passes_on_any_probe(ml: Object) -> void:
 			t[3] = 8
 	var odd_path := "res://Scripts/Camera.gdc"
 	var clean_path := "res://Scripts/Controller.gdc"
-	_assert(_write_bytes(odd_path, _encode(V101, odd, _fixture_identifiers(), _fixture_constants())),
-			"T10: planted the odd probe")
+	_assert(H.write_bytes(odd_path, _encode(V101, odd)), "planted the odd probe")
 	var odd_src := str(ml._detokenize_script("res://Scripts/Camera.gd"))
 	_assert(not odd_src.is_empty() and not bool(ml._source_has_indented_func_body(odd_src)),
-			"T10: the odd probe reconstructs without an indented body (got: %s)" % _oneline(odd_src))
-	_assert(not bool(ml._canary_detokenizer_roundtrip_ok()),
-			"T10: an odd probe with no clean one fails the canary")
-	_assert(_write_bytes(clean_path, _encode(V101, _fixture_tokens(), _fixture_identifiers(), _fixture_constants())),
-			"T10: planted the clean probe")
-	_assert(bool(ml._canary_detokenizer_roundtrip_ok()),
-			"T10: a clean probe after an odd one passes the canary")
+			"the odd probe has no indented body (got: %s)" % H.oneline(odd_src))
+	_assert(not bool(ml._canary_detokenizer_roundtrip_ok()), "only an odd probe fails the canary")
+	_assert(H.write_bytes(clean_path, _encode(V101, _fixture())), "planted the clean probe")
+	_assert(bool(ml._canary_detokenizer_roundtrip_ok()), "a clean probe passes the canary")
 	for p in [odd_path, clean_path]:
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
-	_assert(bool(ml._canary_detokenizer_roundtrip_ok()),
-			"T10: no readable probe at all is a pass")
+	_assert(bool(ml._canary_detokenizer_roundtrip_ok()), "no readable probe is a pass")
 
-# The cached source is only as current as the PCK it was read from. A game
-# update can replace the PCK and leave the executable alone, so the cache
-# records the PCK it came from and is dropped when that PCK changes.
-func _t11_changed_pck_drops_the_cache(ml: Object) -> void:
-	_assert(ml.has_method("_static_game_pck_stamp") and ml.has_method("_game_pck_stamp"),
-			"T11: the loader has _static_game_pck_stamp and _game_pck_stamp")
-	if not ml.has_method("_static_game_pck_stamp") or not ml.has_method("_game_pck_stamp"):
+# A game update can replace the PCK and leave the executable alone.
+func _t11_changed_pck_drops_cache(ml: Object) -> void:
+	if not _assert(ml.has_method("_static_game_pck_stamp") and ml.has_method("_game_pck_stamp"),
+			"the loader has both PCK stamp functions"):
 		return
-	_reset_detok_state(ml)
+	_reset_cache(ml)
 	var pck := "user://fake_game_build.pck"
 	var pck_abs := ProjectSettings.globalize_path(pck)
-	_assert(_write_fake_pck(pck, {"res://Scripts/Build.gd": "extends Node\nvar build_one = true\n"}),
-			"T11: wrote the first game build")
+	_assert(_write_pck(pck, {"res://Scripts/Build.gd": "extends Node\nvar build_one = true\n"}), "wrote the first build")
 	ml.set("_game_pck_path_override", pck_abs)
 	var first := str(ml._read_vanilla_source("res://Scripts/Build.gd"))
-	_assert(first.contains("build_one"), "T11: the first build's text is read (got: %s)" % _oneline(first))
+	_assert(first.contains("build_one"), "the first build is read (got: %s)" % H.oneline(first))
 	var stamp := str(ml._static_game_pck_stamp(pck_abs))
-	_assert(stamp != "" and stamp == str(ml._game_pck_stamp()),
-			"T11: the PCK stamp is known and follows the override (got '%s')" % stamp)
-	_assert(FileAccess.get_file_as_string(CACHE_DIR + "/build").strip_edges() == stamp,
-			"T11: the cache records the PCK it was read from")
-	# The game updates: same path, different bytes. The size differs, so the
-	# stamp moves even when both writes land in the same second.
-	_assert(_write_fake_pck(pck, {"res://Scripts/Build.gd": "extends Node\nvar build_two_is_a_longer_line = true\n"}),
-			"T11: wrote the second game build over the first")
-	_assert(str(ml._static_game_pck_stamp(pck_abs)) != stamp, "T11: the stamp moved with the PCK")
-	# A new launch: per-session state is gone, the on-disk cache is not.
-	ml.set("_game_pck_index", {})
-	ml.set("_game_pck_path", "")
-	ml.set("_game_pck_indexed", false)
-	ml.set("_vanilla_cache_checked", false)
+	_assert(stamp != "" and stamp == str(ml._game_pck_stamp()), "the stamp follows the override (got '%s')" % stamp)
+	check_eq(FileAccess.get_file_as_string(CACHE_DIR + "/build").strip_edges(), stamp, "the cache's PCK stamp")
+	# A different size moves the stamp even within one mtime second.
+	_assert(_write_pck(pck, {"res://Scripts/Build.gd": "extends Node\nvar build_two_is_a_longer_line = true\n"}),
+			"wrote the second build over the first")
+	_assert(str(ml._static_game_pck_stamp(pck_abs)) != stamp, "the stamp moved with the PCK")
+	H.reset_pck_state(ml)
 	var second := str(ml._read_vanilla_source("res://Scripts/Build.gd"))
 	_assert(second.contains("build_two") and not second.contains("build_one"),
-			"T11: a changed PCK drops the cached text (got: %s)" % _oneline(second))
+			"a changed PCK drops the cache (got: %s)" % H.oneline(second))
 	_assert(str(ml._static_game_pck_stamp("")) == "" and str(ml._static_game_pck_stamp(pck_abs + ".absent")) == "",
-			"T11: no PCK reads as the empty stamp")
+			"no PCK reads as the empty stamp")
 	ml.set("_game_pck_path_override", "")
 	DirAccess.remove_absolute(pck_abs)
 
-func _write_bytes(path: String, buf: PackedByteArray) -> bool:
-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(path.get_base_dir()))
+# The codegen harness finds coroutines by "await " in wrapper bodies.
+func _t12_await_space(ml: Object) -> void:
+	var toks := [
+		[T_FUNC, 0, 1, 1], [T_IDENTIFIER, 0, 1, 6], [T_PAREN_OPEN, 0, 1, 9], [T_PAREN_CLOSE, 0, 1, 10],
+		[T_COLON, 0, 1, 11], [T_NEWLINE, 0, 1, 12],
+		[T_AWAIT, 0, 2, 5], [T_PAREN_OPEN, 0, 2, 10], [T_IDENTIFIER, 1, 2, 11], [T_PAREN_CLOSE, 0, 2, 12],
+		[T_PERIOD, 0, 2, 13], [T_IDENTIFIER, 2, 2, 14], [T_NEWLINE, 0, 2, 20],
+		[T_EOF, 0, 3, 1],
+	]
+	var src := _detok(ml, V101, toks, "synth_await.gd", ["foo", "x", "done"], [])
+	_assert(src.contains("await (x).done"), "await, a space, then the paren (got: %s)" % H.oneline(src))
+	_assert(not src.contains("await("), "no 'await(' in the output")
+
+# c_escape() writes "\?", which the GDScript tokenizer rejects.
+func _t13_string_escapes(ml: Object) -> void:
+	var toks := []
+	for i in 3:
+		toks.append_array([[T_VAR, 0, i + 1, 1], [T_IDENTIFIER, i, i + 1, 5], [T_ASSIGN, 0, i + 1, 7],
+				[T_LITERAL, i, i + 1, 9], [T_NEWLINE, 0, i + 1, 20]])
+	toks.append([T_EOF, 0, 4, 1])
+	var src := _detok(ml, V101, toks, "synth_escape.gd", ["q", "w", "e"], ["Quit?", "a\"b\\c", "line\nnext\ttab"])
+	_assert(src.contains('"Quit?"'), "a question mark is not escaped (got: %s)" % H.oneline(src))
+	_assert(not src.contains("\\?"), "no backslash-question in the output")
+	_assert(src.contains('"a\\"b\\\\c"'), "quotes and backslashes are escaped (got: %s)" % H.oneline(src))
+	_assert(src.contains('"line\\nnext\\ttab"'), "newline and tab are escaped (got: %s)" % H.oneline(src))
+	var g := GDScript.new()
+	g.source_code = src
+	if _assert(g.reload() == OK, "the output compiles (got: %s)" % H.oneline(src)):
+		var inst: Variant = g.new()
+		_assert(str(inst.get("q")) == "Quit?" and str(inst.get("w")) == "a\"b\\c" and str(inst.get("e")) == "line\nnext\ttab",
+				"the compiled constants round-trip")
+
+# Every res://Scripts/ script once as .gd, zero-byte .gd entries in the side
+# channel, and a disk index that restores both without a parse.
+func _t14_script_enumeration(ml: Object) -> void:
+	_reset_cache(ml)
+	_reset_enumeration(ml)
+	ml.set("_game_pck_path_override", "")
+	_assert((ml._enumerate_game_scripts() as Array).is_empty(), "with no game PCK the list is empty")
+	var pck := "user://fake_game_scripts.pck"
+	var pck_abs := ProjectSettings.globalize_path(pck)
+	_assert(_write_pck(pck, {
+		"res://Scripts/Foo.gdc": "GDSC-not-decoded-here",
+		"res://Scripts/Foo.gd.remap": "[remap]\npath=\"res://Scripts/Foo.gdc\"\n",
+		"res://Scripts/Bar.gd": "extends Node\n",
+		"res://Scripts/Empty.gd": "",
+		"res://Other/Thing.gd": "extends Node\n",
+	}), "wrote a synthetic game pack")
+	ml.set("_game_pck_path_override", pck_abs)
+	_reset_cache(ml)
+	_reset_enumeration(ml)
+	check_eq((ml._enumerate_game_scripts() as Array).duplicate(),
+			["res://Scripts/Foo.gd", "res://Scripts/Bar.gd", "res://Scripts/Empty.gd"], "the enumerated scripts")
+	var zero: Dictionary = ml.get("_pck_zero_byte_paths")
+	_assert(zero.has("res://Scripts/Empty.gd") and not zero.has("res://Scripts/Bar.gd"),
+			"the zero-byte entry is recorded (got %s)" % str(zero.keys()))
+	var index := FileAccess.get_file_as_string(SCRIPT_INDEX)
+	_assert(index.begins_with(str(ml._script_index_stamp()) + "\n") and index.contains("\n!res://Scripts/Empty.gd"),
+			"the index has the stamp and side channel (got: %s)" % H.oneline(index))
+	# A hand-trimmed index proves the next launch reads it; a line that is not
+	# parser-shaped is dropped.
+	_assert(H.write_text(SCRIPT_INDEX, str(ml._script_index_stamp())
+			+ "\nres://Scripts/Bar.gd\nres://Other/Thing.gd\n!res://Scripts/Empty.gd\n"), "rewrote the disk index")
+	(ml.get("_all_game_script_paths") as Array).clear()
+	zero.clear()
+	check_eq((ml._enumerate_game_scripts() as Array).duplicate(), ["res://Scripts/Bar.gd"], "the list from the index")
+	_assert(zero.has("res://Scripts/Empty.gd"), "the index restores the side channel")
+	_reset_enumeration(ml)
+	ml.set("_game_pck_path_override", "")
+	DirAccess.remove_absolute(pck_abs)
+
+# Canary B reads the version from the first probe with the GDSC magic; -1
+# when no probe is readable.
+func _t15_canary_b_version(ml: Object) -> void:
+	var header := func(version: int) -> PackedByteArray:
+		var b := "GDSC".to_ascii_buffer()
+		b.append_array(H.uint_le(version))
+		b.append_array(H.uint_le(0))
+		return b
+	var camera := "res://Scripts/Camera.gdc"
+	var controller := "res://Scripts/Controller.gdc"
+	check_eq(int(ml._probe_gdsc_version()), -1, "no readable probe")
+	for v in [100, 101, 102]:
+		_assert(H.write_bytes(camera, header.call(v)), "planted a v%d probe header" % v)
+		check_eq(int(ml._probe_gdsc_version()), v, "a v%d header" % v)
+	_assert(H.write_bytes(camera, "NOPE-not-bytecode".to_ascii_buffer()), "planted a probe without the magic")
+	check_eq(int(ml._probe_gdsc_version()), -1, "a probe without the magic")
+	_assert(H.write_bytes(controller, header.call(101)), "planted a second probe")
+	check_eq(int(ml._probe_gdsc_version()), 101, "the next probe after no magic")
+	_assert(H.write_bytes(camera, "GDSC".to_ascii_buffer()), "planted a truncated probe")
+	check_eq(int(ml._probe_gdsc_version()), 101, "a probe shorter than the header")
+	for p in [camera, controller]:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
+
+# Every keyword wants a space after it, the operator-like ones one before.
+func _t16_keyword_spacing(ml: Object) -> void:
+	var toks: Array = []
+	var want := ""
+	var line := 1
+	for i in KEYWORDS.size():
+		toks.append_array([[40 + i, 0, line, 1], [T_IDENTIFIER, 0, line, 20], [T_NEWLINE, 0, line, 30]])
+		want += "%s foo\n" % KEYWORDS[i]
+		line += 1
+	# foo if int else foo, then foo is int / foo as int / foo in int
+	toks.append_array([[T_IDENTIFIER, 0, line, 1], [40, 0, line, 5], [T_IDENTIFIER, 1, line, 8],
+			[42, 0, line, 12], [T_IDENTIFIER, 0, line, 17], [T_NEWLINE, 0, line, 20]])
+	want += "foo if int else foo\n"
+	line += 1
+	for kw in [62, 51, 61]:
+		toks.append_array([[T_IDENTIFIER, 0, line, 1], [kw, 0, line, 5], [T_IDENTIFIER, 1, line, 8],
+				[T_NEWLINE, 0, line, 12]])
+		want += "foo %s int\n" % KEYWORDS[kw - 40]
+		line += 1
+	toks.append([T_EOF, 0, line, 1])
+	check_eq(_detok(ml, V101, toks, "synth_keywords.gd"), want, "keyword spacing")
+
+# The enumeration (_parse_pck_file_list, which logs why) and the offset index
+# (silent, one empty-table line) read one table; a path_len of 0 ends it.
+func _t17_pck_readers_agree(ml: Object) -> void:
+	var files := {
+		"res://Scripts/One.gd": "extends Node\nvar one = 1\n",
+		"res://Scripts/Empty.gd": "",
+		"res://Scenes/Room.tscn": "[gd_scene format=3]\n",
+	}
+	var pck := "user://t17.pck"
+	var pck_abs := ProjectSettings.globalize_path(pck)
+	var lines: Array = ml.get("_report_lines")
+	var zero: Dictionary = ml.get("_pck_zero_byte_paths")
+	var pck_index := func(path: String) -> Dictionary:
+		_reset_cache(ml)
+		ml.set("_game_pck_path_override", path)
+		ml._ensure_game_pck_index()
+		return (ml.get("_game_pck_index") as Dictionary).duplicate()
+	for version in [2, 3]:
+		begin("T17 v%d" % version)
+		_assert(_write_pck(pck, files, {"version": version}), "wrote the pack")
+		zero.clear()
+		check_eq(Array(ml._parse_pck_file_list(pck_abs)), files.keys(), "the enumerated entries")
+		_assert(zero.has("res://Scripts/Empty.gd") and zero.size() == 1, "the zero-byte entry (got %s)" % str(zero.keys()))
+		zero.clear()
+		var index: Dictionary = pck_index.call(pck_abs)
+		check_eq(index.keys(), ["Scripts/One.gd", "Scripts/Empty.gd", "Scenes/Room.tscn"], "the offset index entries")
+		_assert(zero.is_empty(), "the offset index records no zero-byte entry")
+		for rel in index:
+			var want: PackedByteArray = str(files["res://" + rel]).to_utf8_buffer()
+			check_eq(int(index[rel]["size"]), want.size(), "%s size" % rel)
+			var f := FileAccess.open(pck_abs, FileAccess.READ)
+			f.seek(int(index[rel]["offset"]))
+			var got := f.get_buffer(int(index[rel]["size"]))
+			f.close()
+			_assert(got == want, "%s's offset is absolute (read '%s')" % [rel, got.get_string_from_utf8()])
+
+	for r in [
+		[{"flags": 1}, "directory encrypted -- can't enumerate"],
+		[{"version": 4}, "pack format v4, exported with Godot 4.6"],
+		[{"version": 1}, "unsupported format version 1"],
+		[{"magic": 0x12345678}, "not a standalone PCK (magic=0x12345678)"],
+	]:
+		begin("T17 %s" % str(r[0]))
+		_assert(_write_pck(pck, files, r[0]), "wrote the pack")
+		lines.clear()
+		zero.clear()
+		_assert((ml._parse_pck_file_list(pck_abs) as PackedStringArray).is_empty(), "the enumeration lists nothing")
+		_assert("\n".join(lines).contains("[PCK] %s: %s" % [pck_abs, r[1]]), "the enumeration says why (got %s)" % str(lines))
+		_assert(zero.is_empty(), "nothing is recorded as zero-byte")
+		lines.clear()
+		_assert((pck_index.call(pck_abs) as Dictionary).is_empty(), "the offset index is empty")
+		var said := "\n".join(lines)
+		_assert(said.contains("has no readable file table") and not said.contains("[PCK]"),
+				"the index says so once, its own way (got %s)" % str(lines))
+
+	begin("T17")
+	_assert(_write_pck(pck, files, {"bad_path_at": 1}), "wrote a pack with a bad path_len")
+	lines.clear()
+	zero.clear()
+	check_eq(Array(ml._parse_pck_file_list(pck_abs)), ["res://Scripts/One.gd"], "entries before a 0 path_len")
+	_assert("\n".join(lines).contains("[PCK] %s: suspicious path_len=0 at entry 1 -- abort" % pck_abs),
+			"the enumeration names the bad entry (got %s)" % str(lines))
+	check_eq((pck_index.call(pck_abs) as Dictionary).keys(), ["Scripts/One.gd"], "offset index before a 0 path_len")
+	lines.clear()
+	_assert((ml._parse_pck_file_list(pck_abs + ".absent") as PackedStringArray).is_empty()
+			and "\n".join(lines).contains("[PCK] cannot open: %s.absent" % pck_abs),
+			"a missing file lists nothing, says so (got %s)" % str(lines))
+	_assert((pck_index.call(pck_abs + ".absent") as Dictionary).is_empty(), "a missing file indexes nothing")
+	lines.clear()
+	zero.clear()
+	_reset_cache(ml)
+	ml.set("_game_pck_path_override", "")
+	DirAccess.remove_absolute(pck_abs)
+
+# An updated .vmz must replace the cached copy, not mount the old one.
+func _t18_vmz_copy_cache(ml: Object) -> void:
+	var vmz := ProjectSettings.globalize_path("user://t18/Mod.vmz")
+	var zip := ""
+	for body in ["first build", "second build, a longer one"]:
+		_assert(H.write_text(vmz, body), "wrote the vmz")
+		zip = str(ml._static_vmz_to_zip(vmz))
+		check_eq(FileAccess.get_file_as_string(zip), body, "the cached copy")
+		check_eq(FileAccess.get_file_as_string(zip + ".src"),
+				"%d:%d" % [FileAccess.get_modified_time(vmz), body.length()], "the copy's stamp")
+	# A marker in the copy shows an unchanged vmz is not copied again.
+	_assert(H.write_text(zip, "marker"), "marked the cached copy")
+	check_eq(FileAccess.get_file_as_string(str(ml._static_vmz_to_zip(vmz))), "marker", "an unchanged vmz's copy")
+	for p in [zip, zip + ".src", vmz]:
+		DirAccess.remove_absolute(p)
+
+func _t19_tracked_extensions(ml: Object) -> void:
+	for r in [["Scripts/Foo.GD", "res://Scripts/Foo.GD"], ["Items/Item.TRES", "res://Items/Item.TRES"],
+			["a.tscn", "res://a.tscn"], [".hidden.gd", ""], ["mod.txt", ""], ["readme.md", ""]]:
+		check_eq(str(ml._normalize_to_res_path(r[0])), r[1], r[0])
+
+func _t20_hooks_backslash(ml: Object) -> void:
+	var text := str(ml._quote_unquoted_hooks_values("[hooks]\nx = a\\b, c\n"))
+	var cfg := ConfigFile.new()
+	if _assert(cfg.parse(text) == OK, "the quoted text parses (got: %s)" % H.oneline(text)):
+		check_eq(str(cfg.get_value("hooks", "x", "")), "a\\b, c", "the hooks value")
+
+# A mod can shadow the class cache with a handful of entries.
+func _t21_tiny_class_cache(ml: Object) -> void:
+	var cfg_path := "res://.godot/global_script_class_cache.cfg"
+	var full := (ml._get_hardcoded_class_map() as Dictionary).size()
+	for r in [[5, full], [9, full], [10, 10]]:
+		var list: Array = []
+		for i in r[0]:
+			list.append({"class": "C%d" % i, "path": "res://Scripts/C%d.gd" % i})
+		var cfg := ConfigFile.new()
+		cfg.set_value("", "list", list)
+		_assert(H.write_text(cfg_path, cfg.encode_to_text()), "wrote the class cache")
+		ml._build_class_name_lookup()
+		check_eq((ml.get("_class_name_to_path") as Dictionary).size(), r[1], "map size for %d entries" % r[0])
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(cfg_path))
+
+func _t22_empty_gdc_beside_gd(ml: Object) -> void:
+	_reset_cache(ml)
+	var pck := "user://t22.pck"
+	var text := "extends Node\nvar dual = true\n"
+	_assert(_write_pck(pck, {"res://Scripts/Dual.gdc": "", "res://Scripts/Dual.gd": text}), "wrote the pack")
+	ml.set("_game_pck_path_override", ProjectSettings.globalize_path(pck))
+	check_eq((ml._vanilla_bytes_from_pck("res://Scripts/Dual.gd") as PackedByteArray).get_string_from_utf8(),
+			text, "the .gd beside an empty .gdc")
+	_reset_cache(ml)
+	ml.set("_game_pck_path_override", "")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(pck))
+
+func _reset_cache(ml: Object) -> void:
+	H.reset_pck_state(ml)
+	if DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(CACHE_DIR)):
+		ml._remove_tree(ProjectSettings.globalize_path(CACHE_DIR), false)
+
+func _reset_enumeration(ml: Object) -> void:
+	(ml.get("_all_game_script_paths") as Array).clear()
+	(ml.get("_pck_zero_byte_paths") as Dictionary).clear()
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(SCRIPT_INDEX))
+
+# A format-2 (or 3) .pck of plain-text files. opts: "magic", "version" (3
+# adds the directory offset and padding), "flags" (1 = encrypted directory),
+# "bad_path_at" (that entry gets path_len 0).
+func _write_pck(path: String, files: Dictionary, opts := {}) -> bool:
 	var f := FileAccess.open(path, FileAccess.WRITE)
 	if f == null:
 		return false
-	f.store_buffer(buf)
+	var version := int(opts.get("version", 2))
+	f.store_32(int(opts.get("magic", 0x43504447)))
+	f.store_32(version)
+	f.store_32(4)
+	f.store_32(6)
+	f.store_32(0)
+	f.store_32(int(opts.get("flags", 0)))
+	var file_base_pos := f.get_position()
+	f.store_64(0)
+	if version == 3:
+		f.store_64(f.get_position() + 8 + 12)
+		f.store_buffer(PackedByteArray([7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]))
+	else:
+		for i in 16:
+			f.store_32(0)
+	f.store_32(files.size())
+	var bad_at := int(opts.get("bad_path_at", -1))
+	var offset := 0
+	var i := 0
+	for p in files:
+		var pb: PackedByteArray = str(p).to_utf8_buffer()
+		var size: int = str(files[p]).to_utf8_buffer().size()
+		f.store_32(0 if i == bad_at else pb.size())
+		f.store_buffer(pb)
+		f.store_64(offset)
+		f.store_64(size)
+		f.store_buffer(PackedByteArray([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))
+		f.store_32(0)
+		offset += size
+		i += 1
+	var file_base := f.get_position()
+	for p in files:
+		f.store_buffer(str(files[p]).to_utf8_buffer())
+	f.seek(file_base_pos)
+	f.store_64(file_base)
 	f.close()
 	return true
 
-func _to_v100_indices(toks: Array) -> Array:
+# v100 predates "..." at 83: everything from 83 up sits one lower.
+func _to_v100(toks: Array) -> Array:
 	var out: Array = []
 	for t in toks:
-		var tk: int = t[0]
-		if tk == T_PERIOD_PERIOD_PERIOD:
-			# "..." does not exist in v100 at all; nothing to encode.
-			continue
-		if tk >= SHIFT_FROM:
-			tk -= 1
-		out.append([tk, t[1], t[2], t[3]])
+		if t[0] != T_PERIOD_PERIOD_PERIOD:
+			out.append([t[0] - 1 if t[0] >= SHIFT_FROM else t[0], t[1], t[2], t[3]])
 	return out
 
-# Build a GDSC buffer this repo's reader accepts, write it, detokenize it.
-func _detok(ml: Object, version: int, toks: Array, fname: String) -> String:
-	var buf := _encode(version, toks, _fixture_identifiers(), _fixture_constants())
+func _detok(ml: Object, version: int, toks: Array, fname: String, idents := IDENTS, consts := CONSTS) -> String:
 	var path := "res://" + fname
-	var f := FileAccess.open(path, FileAccess.WRITE)
-	if f == null:
+	if not H.write_bytes(path, _encode(version, toks, idents, consts)):
 		_fail("could not write fixture " + path)
 		return ""
-	f.store_buffer(buf)
-	f.close()
 	return str(ml._detokenize_script(path))
 
-func _encode(version: int, toks: Array, idents: Array, consts: Array) -> PackedByteArray:
+func _encode(version: int, toks: Array, idents := IDENTS, consts := CONSTS) -> PackedByteArray:
 	var body := PackedByteArray()
-
-	# -- Metadata. v101: ident/const/line/token at 0/4/8/12 (16 bytes).
-	#    v100: same but token_count at 16, with 4 bytes of padding at 12.
-	_u32(body, idents.size())
-	_u32(body, consts.size())
-	_u32(body, toks.size())        # line_count: one map entry per token
+	# ident, const, line and token counts; v100 pads 4 bytes before the token count.
+	body.append_array(H.uint_le(idents.size()))
+	body.append_array(H.uint_le(consts.size()))
+	body.append_array(H.uint_le(toks.size()))
 	if version == V100:
-		_u32(body, 0)              # padding slot the reader skips
-	_u32(body, toks.size())
-
-	# -- Identifiers: u32 length, then length UTF-32 code points XOR 0xb6.
+		body.append_array(H.uint_le(0))
+	body.append_array(H.uint_le(toks.size()))
+	# Identifiers: a length, then UTF-32 code points XOR 0xb6.
 	for s in idents:
-		var text: String = str(s)
-		_u32(body, text.length())
-		for i in text.length():
-			var cp := text.unicode_at(i)
-			body.append((cp & 0xFF) ^ 0xb6)
-			body.append(((cp >> 8) & 0xFF) ^ 0xb6)
-			body.append(((cp >> 16) & 0xFF) ^ 0xb6)
-			body.append(((cp >> 24) & 0xFF) ^ 0xb6)
-
-	# -- Constants: sequential Variant encoding, exactly what the reader
-	#    advances over with var_to_bytes().
+		body.append_array(H.uint_le(str(s).length()))
+		for i in str(s).length():
+			for b in H.uint_le(str(s).unicode_at(i)):
+				body.append(b ^ 0xb6)
 	for c in consts:
 		body.append_array(var_to_bytes(c))
-
-	# -- Line map, then column map: (token_index, value) pairs.
-	for i in toks.size():
-		_u32(body, i)
-		_u32(body, toks[i][2])
-	for i in toks.size():
-		_u32(body, i)
-		_u32(body, toks[i][3])
-
-	# -- Token stream. Bit 7 of the low byte selects the wide form; the
-	#    reader takes tk_type from bits 0-6 and the data index from bits 8+.
+	# Line map, then column map, as (token index, value) pairs.
+	for col in [2, 3]:
+		for i in toks.size():
+			body.append_array(H.uint_le(i))
+			body.append_array(H.uint_le(toks[i][col]))
+	# Bit 7 of the low byte selects the wide form, which carries the data index.
 	for t in toks:
-		var tk: int = t[0]
-		var data: int = t[1]
-		if data > 0:
-			_u32(body, tk | 0x80 | (data << 8))
-			for _p in 4:
-				body.append(0)
+		if t[1] > 0:
+			body.append_array(H.uint_le(t[0] | 0x80 | (t[1] << 8)))
+			body.append_array(H.uint_le(0))
 		else:
-			_u32(body, tk)
+			body.append_array(H.uint_le(t[0]))
 			body.append(0)
-
-	# -- Container header: magic, version, decompressed size (0 = stored
-	#    uncompressed, which the reader handles directly).
-	var out := PackedByteArray()
-	out.append_array("GDSC".to_ascii_buffer())
-	_u32(out, version)
-	_u32(out, 0)
+	# Header: magic, version, decompressed size (0 = stored uncompressed).
+	var out := "GDSC".to_ascii_buffer()
+	out.append_array(H.uint_le(version))
+	out.append_array(H.uint_le(0))
 	out.append_array(body)
 	return out
-
-func _u32(buf: PackedByteArray, value: int) -> void:
-	buf.append(value & 0xFF)
-	buf.append((value >> 8) & 0xFF)
-	buf.append((value >> 16) & 0xFF)
-	buf.append((value >> 24) & 0xFF)
-
-# --- Reporting ---------------------------------------------------------------
-
-func _oneline(s: String) -> String:
-	return s.replace("\n", "\\n").replace("\t", "\\t")
-
-func _assert(cond: bool, msg: String) -> void:
-	_assertions += 1
-	if not cond:
-		_failures.append(msg)
-
-func _fail(msg: String) -> void:
-	_failures.append(msg)
-
-func _finish() -> void:
-	if _failures.is_empty():
-		print("[detok] PASS: %d assertion(s) across T1..T11" % _assertions)
-		quit(0)
-		return
-	for m in _failures:
-		printerr("[detok] FAIL: " + m)
-	printerr("[detok] FAILED: %d of %d assertion(s)" % [_failures.size(), _assertions])
-	quit(1)

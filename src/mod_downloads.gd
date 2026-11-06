@@ -1,58 +1,30 @@
-## Host-neutral downloads, archive validation and replacement on disk.
-## UI and pack callers enter through download_mod_from_ref or replace_mod_from_ref.
-## Host adapters resolve files; mod_sources.gd records their installed origin.
+## Downloads and updates of mod archives: file names, validation and the swap on disk.
 
-# HTTPRequest.timeout covers the whole transfer; mod bodies run to ~256MB.
+# HTTPRequest.timeout covers the whole transfer, not just the connect.
 const API_DOWNLOAD_TIMEOUT := 300.0
+# The body is held in memory before it is written, so this bounds RAM too.
+const DOWNLOAD_MAX_BYTES := 1024 * 1024 * 1024
+# Shares the result's `code` key with the HOST_ERR_* values, so it must not equal one.
+const DOWNLOAD_ALREADY_INSTALLED := "already_installed"
 
-## Current version of many installed mods, grouped by host. Returns
-## {ref_key: version}; an absent mod could not be checked. A host without the
-## resolve_file capability is skipped.
-func fetch_latest_versions(refs: Array) -> Dictionary:
-	var ids_by_provider: Dictionary = {}
-	for ref_v in refs:
-		if not host_ref_valid(ref_v):
-			continue
-		var provider := str(ref_v["provider"])
-		var ids: PackedStringArray = ids_by_provider.get(provider, PackedStringArray())
-		var id := str(ref_v["id"])
-		if not ids.has(id):
-			ids.append(id)
-		ids_by_provider[provider] = ids
-	var out := {}
-	for provider in ids_by_provider:
-		if not bool(host_caps(provider)["resolve_file"]):
-			continue
-		var res := await host_latest_versions(provider, ids_by_provider[provider], Callable())
-		if not res["ok"]:
-			_log_warning("[Updates] %s version check failed: %s" % [host_display_name(provider), host_error_message(provider, res)])
-			continue
-		if res["data"] is Dictionary:
-			out.merge(res["data"], true)
-	return out
-
-# Filename from Content-Disposition (plain, quoted, and RFC 5987 filename*).
-# Returns "" unless the value is a safe basename with an accepted extension.
 func _filename_from_content_disposition(headers: PackedStringArray) -> String:
-	for raw in headers:
-		var line: String = raw
+	for line: String in headers:
 		var colon := line.find(":")
-		if colon < 0:
-			continue
-		if line.substr(0, colon).strip_edges().to_lower() != "content-disposition":
+		if colon < 0 or line.substr(0, colon).strip_edges().to_lower() != "content-disposition":
 			continue
 		var value := line.substr(colon + 1).strip_edges()
-		# filename* first: unicode-safe, and dual-emitting servers prefer it.
 		var star_val := _extract_disposition_param(value, "filename*")
 		if star_val != "":
-			var sep := star_val.find("''")
-			if sep >= 0:
-				star_val = star_val.substr(sep + 2).uri_decode()
+			# RFC 5987: charset'language'value, and the language may be set.
+			var q1 := star_val.find("'")
+			var q2 := star_val.find("'", q1 + 1) if q1 >= 0 else -1
+			if q2 >= 0:
+				star_val = star_val.substr(q2 + 1).uri_decode()
 			if _is_safe_mod_filename(star_val):
 				return star_val.get_file()
 		var plain_val := _extract_disposition_param(value, "filename")
 		if plain_val != "":
-			# CDNs percent-encode plain filename=; decode, then validate.
+			# CDNs percent-encode plain filename= too.
 			if plain_val.contains("%"):
 				plain_val = plain_val.uri_decode()
 			if _is_safe_mod_filename(plain_val):
@@ -75,279 +47,265 @@ func _extract_disposition_param(header_value: String, param: String) -> String:
 		return rest.strip_edges()
 	return rest.substr(0, semi).strip_edges()
 
-# True when a server-supplied name is a bare filename safe to path_join.
-# get_file() only splits on "/", so "..\evil.zip" would pass a basename check;
-# both separators, drive and ADS colons, and dot-prefixed names are rejected.
 func _is_safe_basename(name: String) -> bool:
-	if name.is_empty():
+	# get_file() splits only on "/", so "..\evil.zip" would pass a basename check.
+	if name.is_empty() or "\\" in name or "/" in name or ":" in name or name.begins_with("."):
 		return false
-	if "\\" in name or "/" in name or ":" in name or name.begins_with("."):
+	# Names Windows cannot create would fail the final rename for good;
+	# is_valid_filename also refuses "%", which Windows allows.
+	if not name.replace("%", "_").is_valid_filename() or name.ends_with(".") or name.ends_with(" "):
 		return false
-	return name == name.get_file()
+	var stem := name.split(".")[0].to_lower()
+	if stem in ["con", "prn", "aux", "nul"] or (stem.length() == 4 and (stem.begins_with("com") or stem.begins_with("lpt")) and stem[3].is_valid_int()):
+		return false
+	return true
 
 func _is_safe_mod_filename(name: String) -> bool:
 	if not _is_safe_basename(name):
 		return false
-	return name.get_extension().to_lower() in ["vmz", "zip", "pck"]
+	return name.get_extension().to_lower() in MOD_ARCHIVE_EXTENSIONS
 
-# Filename the download lands under: Content-Disposition, else the old stem
-# with the new version spliced on. Best-effort; never blocks an update.
 func _derive_updated_filename(old_file_name: String, headers: PackedStringArray, new_version: String) -> String:
 	var server_name := _filename_from_content_disposition(headers)
 	if server_name != "":
 		return server_name
-	if new_version.is_empty():
-		return old_file_name
-	# new_version is untrusted; separators would land outside the mods dir.
-	if not new_version.lstrip("vV").is_valid_filename():
+	# new_version is server text; separators would land outside the mods dir.
+	if new_version.is_empty() or not new_version.lstrip("vV").is_valid_filename():
 		return old_file_name
 	var ext := old_file_name.get_extension()
-	var stem := old_file_name.get_basename()
 	var rx := RegEx.new()
 	rx.compile("[_-][vV]\\d+(?:\\.\\d+)*$")
-	var stripped := rx.sub(stem, "")
-	var new_stem := stripped + "_v" + new_version.lstrip("vV")
+	var new_stem := rx.sub(old_file_name.get_basename(), "") + "_v" + new_version.lstrip("vV")
 	return new_stem if ext.is_empty() else new_stem + "." + ext
 
-# --- Download surfaces ------------------------------------------------------
-# Four UI surfaces reach the two entry points below; keep this map current:
-#   1. Mods tab "Update" badge (build_mods_tab) -> replace_mod_from_ref
-#   2. Browse "Download" and its serial queue (build_browse_tab) -> download_mod_from_ref(ref)
-#   3. Missing-mod stub "Download" (build_mods_tab) -> download_mod_from_ref(ref, version, true)
-#   4. Modpack apply and retry (modpacks.gd) -> download_mod_from_ref(ref, version, true);
-#      the apply loop counts the "Already have" prefix as installed, not failed.
-# Each surface has its own busy state and error handling; only Browse
-# serializes, so two surfaces can race on the same file (hence the
-# _live_full_path re-resolution in profiles.gd).
-
-# Returns {ok, new_path, new_file_name}; failures also carry "error", and
-# "local": true when the cause is on this machine, not the network. On
-# success new_path may differ from target_path (Content-Disposition or
-# version bump). On failure temp and backup are cleaned up and the original is intact.
 func replace_mod_from_ref(target_path: String, ref: Dictionary) -> Dictionary:
-	# The Mods-tab badge shows "error" verbatim, so it is never "unknown".
-	var failure := {"ok": false, "new_path": target_path, "new_file_name": target_path.get_file(), "error": ""}
 	if not host_ref_valid(ref):
-		failure["error"] = "This mod has no download source recorded."
-		return failure
-	# A .zip or .pck the game mounted at startup stays locked until the game
-	# exits (a .vmz mounts through a cache copy), so the swap below would
-	# fail after a full download with a "file in use" error nobody can act on.
+		return _fail("This mod has no download source recorded.", target_path)
+	# A mounted .zip/.pck stays locked until exit (a .vmz mounts via a cache copy): fail early.
 	if _filescope_mounted.has(target_path) and target_path.get_extension().to_lower() != "vmz":
-		failure["error"] = "The game has this mod's archive open while the mod is enabled. Disable the mod, relaunch the game, then update it."
-		failure["local"] = true
-		return failure
+		return _fail("The game has this mod's archive open while the mod is enabled. Disable the mod, relaunch the game, then update it.", target_path, "", true)
 	var provider := str(ref["provider"])
 	var resolved := await host_resolve_file(ref, "")
 	if not resolved["ok"]:
-		failure["error"] = _host_resolve_failure_copy(provider, resolved, "")
-		return failure
+		return _fail(_download_resolve_failure_copy(provider, resolved, ""), target_path)
 	var file: Dictionary = resolved["data"]
-
-	var temp_path   := target_path + ".download"
-	var backup_path := target_path + ".bak"
+	var temp_path := target_path + ".download"
 	var dl := await _http_download_to_temp(provider, str(file["download_url"]),
-			_host_download_headers(file), temp_path)
+			PackedStringArray([_host_user_agent_header()]), temp_path)
 	if not dl["ok"]:
-		failure["error"] = dl["error"]
-		return failure
-	var headers: PackedStringArray = dl["headers"]
-	# A .bak left by an interrupted update goes only now: until the new
-	# download has landed it may be the one copy of the old archive.
-	if FileAccess.file_exists(backup_path):
-		DirAccess.remove_absolute(backup_path)
+		return _fail(dl["error"], target_path)
+	return _adopt_update(target_path, temp_path, dl["headers"], ref, str(file["version"]))
 
-	var new_cfg: ConfigFile = read_mod_config(temp_path)["cfg"]
+func _adopt_update(target_path: String, temp_path: String, headers: PackedStringArray,
+		ref: Dictionary, file_version: String) -> Dictionary:
+	var backup_path := target_path + ".bak"
+	# Only now: until the download lands, a leftover .bak may be the one old copy.
+	_static_remove_file(backup_path)
+	var new_cfg: ConfigFile = _inspect_download(temp_path, target_path.get_extension())["cfg"]
 	if new_cfg == null:
-		DirAccess.remove_absolute(temp_path)
-		failure["error"] = "Downloaded file is not a valid mod archive (no readable mod.txt)"
-		failure["local"] = true
-		return failure
-
-	var other_mod := _update_names_another_mod(target_path, new_cfg, provider)
+		return _fail("Downloaded file is not a valid mod archive (no readable mod.txt)", target_path, temp_path, true)
+	var other_mod := _update_names_another_mod(target_path, new_cfg, str(ref["provider"]))
 	if other_mod != "":
-		DirAccess.remove_absolute(temp_path)
-		failure["error"] = other_mod
-		failure["local"] = true
-		return failure
-
+		return _fail(other_mod, target_path, temp_path, true)
 	var dir_access := DirAccess.open(target_path.get_base_dir())
 	if dir_access == null:
-		DirAccess.remove_absolute(temp_path)
-		failure["error"] = "Could not open the mods folder"
-		failure["local"] = true
-		return failure
+		return _fail("Could not open the mods folder", target_path, temp_path, true)
 
 	var old_file_name := target_path.get_file()
-	var new_version := str(new_cfg.get_value("mod", "version", ""))
-	var new_file_name := _derive_updated_filename(old_file_name, headers, new_version)
+	var new_file_name := _derive_updated_filename(old_file_name, headers, str(new_cfg.get_value("mod", "version", "")))
 	var new_path := target_path.get_base_dir().path_join(new_file_name)
+	# Read before the old archive goes: an id-less mod's key moves to the new name.
+	var old_key := ""
+	if FileAccess.file_exists(target_path):
+		old_key = _archive_profile_key(old_file_name, target_path)
 
-	# Never clobber an unrelated archive at the derived path.
 	if not _same_file_name(new_file_name, old_file_name) and FileAccess.file_exists(new_path):
 		DirAccess.remove_absolute(temp_path)
-		failure["error"] = "A different file named \"%s\" is already in the mods folder -- move or delete it and retry" % new_file_name
-		failure["local"] = true
-		return failure
+		if not _update_already_installed_at(new_path, new_cfg):
+			return _fail("A different file named \"%s\" is already in the mods folder -- move or delete it and retry" % new_file_name, target_path, "", true)
+		# An earlier update put this version there; the next scan hides the older copy.
+		if FileAccess.file_exists(target_path) and DirAccess.remove_absolute(target_path) != OK:
+			_log_warning("[Updates] %s is already installed as %s; could not remove the old copy"
+					% [old_file_name, new_file_name])
+		_finish_install(new_path, ref, _cfg_mod_version(read_mod_config(new_path)["cfg"]), old_key)
+		return {"ok": true, "new_file_name": new_file_name}
 
-	# Stash the old archive under .bak so a failed rename can roll back.
-	if FileAccess.file_exists(target_path):
-		if dir_access.rename(target_path.get_file(), backup_path.get_file()) != OK:
-			DirAccess.remove_absolute(temp_path)
-			failure["error"] = "Could not back up the current archive (file in use?) -- close anything using it and retry"
-			failure["local"] = true
-			return failure
+	if FileAccess.file_exists(target_path) and dir_access.rename(old_file_name, backup_path.get_file()) != OK:
+		return _fail("Could not back up the current archive (file in use?) -- close anything using it and retry", target_path, temp_path, true)
+	if not _place_download(dir_access, temp_path, new_file_name, backup_path):
+		return _fail("Could not finalize the update (file may be locked) -- the old version was kept", target_path, temp_path, true)
+	_static_remove_file(backup_path)
+	_finish_install(new_path, ref, file_version, old_key)
+	return {"ok": true, "new_file_name": new_file_name}
 
-	if dir_access.rename(temp_path.get_file(), new_file_name) != OK:
-		if FileAccess.file_exists(backup_path):
-			dir_access.rename(backup_path.get_file(), target_path.get_file())
+func _fail(msg: String, target_path := "", temp_path := "", local := false) -> Dictionary:
+	if temp_path != "":
 		DirAccess.remove_absolute(temp_path)
-		failure["error"] = "Could not finalize the update (file may be locked) -- the old version was kept"
-		failure["local"] = true
-		return failure
+	if target_path != "":
+		return {"ok": false, "new_file_name": target_path.get_file(), "error": msg, "local": local}
+	return {"ok": false, "file_name": "", "error": msg}
 
-	# New file is in place; the .bak (which is the old archive) can go.
-	if FileAccess.file_exists(backup_path):
-		DirAccess.remove_absolute(backup_path)
-	_record_installed_mod_source(new_file_name, ref, str(file["version"]))
-	return {"ok": true, "new_path": new_path, "new_file_name": new_file_name}
+func _inspect_download(temp_path: String, ext: String) -> Dictionary:
+	if ext.to_lower() == "pck":
+		var f := FileAccess.open(temp_path, FileAccess.READ)
+		var magic := f.get_buffer(4) if f != null else PackedByteArray()
+		if f != null:
+			f.close()
+		if magic != PackedByteArray([0x47, 0x44, 0x50, 0x43]):  # "GDPC"
+			return {"ok": false, "cfg": null, "error": "Downloaded file is not a valid .pck"}
+		return {"ok": true, "cfg": null, "error": ""}
+	var zr := ZIPReader.new()
+	if zr.open(temp_path) != OK:
+		return {"ok": false, "cfg": null, "error": "Downloaded file is not a valid archive"}
+	zr.close()
+	return {"ok": true, "cfg": read_mod_config(temp_path)["cfg"], "error": ""}
 
+func _place_download(dir: DirAccess, temp_path: String, dest_name: String, backup_path: String = "") -> bool:
+	if dir.rename(temp_path.get_file(), dest_name) == OK:
+		return true
+	if backup_path != "" and FileAccess.file_exists(backup_path):
+		dir.rename(backup_path.get_file(), backup_path.get_file().get_basename())
+	return false
 
-# Only the same mod replaces an installed one. A mod.txt copied from another
-# mod can point the update check at that mod's page, and the swap would then
-# delete this mod for a different one. The error to show, or "" when both
-# archives name the same [mod] id or either names none.
+func _finish_install(new_path: String, ref: Dictionary, version: String, old_key: String = "") -> void:
+	var new_key := _archive_profile_key(new_path.get_file(), new_path)
+	if old_key.begins_with("zip:"):
+		_move_profile_key(old_key, new_key)
+	_persist_single_mod_source(new_key, {"provider": str(ref["provider"]), "id": str(ref["id"]), "version": version})
+
 func _update_names_another_mod(target_path: String, new_cfg: ConfigFile, provider: String) -> String:
 	var old_cfg: ConfigFile = read_mod_config(target_path)["cfg"] if FileAccess.file_exists(target_path) else null
-	var old_id := str(old_cfg.get_value("mod", "id", "")).strip_edges().to_lower() if old_cfg != null else ""
-	var new_id := str(new_cfg.get_value("mod", "id", "")).strip_edges().to_lower() if new_cfg != null else ""
+	var old_id := _cfg_mod_id(old_cfg)
+	var new_id := _cfg_mod_id(new_cfg)
 	if old_id == "" or new_id == "" or old_id == new_id:
 		return ""
-	return "The file on %s is a different mod (id \"%s\", this one is \"%s\"), so the installed mod was kept. Its mod.txt may point at the wrong mod page." \
+	return "The file on %s is a different mod (id \"%s\", this one is \"%s\"), so the installed mod was kept. Either the mod page is serving the wrong file or this mod's mod.txt points at the wrong page." \
 			% [host_display_name(provider), new_id, old_id]
 
+func _update_already_installed_at(path: String, new_cfg: ConfigFile) -> bool:
+	var cfg: ConfigFile = read_mod_config(path)["cfg"]
+	if cfg == null or new_cfg == null:
+		return false
+	var id := _cfg_mod_id(cfg)
+	if id == "" or id != _cfg_mod_id(new_cfg):
+		return false
+	return compare_versions(_cfg_mod_version(cfg), _cfg_mod_version(new_cfg)) >= 0
 
-# True when two names in one folder are the same file: equal, or equal but for
-# case where the file system ignores it. file_exists() finds the installed
-# archive under a new name that differs only in case.
+func _mod_ids_installed_from(ref: Dictionary) -> PackedStringArray:
+	var ids := PackedStringArray()
+	var page := host_ref_key(ref)
+	if page == "":
+		return ids
+	var page_keys := PackedStringArray([page])
+	for alias in host_ref_aliases(page):
+		page_keys.append(str(alias))
+	var persisted := _get_persisted_mod_sources()
+	for entry in _ui_mod_entries:
+		var mid := _entry_mod_key(entry)
+		if mid == "" or ids.has(mid):
+			continue
+		for key in _entry_ref_keys(entry, persisted):
+			if page_keys.has(key):
+				ids.append(mid)
+				break
+	return ids
+
+func _install_names_another_mod(archive_path: String, installed_ids: PackedStringArray, provider: String) -> String:
+	if installed_ids.is_empty():
+		return ""
+	var got := _cfg_mod_id(read_mod_config(archive_path)["cfg"])
+	if got == "" or installed_ids.has(got):
+		return ""
+	for entry in _ui_mod_entries:
+		if _entry_mod_key(entry) == got:
+			return "The file on %s is a different mod (id \"%s\") from the one installed from that page (\"%s\"), and that mod is already installed from elsewhere, so it was not installed. The mod page may be serving the wrong file." \
+					% [host_display_name(provider), got, installed_ids[0]]
+	return ""
+
+func _install_collision(final_path: String, temp_path: String, derived_name: String) -> Dictionary:
+	var downloaded_cfg: ConfigFile = read_mod_config(temp_path)["cfg"]
+	DirAccess.remove_absolute(temp_path)
+	if downloaded_cfg != null and _update_already_installed_at(final_path, downloaded_cfg):
+		return {"ok": true, "file_name": derived_name, "error": ""}
+	return _install_already_have(derived_name)
+
+func _install_already_have(taken: String, temp_path := "") -> Dictionary:
+	var r := _fail("Already have a file named " + taken, "", temp_path)
+	r["code"] = DOWNLOAD_ALREADY_INSTALLED
+	return r
+
 func _same_file_name(a: String, b: String) -> bool:
 	if a == b:
 		return true
 	return a.to_lower() == b.to_lower() and OS.get_name() in ["Windows", "macOS"]
 
-
-# Fetch an archive and adopt it into mods/. Provider-neutral: the caller
-# resolved a FileRecord through the seam. Returns {ok, file_name, error}; on
-# failure the temp file is cleaned up. The "Already have a file named " prefix
-# is a contract: modpacks.gd counts that failure as already-installed.
-func _host_install_downloaded_archive(provider: String, download_url: String, headers: PackedStringArray,
-		fallback_stem: String, filename_hint: String, version_hint: String,
-		allow_rename_on_collision: bool, expected_sha256: String = "") -> Dictionary:
-	var failure := {"ok": false, "file_name": "", "error": "unknown"}
-	if _mods_dir.is_empty():
-		_mods_dir = OS.get_executable_path().get_base_dir().path_join(MOD_DIR)
-	DirAccess.make_dir_recursive_absolute(_mods_dir)
-
-	# The final name comes from the response headers, so the download lands
-	# under the fallback stem first and is renamed once.
-	var temp_path := _mods_dir.path_join(fallback_stem + ".download")
-	var dl := await _http_download_to_temp(provider, download_url, headers, temp_path, expected_sha256)
+func _install_downloaded_archive(ref: Dictionary, file: Dictionary, rename_on_collision: bool,
+		expected_sha256: String, installed_ids: PackedStringArray) -> Dictionary:
+	var provider := str(ref["provider"])
+	var mods_dir := _mods_dir_path()
+	DirAccess.make_dir_recursive_absolute(mods_dir)
+	# ModWorkshop keeps "mws_mod_<id>", the name its earlier installs have.
+	var stem := provider + "_" + str(ref["id"]).validate_filename()
+	if provider == HOST_MODWORKSHOP:
+		stem = "mws_mod_" + str(ref["id"])
+	var temp_path := mods_dir.path_join(stem + ".download")
+	var dl := await _http_download_to_temp(provider, str(file["download_url"]),
+			PackedStringArray([_host_user_agent_header()]), temp_path, expected_sha256)
 	if not dl["ok"]:
-		failure["error"] = dl["error"]
-		return failure
-	var resp_headers: PackedStringArray = dl["headers"]
+		return _fail(dl["error"])
+	# Before the collision check: modpacks count "Already have" as installed.
+	var other_mod := _install_names_another_mod(temp_path, installed_ids, provider)
+	if other_mod != "":
+		return _fail(other_mod, "", temp_path)
 
-	# Same _is_safe_mod_filename gate as the update path. The adapter's
-	# filename_hint carries whatever its host knows; the fallback stem is
-	# provider-specific so ModWorkshop installs keep their old filenames.
-	var derived_name := _filename_from_content_disposition(resp_headers)
-	if derived_name.is_empty() and _is_safe_mod_filename(filename_hint):
-		derived_name = filename_hint
-	if derived_name.is_empty():
-		derived_name = fallback_stem + ".zip"
-	var final_path := _mods_dir.path_join(derived_name)
+	var file_name := _pick_install_file_name(dl["headers"], file, stem, rename_on_collision)
+	if FileAccess.file_exists(mods_dir.path_join(file_name)):
+		if not rename_on_collision:
+			return _install_collision(mods_dir.path_join(file_name), temp_path, file_name)
+		return _install_already_have(file_name + " (and the renamed variant)", temp_path)
 
-	# Collisions: Browse refuses. Modpack apply (allow_rename_on_collision)
-	# suffixes the version so a pinned version coexists and dedup picks the higher.
-	if FileAccess.file_exists(final_path):
-		if not allow_rename_on_collision:
-			# Prefix contract with modpacks.gd _apply_modpack_inner; reword it there too.
-			DirAccess.remove_absolute(temp_path)
-			failure["error"] = "Already have a file named " + derived_name
-			return failure
-		var meta_version := version_hint.strip_edges().lstrip("vV")
-		# Server-controlled string headed into a filename; is_valid_filename rejects traversal and "<null>".
-		if not meta_version.is_empty() and not meta_version.is_valid_filename():
-			meta_version = ""
-		if meta_version.is_empty():
-			# Last-ditch: a timestamp suffix so the install can proceed.
-			meta_version = str(int(Time.get_unix_time_from_system()))
-		var ext := derived_name.get_extension()
-		var stem := derived_name.get_basename()
-		derived_name = stem + "-v" + meta_version + ("." + ext if ext != "" else "")
-		final_path = _mods_dir.path_join(derived_name)
-		if FileAccess.file_exists(final_path):
-			# Same "Already have" prefix contract as above.
-			DirAccess.remove_absolute(temp_path)
-			failure["error"] = "Already have a file named " + derived_name + " (and the renamed variant)"
-			return failure
-
-	# Validate before adopting, mirroring collect_mod_metadata: a .pck has no
-	# readable root mod.txt, so check its container magic instead.
-	var dl_ext := derived_name.get_extension().to_lower()
-	if dl_ext == "pck":
-		if not _looks_like_pck(temp_path):
-			DirAccess.remove_absolute(temp_path)
-			failure["error"] = "Downloaded file is not a valid .pck"
-			return failure
-	else:
-		# Reject only an invalid container; mod.txt is optional, same as discovery.
-		var zr := ZIPReader.new()
-		var zip_ok := zr.open(temp_path) == OK
-		if zip_ok:
-			zr.close()
-		if not zip_ok:
-			DirAccess.remove_absolute(temp_path)
-			failure["error"] = "Downloaded file is not a valid archive"
-			return failure
-		if read_mod_config(temp_path)["cfg"] == null:
-			_log_warning("Downloaded '%s' has no parseable root mod.txt -- installing as a plain resource pack" % derived_name)
-
-	var dir_access := DirAccess.open(_mods_dir)
+	var dl_ext := file_name.get_extension().to_lower()
+	var inspected := _inspect_download(temp_path, dl_ext)
+	if not inspected["ok"]:
+		return _fail(inspected["error"], "", temp_path)
+	if dl_ext != "pck" and inspected["cfg"] == null:
+		_log_warning("Downloaded '%s' has no root mod.txt; installing it as a plain resource pack" % file_name)
+	var dir_access := DirAccess.open(mods_dir)
 	if dir_access == null:
-		DirAccess.remove_absolute(temp_path)
-		failure["error"] = "Could not open the mods folder"
-		return failure
+		return _fail("Could not open the mods folder", "", temp_path)
+	if not _place_download(dir_access, temp_path, file_name):
+		return _fail("Could not move the downloaded file into the mods folder (file may be locked) -- close anything using it and retry", "", temp_path)
+	return {"ok": true, "file_name": file_name, "error": ""}
 
-	if dir_access.rename(temp_path.get_file(), derived_name) != OK:
-		DirAccess.remove_absolute(temp_path)
-		failure["error"] = "Could not move the downloaded file into the mods folder (file may be locked) -- close anything using it and retry"
-		return failure
+func _pick_install_file_name(headers: PackedStringArray, file: Dictionary, stem: String,
+		rename_on_collision: bool) -> String:
+	var file_name := _filename_from_content_disposition(headers)
+	if file_name.is_empty() and _is_safe_mod_filename(str(file["filename_hint"])):
+		file_name = str(file["filename_hint"])
+	if file_name.is_empty():
+		file_name = stem + ".zip"
+	if not rename_on_collision or not FileAccess.file_exists(_mods_dir_path().path_join(file_name)):
+		return file_name
+	# Server text headed into a file name; a timestamp stands in for a bad one.
+	var suffix := str(file["version"]).strip_edges().lstrip("vV")
+	if suffix.is_empty() or not suffix.is_valid_filename():
+		suffix = str(int(Time.get_unix_time_from_system()))
+	var ext := file_name.get_extension()
+	return file_name.get_basename() + "-v" + suffix + ("." + ext if ext != "" else "")
 
-	return {"ok": true, "file_name": derived_name, "error": ""}
-
-
-## The user-facing reason a download request failed. A transport failure has
-## no status code; a body over the size cap is its own case, since retrying it
-## cannot help.
 func _download_failure_text(provider: String, result: int, status: int) -> String:
 	if result == HTTPRequest.RESULT_BODY_SIZE_LIMIT_EXCEEDED:
-		return "This file is larger than the 256 MB the mod loader will download. Get it from the mod's page and put it in the mods folder yourself."
+		return "This file is larger than the %d MB the mod loader will download. Get it from the mod's page and put it in the mods folder yourself." % (DOWNLOAD_MAX_BYTES >> 20)
 	if result != HTTPRequest.RESULT_SUCCESS:
 		return "Download failed (connection error or timeout) -- check your network and retry"
 	return host_error_status(provider, "Download failed (HTTP %d)" % status)
 
-
-## Download `url` to `temp_path`, replacing any file there, and verify the
-## bytes on disk match the body. `expected_sha256`, when set, is checked
-## before anything is written. Returns {ok, error, headers}; on failure no
-## temp file is left behind and `error` is the user-facing text.
 func _http_download_to_temp(provider: String, url: String, headers: PackedStringArray,
 		temp_path: String, expected_sha256: String = "") -> Dictionary:
 	var failure := {"ok": false, "error": "", "headers": PackedStringArray()}
 	var req := HTTPRequest.new()
 	req.timeout = API_DOWNLOAD_TIMEOUT
-	req.download_body_size_limit = 256 * 1024 * 1024
+	req.body_size_limit = DOWNLOAD_MAX_BYTES
 	add_child(req)
 	var err := req.request(url, headers)
 	if err != OK:
@@ -364,17 +322,14 @@ func _http_download_to_temp(provider: String, url: String, headers: PackedString
 	if body.is_empty():
 		failure["error"] = "The download came back empty. Try again later."
 		return failure
-	# A pack that names the file's checksum gets it checked before it reaches mods/.
 	if expected_sha256 != "":
 		var ctx := HashingContext.new()
 		ctx.start(HashingContext.HASH_SHA256)
 		ctx.update(body)
-		var got := ctx.finish().hex_encode()
-		if got != expected_sha256.to_lower():
+		if ctx.finish().hex_encode() != expected_sha256.to_lower():
 			failure["error"] = "The downloaded file does not match the checksum the modpack lists. Try again later; if it keeps failing, the file on the site may have changed."
 			return failure
-	if FileAccess.file_exists(temp_path):
-		DirAccess.remove_absolute(temp_path)
+	_static_remove_file(temp_path)
 	var out := FileAccess.open(temp_path, FileAccess.WRITE)
 	if out == null:
 		failure["error"] = "Could not write to the mods folder (permissions or disk full)"
@@ -391,82 +346,34 @@ func _http_download_to_temp(provider: String, url: String, headers: PackedString
 		return failure
 	return {"ok": true, "error": "", "headers": res[2]}
 
-
-## Download headers: our User-Agent (a default one gets a bodyless 403) plus
-## the adapter's per-file headers, such as a signed-CDN token.
-func _host_download_headers(file: Dictionary) -> PackedStringArray:
-	var h := PackedStringArray(["User-Agent: " + (HOST_USER_AGENT_TEMPLATE % MODLOADER_VERSION)])
-	var extra: Variant = file.get("headers")
-	if extra is PackedStringArray:
-		h.append_array(extra)
-	return h
-
-
-## User-facing copy for a failed resolve; codes the install path cares about get specific wording.
-func _host_resolve_failure_copy(provider: String, res: Dictionary, version: String) -> String:
+func _download_resolve_failure_copy(provider: String, res: Dictionary, version: String) -> String:
 	var host := host_display_name(provider)
-	match str(res.get("code", "")):
+	match res["code"]:
 		HOST_ERR_VERSION_NOT_FOUND:
 			return host_error_status(provider, "Version " + version + " not available on " + host)
+		HOST_ERR_NOT_SCANNED:
+			return "This version has not passed " + host + "'s malware scan, so it cannot be downloaded yet."
 		HOST_ERR_NO_FILE:
-			if str(res.get("message", "")).contains("scan"):
-				return "This version has not passed " + host + "'s malware scan, so it cannot be downloaded yet."
 			return host_error_status(provider, "This mod has no downloadable file on " + host + ". Check its mod page -- the author may host the download elsewhere.")
 		HOST_ERR_OFFLINE:
 			return "Could not reach " + host + ". Check your connection and try again."
 		_:
 			return host_error_message(provider, res)
 
-
-## Record where an installed archive came from, so the update check and a
-## modpack apply know its host even when its mod.txt declares no source.
-## Only the profile key is needed, so the archive is not security-scanned here.
-func _record_installed_mod_source(file_name: String, ref: Dictionary, version: String) -> void:
-	var full_path := _mods_dir.path_join(file_name)
-	var ext := file_name.get_extension().to_lower()
-	var read: Dictionary = read_mod_config(full_path) if ext != "pck" else _mod_txt_read("pck")
-	var pk := str(_entry_from_config(read, file_name, full_path, ext).get("profile_key", ""))
-	if pk.is_empty():
-		return
-	_persist_single_mod_source(pk, {"provider": str(ref["provider"]), "id": str(ref["id"]), "version": version})
-
-
-## Filename stem when neither the server nor the adapter names the file.
-## ModWorkshop keeps "mws_mod_<id>" so existing installs are recognized.
-func _host_fallback_stem(ref: Dictionary) -> String:
-	var id := str(ref["id"])
-	if str(ref["provider"]) == HOST_MODWORKSHOP:
-		return "mws_mod_" + id
-	return str(ref["provider"]) + "_" + id.validate_filename()
-
-
-# Browse "Get" and modpack apply, for any host. Empty `version` installs the
-# host's current file; a set version pins it. Returns {ok, file_name, error}.
 func download_mod_from_ref(ref: Dictionary, version: String = "", allow_rename_on_collision: bool = false,
 		expected_sha256: String = "") -> Dictionary:
-	var failure := {"ok": false, "file_name": "", "error": "unknown"}
 	if not host_ref_valid(ref):
-		failure["error"] = "This mod has no download source recorded."
-		return failure
+		return _fail("This mod has no download source recorded.")
 	var provider := str(ref["provider"])
 	var res := await host_resolve_file(ref, version)
 	if not res["ok"]:
-		failure["error"] = _host_resolve_failure_copy(provider, res, version)
+		var failure := _fail(_download_resolve_failure_copy(provider, res, version))
+		failure["code"] = res["code"]
 		return failure
 	var file: Dictionary = res["data"]
-	var r := await _host_install_downloaded_archive(provider, str(file["download_url"]),
-			_host_download_headers(file), _host_fallback_stem(ref), str(file["filename_hint"]),
-			str(file["version"]), allow_rename_on_collision, expected_sha256)
+	# Read after the resolve, which has paired the page's slug and UUID.
+	var installed_ids := _mod_ids_installed_from(ref)
+	var r := await _install_downloaded_archive(ref, file, allow_rename_on_collision, expected_sha256, installed_ids)
 	if r["ok"]:
-		_record_installed_mod_source(str(r["file_name"]), ref, str(file["version"]))
+		_finish_install(_mods_dir_path().path_join(str(r["file_name"])), ref, str(file["version"]))
 	return r
-
-
-# .pck archives begin with "GDPC"; a CDN error page under a .pck name is refused.
-func _looks_like_pck(path: String) -> bool:
-	var f := FileAccess.open(path, FileAccess.READ)
-	if f == null:
-		return false
-	var magic := f.get_buffer(4)
-	f.close()
-	return magic == PackedByteArray([0x47, 0x44, 0x50, 0x43])
