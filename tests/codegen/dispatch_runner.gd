@@ -631,6 +631,9 @@ func _t27_awaiting_post_hook() -> void:
 		await process_frame
 		return 999)
 	check_eq(_node_a.Add(2, 3), 5, "an awaiting post hook keeps vanilla's value")
+	check_eq(_node_a.Add(2, 3), 5, "and keeps it on the second call")
+	var warned: Array = Array(_ml._report_lines).filter(func(l): return "post hook 'fixturedispatch-add-post' awaits" in l)
+	check_eq(warned.size(), 1, "two calls warn exactly once")
 	await process_frame
 	await process_frame
 	_unhook_all([id])
