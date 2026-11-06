@@ -59,7 +59,7 @@ class CfgBlockStub extends "res://stub_loader.gd":
 		DirAccess.rename_absolute(UI_CONFIG_PATH + ".held", UI_CONFIG_PATH)
 
 func _init() -> void:
-	super("profiles", "T10..T101")
+	super("profiles", "T10..T104")
 
 func _tests(ml: Object) -> void:
 	# Mod scans and id matching read the regexes _ready compiles.
@@ -110,6 +110,9 @@ func _tests(ml: Object) -> void:
 		["T99", _t99_slotless_active_pack_refuses_a_replace],
 		["T100", _t100_newest_same_named_pack_wins],
 		["T101", _t101_failed_cfg_save_stops_the_mcm_switch],
+		["T102", _t102_new_profile_dialog_keeps_the_old_selection],
+		["T103", _t103_stranded_slot_on_an_unstored_default],
+		["T104", _t104_unstamped_settings_section_is_no_profile],
 	]:
 		begin(t[0])
 		await t[1].call(ml)
@@ -1848,3 +1851,70 @@ func _t101_failed_cfg_save_stops_the_mcm_switch(_ml: Object) -> void:
 		_assert(not stub._mcm_switch_pending(), "%s: the retry clears the markers" % c[0])
 		H.pack_cleanup(stub)
 		stub.free()
+
+# The dialog sets the new profile's mods, so a pending priority save must run first.
+func _t102_new_profile_dialog_keeps_the_old_selection(ml: Object) -> void:
+	var win := Window.new()
+	root.add_child(win)
+	ml.set("_ui_window", win)
+	# [initial state box, New's a and b]
+	for c in [["Empty", [false, false]], ["All", [true, true]], ["Copy", [true, false]]]:
+		H.pack_cleanup(ml)
+		_install(ml, [H.mod_entry("a@1.0", "a", "1.0"), H.mod_entry("b@1.0", "b", "1.0", {"enabled": false, "priority": -7})])
+		ml.set("_active_profile", "Main")
+		_seed(ml, [["settings", "active_profile", "Main"], ["profile.Main.enabled", "a@1.0", true],
+				["profile.Main.enabled", "b@1.0", false], ["profile.Main.priority", "b@1.0", 3]])
+		ml.set("_priority_save_pending", true)
+		ml._show_new_profile_dialog(null)
+		var d: ConfirmationDialog = win.get_child(win.get_child_count() - 1)
+		(d.find_children("*", "LineEdit", true, false)[0] as LineEdit).text = "New"
+		for box: CheckBox in d.find_children("*", "CheckBox", true, false):
+			box.button_pressed = box.text.begins_with(c[0])
+		d.confirmed.emit()
+		win.remove_child(d)
+		d.free()
+		var cfg := _read(ml)
+		check_eq([cfg.get_value("profile.Main.enabled", "a@1.0"), cfg.get_value("profile.Main.enabled", "b@1.0")],
+				[true, false], "%s: Main's mods" % c[0])
+		check_eq(cfg.get_value("profile.Main.priority", "b@1.0", 0), -7, "%s: pending priority on Main" % c[0])
+		check_eq([cfg.get_value("profile.New.enabled", "a@1.0"), cfg.get_value("profile.New.enabled", "b@1.0")],
+				c[1], "%s: New's mods" % c[0])
+	ml.set("_ui_window", null)
+	root.remove_child(win)
+	win.free()
+	ml.set("_active_profile", "Default")
+	H.pack_cleanup(ml)
+
+# A pack applied from a never-saved Default: recovery keeps the pre-pack MCM.
+func _t103_stranded_slot_on_an_unstored_default(ml: Object) -> void:
+	for listed in [false, true]:
+		H.pack_cleanup(ml)
+		_install(ml, [H.mod_entry("a@1.0", "a", "1.0")])
+		var rows := [["settings", "active_profile", "modpack__X"], ["settings", "active_modpack", ""],
+				["settings", "modpack_backup_profile", "Default"], ["profile.modpack__X.enabled", "a@1.0", true]]
+		if listed:
+			rows.append(["profile.Default.settings", "listed", true])
+		_seed(ml, rows)
+		for c in [["_before_modpack_X", "v=pre"], ["Default", "v=default-old"]]:
+			ml._write_mcm_snapshot_from_data(c[0], {"some-mod/config.ini": str(c[1]).to_utf8_buffer()})
+		H.write_text(LIVE_MCM, "v=pack")
+		ml._load_ui_config()
+		check_eq(str(ml.get("_active_profile")), "Default", "listed=%s: recovered profile" % listed)
+		check_eq(FileAccess.get_file_as_string(LIVE_MCM), "v=pre", "listed=%s: live MCM" % listed)
+	ml.set("_active_profile", "Default")
+	H.pack_cleanup(ml)
+
+# 3.4.2 wrote .settings for a profile with no mods and never listed it.
+func _t104_unstamped_settings_section_is_no_profile(ml: Object) -> void:
+	# [stored active profile, the settings-only profile]
+	for c in [["Empty", "Empty"], ["Default", "Solo"]]:
+		H.pack_cleanup(ml)
+		_install(ml, [H.mod_entry("a@1.0", "a", "1.0", {"enabled": false}), H.mod_entry("b@1.0", "b", "1.0", {"enabled": false})])
+		_seed(ml, [["settings", "active_profile", c[0]], ["profile.%s.settings" % c[1], "hide_disabled", true]])
+		ml._load_ui_config()
+		check_eq(str(ml.get("_active_profile")), "Default", "%s: active profile" % c[1])
+		check_eq([_find(ml, "mod_id", "a")["enabled"], _find(ml, "mod_id", "b")["enabled"]], [true, true], "%s: mods on" % c[1])
+		_assert(not ml._list_profiles().has(c[1]), "%s: not listed" % c[1])
+		_assert(not ml.get("_mods_hide_disabled"), "%s: hide_disabled off" % c[1])
+	ml.set("_active_profile", "Default")
+	H.pack_cleanup(ml)

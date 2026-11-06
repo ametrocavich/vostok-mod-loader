@@ -251,6 +251,7 @@ func _show_new_profile_dialog(tabs: TabContainer) -> void:
 			err_lbl.text = err
 			return
 		d.queue_free()
+		_flush_priority_save()
 		# _create_profile snapshots the in-memory entries; priorities stay.
 		if states[1].button_pressed:
 			for entry in _ui_mod_entries:

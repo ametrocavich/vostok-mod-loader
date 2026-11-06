@@ -124,7 +124,7 @@ func _recover_stranded_slot(cfg: ConfigFile, users: Array[String]) -> void:
 	else:
 		_active_profile = users[0] if not users.is_empty() else "Default"
 	# Any landing but the backup gets its own MCM back, or the next switch saves over it.
-	if not (pre_pack_restored and to_backup) and _has_mcm_snapshot(_active_profile):
+	if not (pre_pack_restored and _active_profile == backup) and _has_mcm_snapshot(_active_profile):
 		_restore_mcm_from(_active_profile)
 	cfg.set_value("settings", "active_profile", _active_profile)
 	cfg.set_value("settings", "modpack_backup_profile", "")
@@ -220,6 +220,8 @@ func _list_profiles_in_cfg(cfg: ConfigFile) -> Array[String]:
 		for suffix: String in PROFILE_SUBSECTIONS:
 			if not sec.ends_with(suffix):
 				continue
+			if suffix == ".settings" and not cfg.has_section_key(sec, "listed"):
+				break
 			var name: String = sec.substr(prefix.length(), sec.length() - prefix.length() - suffix.length())
 			if name != "" and name != VANILLA_PROFILE and not (name in names):
 				names.append(name)
