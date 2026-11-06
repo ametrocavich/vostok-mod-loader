@@ -62,7 +62,7 @@ Search results and mod details are cached in memory for minutes; ModWorkshop ima
 
 If Browse cannot reach the selected site when it opens, it shows the last landing it loaded from that site under `Showing cached results.`, with how old the results are and a **Retry** button. With no saved results, or when a search, a detail file list or a download fails, Browse shows the site's error with a **Retry** button. A failed **Load more** keeps what is already on screen; click it again to retry.
 
-Vostok Mods tells the launcher how many requests it has left. When they run out, or the site refuses a request as too frequent, the launcher pauses its requests to that site for the seconds the site names, and a rate-limited request says when to try again.
+Vostok Mods tells the launcher how many requests it has left. When they run out, or the site refuses a request as too frequent, the launcher pauses its requests to that site for the seconds the site names, up to two minutes (a longer ask counts as one minute). Downloads and pack applies wait it out with a countdown; lists and search show the rate-limited notice, which says when to try again.
 
 ## Modpacks
 

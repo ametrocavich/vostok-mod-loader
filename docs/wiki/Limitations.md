@@ -38,7 +38,7 @@ The hook rewrite avoids it: rewritten scripts ship at the original `res://Script
 
 ### Scripts deliberately not rewritten
 
-Three lists in [src/constants.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd) keep scripts out of the hook pack, each entry with its reason beside it. `RTV_SKIP_LIST` holds runtime-sensitive scripts a dispatch wrapper breaks or that are not verified under one (`MuzzleFlash.gd`, `Hit.gd`, `ParticleInstance.gd`, `Message.gd`, `Explosion.gd` and others). `RTV_RESOURCE_SERIALIZED_SKIP` holds save-data classes (`CharacterSave`, `ItemSave`, `Preferences` and others): `ResourceSaver` embeds the script path in save files, so wrapping one would make saves depend on the mod. `RTV_RESOURCE_DATA_SKIP` holds data resources (`AIData`, `ItemData`, `LootTable` and others) that have no call sites to intercept.
+Three lists in [src/constants.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/constants.gd) keep scripts out of the hook pack, each list with its reason in a comment above it and `RTV_SKIP_LIST` with one beside every entry. `RTV_SKIP_LIST` holds runtime-sensitive scripts a dispatch wrapper breaks or that are not verified under one (`MuzzleFlash.gd`, `Hit.gd`, `ParticleInstance.gd`, `Message.gd`, `Explosion.gd` and others). `RTV_RESOURCE_SERIALIZED_SKIP` holds save-data classes (`CharacterSave`, `ItemSave`, `Preferences` and others): `ResourceSaver` embeds the script path in save files, so wrapping one would make saves depend on the mod. `RTV_RESOURCE_DATA_SKIP` holds data resources (`AIData`, `ItemData`, `LootTable` and others) that have no call sites to intercept.
 
 Hooks on these scripts never fire, and a mod that declares one gets a warning naming it. Hook a caller or consumer instead.
 
@@ -68,7 +68,7 @@ Database["Potato"]       # registry overrides applied
 Database.Potato          # resolved at compile time: vanilla only
 ```
 
-Use `Database.get(name)`. The header of [src/registry/scenes.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/registry/scenes.gd) says the same.
+Use `Database.get(name)`. The comment above `_database_consts_to_dict` in [src/rewriter_registry_inject.gd](https://github.com/ametrocavich/vostok-mod-loader/blob/development/src/rewriter_registry_inject.gd) says the same.
 
 ### Mod-shadowed class cache
 

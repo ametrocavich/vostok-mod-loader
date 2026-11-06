@@ -21,10 +21,10 @@ VOSTOKMODS_PAGE.md; tools/dev.py check-docs fails when the two differ.
 * Vostok Mods rows in Browse show the date of the mod's newest file, and Recently updated sorts by it.
 * A modpack mod the site cannot serve yet gets a Download button on the Mods tab, with the site's own reason, instead of "Download unavailable".
 * Browse switches between Mods and Modpacks: Modpacks lists the packs on Vostok Mods with covers, search and sort; Get one from the list or a pasted link and see its mods before you apply. The Modpacks tab holds the packs you got. Modpacks are no longer labelled beta.
-* Check for updates also reports the packs that changed on Vostok Mods, a pack whose mod settings are too many or too large is refused, and the launcher waits out the site's rate limit for as long as the site asks.
+* Check for updates also reports the packs that changed on Vostok Mods, a pack whose mod settings are too many or too large is refused, and when the site rate-limits the launcher, downloads and pack applies wait the seconds it names (up to two minutes) while lists and search show the rate-limited notice.
 * Download size limits apply as written (the loader set a property Godot 4.6 does not have, so none applied); the mod download limit is 1 GiB.
 * A dependency listed as both required and optional counts as required. Registry fixes: reverting a patched-then-overridden recipe, event or trader task restores the original entry; two mods enabling the same item for the same trader pool no longer undo each other.
-* Internals cleaned up for the long-term line: the loader's code is about a quarter smaller (some 5,700 fewer lines). Mods that work on 3.4.x keep working; the mod API gained one call, below.
+* Internals cleaned up for the long-term line: the loader's code is about a quarter smaller (some 5,600 fewer lines). Mods that work on 3.4.x keep working; the mod API gained one call, below.
 * For mod authors: RTVModLib.active_profile() names the profile the mods loaded from, and has_replace() no longer reports a replace slot whose owner is gone. Full notes on GitHub.
 <!-- end changelog -->
 
@@ -52,7 +52,7 @@ VOSTOKMODS_PAGE.md; tools/dev.py check-docs fails when the two differ.
 * The loader no longer edits mod scripts in any way. Mods run exactly as their authors shipped them.
 * Many fixes to load order, profiles, crash recovery and hook reliability. Full notes on GitHub.
 
-Coming from 3.2.1: copy the new `modloader.gd` and `override.cfg` over the old ones (or run the installer). Profiles, enabled mods and load order carry over.
+Coming from 3.2.1: copy the new `modloader.gd` and `override.cfg` over the old ones (or run the installer). Profiles, enabled mods and load order carry over; a launcher left on Vanilla opens on one of your profiles, with its mods enabled.
 <!-- end changelog -->
 
 # Community Mod Loader
