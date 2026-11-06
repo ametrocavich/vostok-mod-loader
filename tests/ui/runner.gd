@@ -1,4 +1,4 @@
-## Launcher UI harness: T1..T5, T7, T8 and T10..T35 assert helpers, seams, Browse kinds, the Modpacks tab, covers and the launch label; T9 dumps every surface for check_ui.sh.
+## Launcher UI harness: T1..T5, T7, T8 and T10..T36 assert helpers, seams, Browse kinds, the Modpacks tab, covers and the launch label; T9 dumps every surface for check_ui.sh.
 ## A dump records properties, not pixels; host requests fail as offline (the loader stays out of the tree).
 extends "res://runner_base.gd"
 
@@ -115,7 +115,7 @@ var _user_abs := ""
 var _version := ""
 
 func _init() -> void:
-	super("ui", "T1..T5, T7, T8 and T10..T35")
+	super("ui", "T1..T5, T7, T8 and T10..T36")
 	max_frames = 600
 
 func _run() -> void:
@@ -165,7 +165,7 @@ func _run() -> void:
 	await _dump_all(ml)
 	H.write_text(DUMP_PATH, "\n".join(_out) + "\n")
 	ml.free()
-	_report.scope = "T1..T5, T7, T8 and T10..T35, dump of %d line(s) written for T9" % _out.size()
+	_report.scope = "T1..T5, T7, T8 and T10..T36, dump of %d line(s) written for T9" % _out.size()
 	_finish()
 
 func _t1_browse_meta_and_gate(ml: Object) -> void:
@@ -423,6 +423,7 @@ func _t14_to_t18_packs(win: Window) -> void:
 	_t27_spin_label(pk, tabs)
 	await _t28_cover_cache(pk)
 	await _t29_freed_cover(pk)
+	await _t36_thumb_retry(pk)
 	await _t30_get_after_failure(pk, tabs)
 	# A live first page wrote the snapshots; the dump's launcher_empty pins the state without them.
 	for key in ["vostokmods_packs", "vostokmods"]:
@@ -920,6 +921,23 @@ func _t29_freed_cover(pk: Object) -> void:
 	await _settle()
 	_assert((pk.get("_thumb_texture_cache") as Dictionary).has(image["url"]), "the memo keeps the texture")
 	pk.thumb_body = PackedByteArray()
+
+# A failed mod thumbnail is asked again on a later render.
+func _t36_thumb_retry(pk: Object) -> void:
+	begin("T36")
+	var holder := Control.new()
+	var image := {"url": "https://files.vostokmods.net/mods/7/thumb.png", "cache_key": ""}
+	pk.thumb_body = PackedByteArray()
+	pk.thumb_urls.clear()
+	await pk._browse_load_thumbnail_async(pk._make_thumb_cell(holder, Vector2(96, 54)), image)
+	var failed: Dictionary = pk.get("_thumb_failed")
+	failed[image["url"]] = Time.get_ticks_msec() - 1
+	pk.thumb_body = _cover_png()
+	var later: TextureRect = pk._make_thumb_cell(holder, Vector2(96, 54))
+	await pk._browse_load_thumbnail_async(later, image)
+	check_eq([pk.thumb_urls.size(), later.texture != null], [2, true], "a later render asks again")
+	pk.thumb_body = PackedByteArray()
+	holder.free()
 
 # A Get that fails after its detail dialog closed leaves the next Get free to run.
 func _t30_get_after_failure(pk: Object, tabs: TabContainer) -> void:

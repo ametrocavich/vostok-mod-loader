@@ -149,8 +149,9 @@ func _make_thumb_cell(parent: Control, min_size: Vector2, cover: bool = true,
 # Decoded textures by cache key, FIFO-bounded (Dictionary keeps insertion order).
 var _thumb_texture_cache: Dictionary = {}
 const _THUMB_TEXTURE_CACHE_MAX := 256
-# URLs whose fetch failed this session; the next launch asks again.
+# URL -> msec until which a failed fetch is not asked again, so rebuilds share one try.
 var _thumb_failed: Dictionary = {}
+const _THUMB_RETRY_MS := 30000
 
 func _memo_thumb(memo_key: String, img: Image) -> ImageTexture:
 	var tex := ImageTexture.create_from_image(img)
@@ -180,7 +181,7 @@ func _browse_load_thumbnail_async(rect: TextureRect, image: Dictionary) -> void:
 	if _thumb_texture_cache.has(memo_key):
 		_set_thumb_ready(rect, _thumb_texture_cache[memo_key])
 		return
-	if _thumb_failed.has(url):
+	if Time.get_ticks_msec() < int(_thumb_failed.get(url, 0)):
 		_set_thumb_state(rect, "failed")
 		return
 
@@ -202,7 +203,7 @@ func _browse_load_thumbnail_async(rect: TextureRect, image: Dictionary) -> void:
 	var alive := is_instance_valid(rect)
 	var img := _decode_image_buffer(body)
 	if img == null:
-		_thumb_failed[url] = true
+		_thumb_failed[url] = Time.get_ticks_msec() + _THUMB_RETRY_MS
 		if alive:
 			_set_thumb_state(rect, "failed")
 		return
