@@ -213,6 +213,10 @@ report_result() {
         echo "OK: $label harness passed in ${SECONDS}s$detail (full log: $WORK/run.log)"
     else
         echo "FAILED: $label harness (exit $status, ${SECONDS}s). Full log: $WORK/run.log" >&2
+        if [[ $status -gt 128 ]]; then
+            echo "  The engine died on signal $((status - 128)); the log ends:" >&2
+            tail -n 60 "$WORK/run.log" | sed 's/^/    /' >&2
+        fi
     fi
     exit "$status"
 }
