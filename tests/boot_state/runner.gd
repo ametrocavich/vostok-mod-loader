@@ -25,7 +25,7 @@ var _exe_cfg := ""
 var _built: PackedStringArray = []
 
 func _init() -> void:
-	super("boot-state", "T1..T50")
+	super("boot-state", "T1..T52")
 
 func _run() -> void:
 	_ml = boot_loader()
