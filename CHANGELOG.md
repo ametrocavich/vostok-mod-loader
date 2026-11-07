@@ -1,5 +1,24 @@
 # Changelog
 
+## [3.5.0](https://github.com/ametrocavich/vostok-mod-loader/compare/v3.4.2...v3.5.0) (2026-11-06)
+
+
+### Features
+
+* 3.5.0 LTS ([7979294](https://github.com/ametrocavich/vostok-mod-loader/commit/7979294a2aed14d8a85b200fb796c8206b1057dc))
+* 3.5.0 LTS ([#97](https://github.com/ametrocavich/vostok-mod-loader/issues/97)) ([d8b4ca4](https://github.com/ametrocavich/vostok-mod-loader/commit/d8b4ca4d2b9abbe76720c69c4ab4c76e60fd5367))
+* 3.5.0 LTS loader ([690bce0](https://github.com/ametrocavich/vostok-mod-loader/commit/690bce0e795e629bb470b7b843790b2054aae0a0))
+
+
+### Bug Fixes
+
+* **hosts:** keep the pack zip on a failed rewrite, fresh update checks ([09528bc](https://github.com/ametrocavich/vostok-mod-loader/commit/09528bcb42dbe95fe94ae3afe22a15939c9b5215))
+* **installer:** find Steam on any drive and merge override.cfg ([721df49](https://github.com/ametrocavich/vostok-mod-loader/commit/721df49d1ac6ccaef4036b83f35c6934ecde4238))
+* **notices:** crash-streak and partial-hook banners say what happens ([b1bd43f](https://github.com/ametrocavich/vostok-mod-loader/commit/b1bd43f5255e7fe99f051fcc5a3559fc31ab196a))
+* **profiles:** a new profile no longer overwrites the one being left ([ed2843c](https://github.com/ametrocavich/vostok-mod-loader/commit/ed2843c5e4010666f3b7ab25640bc7cec267c03c))
+* **profiles:** stop a deferred profile switch when its save fails ([23db2e8](https://github.com/ametrocavich/vostok-mod-loader/commit/23db2e80fd75b26e9a2a5ae2609b1ca2e9e91df4))
+* **ui:** ask again for a thumbnail 30 s after a failed fetch ([add5c7e](https://github.com/ametrocavich/vostok-mod-loader/commit/add5c7ef9ae5f5fbacdd9ab11d97003de88aec29))
+
 ## [3.4.2](https://github.com/ametrocavich/vostok-mod-loader/compare/v3.4.1...v3.4.2) (2026-10-06)
 
 

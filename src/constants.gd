@@ -2,7 +2,7 @@
 ## references another must come after it (across files: earlier in build.sh FILES).
 
 # x-release-please-start-version
-const MODLOADER_VERSION := "3.4.2"
+const MODLOADER_VERSION := "3.5.0"
 # x-release-please-end
 
 const MODLOADER_RES_PATH := "res://modloader.gd"
